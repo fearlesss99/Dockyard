@@ -1150,6 +1150,435 @@ This section (§2.10) is now an implemented contract.
 * TC-13.7 is marked **Current** — ``dispatcher_gateway.py`` and matching
   tests are committed.
 
+### 2.11 Claude Code CLI Provider — Frozen Contract (Target — TC-13.8)
+
+TC-13.8 defines the **Claude Code CLI Provider** — a concrete
+`AgentCliProvider` adapter for the `claude` CLI.  This section is the
+Frozen Contract for TC-13.8 public interfaces.  TC-13.8 is **Target**:
+no production provider module exists yet; this contract governs all
+future implementation and test work.
+
+---
+
+#### 2.11.1 Relationship to TC-13.7
+
+Claude Code Provider is a concrete implementation of the TC-13.7
+`AgentCliProvider` Protocol.  It translates a `DispatchRequest` into
+an `AgentCliInvocation`:
+
+```
+DispatchRequest
+    ↓
+AgentCliInvocation(
+    executable,
+    argv,
+    stdin,
+    env_overrides,
+)
+```
+
+Claude Code Provider is responsible **only** for constructing this
+invocation value.  It does **not**:
+
+* launch subprocesses — TC-13.7 `DispatcherAgentGateway` owns this;
+* set `cwd` — `request.workspace` is passed as `cwd=str(request.workspace)`
+  by the Gateway, never by the provider;
+* implement timeout or cancellation — Gateway responsibility;
+* terminate process trees — Gateway responsibility;
+* compute stdout/stderr SHA-256 — Gateway responsibility;
+* parse `DispatchResult.stdout` — stdout is opaque bytes (TC-13.7);
+* write files or persist state — Gateway is a pure execution boundary;
+* implement retry, lease, slot, or escalation — deferred to TC-13.9 / TC-13.10 / TC-13.11.
+
+The provider must **not** have a `cwd` field, must not call `os.chdir()`,
+and must not use `--add-dir` to simulate the primary workspace directory.
+
+---
+
+#### 2.11.2 Provider ID — Dual-Instance Design
+
+A single provider implementation may be registered under two distinct
+identifiers:
+
+```python
+ClaudeCodeProvider(provider_id="claude", ...)
+ClaudeCodeProvider(provider_id="claudecode", ...)
+```
+
+**Frozen rules:**
+
+1. `provider_id` must be exactly `"claude"` or `"claudecode"` — no
+   other values are permitted.
+2. Each instance's `provider_id` **must** equal its key in the providers
+   `Mapping[str, AgentCliProvider]` passed to `run_dispatch`.
+3. `"claudecode"` must **not** be alias-normalized to `"claude"`.
+4. `ModelSelectionSnapshot.selected_model_provider` must **not** be
+   modified by the provider.
+5. There is **no** module-level mutable provider registry — no
+   `register_provider()`, no `unregister_provider()`.
+
+**Explicitly prohibited:**
+
+```python
+if selected_provider == "claudecode":
+    selected_provider = "claude"
+```
+
+The TC-13.7 mapping-key/provider-id consistency rule is preserved
+unchanged.
+
+---
+
+#### 2.11.3 Prompt Transmission — Stdin-Only
+
+`DispatchRequest.prompt` is the sole source of task content.
+
+The complete task prompt must be transmitted **exclusively via stdin**:
+
+```python
+stdin = request.prompt.encode("utf-8")
+```
+
+**Frozen rules:**
+
+* UTF-8 strict encoding — no `errors="ignore"` or `errors="replace"`.
+* No BOM (byte-order mark).
+* The prompt must not be modified, trimmed, normalized, or concatenated
+  with any other content.
+* `request.prompt` must **not** appear in `argv`.
+* The prompt must **not** be placed in any environment variable.
+* The prompt must **not** be written to a temporary file.
+
+**Control prompt:** `argv` may contain **one** fixed, non-sensitive
+control string:
+
+```text
+Read the task instructions from stdin and execute them.
+```
+
+This string must be a compile-time constant in source code.  It must
+**not** contain task content, paths, dispatch IDs, or any data from
+`DispatchRequest`.
+
+| Channel | Content |
+|---------|---------|
+| **stdin** | Complete task prompt |
+| **argv control string** | Fixed instruction to read from stdin |
+| **argv** | Must NOT contain task content |
+| **environment** | Must NOT contain task content |
+| **temporary files** | Must NOT be used for task content |
+
+---
+
+#### 2.11.4 CLI Invocation Pattern
+
+Frozen as **non-interactive, single-shot** execution:
+
+```text
+claude -p <fixed-control-prompt>
+```
+
+Required flags:
+
+| Flag | Value / Source |
+|------|---------------|
+| `-p` | Fixed control prompt (compile-time constant) |
+| `--output-format` | `json` |
+| `--model` | `request.model_selection.selected_model_id` |
+| `--permission-mode` | Configured safe mode (see §2.11.7) |
+| `--effort` | Mapped effort (see §2.11.6) |
+| `--no-session-persistence` | (flag, no argument) |
+
+`executable` and `argv` are strictly separated:
+
+```python
+AgentCliInvocation(
+    executable=config.executable,       # e.g. "claude"
+    argv=(                             # does NOT include executable
+        "-p",
+        CONTROL_PROMPT,                # fixed constant
+        "--output-format", "json",
+        "--model", request.model_selection.selected_model_id,
+        "--permission-mode", config.permission_mode,
+        "--effort", mapped_effort,
+        "--no-session-persistence",
+    ),
+    stdin=request.prompt.encode("utf-8"),
+    env_overrides=(),
+)
+```
+
+* `argv` must **not** include the executable.
+* No shell string — each argument is a separate `argv` element.
+* No shell wrapper (`cmd /c`, `powershell -Command`, `bash -c`).
+
+---
+
+#### 2.11.5 Model Mapping
+
+The CLI model argument is taken **exactly** from the frozen snapshot:
+
+```text
+request.model_selection.selected_model_id
+```
+
+generates:
+
+```text
+--model <selected_model_id>
+```
+
+**Must not:**
+
+* use `required_model_tier` in place of a model ID;
+* override with a hard-coded default model;
+* rewrite the model ID based on `provider_id` alias;
+* read a different model from an environment variable;
+* silently fall back to another model.
+
+An empty string or otherwise invalid model ID must **fail closed**
+(see §2.11.12).
+
+---
+
+#### 2.11.6 Deliberation Tier → Claude Effort Mapping
+
+Frozen mapping:
+
+| AgentDesk `deliberation_tier` | Claude `--effort` |
+|-------------------------------|-------------------|
+| `efficient` | `low` |
+| `balanced` | `medium` |
+| `deep` | `high` |
+
+Input source: `request.model_selection.selected_deliberation_tier`.
+
+**Important caveats (must be stated in the ADR):**
+
+* This is a **provider-specific** mapping from AgentDesk terminology
+  to Claude CLI terminology.
+* It does **not** imply the two tier systems are semantically identical.
+* An unknown deliberation tier must **fail closed** — no silent default
+  to `medium`.
+* `MadDeliberationDepth.fast` is a **MAD** concept distinct from
+  AgentDesk `efficient`; they are not the same enum and must not be
+  treated as interchangeable.
+
+---
+
+#### 2.11.7 Permission Mode — Safe Set
+
+Allowed permission modes:
+
+```text
+default
+plan
+acceptEdits
+dontAsk
+```
+
+Explicitly **forbidden**:
+
+```text
+bypassPermissions
+delegate
+```
+
+Reasons:
+* `bypassPermissions` bypasses the security boundary.
+* `delegate` is not part of the single-worker CLI execution model
+  frozen in this task.
+
+An unknown permission mode must **fail closed** — no silent fallback
+to `default`.
+
+No equivalent dangerous skip-permissions argument may be enabled.
+
+---
+
+#### 2.11.8 Tool Allow / Deny Configuration
+
+The provider configuration carries two **deeply immutable** tuples:
+
+```text
+allowed_tools: tuple[str, ...]
+disallowed_tools: tuple[str, ...]
+```
+
+**Rules:**
+
+* At construction time, external sequences are copied into `tuple`.
+* Every entry must be a non-empty string.
+* Leading and trailing whitespace on any entry is forbidden — reject
+  at construction.
+* Duplicate entries are forbidden — reject at construction.
+* Original order is preserved.
+* Mutating the source list after construction does **not** affect the
+  provider's stored tuples.
+* Both tuples may be empty.
+* When empty, the corresponding CLI argument is omitted entirely.
+
+When non-empty, each entry is serialized as a separate `argv` element.
+No shell string concatenation is performed.
+
+Tool allow/deny priority behavior is **not** frozen — this contract
+only guarantees faithful forwarding of both tuples to the Claude CLI.
+
+---
+
+#### 2.11.9 Configuration Object
+
+A frozen (immutable after construction) configuration object with at
+minimum these fields:
+
+| Field | Type | Constraint |
+|-------|------|------------|
+| `provider_id` | `str` | `"claude"` or `"claudecode"` only |
+| `executable` | `str` | Non-empty; default `"claude"`; no embedded arguments or shell metacharacters |
+| `permission_mode` | `str` | One of `default`, `plan`, `acceptEdits`, `dontAsk` |
+| `allowed_tools` | `tuple[str, ...]` | Deeply immutable; empty allowed |
+| `disallowed_tools` | `tuple[str, ...]` | Deeply immutable; empty allowed |
+
+`executable` path resolution (e.g. `shutil.which`) is performed by
+`DispatcherAgentGateway`, not by the provider.
+
+**Must not** appear in configuration: API key, OAuth token, session ID,
+resume ID, workspace/cwd, prompt, timeout, model override, retry config,
+lease or slot identifiers, persistence paths.
+
+---
+
+#### 2.11.10 Environment Variable & Authentication Boundary
+
+Frozen:
+
+```python
+env_overrides == ()
+```
+
+The Claude Code Provider:
+
+* does **not** read, set, or forward any API key.
+* does **not** copy or inspect the full parent process environment.
+* does **not** set any authentication environment variable.
+* does **not** set `MAD_HOME`.
+* does **not** set `MAD_PARTICIPANT`.
+* does **not** set `CLAUDECODE` or any recursive-session guard.
+* does **not** log or return secrets in any form.
+
+Authentication is the responsibility of the installation environment
+and the Claude CLI itself.
+
+The `--bare` flag is **not** included in this frozen contract — it
+may alter authentication and configuration loading behavior and
+requires separate evaluation.
+
+---
+
+#### 2.11.11 Explicitly Forbidden CLI Behavior
+
+The following must **never** appear in `argv`:
+
+| Forbidden Flag / Pattern | Reason |
+|--------------------------|--------|
+| `--continue` | Session resumption — single-shot only |
+| `--resume` | Session resumption — single-shot only |
+| `--session-id` | Session persistence — single-shot only |
+| `--fork-session` | Multi-session — not in scope |
+| `--remote` | Remote execution — not in scope |
+| `--teleport` | Remote execution — not in scope |
+| `--dangerously-skip-permissions` | Security bypass |
+| `--permission-mode bypassPermissions` | Security bypass |
+| `--add-dir` for primary workspace | cwd handled by Gateway |
+| Interactive mode (no `-p`) | Single-shot only |
+| Shell wrapper (`cmd /c`, `powershell -Command`, `bash -c`) | Process integrity |
+| Task prompt in argv | Stdin-only contract |
+| Secrets / API keys / tokens in argv | Security boundary |
+
+Future `--add-dir` usage for auxiliary directory access is not
+within TC-13.8 scope.
+
+---
+
+#### 2.11.12 Fail-Closed Rules
+
+The provider must **reject** (fail closed, no silent recovery) for:
+
+| Condition | Action |
+|-----------|--------|
+| `provider_id` not `"claude"` or `"claudecode"` | Raise |
+| `executable` empty or `None` | Raise |
+| `executable` contains embedded arguments or shell metacharacters | Raise |
+| Unknown `selected_deliberation_tier` | Raise |
+| Unknown or forbidden `permission_mode` | Raise |
+| Tool entry not a string | Raise |
+| Tool entry empty string | Raise |
+| Tool entry has leading/trailing whitespace | Raise |
+| Duplicate tool entry | Raise |
+| `provider_id` ≠ mapping key | Rejected by Gateway (TC-13.7) |
+| Prompt cannot be transmitted per UTF-8 contract | Raise — no replacement or trimming |
+
+No silent correction, trimming, fallback, or alias normalization is
+permitted.
+
+---
+
+#### 2.11.13 Output Boundary
+
+The provider requests JSON output:
+
+```text
+--output-format json
+```
+
+but its responsibility ends at constructing the invocation.  It must
+**not**:
+
+* parse stdout JSON;
+* convert stdout to text;
+* extract report data from output;
+* determine business success/failure;
+* modify the Gateway's opaque-bytes contract.
+
+TC-13.7 continues to treat `DispatchResult.stdout` and
+`DispatchResult.stderr` as opaque `bytes`.  Output interpretation and
+Worker delivery transformation belong to **TC-13.9**.
+
+---
+
+#### 2.11.14 Explicitly Out of Scope
+
+TC-13.8 does **not** implement:
+
+* `WorkerAdapter` (TC-13.9)
+* `WorkerKind` → provider selection (TC-13.9)
+* `ContextBudgetPolicy` invocation (TC-13.5.1 / TC-13.9)
+* Context budget → CLI argument translation (TC-13.9)
+* Dispatch scheduling (TC-13.18)
+* Worker slot allocation (TC-13.10)
+* Lease management (TC-13.10)
+* Retry logic (TC-13.9)
+* Escalation (TC-13.13)
+* Rate limiting (TC-13.14)
+* State / event / outbox / report writes (TC-13.11)
+* Stdout business parsing (TC-13.9)
+* Claude session resumption
+* Remote Claude sessions
+* Real Claude CLI invocation
+
+All of the above remain **Target** for their respective task cards.
+
+---
+
+#### 2.11.15 Status
+
+* ADR Interface Status row #30 "Claude Code CLI contract" is **Target**.
+* This section (§2.11) is the Frozen Contract for TC-13.8 — it governs
+  all future implementation and test work.
+* TC-13.7 and all prior Current interfaces remain **Current**.
+* TC-13.8 will become **Current** only when a matching production
+  provider module and complete test suite are committed.
+
 ---
 
 ## 3. Ownership Boundaries

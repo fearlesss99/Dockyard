@@ -2562,6 +2562,655 @@ class ReleaseSmokeTests(unittest.TestCase):
                 f"got: {heading.strip()!r}",
             )
 
+    # -- Item 14: TC-13.8 Claude Code CLI Provider frozen contract --------
+
+    # ── 14a: §2.11 section existence and heading ──────────────────────────
+
+    def test_tc138_section_211_exists_and_is_target(self) -> None:
+        """ADR §2.11 must exist as an independent heading marked Target
+        with TC-13.8."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(
+            section,
+            "ADR must contain ### 2.11 Claude Code CLI Provider",
+        )
+        heading_m = re.search(
+            r"^### 2\.11\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m, "ADR must have a §2.11 heading")
+        heading = heading_m.group(0)
+        self.assertIn(
+            "Target",
+            heading,
+            f"§2.11 heading must say Target, got: {heading.strip()!r}",
+        )
+        self.assertNotIn(
+            "Current",
+            heading,
+            f"§2.11 heading must NOT say Current, got: {heading.strip()!r}",
+        )
+        self.assertIn(
+            "TC-13.8",
+            heading,
+            f"§2.11 heading must reference TC-13.8, got: {heading.strip()!r}",
+        )
+
+    # ── 14b: Interface Status #30 is Target ─────────────────────────────
+
+    def test_tc138_interface_status_row_30_is_target(self) -> None:
+        """ADR Interface Status row #30 (Claude Code CLI, TC-13.8) must
+        be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        tc138_row = None
+        for row in rows:
+            impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell)
+            if "TC-13.8" in task_ids:
+                tc138_row = row
+                break
+
+        self.assertIsNotNone(
+            tc138_row,
+            "ADR Interface Status must contain row #30 Implemented-by TC-13.8",
+        )
+        status_cell = self._resolve_col(tc138_row, "Status")
+        self.assertIn(
+            "Target",
+            status_cell,
+            f"ADR Interface Status #30 (TC-13.8) must be Target, "
+            f"got status={status_cell!r}",
+        )
+        self.assertNotIn(
+            "Current",
+            status_cell,
+            "ADR Interface Status #30 (TC-13.8) must NOT be marked Current",
+        )
+
+    # ── 14c: AgentCliProvider reference and AgentCliInvocation fields ────
+
+    _INVOCATION_FIELDS = frozenset(
+        {"executable", "argv", "stdin", "env_overrides"}
+    )
+
+    def test_tc138_contract_references_agent_cli_provider(self) -> None:
+        """§2.11 must reference AgentCliProvider Protocol from TC-13.7."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "AgentCliProvider",
+            section,
+            "ADR §2.11 must reference AgentCliProvider Protocol",
+        )
+
+    def test_tc138_invocation_four_fields_no_cwd(self) -> None:
+        """§2.11 must define AgentCliInvocation with four fields and
+        explicitly forbid a cwd field."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        for field in sorted(self._INVOCATION_FIELDS):
+            self.assertIn(
+                field,
+                section,
+                f"ADR §2.11 must reference AgentCliInvocation field '{field}'",
+            )
+        # Must explicitly state no cwd field.
+        target = section.lower()
+        self.assertTrue(
+            "no ``cwd`` field" in section
+            or "no cwd field" in target
+            or "not have a `cwd` field" in target
+            or "must **not** have a `cwd` field" in section,
+            "ADR §2.11 must state AgentCliInvocation has no cwd field",
+        )
+
+    def test_tc138_workspace_cwd_is_gateway_responsibility(self) -> None:
+        """§2.11 must state workspace/cwd is the Gateway's responsibility,
+        not the provider's."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        # Must show cwd=str(request.workspace) belongs to Gateway.
+        self.assertIn(
+            "cwd",
+            section.lower(),
+            "§2.11 must reference cwd as Gateway responsibility",
+        )
+        self.assertIn(
+            "request.workspace",
+            section,
+            "§2.11 must reference request.workspace for cwd",
+        )
+
+    # ── 14d: Provider ID rules ──────────────────────────────────────────
+
+    def test_tc138_provider_id_exact_claude_claudecode(self) -> None:
+        """§2.11 must state provider_id is exactly 'claude' or
+        'claudecode'."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        self.assertIn('"claude"', section,
+                      "§2.11 must reference provider_id 'claude'")
+        self.assertIn('"claudecode"', section,
+                      "§2.11 must reference provider_id 'claudecode'")
+
+    def test_tc138_forbids_alias_normalization(self) -> None:
+        """§2.11 must explicitly forbid alias normalization of provider_id."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        # Must explicitly prohibit normalizing claudecode → claude.
+        target = section.lower()
+        has_forbid = (
+            "must **not** be alias-normalized" in section
+            or "must not be alias-normalized" in target
+            or 'selected_provider = "claude"' in section
+        )
+        self.assertTrue(
+            has_forbid,
+            "§2.11 must explicitly forbid alias normalization of provider_id",
+        )
+
+    # ── 14e: Prompt transmission — stdin only ────────────────────────────
+
+    def test_tc138_prompt_via_stdin_utf8_no_bom(self) -> None:
+        """§2.11 must state prompt is transmitted via stdin with UTF-8
+        encoding and no BOM."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        self.assertIn('encode("utf-8")', section,
+                      "§2.11 must show stdin = request.prompt.encode('utf-8')")
+        self.assertIn("BOM", section,
+                      "§2.11 must explicitly forbid BOM")
+        self.assertIn("stdin", section.lower(),
+                      "§2.11 must reference stdin")
+
+    def test_tc138_prompt_not_in_argv_env_or_tempfile(self) -> None:
+        """§2.11 must forbid prompt in argv, env vars, or temp files."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            ("argv" in target and "not" in target)
+            or "must **not** appear in `argv`" in section,
+            "§2.11 must forbid prompt in argv",
+        )
+        self.assertTrue(
+            "environment variable" in target or "environment" in target,
+            "§2.11 must forbid prompt in environment variables",
+        )
+        self.assertTrue(
+            "temporary file" in target or "temp" in target,
+            "§2.11 must forbid prompt in temporary files",
+        )
+
+    def test_tc138_control_prompt_is_fixed_constant(self) -> None:
+        """§2.11 must define a fixed, non-sensitive control prompt
+        instructing Claude to read from stdin."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "Read the task instructions from stdin",
+            section,
+            "§2.11 must contain the fixed control prompt string",
+        )
+        self.assertIn(
+            "compile-time constant",
+            section,
+            "§2.11 must state control prompt is a compile-time constant",
+        )
+
+    # ── 14f: CLI invocation flags ───────────────────────────────────────
+
+    def test_tc138_cli_includes_required_flags(self) -> None:
+        """§2.11 must require -p, --output-format json, --model,
+        --permission-mode, --effort, --no-session-persistence."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        for flag in (
+            "-p",
+            "--output-format",
+            "json",
+            "--model",
+            "--permission-mode",
+            "--effort",
+            "--no-session-persistence",
+        ):
+            self.assertIn(
+                flag,
+                section,
+                f"§2.11 must include CLI flag '{flag}'",
+            )
+
+    def test_tc138_executable_and_argv_are_separated(self) -> None:
+        """§2.11 must show executable and argv are strictly separated."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "does **not** include executable" in section
+            or "must **not** include the executable" in section
+            or ("argv" in target and "not" in target and "executable" in target),
+            "§2.11 must state argv does not include executable",
+        )
+
+    # ── 14g: Model mapping ──────────────────────────────────────────────
+
+    def test_tc138_model_from_snapshot_selected_model_id(self) -> None:
+        """§2.11 must state --model comes from
+        request.model_selection.selected_model_id."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "selected_model_id",
+            section,
+            "§2.11 must derive --model from selected_model_id",
+        )
+        # Must not use required_model_tier for model.
+        target = section.lower()
+        self.assertTrue(
+            "required_model_tier" not in section
+            or "must not" in target
+            or "must **not** use `required_model_tier`" in section
+            or "not" in section.split("required_model_tier")[0][-50:]
+            if "required_model_tier" in section
+            else True,
+            "§2.11 must warn against using required_model_tier for model",
+        )
+
+    def test_tc138_empty_model_id_fail_closed(self) -> None:
+        """§2.11 must state empty/invalid model ID is fail-closed."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "fail closed",
+            section.lower(),
+            "§2.11 must mention fail-closed for invalid model ID",
+        )
+
+    # ── 14h: Effort mapping ─────────────────────────────────────────────
+
+    _EFFORT_MAPPING = {
+        "efficient": "low",
+        "balanced": "medium",
+        "deep": "high",
+    }
+
+    def test_tc138_effort_mapping_exact(self) -> None:
+        """§2.11 must define exact efficient→low, balanced→medium,
+        deep→high mapping."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        for agentdesk_tier, claude_effort in sorted(self._EFFORT_MAPPING.items()):
+            self.assertIn(
+                agentdesk_tier,
+                section,
+                f"§2.11 effort mapping missing input: {agentdesk_tier}",
+            )
+            self.assertIn(
+                claude_effort,
+                section,
+                f"§2.11 effort mapping missing output: {claude_effort}",
+            )
+
+    def test_tc138_unknown_deliberation_tier_fail_closed(self) -> None:
+        """§2.11 must state unknown deliberation tier is fail-closed."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            ("unknown" in target and "fail" in target)
+            or ("unknown" in target and "closed" in target),
+            "§2.11 must state unknown deliberation tier fails closed",
+        )
+
+    def test_tc138_effort_not_semantically_identical(self) -> None:
+        """§2.11 must state effort mapping is provider-specific and
+        does not imply semantic identity."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "not" in target and "identical" in target
+            or "provider-specific" in target,
+            "§2.11 must note effort systems are not semantically identical",
+        )
+
+    # ── 14i: Permission mode ────────────────────────────────────────────
+
+    _SAFE_MODES = frozenset({"default", "plan", "acceptEdits", "dontAsk"})
+    _FORBIDDEN_MODES = frozenset({"bypassPermissions", "delegate"})
+
+    def test_tc138_permission_mode_safe_set(self) -> None:
+        """§2.11 must list exact allowed permission modes."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        for mode in sorted(self._SAFE_MODES):
+            self.assertIn(
+                mode,
+                section,
+                f"§2.11 must allow permission mode '{mode}'",
+            )
+
+    def test_tc138_permission_mode_forbids_bypass_and_delegate(self) -> None:
+        """§2.11 must explicitly forbid bypassPermissions and delegate."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "bypassPermissions",
+            section,
+            "§2.11 must explicitly forbid bypassPermissions",
+        )
+        self.assertIn(
+            "delegate",
+            section,
+            "§2.11 must explicitly forbid delegate",
+        )
+        self.assertIn(
+            "--dangerously-skip-permissions",
+            section,
+            "§2.11 must explicitly forbid --dangerously-skip-permissions",
+        )
+
+    # ── 14j: Tool allow/deny deeply immutable tuples ────────────────────
+
+    def test_tc138_tool_allow_deny_immutable_tuples(self) -> None:
+        """§2.11 must declare allowed_tools and disallowed_tools as
+        tuple[str, ...]."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "tuple[str, ...]",
+            section,
+            "§2.11 must declare tool lists as tuple[str, ...]",
+        )
+        self.assertIn(
+            "allowed_tools",
+            section,
+            "§2.11 must reference allowed_tools",
+        )
+        self.assertIn(
+            "disallowed_tools",
+            section,
+            "§2.11 must reference disallowed_tools",
+        )
+
+    def test_tc138_tool_entries_must_be_nonempty_strings(self) -> None:
+        """§2.11 must state tool entries are non-empty strings with no
+        whitespace padding."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "non-empty" in target or "nonempty" in target
+            or "empty string" in target,
+            "§2.11 must forbid empty tool entries",
+        )
+        self.assertTrue(
+            "whitespace" in target,
+            "§2.11 must forbid leading/trailing whitespace in tool entries",
+        )
+
+    def test_tc138_tool_duplicates_forbidden(self) -> None:
+        """§2.11 must forbid duplicate tool entries."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "duplicate",
+            section.lower(),
+            "§2.11 must forbid duplicate tool entries",
+        )
+
+    def test_tc138_tool_source_mutation_does_not_affect_provider(self) -> None:
+        """§2.11 must state mutating source list after construction
+        does not affect stored tuples."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "mutating" in target
+            or "source" in target
+            or "does **not** affect" in section,
+            "§2.11 must state source mutation does not affect stored config",
+        )
+
+    # ── 14k: Environment / secrets boundary ──────────────────────────────
+
+    def test_tc138_env_overrides_empty(self) -> None:
+        """§2.11 must freeze env_overrides == ()."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "env_overrides",
+            section,
+            "§2.11 must reference env_overrides",
+        )
+        self.assertIn(
+            "()",
+            section,
+            "§2.11 must show env_overrides == ()",
+        )
+
+    def test_tc138_no_auth_or_secrets_in_provider(self) -> None:
+        """§2.11 must state provider does not handle API keys,
+        secrets, or auth env vars."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "api key" in target or "api_key" in target
+            or "authentication" in target,
+            "§2.11 must state auth boundary",
+        )
+        # Provider must state it does NOT set MAD_HOME (negation, not absence).
+        self.assertIn(
+            "does **not** set `MAD_HOME`",
+            section,
+            "§2.11 must state provider does NOT set MAD_HOME",
+        )
+        # Provider must state it does NOT set MAD_PARTICIPANT (negation).
+        self.assertIn(
+            "does **not** set `MAD_PARTICIPANT`",
+            section,
+            "§2.11 must state provider does NOT set MAD_PARTICIPANT",
+        )
+
+    # ── 14l: Forbidden flags ────────────────────────────────────────────
+
+    _FORBIDDEN_FLAGS = frozenset({
+        "--continue",
+        "--resume",
+        "--session-id",
+        "--fork-session",
+        "--remote",
+        "--teleport",
+    })
+
+    def test_tc138_forbidden_session_resume_remote_flags(self) -> None:
+        """§2.11 must explicitly forbid session, resume, remote, and
+        teleport flags."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        for flag in sorted(self._FORBIDDEN_FLAGS):
+            self.assertIn(
+                flag,
+                section,
+                f"§2.11 must explicitly forbid {flag}",
+            )
+
+    def test_tc138_forbids_add_dir_for_primary_workspace(self) -> None:
+        """§2.11 must forbid --add-dir for primary workspace."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "--add-dir",
+            section,
+            "§2.11 must explicitly forbid --add-dir for primary workspace",
+        )
+
+    # ── 14m: Output boundary ────────────────────────────────────────────
+
+    def test_tc138_output_parsing_deferred_to_tc139(self) -> None:
+        """§2.11 must state output parsing belongs to TC-13.9, not the
+        Claude provider."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        # Output interpretation must reference TC-13.9.
+        self.assertIn(
+            "TC-13.9",
+            section,
+            "§2.11 must reference TC-13.9 for output interpretation",
+        )
+        self.assertIn(
+            "opaque",
+            section.lower(),
+            "§2.11 must state stdout is opaque bytes (TC-13.7 contract)",
+        )
+
+    # ── 14n: Configuration object ───────────────────────────────────────
+
+    def test_tc138_config_fields_provider_id_exec_permission_tools(self) -> None:
+        """§2.11 must define config with provider_id, executable,
+        permission_mode, allowed_tools, disallowed_tools."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        for field in (
+            "provider_id",
+            "executable",
+            "permission_mode",
+            "allowed_tools",
+            "disallowed_tools",
+        ):
+            self.assertIn(
+                field,
+                section,
+                f"§2.11 config must include field '{field}'",
+            )
+
+    def test_tc138_config_forbids_secrets_and_persistence(self) -> None:
+        """§2.11 must forbid API keys, tokens, session IDs, persistence
+        paths in config."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "api key" in target
+            or "oauth" in target
+            or "token" in target,
+            "§2.11 must forbid auth tokens in config",
+        )
+        self.assertTrue(
+            "session" in target or "persistence" in target,
+            "§2.11 must forbid session persistence in config",
+        )
+
+    # ── 14o: TC-13.9 still Target ───────────────────────────────────────
+
+    def test_tc138_tc139_still_target_in_interface_status(self) -> None:
+        """TC-13.9 must still be Target in Interface Status table."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        tc139_row = None
+        for row in rows:
+            impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell)
+            if "TC-13.9" in task_ids:
+                tc139_row = row
+                break
+
+        self.assertIsNotNone(
+            tc139_row,
+            "ADR Interface Status must contain a row for TC-13.9",
+        )
+        status_cell = self._resolve_col(tc139_row, "Status")
+        self.assertIn(
+            "Target",
+            status_cell,
+            f"TC-13.9 must still be Target, got: {status_cell}",
+        )
+        self.assertNotIn(
+            "Current",
+            status_cell,
+            "TC-13.9 must NOT be marked Current",
+        )
+
+    # ── 14p: #29 DispatcherAgentGateway still Current ──────────────────
+
+    def test_tc138_tc137_row_29_still_current(self) -> None:
+        """#29 DispatcherAgentGateway must remain Current after TC-13.8
+        contract freeze."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        tc137_row = None
+        for row in rows:
+            impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell)
+            if "TC-13.7" in task_ids:
+                tc137_row = row
+                break
+
+        self.assertIsNotNone(tc137_row)
+        status_cell = self._resolve_col(tc137_row, "Status")
+        self.assertIn(
+            "Current",
+            status_cell,
+            f"#29 TC-13.7 must remain Current, got: {status_cell}",
+        )
+
+    # ── 14q: §2.11 scope exclusions ────────────────────────────────────
+
+    def test_tc138_section_211_excludes_worker_adapter_and_budget(self) -> None:
+        """§2.11 must state WorkerAdapter, ContextBudgetPolicy,
+        retry, lease, slot, escalation, rate-limiting are out of scope."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.11")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        for excluded in (
+            "workeradapter",
+            "contextbudgetpolicy",
+            "retry",
+            "lease",
+            "slot",
+            "escalation",
+            "rate limiting",
+        ):
+            self.assertIn(
+                excluded,
+                target,
+                f"§2.11 must exclude '{excluded}' from TC-13.8 scope",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
