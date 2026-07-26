@@ -38,7 +38,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 25 | ADR status update (Target → Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
 | 26 | `agentdesk.mad-refs/v1` runtime schema | **Target** | TC-13.6 | Gitignored runtime record of MAD invocations |
 | 27 | AgentDesk shared core data types | **Current** | TC-13.4 | `TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind` enums; no budget calculation or WorkerAdapter implementation |
-| 28 | AgentDesk ContextBudgetPolicy | **Target** | TC-13.5 | Per-tier budget percentages; 15% / 30% / 50% / 65%; retains ≥35% reserved; depends on TC-13.4 |
+| 28 | AgentDesk ContextBudgetPolicy | **Current** | TC-13.5 | Per-tier budget percentages: 15% / 30% / 50% / 65%; floor integer arithmetic; retains ≥35% reserved; depends on TC-13.4 |
 | 29 | AgentDesk DispatcherAgentGateway | **Target** | TC-13.7 | Config-driven subprocess dispatch via agent CLI; depends on TC-13.4, TC-13.6 |
 | 30 | Claude Code CLI contract | **Target** | TC-13.8 | Public CLI interface contract for `claude` invocation; depends on TC-13.4 |
 
@@ -430,6 +430,11 @@ At least **35% of context window** is reserved for system prompt, tool
 definitions, and overhead.  The per-worktree writer limit of 1 means no two
 Workers may write to the same ordinary worktree concurrently.
 
+The budget percentages and the ≥35 % reserved rule are computed by
+`ContextBudgetPolicy` (TC-13.5 — Current).  WorkerAdapter (TC-13.9)
+consumes the policy's `BudgetResult`; this section describes the
+*Worker-tier behaviours* that use that budget, not the arithmetic itself.
+
 ### 2.5 Worker Slot Lease (Target — TC-13.10)
 
 Each Worker slot lease is independent of the PM lease.  Fields:
@@ -574,6 +579,84 @@ TC-13.4 explicitly does **not** include:
 - Task-card, outbox, or event schema changes
 - A runtime data file; these enums are compile-time / specification
   constants only
+
+---
+
+#### 2.8.5 ContextBudgetPolicy (Current — TC-13.5)
+
+`ContextBudgetPolicy` (TC-13.5) computes a per-task token budget from
+`TaskDifficulty` and a model's `context_window_tokens`.  It is a **pure
+arithmetic strategy** with no I/O, no provider knowledge, and no
+WorkerAdapter mechanics.
+
+**Public API** (`skills/agentdesk/scripts/context_budget.py`):
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `compute_budget(context_window_tokens, difficulty)` | function | Returns a `BudgetResult` |
+| `BudgetResult` | `NamedTuple` | Five-field immutable result |
+
+**Inputs**:
+
+| Parameter | Type | Constraint |
+|-----------|------|------------|
+| `context_window_tokens` | `int` | Positive (≥1), non-bool, from a validated `model-bindings/v2` binding |
+| `difficulty` | `TaskDifficulty` | Must be a `TaskDifficulty` enum member; bare strings and other enum types are rejected |
+
+**Frozen percentages**:
+
+| `TaskDifficulty` | Budget % |
+|------------------|----------|
+| `BASIC` | 15 |
+| `STANDARD` | 30 |
+| `ADVANCED` | 50 |
+| `EXPERT` | 65 |
+
+**Integer arithmetic** (no floating-point, no `Decimal`):
+
+```text
+budget_tokens  = context_window_tokens × budget_percent // 100   (floor)
+reserved_tokens = context_window_tokens - budget_tokens
+```
+
+**Invariants** (enforced at computation time):
+
+```text
+budget_tokens >= 1
+reserved_tokens >= (context_window_tokens × 35 + 99) // 100   (ceil of 35 %)
+budget_tokens + reserved_tokens == context_window_tokens
+```
+
+If `budget_tokens` would round to 0 (window too small for the requested
+difficulty), `compute_budget()` raises `ValueError`.
+
+**Result fields** (`BudgetResult`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `context_window_tokens` | `int` | As supplied |
+| `difficulty` | `TaskDifficulty` | As supplied |
+| `budget_percent` | `int` | 15 / 30 / 50 / 65 |
+| `budget_tokens` | `int` | Floor-computed budget |
+| `reserved_tokens` | `int` | `context_window_tokens - budget_tokens` |
+
+**Explicit non-goals**:
+
+- `BudgetResult` is **not** written to `model_selection`, dispatch,
+  outbox, event, or delivery report evidence.
+- The percentage table is module-private; callers cannot override it.
+- `compute_budget()` does **not** perform any I/O, subprocess call,
+  filesystem write, environment-variable read, or network access.
+- The module does **not** implement WorkerAdapter, slot allocation,
+  lease, scheduling, retry, or escalation.
+- The module does **not** map `TaskDifficulty` to `WorkerKind`,
+  `MadDeliberationDepth`, or any other enum.
+
+**Consumption by WorkerAdapter (TC-13.9)**:  WorkerAdapter calls
+`compute_budget()` as a pure function and uses `budget_tokens` to
+constrain the Worker's effective context window.  WorkerAdapter is
+responsible for sourcing `context_window_tokens` from the selected
+model binding's `selected_context_window_tokens` field.
 
 ---
 

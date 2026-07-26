@@ -975,14 +975,14 @@ class ReleaseSmokeTests(unittest.TestCase):
             "ADR §2.8.4 must reference TC-13.9 as out-of-scope",
         )
 
-    # -- 8e: New interfaces (TC-13.5/7/8) remain Target; TC-13.4 is now Current
+    # -- 8e: New interfaces (TC-13.7/8) remain Target; TC-13.4 and TC-13.5 are now Current
 
-    STILL_TARGET_TC13_IDS = frozenset({"TC-13.5", "TC-13.7", "TC-13.8"})
+    STILL_TARGET_TC13_IDS = frozenset({"TC-13.7", "TC-13.8"})
 
     def test_new_non_tc134_interfaces_remain_target(self) -> None:
-        """TC-13.5, TC-13.7, TC-13.8 must still be Target.
+        """TC-13.7, TC-13.8 must still be Target.
 
-        TC-13.4 is now Current (completed by this card), so it is
+        TC-13.4 and TC-13.5 are now Current (completed), so they are
         excluded from this check.
         """
         adr_text = self._adr_path().read_text(encoding="utf-8")
@@ -1064,6 +1064,75 @@ class ReleaseSmokeTests(unittest.TestCase):
             heading,
             f"§2.8 heading must NOT say Target, got: {heading.strip()!r}",
         )
+
+    # -- 8e2: TC-13.5 interface row is now Current ------------------------
+
+    def test_tc135_interface_row_is_now_current(self) -> None:
+        """TC-13.5's Interface Status row (#28) must be Current."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        tc135_row = None
+        for row in rows:
+            impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)?)\b", impl_cell)
+            if "TC-13.5" in task_ids:
+                tc135_row = row
+                break
+
+        self.assertIsNotNone(
+            tc135_row,
+            "ADR Interface Status must contain a row Implemented-by TC-13.5",
+        )
+        status_cell = self._resolve_col(tc135_row, "Status")
+        self.assertIn(
+            "Current",
+            status_cell,
+            f"ADR Interface Status #28 (TC-13.5) must be Current, "
+            f"got status={status_cell!r}",
+        )
+
+    def test_context_budget_policy_section_exists_and_is_current(self) -> None:
+        """ADR must contain §2.8.5 ContextBudgetPolicy with the four
+        percentages and the two integer formulas."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.8.5")
+        self.assertIsNotNone(
+            section,
+            "ADR must contain §2.8.5 ContextBudgetPolicy",
+        )
+        # Must be marked Current.
+        heading_m = re.search(
+            r"^#### 2\.8\.5\s.*$", adr_text, re.MULTILINE
+        )
+        self.assertIsNotNone(heading_m, "ADR must have a §2.8.5 heading")
+        heading = heading_m.group(0)
+        self.assertIn(
+            "Current",
+            heading,
+            f"§2.8.5 heading must say Current, got: {heading.strip()!r}",
+        )
+        # Must include TC-13.5.
+        self.assertIn("TC-13.5", section)
+        # Must mention all four percentages.
+        for pct in ("15", "30", "50", "65"):
+            self.assertIn(
+                pct,
+                section,
+                f"ADR §2.8.5 must mention {pct}%",
+            )
+        # Must include the floor formula (budget_tokens = ... // 100).
+        self.assertIn("// 100", section,
+                       "ADR §2.8.5 must contain floor integer formula")
+        # Must include the reserved formula.
+        self.assertIn("reserved_tokens", section,
+                       "ADR §2.8.5 must contain reserved_tokens formula")
+        # Must mention BudgetResult.
+        self.assertIn("BudgetResult", section,
+                       "ADR §2.8.5 must reference BudgetResult")
+        # Must reference TC-13.9 WorkerAdapter consumption.
+        self.assertIn("TC-13.9", section,
+                       "ADR §2.8.5 must reference TC-13.9 consumption")
 
     # -- 8f: Interface Status rows for the new cards -----------------------
 
