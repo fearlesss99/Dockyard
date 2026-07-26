@@ -534,6 +534,230 @@ class ExecutableValidationTests(unittest.TestCase):
         )
         self.assertIn(" ", p.executable)
 
+    # ── New fail-closed: embedded arguments without metacharacters ──────
+
+    def test_claude_whoami_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="claude whoami",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_claude_output_json_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="claude output.json",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_claude_true_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="claude true",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_windows_path_whoami_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"C:\Program Files\Claude\claude.exe whoami",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_windows_path_calc_exe_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"C:\Program Files\Claude\claude.exe calc.exe",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_unc_path_whoami_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"\\server\share\Claude Code\claude.exe whoami",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_ampersand_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="claude & whoami",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_gt_redirect_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="claude > output.txt",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_lt_redirect_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="claude < input.txt",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_double_quoted_arg_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable='claude "argument"',
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_single_quoted_arg_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="claude 'argument'",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_dollar_home_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="claude $HOME",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_dollar_subshell_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="claude $(whoami)",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_tab_in_executable_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="claude\targument",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_vt_in_executable_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="claude\vargument",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_ff_in_executable_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="claude\fargument",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    # ── Still allowed: legitimate paths with spaces ────────────────────
+
+    def test_windows_program_files_path_allowed(self) -> None:
+        p = ClaudeCodeProvider(
+            provider_id="claude",
+            executable=r"C:\Program Files\Claude\claude.exe",
+            permission_mode="plan",
+            allowed_tools=(),
+            disallowed_tools=(),
+        )
+        self.assertIn(" ", p.executable)
+
+    def test_windows_forward_slash_path_allowed(self) -> None:
+        p = ClaudeCodeProvider(
+            provider_id="claude",
+            executable="C:/Program Files/Claude/claude.cmd",
+            permission_mode="plan",
+            allowed_tools=(),
+            disallowed_tools=(),
+        )
+        self.assertIn(" ", p.executable)
+
+    def test_unc_path_allowed(self) -> None:
+        p = ClaudeCodeProvider(
+            provider_id="claude",
+            executable=r"\\server\share\Claude Code\claude.exe",
+            permission_mode="plan",
+            allowed_tools=(),
+            disallowed_tools=(),
+        )
+        self.assertIn(" ", p.executable)
+
+    def test_claude_exe_plain_allowed(self) -> None:
+        p = ClaudeCodeProvider(
+            provider_id="claude",
+            executable="claude.exe",
+            permission_mode="plan",
+            allowed_tools=(),
+            disallowed_tools=(),
+        )
+        self.assertEqual(p.executable, "claude.exe")
+
+    def test_posix_absolute_path_allowed(self) -> None:
+        p = ClaudeCodeProvider(
+            provider_id="claude",
+            executable="/usr/local/bin/claude",
+            permission_mode="plan",
+            allowed_tools=(),
+            disallowed_tools=(),
+        )
+        self.assertTrue(p.executable.startswith("/"))
+
+    def test_plain_claude_allowed(self) -> None:
+        p = ClaudeCodeProvider(
+            provider_id="claude",
+            executable="claude",
+            permission_mode="plan",
+            allowed_tools=(),
+            disallowed_tools=(),
+        )
+        self.assertEqual(p.executable, "claude")
+
 
 # =========================================================================
 # 4. Permission mode

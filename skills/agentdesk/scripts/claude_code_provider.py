@@ -21,7 +21,9 @@ _CONTROL_PROMPT = (
     "Read the task instructions from stdin and execute them."
 )
 
-_BLOCKED_CHARS_EXECUTABLE = frozenset({"\x00", "\r", "\n"})
+_BLOCKED_CHARS_EXECUTABLE = frozenset(
+    {"\x00", "\r", "\n", "\t", "\v", "\f"}
+)
 _ALLOWED_PROVIDER_IDS = frozenset({"claude", "claudecode"})
 _ALLOWED_PERMISSION_MODES = frozenset({
     "default",
@@ -29,6 +31,9 @@ _ALLOWED_PERMISSION_MODES = frozenset({
     "acceptEdits",
     "dontAsk",
 })
+_SHELL_METACHARS = frozenset(
+    {"&", "|", ";", "`", "$", "<", ">", "(", ")", '"', "'"}
+)
 _EFFORT_MAP = {
     "efficient": "low",
     "balanced": "medium",
@@ -40,8 +45,8 @@ def _validate_executable(executable: object) -> str:
     """Validate and return *executable* as a non-empty, safe ``str``.
 
     Must be ``str``, non-empty, non-pure-whitespace, no leading/trailing
-    whitespace, no NUL/CR/LF, and must not be an obvious shell command
-    with embedded arguments or metacharacters.
+    whitespace, no NUL/CR/LF/TAB/VT/FF, no shell metacharacters, and
+    must not be an executable name with embedded arguments.
     """
     if not isinstance(executable, str):
         raise ValueError(
@@ -54,34 +59,52 @@ def _validate_executable(executable: object) -> str:
     if executable != executable.strip():
         raise ValueError("executable must not have leading or trailing whitespace")
 
+    # Reject control characters — NUL, CR, LF, TAB, VT, FF.
     for ch in _BLOCKED_CHARS_EXECUTABLE:
         if ch in executable:
-            if ch == "\x00":
-                raise ValueError("executable must not contain NUL")
-            if ch == "\r":
-                raise ValueError("executable must not contain CR")
-            if ch == "\n":
-                raise ValueError("executable must not contain LF")
+            label = {
+                "\x00": "NUL", "\r": "CR", "\n": "LF",
+                "\t": "TAB", "\v": "VT", "\f": "FF",
+            }[ch]
+            raise ValueError(f"executable must not contain {label}")
 
-    # Reject embedded arguments / shell command characters.
-    # A path with spaces is legal (e.g. "C:\\Program Files\\Claude\\claude.exe").
-    # But the executable must not contain things like &&, |, ;, backticks, or
-    # look like "exe --flag" (a space followed by a leading dash or similar).
-    # The heuristic: if there is a space followed by a dash- or slash-prefixed
-    # token, that's an embedded argument.
-    parts = executable.split()
-    if len(parts) > 1:
-        for part in parts[1:]:
-            if part.startswith("-") or part.startswith("/"):
-                raise ValueError(
-                    "executable must not contain embedded arguments"
-                )
-    # Shell metacharacters — reject outright (not just after spaces).
-    for mc in ("&&", "|", ";", "`"):
+    # Reject shell metacharacters outright — no legitimate path contains
+    # any of these.
+    for mc in _SHELL_METACHARS:
         if mc in executable:
             raise ValueError(
                 "executable must not contain shell metacharacters"
             )
+
+    # Structural check for embedded arguments.
+    # A space is legal only as part of a directory path, e.g.:
+    #   C:\Program Files\Claude\claude.exe
+    #   /Program Files/Claude/claude
+    #   \\server\share\Claude Code\claude.exe
+    #
+    # Embedded arguments (e.g. "claude whoami", "claude true",
+    # "C:\...\claude.exe calc.exe") must be rejected.
+    #
+    # Rule: when the string contains spaces, the executable must contain
+    # at least one path separator (\\ or /), AND every space-delimited
+    # token after the first must itself contain at least one path
+    # separator — otherwise it is an embedded argument.
+    parts = executable.split()
+    if len(parts) > 1:
+        # Must contain at least one path separator to justify the spaces.
+        if "\\" not in executable and "/" not in executable:
+            raise ValueError(
+                "executable must not contain embedded arguments"
+            )
+
+        # Every token after the first must be a path component, not a
+        # bare argument.  A lone extension (e.g. "calc.exe") without a
+        # directory separator is an argument, not part of the path.
+        for part in parts[1:]:
+            if "\\" not in part and "/" not in part:
+                raise ValueError(
+                    "executable must not contain embedded arguments"
+                )
 
     return executable
 
