@@ -12,10 +12,10 @@ marked **Current** exist and are callable today; interfaces marked
 | # | Interface | Status | Implemented by | Notes |
 |---|-----------|--------|----------------|-------|
 | 1 | `mad agents` (TSV) | **Current** | N/A (MVP) | Tab-separated `id name adapter enabled` to stdout |
-| 2 | `mad agents --format json` | **Target** | TC-13.1 | `mad.agents/v1` JSON array to stdout |
+| 2 | `mad agents --format json` | **Target** | TC-13.2 | `mad.agents/v1` — root object with `schema_version` + `agents` array |
 | 3 | `mad deliberate --format json` | **Current** | N/A (MVP) | `RunResult.to_dict()` to stdout; no public `schema_version` |
-| 4 | `mad.run-result/v1` schema | **Target** | TC-13.1 | Formalise the existing `RunResult` output with `schema_version` |
-| 5 | `mad audit` sub-command | **Target** | TC-13.1 | `mad.audit-result/v1`; structured audit of a delivery |
+| 4 | `mad.run-result/v1` schema | **Target** | TC-13.2 | Add `schema_version` only; keep all existing field shapes |
+| 5 | `mad audit` sub-command | **Target** | TC-13.15 | `mad.audit-result/v1`; structured audit of a delivery |
 | 6 | `MAD_HOME` environment variable | **Current** | N/A (MVP) | Override data directory; read by `app_home()` |
 | 7 | `MAD_PARTICIPANT` recursion guard | **Current** | N/A (MVP) | Set to `"1"` in subprocess env to prevent re-entry |
 | 8 | Claude CliAdapter (read-only) | **Current** | N/A (MVP) | `--permission-mode plan`, tools limited to Read/Glob/Grep/WebSearch/WebFetch |
@@ -23,15 +23,20 @@ marked **Current** exist and are callable today; interfaces marked
 | 10 | AgentDesk PM lease | **Current** | N/A (existing) | `agentdesk.pm-lease/v1` in `.agentdesk/runtime/` |
 | 11 | AgentDesk event / outbox | **Current** | N/A (existing) | `agentdesk.state-event/v2`, `agentdesk.outbox-message/v2` |
 | 12 | AgentDesk double-commit protocol | **Current** | N/A (existing) | `implementation_commit` → `report_commit` |
-| 13 | AgentDesk WorkerSlotLease | **Target** | TC-13.7 | `agentdesk.worker-slot-lease/v1` |
-| 14 | AgentDesk WorkflowOrchestrator | **Target** | TC-13.9 | Central scheduler integrating all services |
-| 15 | AgentDesk MAD Gateway | **Target** | TC-13.1 | Config-driven subprocess invocation of `mad` |
-| 16 | AgentDesk ControlPlaneTransitionService | **Target** | TC-13.2 | CAS-write tasks, immutable events, replayable outbox |
-| 17 | AgentDesk EscalationService | **Target** | TC-13.3 | Difficulty escalation independent of rate-limit |
-| 18 | AgentDesk RateLimit service | **Target** | TC-13.4 | Provider rate-limit handling independent of escalation |
-| 19 | AgentDesk TASK_APPROVAL structured scope | **Target** | TC-13.8 | Scoped approvals for dispatch / accept / integrate |
-| 20 | AgentDesk HTML Dashboard | **Target** | TC-13.11 | Read-only dashboard via StateProvider |
-| 21 | AgentDesk four-tier Worker (Basic/Standard/Advanced/Expert) | **Target** | TC-13.6 | Independent configurable Worker slots |
+| 13 | AgentDesk MAD Decision Gateway | **Target** | TC-13.6 | Config-driven subprocess invocation of `mad` for planning/deliberation |
+| 14 | AgentDesk WorkerAdapter + four-tier slots | **Target** | TC-13.9 | Basic/Standard/Advanced/Expert; provider/model from bindings only |
+| 15 | AgentDesk WorkerSlotLease | **Target** | TC-13.10 | `agentdesk.worker-slot-lease/v1` |
+| 16 | AgentDesk ControlPlaneTransitionService | **Target** | TC-13.11 | CAS-write tasks, immutable events, replayable outbox |
+| 17 | AgentDesk ApprovalGate | **Target** | TC-13.12 | TASK_APPROVAL with structured scope (dispatch/accept/integrate) |
+| 18 | AgentDesk EscalationService | **Target** | TC-13.13 | Difficulty escalation independent of rate-limit |
+| 19 | AgentDesk RateLimit service | **Target** | TC-13.14 | Provider rate-limit handling independent of escalation |
+| 20 | AgentDesk MadAuditGateway | **Target** | TC-13.16 | Subprocess invocation of `mad audit` with worktree validation |
+| 21 | AgentDesk StateProvider (read-only) | **Target** | TC-13.17 | Read-only access to tasks, events, outbox, acceptances |
+| 22 | AgentDesk WorkflowOrchestrator | **Target** | TC-13.18 | Central scheduler integrating all services |
+| 23 | E2E / Recovery tests | **Target** | TC-13.19 | End-to-end validation and recovery scenarios |
+| 24 | AgentDesk HTML Dashboard | **Target** | TC-13.20 | Read-only dashboard via StateProvider |
+| 25 | ADR status update (Target → Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
+| 26 | `agentdesk.mad-refs/v1` runtime schema | **Target** | TC-13.6 | Gitignored runtime record of MAD invocations |
 
 ---
 
@@ -45,6 +50,9 @@ marked **Current** exist and are callable today; interfaces marked
   to stdout.  The JSON object contains `deliberation_id`, `status`, `report`,
   `archive_path`, `warnings`, `participants`, `convergence`, and `plan`.
   There is **no `schema_version`** field.
+  - `status` is a Chinese string: `"完成"` or `"带警告完成"`.
+  - `participants` is a flat `list[str]` of agent IDs.
+  - `convergence` and `plan` use their current shapes as produced by the engine.
 - **`mad resume --format json`** prints the same shape as `deliberate`.
 - **`mad audit` does not exist.**  There is no audit sub-command.
 - **`MAD_HOME`** is read by `config.app_home()`; when set, it overrides the
@@ -55,6 +63,37 @@ marked **Current** exist and are callable today; interfaces marked
 - **Claude CliAdapter** (`adapter = "claude" | "claudecode"`) invokes the
   Claude CLI with `--permission-mode plan`, limiting tool access to
   `Read,Glob,Grep,WebSearch,WebFetch`.  It does not modify files.
+
+**Current exit codes (`mad deliberate`)**:
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Deliberation completed (including `status: "带警告完成"`) |
+| `1` | Workflow, recovery, or report failure |
+| `2` | Parameter, plan, or configuration error |
+| `3` | Insufficient available participants |
+| `130` | User cancellation or SIGINT |
+
+**Current exit codes (`mad resume`)**:
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Resume completed |
+| `1` | Workflow or recovery failure |
+| `130` | User cancellation or SIGINT |
+
+`mad resume` does **not** have a dedicated exit code `3` for insufficient
+participants — that is a `mad deliberate` distinction.  Argparse-level
+parameter errors on `resume` are exit code `2` (Python `argparse` default).
+Uncaught configuration exceptions must not be documented as stable public
+exit semantics.
+
+**Current exit codes (`mad agents`)**:
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Normal output |
+| `2` | Argparse parameter error |
 
 MAD does **not**:
 - Create, remove, or prune Git worktrees.
@@ -92,6 +131,7 @@ AgentDesk does **not** currently have:
 - `EscalationService` / `RateLimit` as separate services.
 - `TASK_APPROVAL` with structured scope (only `MODEL_DEGRADATION_APPROVED`
   exists for model-tier exceptions).
+- `StateProvider` as an explicit read-only service boundary.
 
 ---
 
@@ -99,48 +139,192 @@ AgentDesk does **not** currently have:
 
 ### 2.1 MAD Target Interfaces
 
-| Interface | Schema | Description |
-|-----------|--------|-------------|
-| `mad agents --format json` | `mad.agents/v1` | JSON array of agent profiles to stdout |
-| `mad deliberate --format json` | `mad.run-result/v1` | Formalised `RunResult` with `schema_version` |
-| `mad audit <question> --workspace …` | `mad.audit-result/v1` | Structured audit of a delivery workspace |
+| Interface | Schema | Implemented by | Description |
+|-----------|--------|----------------|-------------|
+| `mad agents --format json` | `mad.agents/v1` | TC-13.2 | Root object with `schema_version` + `agents` array |
+| `mad deliberate --format json` | `mad.run-result/v1` | TC-13.2 | Current output plus `schema_version` at top level; backward-compatible |
+| `mad audit <question> --workspace …` | `mad.audit-result/v1` | TC-13.15 | Structured audit of a delivery workspace |
 
-**Audit CLI (Target)**:
+**`mad.agents/v1` (Target — TC-13.2)**:
 
-```text
-mad audit <question> \
-  --workspace <path>              # AgentDesk-created worktree at report_commit
-  --task-card-commit <sha>        # Frozen task card SHA
-  --task-card-path <relpath>      # Relative path to task card in worktree
-  --delivery-report-path <relpath># Relative path to delivery report in worktree
-  --report-commit <sha>           # Worker's report_commit
-  --base-commit <sha>             # Task card base_commit
-  --implementation-commit <sha>   # Worker's implementation_commit
-  --agents <id1,id2,...>          # Comma-separated participant IDs (single CSV)
-  --report-agent <id>             # Report-writing agent ID
-  --depth fast|balanced|deep      # Deliberation depth (default: deep)
-  --convergence auto|always|never # Dispute convergence strategy (default: auto)
-  --confirm-plan                  # Skip plan confirmation (required for auto)
-  --format json|markdown          # Output format (default: json for Gateway)
+Uses a root object, not a bare array:
+
+```json
+{
+  "schema_version": "mad.agents/v1",
+  "agents": [
+    {
+      "id": "pi-deepseek",
+      "name": "Pi · DeepSeek V4 Pro",
+      "adapter": "pi",
+      "model": "deepseek/deepseek-v4-pro",
+      "enabled": true,
+      "default_report": false,
+      "timeout_seconds": 300,
+      "context_budget": 1000000
+    }
+  ]
+}
 ```
 
-**Exit codes (Target)**:
+Each agent object exposes only these fields:
 
-| Exit | Meaning |
-|------|---------|
-| `0` | Audit completed normally (`verdict` may be `pass`, `fail`, or `blocked`) |
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Stable unique agent ID |
+| `name` | string | Display name |
+| `adapter` | string | Adapter type (`claude`, `pi`, `codex`, …) |
+| `model` | string\|null | Model identifier |
+| `enabled` | boolean | Whether eligible for preflight |
+| `default_report` | boolean | Default report agent (at most one) |
+| `timeout_seconds` | integer | Single-invocation timeout |
+| `context_budget` | integer | Declared context token budget |
+
+The following AgentProfile fields are **forbidden** in the public output:
+- `executable` — local filesystem path; security boundary.
+- `extra_args` — may contain sensitive or local configuration.
+- `role` — internal prompt modifier, not a public interface field.
+
+The contract must never claim that `mad.agents/v1` outputs all `AgentProfile`
+fields.
+
+**`mad.run-result/v1` (Target — TC-13.2)**:
+
+Backward-compatible: the only change from Current is the addition of
+`schema_version` at the top level.  All other fields keep their Current
+shapes:
+
+```json
+{
+  "schema_version": "mad.run-result/v1",
+  "deliberation_id": "<id>",
+  "status": "完成 | 带警告完成",
+  "report": "<full-markdown-report>",
+  "archive_path": "<absolute-path>",
+  "warnings": ["<warning>"],
+  "participants": ["<agent-id>", "..."],
+  "convergence": {"strategy": "auto", "triggered": false, "reason": "...", "marked_participants": 0, "disputes": [], "status": "未触发"},
+  "plan": {"participants": [{"id": "...", "name": "...", "adapter": "...", "model": "...", "role": "..."}], "report_agent_id": "...", "organizer_agent_id": null, "source": "manual", "depth": "deep", "critic_agent_id": null}
+}
+```
+
+V1 explicitly does **not**:
+- Change `status` to English enums (`"completed"`, `"completed_with_warnings"`).
+- Change `participants` from `list[str]` to an object array.
+- Restructure `convergence` or `plan`.
+
+If future versions need English status strings or object-typed participants,
+they must use `mad.run-result/v2`.
+
+**`mad.audit-result/v1` (Target — TC-13.15)**:
+
+```bash
+mad audit "<question>" \
+  --workspace <path> \
+  --task-card-commit <sha> \
+  --task-card-path <relpath> \
+  --delivery-report-path <relpath> \
+  --report-commit <sha> \
+  --base-commit <sha> \
+  --implementation-commit <sha> \
+  --agents <id1,id2,...> \
+  --report-agent <id> \
+  --depth deep \
+  --convergence auto \
+  --confirm-plan \
+  --format json
+```
+
+`--agents` is a **single CSV parameter** (e.g. `--agents id1,id2,id3`).
+
+Stdout (`mad.audit-result/v1`):
+
+```json
+{
+  "schema_version": "mad.audit-result/v1",
+  "deliberation_id": "<uuid-or-archive-id>",
+  "status": "completed | failed | blocked",
+  "verdict": "pass | fail | blocked",
+  "issues": [
+    {
+      "id": "ISS-<unique>",
+      "severity": "critical | high | medium | low | info",
+      "category": "security | correctness | completeness | consistency | evidence | process",
+      "title": "<one-line>",
+      "description": "<detailed-finding>",
+      "location": {
+        "file": "<relative-path>",
+        "line": "<optional>",
+        "commit": "<sha>"
+      },
+      "recommendation": "<actionable-fix>"
+    }
+  ],
+  "evidence": [
+    {
+      "ref": "<evidence-id>",
+      "type": "git-ancestry | git-diff | file-content | commit-message | check-output | model-output",
+      "source": "<path-or-sha>",
+      "summary": "<one-line>",
+      "verified": true
+    }
+  ],
+  "warnings": ["<human-readable-warning>"],
+  "report": "<full-audit-report-markdown>",
+  "archive_path": "<absolute-path-to-archive>",
+  "participants": ["<agent-id>", "..."],
+  "plan": {
+    "participants": ["..."],
+    "report_agent_id": "<id>",
+    "organizer_agent_id": "<id-or-null>",
+    "source": "organizer | manual",
+    "depth": "fast | balanced | deep",
+    "critic_agent_id": "<id-or-null>",
+    "audit_specific": {
+      "task_card_commit": "<sha>",
+      "task_card_path": "<relative-path>",
+      "delivery_report_path": "<relative-path>",
+      "base_commit": "<sha>",
+      "implementation_commit": "<sha>",
+      "report_commit": "<sha>",
+      "workspace": "<absolute-path>"
+    }
+  }
+}
+```
+
+Key semantics:
+
+- `status` (string) describes whether the audit **process** completed.  When
+  exit code is `0`, `status` is fixed to `"completed"` — the audit ran to
+  its natural conclusion.  `"failed"` and `"blocked"` are only used when the
+  process itself did not complete normally.
+- `verdict` (enum `pass | fail | blocked`) describes the **business
+  conclusion** of the audit.  `verdict: "blocked"` means the audit process
+  completed (`status: "completed"`) but could not reach a pass/fail
+  determination due to missing or unreachable evidence.  It is not an
+  infrastructure failure.
+- Infrastructure failures (model crash, parse error, evidence verification
+  error) are **not** encoded as verdict values — they are reported via
+  non-zero exit codes and `status`.
+- `participants` is `list[str]` (agent IDs), matching the shape in
+  `mad.run-result/v1`.  It does not embed stage contribution details in V1.
+- `verdict` is a mutually-exclusive enum: `pass`, `fail`, or `blocked`.
+
+**Exit codes for `mad audit`**:
+
+| Exit | Condition |
+|------|-----------|
+| `0` | Audit process completed — `status: "completed"`; `verdict` may be `pass`, `fail`, or `blocked` |
 | `1` | Parse failure, model invocation failure, or evidence verification failure |
 | `2` | Parameter, configuration, or workspace validation failure (caller error) |
 | `3` | Insufficient available participants |
 | `130` | User cancellation or SIGINT |
 
-A **GatewayTimeoutError** (AgentDesk-side) is distinct from MAD exit codes:
-it means the subprocess did not produce a result within `timeout_seconds`.
-
-**Audit verdict** is a mutually-exclusive enum: `pass | fail | blocked`.
-- `pass` — no issues found, or only informational issues.
-- `fail` — one or more issues of severity `critical`, `high`, or `medium` found.
-- `blocked` — audit could not reach a conclusion due to missing evidence.
+**Critical rule**: When the audit process completes normally but the
+deliberation finds issues (`verdict: fail`) or cannot reach a conclusion
+(`verdict: blocked`), exit code is `0`.  Exit code `1` is ONLY for
+infrastructure/model failures.
 
 **Fail-closed rule**: Unknown, malformed, or structurally invalid MAD output
 (JSON that does not parse, missing `schema_version`, or unknown `verdict`
@@ -163,7 +347,8 @@ It must never:
 | `git worktree remove <path>` | AgentDesk WorkflowOrchestrator (after audit) |
 | `git worktree prune` | Never automatic — manual PM recovery only |
 
-**Gateway configuration** (`.agentdesk/runtime/gateway.yaml`, Target):
+**Gateway configuration** (`.agentdesk/runtime/gateway.yaml`, Target —
+TC-13.6):
 
 ```json
 {
@@ -179,19 +364,56 @@ It must never:
 ```
 
 The Gateway sets `MAD_HOME=<mad_home>` in the subprocess environment for all
-three call types (`agents`, `deliberate`, `audit`).
+call types (`agents`, `deliberate`, `audit`).
 
 **Data the Gateway captures from MAD stdout**:
 
 | Field | Source | Storage |
 |-------|--------|---------|
-| Raw stdout | Subprocess capture | Not persisted (transient) |
-| SHA-256 of stdout | Computed by Gateway | `dispatch_receipt` or audit event |
-| `deliberation_id` | Parsed from JSON | Audit event `evidence_refs` |
-| `archive_path` | Parsed from JSON | `.agentdesk/runtime/` (runtime-only, never in Git) |
-| `verdict` / `issues` / `evidence` | Parsed from JSON | Audit event |
+| Raw stdout bytes | Subprocess capture | Not persisted (transient) |
+| SHA-256 of stdout | Computed by Gateway | `agentdesk.mad-refs/v1` → `stdout_sha256` (runtime-only) |
+| Parsed `report` field | Extracted from JSON | SHA-256 of report UTF-8 bytes → `agentdesk.mad-refs/v1` → `report_sha256` (runtime-only) |
+| `deliberation_id` | Parsed from JSON | `agentdesk.mad-refs/v1` → `deliberation_id` |
+| `archive_path` | Parsed from JSON | `agentdesk.mad-refs/v1` → `archive_path` (runtime-only, never in Git) |
+| `verdict` / `issues` | Parsed from JSON | Audit event (Git-tracked) |
 
-### 2.3 Worker Tiers (Target)
+### 2.3 `agentdesk.mad-refs/v1` Runtime Schema (Target — TC-13.6)
+
+Gitignored runtime file at `.agentdesk/runtime/mad-refs.yaml`.
+Strict JSON root:
+
+```json
+{
+  "schema_version": "agentdesk.mad-refs/v1",
+  "updated_at": "<RFC3339 UTC>",
+  "refs": [
+    {
+      "task_id": "TC-031",
+      "dispatch_id": "DSP-TC031-R2-A1-7F3C",
+      "purpose": "planning | audit",
+      "deliberation_id": "<mad-archive-id>",
+      "depth": "deep",
+      "stdout_sha256": "<sha256-hex>",
+      "report_sha256": "<sha256-hex>",
+      "status": "completed | completed_with_warnings",
+      "archive_path": "<absolute-path>",
+      "created_at": "<RFC3339 UTC>"
+    }
+  ]
+}
+```
+
+Rules:
+
+- `stdout_sha256` is the SHA-256 of MAD's raw stdout bytes (before JSON parse).
+- `report_sha256` is the SHA-256 of the parsed `report` field's UTF-8 bytes.
+- `archive_path` is absolute and must only exist in gitignored runtime — never
+  in tracked files.
+- The entire `mad-refs` file is gitignored and must never be committed.
+- Git-tracked events may record the SHA-256 digests as references, but must
+  not include `archive_path`.
+
+### 2.4 Worker Tiers (Target — TC-13.9)
 
 | Tier | Context Budget (% of model window) | Max Active | Escalation Behaviour |
 |------|-----------------------------------|------------|---------------------|
@@ -204,7 +426,7 @@ At least **35% of context window** is reserved for system prompt, tool
 definitions, and overhead.  The per-worktree writer limit of 1 means no two
 Workers may write to the same ordinary worktree concurrently.
 
-### 2.4 Worker Slot Lease (Target)
+### 2.5 Worker Slot Lease (Target — TC-13.10)
 
 Each Worker slot lease is independent of the PM lease.  Fields:
 
@@ -221,23 +443,24 @@ A **provider request permit** is independent of the Worker lifecycle slot:
 rate-limiting a provider (429) does not release the Worker slot, and releasing
 a Worker slot does not reset the provider rate-limit window.
 
-### 2.5 Approval, Escalation, Event, and Outbox Separation
+### 2.6 Approval, Escalation, Event, and Outbox Separation
 
-- **TASK_APPROVAL** uses structured scope (dispatch / accept / integrate), not
-  free-text.  Each approval is for exactly one action and one delivery.
-  Revocation is an independent, immutable event.
-- **Escalation** (difficulty tier change) is separate from **RateLimit**
-  (provider 429 handling).  A rate-limit event must not change difficulty or
-  generate `TASK_ESCALATED`.
+- **TASK_APPROVAL** (TC-13.12) uses structured scope (dispatch / accept /
+  integrate), not free-text.  Each approval is for exactly one action and one
+  delivery.  Revocation is an independent, immutable event.
+- **Escalation** (TC-13.13 — difficulty tier change) is separate from
+  **RateLimit** (TC-13.14 — provider 429 handling).  A rate-limit event must
+  not change difficulty or generate `TASK_ESCALATED`.
 - **Event** records what happened (audit trail).  **Outbox** records what
   should be sent (replayable intent).  They use separate ID namespaces and
   must not be conflated.
 
-### 2.6 Skill and Dashboard Data Sharing
+### 2.7 Skill and Dashboard Data Sharing
 
 The Skill (PM/Worker runbooks) and the HTML Dashboard both consume data
-through a **read-only StateProvider**.  Neither writes to canonical state
-directly — all writes go through `ControlPlaneTransitionService`.
+through a **read-only StateProvider** (TC-13.17).  Neither writes to canonical
+state directly — all writes go through `ControlPlaneTransitionService`
+(TC-13.11).
 
 ---
 
@@ -270,7 +493,7 @@ or `result.json`.  MAD never opens `docs/pm/state/tasks.yaml` or
 | Prefix | Owner | Examples |
 |--------|-------|----------|
 | `mad.*` | MAD | `mad.agents/v1`, `mad.run-result/v1`, `mad.audit-result/v1` |
-| `agentdesk.*` | AgentDesk | `agentdesk.tasks/v2`, `agentdesk.state-event/v2`, `agentdesk.worker-slot-lease/v1` |
+| `agentdesk.*` | AgentDesk | `agentdesk.tasks/v2`, `agentdesk.state-event/v2`, `agentdesk.worker-slot-lease/v1`, `agentdesk.mad-refs/v1` |
 
 No schema version from one namespace may be re-declared in the other.
 Cross-references (e.g. an AgentDesk event referencing a `deliberation_id`)
@@ -282,18 +505,21 @@ use opaque foreign keys, not embedded schema objects.
 
 | Task Card | Description | Depends on |
 |-----------|-------------|------------|
-| TC-13.1 | MAD `audit` sub-command + `agents --format json` | This ADR |
-| TC-13.2 | ControlPlaneTransitionService | TC-13.1 |
-| TC-13.3 | EscalationService | TC-13.2 |
-| TC-13.4 | RateLimit service | TC-13.2 |
-| TC-13.5 | StateProvider (read-only) | TC-13.2 |
-| TC-13.6 | WorkerAdapter + four-tier Worker slots | TC-12.3.1 |
-| TC-13.7 | WorkerSlotLease implementation | TC-13.6 |
-| TC-13.8 | TASK_APPROVAL structured scope | TC-13.2 |
-| TC-13.9 | WorkflowOrchestrator (full integration) | TC-13.3, 13.4, 13.5, 13.6, 13.7, 13.8 |
-| TC-13.10 | E2E / Recovery tests | TC-13.9 |
-| TC-13.11 | HTML Dashboard | TC-13.5, TC-13.10 |
-| TC-13.12 | ADR status update (Target → Current) | TC-13.10 |
+| TC-13.2 | MAD `agents --format json` + `mad.run-result/v1` schema | This ADR |
+| TC-13.6 | AgentDesk MAD Decision Gateway + `agentdesk.mad-refs/v1` | This ADR |
+| TC-13.9 | WorkerAdapter + four-tier Worker slots | TC-13.6 |
+| TC-13.10 | WorkerSlotLease implementation | TC-13.9 |
+| TC-13.11 | ControlPlaneTransitionService | TC-13.2 |
+| TC-13.12 | ApprovalGate (TASK_APPROVAL structured scope) | TC-13.11 |
+| TC-13.13 | EscalationService | TC-13.11 |
+| TC-13.14 | RateLimit service | TC-13.11 |
+| TC-13.15 | MAD `audit` sub-command (`mad.audit-result/v1`) | TC-13.2 |
+| TC-13.16 | AgentDesk MadAuditGateway | TC-13.15 |
+| TC-13.17 | StateProvider (read-only) | TC-13.11 |
+| TC-13.18 | WorkflowOrchestrator (full integration) | TC-13.10, 13.11, 13.12, 13.13, 13.14, 13.16, 13.17 |
+| TC-13.19 | E2E / Recovery tests | TC-13.18 |
+| TC-13.20 | HTML Dashboard | TC-13.17, TC-13.19 |
+| TC-13.21 | ADR status update (Target → Current) | TC-13.19 |
 
 ---
 

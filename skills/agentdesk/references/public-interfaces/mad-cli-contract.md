@@ -13,11 +13,12 @@ a Target interface as if it were Current.
 | Interface | Status | Implemented by | Schema |
 |-----------|--------|----------------|--------|
 | `mad agents` (TSV) | **Current** | N/A (MVP) | None (tab-separated) |
-| `mad agents --format json` | **Target** | TC-13.1 | `mad.agents/v1` |
+| `mad agents --format json` | **Target** | TC-13.2 | `mad.agents/v1` |
 | `mad deliberate --format json` | **Current** | N/A (MVP) | Informal (`RunResult.to_dict()`) |
-| `mad deliberate --format json` (formal) | **Target** | TC-13.1 | `mad.run-result/v1` |
+| `mad deliberate --format json` (formal) | **Target** | TC-13.2 | `mad.run-result/v1` |
 | `mad resume --format json` | **Current** | N/A (MVP) | Informal (same shape as deliberate) |
-| `mad audit` | **Target** | TC-13.1 | `mad.audit-result/v1` |
+| `mad audit` | **Target** | TC-13.15 | `mad.audit-result/v1` |
+| `agentdesk.mad-refs/v1` | **Target** | TC-13.6 | Runtime MAD invocation record |
 
 ---
 
@@ -45,7 +46,14 @@ codebuddy-reviewer	CodeBuddy Reviewer	codebuddy	启用
 ```
 
 Exit codes:
-- `0` — always (unless argument parse error → `2`).
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Normal output |
+| `2` | Argparse parameter error |
+
+Uncaught configuration exceptions (e.g. corrupt `agents.toml`) may produce
+non-zero exits; these are not stable public exit semantics.
 
 Limitations (Current):
 - No `--format` flag.
@@ -85,10 +93,9 @@ Limitations (Current):
 - `status` is a Chinese string (`"完成"`, `"带警告完成"`), not a machine-readable enum.
 - No `verdict` field (the concept does not exist in deliberation).
 - No structured `issues` or `evidence` arrays.
-- `participants` is a flat list of strings (agent IDs), not objects with
-  stage contributions.
+- `participants` is a flat list of strings (agent IDs).
 
-Exit codes:
+Exit codes for `mad deliberate`:
 
 | Exit | Meaning |
 |------|---------|
@@ -106,9 +113,21 @@ Exit codes:
 mad resume <deliberation_id> --format json
 ```
 
-Output shape is identical to `mad deliberate --format json`.  Exit codes are
-identical.  The same limitations apply (no `schema_version`, Chinese `status`
-strings).
+Output shape is identical to `mad deliberate --format json`.
+
+Exit codes for `mad resume`:
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Resume completed |
+| `1` | Workflow or recovery failure |
+| `130` | User cancellation or SIGINT |
+
+`mad resume` does **not** have a dedicated exit code `3` for insufficient
+participants — that distinction is specific to `mad deliberate`.
+Argparse-level parameter errors (e.g. missing `deliberation_id`) produce exit
+code `2` (Python `argparse` default).  Uncaught configuration exceptions must
+not be documented as stable public exit semantics for `resume`.
 
 ---
 
@@ -116,82 +135,95 @@ strings).
 
 ### 3.1 `mad agents --format json` → `mad.agents/v1`
 
-**Status: Target — to be implemented by TC-13.1**
+**Status: Target — to be implemented by TC-13.2**
 
 ```bash
 mad agents --format json
 ```
 
-Stdout (JSON array):
+Stdout is a root JSON object, not a bare array:
 
 ```json
-[
-  {
-    "id": "pi-deepseek",
-    "name": "Pi · DeepSeek V4 Pro",
-    "adapter": "pi",
-    "model": "deepseek/deepseek-v4-pro",
-    "role": "侧重严谨推理、识别假设和构造反例",
-    "executable": null,
-    "enabled": true,
-    "default_report": false,
-    "timeout_seconds": 300,
-    "context_budget": 1000000
-  }
-]
+{
+  "schema_version": "mad.agents/v1",
+  "agents": [
+    {
+      "id": "pi-deepseek",
+      "name": "Pi · DeepSeek V4 Pro",
+      "adapter": "pi",
+      "model": "deepseek/deepseek-v4-pro",
+      "enabled": true,
+      "default_report": false,
+      "timeout_seconds": 300,
+      "context_budget": 1000000
+    }
+  ]
+}
 ```
 
-Schema: `mad.agents/v1`.  Array elements contain all fields of `AgentProfile`.
+Each agent object exposes only these public fields:
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `id` | string | yes | Stable unique agent ID |
+| `name` | string | yes | Display name |
+| `adapter` | string | yes | `claude`, `pi`, `codex`, `grok`, `codebuddy`, `agy`, `cursor`, `reasonix` |
+| `model` | string\|null | yes | Model identifier; null if not configured |
+| `enabled` | boolean | yes | Whether eligible for preflight |
+| `default_report` | boolean | yes | At most one agent is `true` |
+| `timeout_seconds` | integer | yes | Single-invocation timeout |
+| `context_budget` | integer | yes | Declared context token budget |
+
+The following AgentProfile fields are **forbidden** in public output:
+
+| Field | Reason |
+|-------|--------|
+| `executable` | Local filesystem path; security boundary |
+| `extra_args` | May contain sensitive or local-only configuration |
+| `role` | Internal prompt modifier; not a public interface field |
+
+The contract must never claim that `mad.agents/v1` outputs the full
+`AgentProfile`.
 
 Exit codes: `0` (success), `2` (argument error).
 
 ### 3.2 `mad deliberate --format json` → `mad.run-result/v1`
 
-**Status: Target — to be implemented by TC-13.1**
+**Status: Target — to be implemented by TC-13.2**
 
-Identical invocation to Current `mad deliberate --format json`, but the output
-is versioned with `schema_version: "mad.run-result/v1"` and `status` is
-a machine-readable enum (`"completed" | "completed_with_warnings"`).
+Backward-compatible: the only change from Current is the addition of
+`schema_version` at the top level.  All other fields keep their Current
+shapes exactly:
 
 ```json
 {
   "schema_version": "mad.run-result/v1",
   "deliberation_id": "<id>",
-  "status": "completed | completed_with_warnings",
+  "status": "完成 | 带警告完成",
   "report": "<full-markdown-report>",
   "archive_path": "<absolute-path>",
   "warnings": ["<warning>"],
-  "participants": [
-    {
-      "agent_id": "<id>",
-      "agent_name": "<name>",
-      "adapter": "<adapter>",
-      "model": "<model-or-null>",
-      "stage_contributions": ["OPENING", "CRITIQUE"]
-    }
-  ],
-  "convergence": {
-    "strategy": "auto",
-    "triggered": false,
-    "reason": "...",
-    "marked_participants": 0,
-    "disputes": [],
-    "status": "not_triggered"
-  },
-  "plan": {
-    "participants": [{"id": "...", "name": "...", "adapter": "...", "model": "...", "role": "..."}],
-    "report_agent_id": "...",
-    "organizer_agent_id": null,
-    "source": "manual",
-    "depth": "deep",
-    "critic_agent_id": null
-  }
+  "participants": ["<agent-id>", "..."],
+  "convergence": {"strategy": "auto", "triggered": false, "reason": "...", "marked_participants": 0, "disputes": [], "status": "未触发"},
+  "plan": {"participants": [{"id": "...", "name": "...", "adapter": "...", "model": "...", "role": "..."}], "report_agent_id": "...", "organizer_agent_id": null, "source": "manual", "depth": "deep", "critic_agent_id": null}
 }
 ```
 
+V1 explicitly does **not**:
+
+- Change `status` to English enums (`"completed"`, `"completed_with_warnings"`).
+- Change `participants` from `list[str]` to an object array with stage
+  contributions.
+- Restructure `convergence` or `plan` objects.
+
+If future versions need English status strings, object-typed participants,
+or restructured convergence/plan, they must use `mad.run-result/v2`.
+
+Exit codes are the same as Current `mad deliberate`.
+
 ### 3.3 `mad audit` → `mad.audit-result/v1`
 
-**Status: Target — to be implemented by TC-13.1**
+**Status: Target — to be implemented by TC-13.15**
 
 ```bash
 mad audit "<question>" \
@@ -248,15 +280,7 @@ Stdout (`mad.audit-result/v1`):
   "warnings": ["<human-readable-warning>"],
   "report": "<full-audit-report-markdown>",
   "archive_path": "<absolute-path-to-archive>",
-  "participants": [
-    {
-      "agent_id": "<id>",
-      "agent_name": "<name>",
-      "adapter": "<adapter>",
-      "model": "<model-id>",
-      "stage_contributions": ["OPENING", "CRITIQUE", "REVISION"]
-    }
-  ],
+  "participants": ["<agent-id>", "..."],
   "plan": {
     "participants": ["..."],
     "report_agent_id": "<id>",
@@ -277,28 +301,90 @@ Stdout (`mad.audit-result/v1`):
 }
 ```
 
-**`verdict` is a mutually-exclusive enum**: `pass`, `fail`, or `blocked`.
+Key semantics:
+
+- `status` describes the audit **process** outcome.  When exit code is `0`,
+  `status` is fixed to `"completed"`.  `"failed"` and `"blocked"` are only
+  used when the process itself did not finish normally.
+- `verdict` is a mutually-exclusive enum (`pass | fail | blocked`) describing
+  the **business finding**.
+- `verdict: "blocked"` is not an infrastructure failure — the process completed
+  but could not reach a pass/fail conclusion due to missing evidence.
+- Infrastructure failures are not encoded as `verdict` values.
+- When `verdict` is `fail` or `blocked` but the process completed normally,
+  exit code is still `0`.
+- `participants` is `list[str]` (agent ID strings), matching
+  `mad.run-result/v1` shape.
 
 **Exit codes for `mad audit`**:
 
 | Exit | Condition |
 |------|-----------|
-| `0` | Audit completed normally — `verdict` may be `pass`, `fail`, or `blocked` |
+| `0` | Audit process completed — `status: "completed"`; `verdict` may be `pass`, `fail`, or `blocked` |
 | `1` | Parse failure, model invocation failure, or evidence verification failure |
 | `2` | Parameter, configuration, or workspace validation failure (caller error) |
 | `3` | Insufficient available participants |
 | `130` | User cancellation or SIGINT |
 
-**Critical rule**: When the audit process runs to completion but the
-deliberation finds issues (`verdict: fail`) or cannot reach a conclusion
-(`verdict: blocked`), the exit code is still `0`.  Exit code `1` is ONLY
-for infrastructure/model failures, not for negative business findings.
+---
+
+## 4. Runtime Schema: `agentdesk.mad-refs/v1`
+
+**Status: Target — to be implemented by TC-13.6**
+
+Gitignored runtime file at `.agentdesk/runtime/mad-refs.yaml`.
+Uses a strict JSON root object:
+
+```json
+{
+  "schema_version": "agentdesk.mad-refs/v1",
+  "updated_at": "2026-07-26T12:00:00Z",
+  "refs": [
+    {
+      "task_id": "TC-031",
+      "dispatch_id": "DSP-TC031-R2-A1-7F3C",
+      "purpose": "planning",
+      "deliberation_id": "20260726T120000Z-a1b2c3d4",
+      "depth": "deep",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "report_sha256": "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a",
+      "status": "completed_with_warnings",
+      "archive_path": "/absolute/path/to/MAD_HOME/deliberations/20260726T120000Z-a1b2c3d4",
+      "created_at": "2026-07-26T12:05:00Z"
+    }
+  ]
+}
+```
+
+Field rules:
+
+| Field | Type | Rule |
+|-------|------|------|
+| `task_id` | string | AgentDesk task ID that triggered this MAD invocation |
+| `dispatch_id` | string | AgentDesk dispatch ID |
+| `purpose` | string | `"planning"` or `"audit"` |
+| `deliberation_id` | string | MAD archive ID from stdout JSON |
+| `depth` | string | `"fast"`, `"balanced"`, or `"deep"` |
+| `stdout_sha256` | string | SHA-256 of raw stdout bytes (before JSON parse) |
+| `report_sha256` | string | SHA-256 of the parsed `report` field's UTF-8 bytes |
+| `status` | string | From MAD stdout's `status` field |
+| `archive_path` | string | Absolute path from MAD stdout; runtime-only, never in Git |
+| `created_at` | string | RFC 3339 UTC timestamp |
+
+Critical rules:
+
+- `stdout_sha256` is computed on the raw subprocess stdout bytes
+- `report_sha256` is computed on the parsed report field's UTF-8 bytes
+- `archive_path` is **runtime-only** — the entire `mad-refs` file is
+  gitignored and must never be committed
+- Git-tracked events may reference `stdout_sha256` and `report_sha256` but
+  must **never** include `archive_path`
 
 ---
 
-## 4. Gateway Invocation Contract
+## 5. Gateway Invocation Contract
 
-### 4.1 Subprocess Environment
+### 5.1 Subprocess Environment
 
 AgentDesk Gateway must set the following environment variables when invoking
 `mad` as a subprocess:
@@ -314,30 +400,32 @@ env = {
 `MAD_HOME` ensures the subprocess uses the correct agent registry and data
 directory, isolating it from the user's global MAD installation.
 
-### 4.2 Timeout
+### 5.2 Timeout
 
 The Gateway applies `timeout_seconds` from its configuration at the subprocess
 level.  If the subprocess does not exit within this window, the Gateway sends
 `SIGTERM` (or `taskkill /T /F` on Windows), waits a grace period, then sends
 `SIGKILL`.  This is a **GatewayTimeoutError** — distinct from any MAD exit code.
 
-### 4.3 Output Capture
+### 5.3 Output Capture
 
 The Gateway:
 1. Captures stdout and stderr separately.
-2. Computes SHA-256 of the raw stdout bytes.
+2. Computes SHA-256 of the raw stdout bytes → `stdout_sha256`.
 3. Parses stdout as JSON.
 4. Validates `schema_version` matches the expected schema.
-5. Stores the SHA-256 and `archive_path` in runtime receipts (never in Git).
-6. Extracts `verdict` and `issues` for the audit event.
+5. Extracts `report` field, computes SHA-256 of its UTF-8 bytes → `report_sha256`.
+6. Records the invocation in `agentdesk.mad-refs/v1` (runtime-only).
+7. Extracts `verdict` and `issues` for the audit event (Git-tracked, without
+   `archive_path`).
 
 If stdout is not valid JSON, or `schema_version` is missing/unknown, the
 Gateway treats this as **fail-closed**: it records an audit failure without
 exposing raw output to downstream systems.
 
-### 4.4 Gateway Configuration Schema
+### 5.4 Gateway Configuration Schema
 
-**Status: Target** — `agentdesk.gateway-config/v1`
+**Status: Target** — `agentdesk.gateway-config/v1` (TC-13.6)
 
 ```json
 {
@@ -357,7 +445,7 @@ initialised MAD data directory (containing `config/agents.toml`).
 
 ---
 
-## 5. Schema Namespaces
+## 6. Schema Namespaces
 
 | Namespace prefix | Owner | Versioning |
 |------------------|-------|------------|
@@ -370,7 +458,7 @@ MAD schema objects.
 
 ---
 
-## 6. Fail-Closed Rules
+## 7. Fail-Closed Rules
 
 1. Unknown `schema_version` → fail closed.  Do not attempt best-effort parsing.
 2. Missing required fields → fail closed.
@@ -384,8 +472,9 @@ unvalidated data to downstream systems, and alert the PM.
 
 ---
 
-## 7. Revision History
+## 8. Revision History
 
 | Date | Revision | Author | Changes |
 |------|----------|--------|---------|
-| 2026-07-26 | 1 (Target) | PM | Initial contract.  All Target interfaces pending TC-13.1. |
+| 2026-07-26 | 1 (Target) | PM | Initial contract.  All Target interfaces pending future TC numbers. |
+| 2026-07-26 | 2 (Target) | PM | Corrected Implemented-by references (→TC-13.2, TC-13.15, etc.). Added `mad.agents/v1` root object. Added `mad.run-result/v1` backward-compat rules. Split exit codes by sub-command. Added `agentdesk.mad-refs/v1` runtime schema. Clarified `verdict: blocked` vs infrastructure failure. |
