@@ -38,7 +38,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 25 | ADR status update (Target → Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
 | 26 | `agentdesk.mad-refs/v1` runtime schema | **Target** | TC-13.6 | Gitignored runtime record of MAD invocations |
 | 27 | AgentDesk shared core data types | **Current** | TC-13.4 | `TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind` enums; no budget calculation or WorkerAdapter implementation |
-| 28 | AgentDesk ContextBudgetPolicy | **Current** | TC-13.5 | Per-tier budget percentages: 15% / 30% / 50% / 65%; floor integer arithmetic; retains ≥35% reserved; depends on TC-13.4 |
+| 28 | AgentDesk ContextBudgetPolicy | **Current** | TC-13.5.1 | Per-tier budget: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; min(floor %, cap); six-field BudgetResult; retains ≥35% reserved; depends on TC-13.4 |
 | 29 | AgentDesk DispatcherAgentGateway | **Target** | TC-13.7 | Config-driven subprocess dispatch via agent CLI; depends on TC-13.4, TC-13.6 |
 | 30 | Claude Code CLI contract | **Target** | TC-13.8 | Public CLI interface contract for `claude` invocation; depends on TC-13.4 |
 
@@ -421,8 +421,8 @@ Rules:
 
 | Tier | Context Budget (% of model window) | Max Active | Escalation Behaviour |
 |------|-----------------------------------|------------|---------------------|
-| Basic | 15% | 2 global / 1 per worktree | Retry once same-tier → escalate to Standard |
-| Standard | 30% | 2 global / 1 per worktree | Retry once same-tier → escalate to Advanced |
+| Basic | 20% | 2 global / 1 per worktree | Retry once same-tier → escalate to Standard |
+| Standard | 35% | 2 global / 1 per worktree | Retry once same-tier → escalate to Advanced |
 | Advanced | 50% | 2 global / 1 per worktree | First failure → escalate to Expert |
 | Expert | 65% | 2 global / 1 per worktree | Failure → request user decision |
 
@@ -431,7 +431,7 @@ definitions, and overhead.  The per-worktree writer limit of 1 means no two
 Workers may write to the same ordinary worktree concurrently.
 
 The budget percentages and the ≥35 % reserved rule are computed by
-`ContextBudgetPolicy` (TC-13.5 — Current).  WorkerAdapter (TC-13.9)
+`ContextBudgetPolicy` (TC-13.5.1 — Current).  WorkerAdapter (TC-13.9)
 consumes the policy's `BudgetResult`; this section describes the
 *Worker-tier behaviours* that use that budget, not the arithmetic itself.
 
@@ -559,7 +559,7 @@ Rules:
   (TC-13.9) and WorkerSlotLease (TC-13.10).
 - `WorkerKind` does **not** encode concurrency limits (2 global / 1 per
   worktree), budget percentages, or escalation behaviour — those
-  belong to ContextBudgetPolicy (TC-13.5) and WorkerAdapter (TC-13.9).
+  belong to ContextBudgetPolicy (TC-13.5.1) and WorkerAdapter (TC-13.9).
 - A `WorkerKind` value must not be used as a model tier, and a model
   tier must not be used as a `WorkerKind`.
 
@@ -570,7 +570,7 @@ Rules:
 TC-13.4 explicitly does **not** include:
 
 - Budget calculation, context-window arithmetic, or token budgeting
-  (→ TC-13.5)
+  (→ TC-13.5.1)
 - Model selection, provider binding, or `select_model.py` logic
 - Any subprocess invocation, CLI call, or filesystem write
 - Worker scheduling, slot allocation, lease acquisition, or
@@ -582,19 +582,25 @@ TC-13.4 explicitly does **not** include:
 
 ---
 
-#### 2.8.5 ContextBudgetPolicy (Current — TC-13.5)
+---
 
-`ContextBudgetPolicy` (TC-13.5) computes a per-task token budget from
+### 2.9 ContextBudgetPolicy (Current — TC-13.5.1)
+
+`ContextBudgetPolicy` (TC-13.5.1) computes a per-task token budget from
 `TaskDifficulty` and a model's `context_window_tokens`.  It is a **pure
 arithmetic strategy** with no I/O, no provider knowledge, and no
 WorkerAdapter mechanics.
+
+The budget is the **smaller** of the percentage-floor result and a
+per-difficulty hard cap — this prevents oversized budgets on very large
+context windows while still reserving at least 35 % of the window.
 
 **Public API** (`skills/agentdesk/scripts/context_budget.py`):
 
 | Symbol | Kind | Description |
 |--------|------|-------------|
 | `compute_budget(context_window_tokens, difficulty)` | function | Returns a `BudgetResult` |
-| `BudgetResult` | `NamedTuple` | Five-field immutable result |
+| `BudgetResult` | `NamedTuple` | Six-field immutable result |
 
 **Inputs**:
 
@@ -603,28 +609,34 @@ WorkerAdapter mechanics.
 | `context_window_tokens` | `int` | Positive (≥1), non-bool, from a validated `model-bindings/v2` binding |
 | `difficulty` | `TaskDifficulty` | Must be a `TaskDifficulty` enum member; bare strings and other enum types are rejected |
 
-**Frozen percentages**:
+**Frozen percentages and hard caps**:
 
-| `TaskDifficulty` | Budget % |
-|------------------|----------|
-| `BASIC` | 15 |
-| `STANDARD` | 30 |
-| `ADVANCED` | 50 |
-| `EXPERT` | 65 |
+| `TaskDifficulty` | Budget % | Hard cap (tokens) |
+|------------------|----------|-------------------|
+| `BASIC` | 20 | 64,000 |
+| `STANDARD` | 35 | 128,000 |
+| `ADVANCED` | 50 | 256,000 |
+| `EXPERT` | 65 | 512,000 |
 
 **Integer arithmetic** (no floating-point, no `Decimal`):
 
 ```text
-budget_tokens  = context_window_tokens × budget_percent // 100   (floor)
-reserved_tokens = context_window_tokens - budget_tokens
+percentage_budget  = context_window_tokens × budget_percent // 100   (floor)
+budget_tokens      = min(percentage_budget, budget_cap_tokens)
+reserved_tokens     = context_window_tokens - budget_tokens
 ```
+
+Callers cannot override the percentages or the caps — both tables are
+module-private and frozen.
 
 **Invariants** (enforced at computation time):
 
 ```text
 budget_tokens >= 1
-reserved_tokens >= (context_window_tokens × 35 + 99) // 100   (ceil of 35 %)
+budget_tokens <= percentage_budget
+budget_tokens <= budget_cap_tokens
 budget_tokens + reserved_tokens == context_window_tokens
+reserved_tokens >= (context_window_tokens × 35 + 99) // 100   (ceil of 35 %)
 ```
 
 If `budget_tokens` would round to 0 (window too small for the requested
@@ -636,15 +648,17 @@ difficulty), `compute_budget()` raises `ValueError`.
 |-------|------|-------------|
 | `context_window_tokens` | `int` | As supplied |
 | `difficulty` | `TaskDifficulty` | As supplied |
-| `budget_percent` | `int` | 15 / 30 / 50 / 65 |
-| `budget_tokens` | `int` | Floor-computed budget |
+| `budget_percent` | `int` | 20 / 35 / 50 / 65 |
+| `budget_cap_tokens` | `int` | Frozen hard cap for this difficulty (64,000 / 128,000 / 256,000 / 512,000) |
+| `budget_tokens` | `int` | `min(floor percentage, cap)` |
 | `reserved_tokens` | `int` | `context_window_tokens - budget_tokens` |
 
 **Explicit non-goals**:
 
 - `BudgetResult` is **not** written to `model_selection`, dispatch,
   outbox, event, or delivery report evidence.
-- The percentage table is module-private; callers cannot override it.
+- The percentage table and cap table are module-private; callers
+  cannot override either.
 - `compute_budget()` does **not** perform any I/O, subprocess call,
   filesystem write, environment-variable read, or network access.
 - The module does **not** implement WorkerAdapter, slot allocation,
@@ -656,7 +670,9 @@ difficulty), `compute_budget()` raises `ValueError`.
 `compute_budget()` as a pure function and uses `budget_tokens` to
 constrain the Worker's effective context window.  WorkerAdapter is
 responsible for sourcing `context_window_tokens` from the selected
-model binding's `selected_context_window_tokens` field.
+model binding's `selected_context_window_tokens` field.  WorkerAdapter
+is a Target (TC-13.9) — ContextBudgetPolicy is Current and available
+today.
 
 ---
 
@@ -703,11 +719,11 @@ use opaque foreign keys, not embedded schema objects.
 |-----------|-------------|------------|
 | TC-13.2 | MAD `agents --format json` + `mad.run-result/v1` schema | This ADR |
 | TC-13.4 | AgentDesk shared core data types (`TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind`) | TC-13.3 |
-| TC-13.5 | AgentDesk ContextBudgetPolicy (per-tier percentages: 15% / 30% / 50% / 65%; ≥35% reserved) | TC-13.4 |
+| TC-13.5.1 | AgentDesk ContextBudgetPolicy (per-tier percentages: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; ≥35% reserved) | TC-13.4 |
 | TC-13.6 | AgentDesk MAD Decision Gateway + `agentdesk.mad-refs/v1` | TC-13.2, TC-13.4 |
 | TC-13.7 | AgentDesk DispatcherAgentGateway (config-driven subprocess dispatch) | TC-13.4, TC-13.6 |
 | TC-13.8 | Claude Code CLI contract (public CLI interface for `claude` invocation) | TC-13.4 |
-| TC-13.9 | WorkerAdapter + four-tier Worker slots | TC-13.5, TC-13.7, TC-13.8 |
+| TC-13.9 | WorkerAdapter + four-tier Worker slots | TC-13.5.1, TC-13.7, TC-13.8 |
 | TC-13.10 | WorkerSlotLease implementation | TC-13.9 |
 | TC-13.11 | ControlPlaneTransitionService | TC-13.2 |
 | TC-13.12 | ApprovalGate (TASK_APPROVAL structured scope) | TC-13.11 |

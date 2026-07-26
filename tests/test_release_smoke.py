@@ -328,7 +328,7 @@ class ReleaseSmokeTests(unittest.TestCase):
                 # Exact task-id matching: TC-13.1 must NOT appear as an
                 # Implemented-by value.  This rejects "TC-13.1" while accepting
                 # "TC-13.10", "TC-13.11", "TC-13.15", etc.
-                task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)?)\b", impl_cell)
+                task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell)
                 for tid in task_ids:
                     self.assertNotEqual(
                         "TC-13.1", tid,
@@ -661,7 +661,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         {"basic_agent", "standard_agent", "advanced_agent", "expert_agent"}
     )
 
-    NEW_TC13_IDS = frozenset({"TC-13.4", "TC-13.5", "TC-13.7", "TC-13.8"})
+    NEW_TC13_IDS = frozenset({"TC-13.4", "TC-13.5.1", "TC-13.7", "TC-13.8"})
 
     def _parse_future_task_cards_table(self, text: str) -> list[dict[str, str]]:
         """Parse the ADR §5 Future Task Cards markdown table.
@@ -751,7 +751,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     # -- 8a: Future Task Cards table includes the four new cards ----------
 
-    def test_future_task_cards_include_tc134_135_137_138(self) -> None:
+    def test_future_task_cards_include_tc134_1351_137_138(self) -> None:
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_future_task_cards_table(adr_text)
         self.assertGreater(
@@ -764,14 +764,15 @@ class ReleaseSmokeTests(unittest.TestCase):
             self._resolve_col(row, "Task Card", "Task", "#")
             for row in rows
         }
-        missing = self.NEW_TC13_IDS - task_ids_seen
+        tc_ids_required = frozenset({"TC-13.4", "TC-13.5.1", "TC-13.7", "TC-13.8"})
+        missing = tc_ids_required - task_ids_seen
         self.assertSetEqual(
             missing,
             set(),
             f"ADR §5 Future Task Cards is missing: {', '.join(sorted(missing))}",
         )
 
-    def test_tc134_135_137_138_descriptions_are_accurate(self) -> None:
+    def test_tc134_1351_137_138_descriptions_are_accurate(self) -> None:
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_future_task_cards_table(adr_text)
         by_id = {
@@ -786,10 +787,11 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("MadDeliberationDepth", desc_134)
         self.assertIn("WorkerKind", desc_134)
 
-        tc135 = by_id.get("TC-13.5")
-        self.assertIsNotNone(tc135, "TC-13.5 must exist in Future Task Cards")
-        desc_135 = self._resolve_col(tc135, "Description", "Desc")
-        self.assertIn("ContextBudgetPolicy", desc_135)
+        tc1351 = by_id.get("TC-13.5.1")
+        self.assertIsNotNone(tc1351, "TC-13.5.1 must exist in Future Task Cards")
+        desc_1351 = self._resolve_col(tc1351, "Description", "Desc")
+        self.assertIn("ContextBudgetPolicy", desc_1351)
+        self.assertIn("64", desc_1351)  # hard cap mention
 
         tc137 = by_id.get("TC-13.7")
         self.assertIsNotNone(tc137, "TC-13.7 must exist in Future Task Cards")
@@ -815,10 +817,10 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("TC-13.3", tc134_dep,
                       "TC-13.4 must depend on TC-13.3")
 
-        # TC-13.5 depends on TC-13.4
-        tc135_dep = self._resolve_col(by_id.get("TC-13.5", {}), "Depends on", "Dep")
-        self.assertIn("TC-13.4", tc135_dep,
-                      "TC-13.5 must depend on TC-13.4")
+        # TC-13.5.1 depends on TC-13.4
+        tc1351_dep = self._resolve_col(by_id.get("TC-13.5.1", {}), "Depends on", "Dep")
+        self.assertIn("TC-13.4", tc1351_dep,
+                      "TC-13.5.1 must depend on TC-13.4")
 
         # TC-13.6 depends on TC-13.2 and TC-13.4
         tc136_dep = self._resolve_col(by_id.get("TC-13.6", {}), "Depends on", "Dep")
@@ -839,10 +841,10 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("TC-13.4", tc138_dep,
                       "TC-13.8 must depend on TC-13.4")
 
-        # TC-13.9 depends on TC-13.5, TC-13.7, TC-13.8
+        # TC-13.9 depends on TC-13.5.1, TC-13.7, TC-13.8
         tc139_dep = self._resolve_col(by_id.get("TC-13.9", {}), "Depends on", "Dep")
-        self.assertIn("TC-13.5", tc139_dep,
-                      "TC-13.9 must depend on TC-13.5")
+        self.assertIn("TC-13.5.1", tc139_dep,
+                      "TC-13.9 must depend on TC-13.5.1")
         self.assertIn("TC-13.7", tc139_dep,
                       "TC-13.9 must depend on TC-13.7")
         self.assertIn("TC-13.8", tc139_dep,
@@ -995,7 +997,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
         for row in rows:
             impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
-            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)?)\b", impl_cell)
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell)
             still_target = [
                 tid for tid in task_ids if tid in self.STILL_TARGET_TC13_IDS
             ]
@@ -1024,7 +1026,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         tc134_row = None
         for row in rows:
             impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
-            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)?)\b", impl_cell)
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell)
             if "TC-13.4" in task_ids:
                 tc134_row = row
                 break
@@ -1067,72 +1069,131 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     # -- 8e2: TC-13.5 interface row is now Current ------------------------
 
-    def test_tc135_interface_row_is_now_current(self) -> None:
-        """TC-13.5's Interface Status row (#28) must be Current."""
+    def test_tc1351_interface_row_is_now_current(self) -> None:
+        """TC-13.5.1's Interface Status row (#28) must be Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
-        tc135_row = None
+        tc1351_row = None
         for row in rows:
             impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
-            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)?)\b", impl_cell)
-            if "TC-13.5" in task_ids:
-                tc135_row = row
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell)
+            if "TC-13.5.1" in task_ids:
+                tc1351_row = row
                 break
 
         self.assertIsNotNone(
-            tc135_row,
-            "ADR Interface Status must contain a row Implemented-by TC-13.5",
+            tc1351_row,
+            "ADR Interface Status must contain a row Implemented-by TC-13.5.1",
         )
-        status_cell = self._resolve_col(tc135_row, "Status")
+        status_cell = self._resolve_col(tc1351_row, "Status")
         self.assertIn(
             "Current",
             status_cell,
-            f"ADR Interface Status #28 (TC-13.5) must be Current, "
+            f"ADR Interface Status #28 (TC-13.5.1) must be Current, "
             f"got status={status_cell!r}",
         )
 
-    def test_context_budget_policy_section_exists_and_is_current(self) -> None:
-        """ADR must contain §2.8.5 ContextBudgetPolicy with the four
-        percentages and the two integer formulas."""
+    def test_context_budget_policy_section_is_standalone_section_29(self) -> None:
+        """ADR must contain independent §2.9 ContextBudgetPolicy, not nested
+        under §2.8."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
-        section = _extract_markdown_section(adr_text, "#### 2.8.5")
+        # Verify §2.9 exists as an independent heading.
+        section_29 = _extract_markdown_section(adr_text, "### 2.9")
         self.assertIsNotNone(
-            section,
-            "ADR must contain §2.8.5 ContextBudgetPolicy",
+            section_29,
+            "ADR must contain independent ### 2.9 ContextBudgetPolicy",
         )
         # Must be marked Current.
         heading_m = re.search(
-            r"^#### 2\.8\.5\s.*$", adr_text, re.MULTILINE
+            r"^### 2\.9\s.*$", adr_text, re.MULTILINE
         )
-        self.assertIsNotNone(heading_m, "ADR must have a §2.8.5 heading")
+        self.assertIsNotNone(heading_m, "ADR must have a §2.9 heading")
         heading = heading_m.group(0)
         self.assertIn(
             "Current",
             heading,
-            f"§2.8.5 heading must say Current, got: {heading.strip()!r}",
+            f"§2.9 heading must say Current, got: {heading.strip()!r}",
         )
-        # Must include TC-13.5.
-        self.assertIn("TC-13.5", section)
+        # Must NOT be nested as #### 2.8.5.
+        self.assertNotIn(
+            "#### 2.8.5 ContextBudgetPolicy",
+            adr_text,
+            "ADR must NOT contain #### 2.8.5 — now §2.9",
+        )
+        # Must reference TC-13.5.1.
+        self.assertIn("TC-13.5.1", section_29)
         # Must mention all four percentages.
-        for pct in ("15", "30", "50", "65"):
+        for pct in ("20", "35", "50", "65"):
             self.assertIn(
                 pct,
-                section,
-                f"ADR §2.8.5 must mention {pct}%",
+                section_29,
+                f"ADR §2.9 must mention {pct}%",
             )
-        # Must include the floor formula (budget_tokens = ... // 100).
-        self.assertIn("// 100", section,
-                       "ADR §2.8.5 must contain floor integer formula")
-        # Must include the reserved formula.
-        self.assertIn("reserved_tokens", section,
-                       "ADR §2.8.5 must contain reserved_tokens formula")
-        # Must mention BudgetResult.
-        self.assertIn("BudgetResult", section,
-                       "ADR §2.8.5 must reference BudgetResult")
+        # Must include the min(floor %, cap) formula.
+        self.assertIn("min(", section_29,
+                       "ADR §2.9 must contain min(percentage_budget, cap) formula")
+        self.assertIn("// 100", section_29,
+                       "ADR §2.9 must contain floor integer formula")
+        # Must include the reserved tokens formula.
+        self.assertIn("reserved_tokens", section_29,
+                       "ADR §2.9 must contain reserved_tokens formula")
+        # Must reference BudgetResult as six-field.
+        self.assertIn("BudgetResult", section_29,
+                       "ADR §2.9 must reference BudgetResult")
+        self.assertIn("six-field", section_29.lower(),
+                       "ADR §2.9 must describe BudgetResult as six-field")
+        # Must mention all four hard caps.
+        for cap in ("64,000", "128,000", "256,000", "512,000"):
+            self.assertIn(
+                cap,
+                section_29,
+                f"ADR §2.9 must mention cap {cap}",
+            )
         # Must reference TC-13.9 WorkerAdapter consumption.
-        self.assertIn("TC-13.9", section,
-                       "ADR §2.8.5 must reference TC-13.9 consumption")
+        self.assertIn("TC-13.9", section_29,
+                       "ADR §2.9 must reference TC-13.9 consumption")
+
+    def test_section_28_does_not_contain_tc135_public_api(self) -> None:
+        """§2.8 continues to belong to TC-13.4 only; must not include
+        BudgetResult, compute_budget, or ContextBudgetPolicy public API."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section_28 = _extract_markdown_section(adr_text, "### 2.8")
+        self.assertIsNotNone(section_28,
+                             "ADR must contain §2.8 for TC-13.4")
+        # §2.8 must NOT contain BudgetResult (the NamedTuple).
+        self.assertNotIn(
+            "BudgetResult",
+            section_28,
+            "ADR §2.8 must NOT contain BudgetResult — that is §2.9",
+        )
+        # §2.8 must NOT contain compute_budget.
+        self.assertNotIn(
+            "compute_budget",
+            section_28,
+            "ADR §2.8 must NOT contain compute_budget — that is §2.9",
+        )
+        # §2.8 may mention ContextBudgetPolicy as a cross-reference
+        # (e.g. in §2.8.3 WorkerKind non-goals), but must not describe
+        # the public API in detail.
+
+    def test_section_24_and_29_percentages_are_identical(self) -> None:
+        """§2.4 Worker Tiers and §2.9 ContextBudgetPolicy must use the same
+        percentages."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section_24 = _extract_markdown_section(adr_text, "### 2.4")
+        section_29 = _extract_markdown_section(adr_text, "### 2.9")
+        self.assertIsNotNone(section_24, "ADR must contain §2.4 Worker Tiers")
+        self.assertIsNotNone(section_29, "ADR must contain §2.9 ContextBudgetPolicy")
+
+        # §2.4 uses "20%" / "35%" etc in table cells.
+        for pct in ("20%", "35%", "50%", "65%"):
+            self.assertIn(pct, section_24,
+                          f"ADR §2.4 must mention {pct}")
+        # §2.9 uses bare numbers in table, but the numbers must match.
+        for pct in ("20", "35", "50", "65"):
+            self.assertIn(pct, section_29,
+                          f"ADR §2.9 must mention {pct}")
 
     # -- 8f: Interface Status rows for the new cards -----------------------
 
@@ -1210,27 +1271,27 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     # -- 8h: ContextBudgetPolicy percentages and reserved rule --------------
 
-    def test_context_budget_policy_percentages_in_tc135_description(self) -> None:
+    def test_context_budget_policy_percentages_in_tc1351_description(self) -> None:
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_future_task_cards_table(adr_text)
         by_id = {
             self._resolve_col(row, "Task Card", "Task", "#"): row
             for row in rows
         }
-        tc135 = by_id.get("TC-13.5")
-        self.assertIsNotNone(tc135)
+        tc1351 = by_id.get("TC-13.5.1")
+        self.assertIsNotNone(tc1351)
 
-        desc = self._resolve_col(tc135, "Description", "Desc")
-        for pct in ("15%", "30%", "50%", "65%"):
+        desc = self._resolve_col(tc1351, "Description", "Desc")
+        for pct in ("20%", "35%", "50%", "65%"):
             self.assertIn(
                 pct,
                 desc,
-                f"TC-13.5 description must mention {pct}",
+                f"TC-13.5.1 description must mention {pct}",
             )
         self.assertIn(
             "35%",
             desc,
-            "TC-13.5 description must mention ≥35% reserved",
+            "TC-13.5.1 description must mention ≥35% reserved",
         )
 
     # -- Item 9: §2.7 Skill and Dashboard Data Sharing restored -----------

@@ -1,19 +1,23 @@
-"""AgentDesk ContextBudgetPolicy — pure token-budget strategy (TC-13.5).
+"""AgentDesk ContextBudgetPolicy — pure token-budget strategy (TC-13.5.1).
 
 Computes a per-task context budget from ``TaskDifficulty`` and the model's
 ``context_window_tokens``.  The policy is a frozen arithmetic function:
 no I/O, no provider knowledge, no WorkerAdapter mechanics.
 
-Fixed percentages (frozen by ADR #28):
+The budget is the **smaller** of the percentage-floor result and a
+per-difficulty hard cap — this prevents oversized budgets on very large
+context windows while still reserving at least 35 % of the window.
 
-============= =====
-TaskDifficulty  %
-============= =====
-BASIC          15
-STANDARD       30
-ADVANCED       50
-EXPERT         65
-============= =====
+Fixed percentages and caps (frozen by ADR #28):
+
+============= ===== ==========
+TaskDifficulty    %  Hard cap
+============= ===== ==========
+BASIC           20    64 000
+STANDARD        35   128 000
+ADVANCED        50   256 000
+EXPERT          65   512 000
+============= ===== ==========
 
 At least **35 %** of the context window is always reserved for system
 prompt, tool definitions, and overhead.
@@ -29,7 +33,7 @@ Non-goals (explicitly excluded from this module):
 * Model selection, provider binding, or ``select_model.py`` logic
 * Writing budget results to model-selection, dispatch, outbox, or report
 * Any I/O, subprocess, filesystem, environment-variable, or network call
-* Custom percentage overrides or configuration files
+* Custom percentage or cap overrides or configuration files
 * Cross-enum mapping (TaskDifficulty → WorkerKind, etc.)
 """
 
@@ -46,10 +50,18 @@ __all__ = [
 
 # ── frozen percentage table (module-private) ────────────────────────────
 _BUDGET_PERCENT: dict[TaskDifficulty, int] = {
-    TaskDifficulty.BASIC: 15,
-    TaskDifficulty.STANDARD: 30,
+    TaskDifficulty.BASIC: 20,
+    TaskDifficulty.STANDARD: 35,
     TaskDifficulty.ADVANCED: 50,
     TaskDifficulty.EXPERT: 65,
+}
+
+# ── frozen hard-cap table (module-private) ──────────────────────────────
+_BUDGET_CAP: dict[TaskDifficulty, int] = {
+    TaskDifficulty.BASIC: 64_000,
+    TaskDifficulty.STANDARD: 128_000,
+    TaskDifficulty.ADVANCED: 256_000,
+    TaskDifficulty.EXPERT: 512_000,
 }
 
 
@@ -63,6 +75,7 @@ class BudgetResult(NamedTuple):
     context_window_tokens: int
     difficulty: TaskDifficulty
     budget_percent: int
+    budget_cap_tokens: int
     budget_tokens: int
     reserved_tokens: int
 
@@ -80,7 +93,7 @@ def compute_budget(
         difficulty: A ``TaskDifficulty`` enum member.
 
     Returns:
-        ``BudgetResult`` with five frozen fields.
+        ``BudgetResult`` with six frozen fields.
 
     Raises:
         TypeError: If *context_window_tokens* is not an ``int`` (or is
@@ -115,33 +128,48 @@ def compute_budget(
             f"got {context_window_tokens}"
         )
 
-    # ── 3. Compute budget ──────────────────────────────────────────────
+    # ── 3. Look up frozen percentage and cap ───────────────────────────
     percent = _BUDGET_PERCENT[difficulty]
-    budget_tokens = context_window_tokens * percent // 100
+    cap = _BUDGET_CAP[difficulty]
+
+    # ── Validate cap (module-private table, but guard against corruption) ─
+    if isinstance(cap, bool) or not isinstance(cap, int):
+        raise AssertionError(
+            f"budget cap for {difficulty.value} must be int, "
+            f"got {type(cap).__name__}: {cap!r}"
+        )
+    if cap < 0:
+        raise AssertionError(
+            f"budget cap for {difficulty.value} must be >= 0, got {cap}"
+        )
+
+    # ── 4. Compute budget: min(floor percentage, hard cap) ─────────────
+    percentage_budget = context_window_tokens * percent // 100
+    budget_tokens = min(percentage_budget, cap)
     reserved_tokens = context_window_tokens - budget_tokens
 
-    # ── 4. Guard: at least 1 budget token ──────────────────────────────
+    # ── 5. Guard: at least 1 budget token ──────────────────────────────
     if budget_tokens < 1:
         raise ValueError(
             f"context_window_tokens={context_window_tokens} is too small "
-            f"for {difficulty.value} budget ({percent}%): "
+            f"for {difficulty.value} budget ({percent}%, cap={cap}): "
             f"budget would be {budget_tokens} token(s)"
         )
 
-    # ── 5. Invariant: at least 35 % reserved ───────────────────────────
+    # ── 6. Invariant: at least 35 % reserved ───────────────────────────
     minimum_reserved = (context_window_tokens * 35 + 99) // 100  # ceil(35%)
-    # This is an assertion, not a branch — the arithmetic guarantees it
-    # for all four frozen percentages, so a failure here indicates a bug.
     assert reserved_tokens >= minimum_reserved, (
         f"invariant broken: reserved={reserved_tokens} < "
         f"minimum_reserved={minimum_reserved} "
-        f"(window={context_window_tokens}, difficulty={difficulty.value})"
+        f"(window={context_window_tokens}, difficulty={difficulty.value}, "
+        f"percent={percent}, cap={cap})"
     )
 
     return BudgetResult(
         context_window_tokens=context_window_tokens,
         difficulty=difficulty,
         budget_percent=percent,
+        budget_cap_tokens=cap,
         budget_tokens=budget_tokens,
         reserved_tokens=reserved_tokens,
     )
