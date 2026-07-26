@@ -696,6 +696,164 @@ class ExecutableValidationTests(unittest.TestCase):
                 disallowed_tools=(),
             )
 
+    # ── Confirmed bypass: exe path + argument with path separator ─────────
+
+    def test_exe_path_help_flag_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"C:\Program Files\Claude\claude.exe /help",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_exe_path_payload_txt_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"C:\Program Files\Claude\claude.exe C:\tmp\payload.txt",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_posix_claude_payload_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="/usr/local/bin/claude /tmp/payload",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_unc_path_other_share_payload_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"\\server\share\Claude Code\claude.exe \\other\share\payload",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_exe_path_forward_slash_payload_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"C:\Program Files\Claude\claude.exe C:/tmp/payload.txt",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_exe_path_unc_payload_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"C:\Program Files\Claude\claude.exe \\server\share\payload",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_cmd_path_help_flag_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"C:\Program Files\Claude\claude.cmd /c",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_posix_claude_argument_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable="/usr/local/bin/claude argument",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_unc_path_help_flag_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"\\server\share\Claude Code\claude.exe /help",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    # ── Table-driven bypass test ─────────────────────────────────────────
+
+    def test_bypass_table_driven_all_rejected(self) -> None:
+        bypass_values = [
+            r"C:\Program Files\Claude\claude.exe /help",
+            r"C:\Program Files\Claude\claude.exe C:\tmp\payload.txt",
+            r"C:\Program Files\Claude\claude.exe C:/tmp/payload.txt",
+            r"C:\Program Files\Claude\claude.exe \\server\share\payload",
+            r"C:\Program Files\Claude\claude.cmd /c",
+            "/usr/local/bin/claude /tmp/payload",
+            "/usr/local/bin/claude argument",
+            r"\\server\share\Claude Code\claude.exe \\other\share\payload",
+            r"\\server\share\Claude Code\claude.exe /help",
+            "claude whoami",
+            "claude output.json",
+            "claude true",
+            r"C:\Program Files\Claude\claude.exe whoami",
+            r"C:\Program Files\Claude\claude.exe calc.exe",
+            r"\\server\share\Claude Code\claude.exe whoami",
+            "claude & whoami",
+            "claude > output.txt",
+            "claude < input.txt",
+            'claude "argument"',
+            "claude 'argument'",
+            "claude $HOME",
+            "claude $(whoami)",
+            "claude\targument",
+            "claude\vargument",
+            "claude\fargument",
+        ]
+        for value in bypass_values:
+            with self.subTest(executable=value):
+                with self.assertRaises(ValueError):
+                    ClaudeCodeProvider(
+                        provider_id="claude",
+                        executable=value,
+                        permission_mode="plan",
+                        allowed_tools=(),
+                        disallowed_tools=(),
+                    )
+
+    # ── Table-driven allow test ───────────────────────────────────────────
+
+    def test_allowed_table_driven_all_pass(self) -> None:
+        allowed_values = [
+            "claude",
+            "claude.exe",
+            "CLAUDE.EXE",
+            "/usr/local/bin/claude",
+            r"C:\Tools\claude.exe",
+            r"C:\Program Files\Claude\claude.exe",
+            r"C:\Program Files\Claude Code\claude.CMD",
+            "C:/Program Files/Claude/claude.cmd",
+            r"\\server\share\Claude Code\claude.exe",
+        ]
+        for value in allowed_values:
+            with self.subTest(executable=value):
+                p = ClaudeCodeProvider(
+                    provider_id="claude",
+                    executable=value,
+                    permission_mode="plan",
+                    allowed_tools=(),
+                    disallowed_tools=(),
+                )
+                self.assertEqual(p.executable, value)
+
     # ── Still allowed: legitimate paths with spaces ────────────────────
 
     def test_windows_program_files_path_allowed(self) -> None:

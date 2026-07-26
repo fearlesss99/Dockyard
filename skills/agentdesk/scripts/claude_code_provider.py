@@ -7,6 +7,7 @@ Zero I/O, zero subprocess, zero network.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from dispatcher_gateway import (
@@ -34,6 +35,9 @@ _ALLOWED_PERMISSION_MODES = frozenset({
 _SHELL_METACHARS = frozenset(
     {"&", "|", ";", "`", "$", "<", ">", "(", ")", '"', "'"}
 )
+# Recognised executable extensions, case-insensitive.
+_EXE_EXTENSIONS = frozenset({".exe", ".cmd", ".bat", ".com"})
+_SUSPICIOUS_EXE_EXT = re.compile(r"(?i)\.(?:exe|cmd|bat|com)\s")
 _EFFORT_MAP = {
     "efficient": "low",
     "balanced": "medium",
@@ -47,6 +51,13 @@ def _validate_executable(executable: object) -> str:
     Must be ``str``, non-empty, non-pure-whitespace, no leading/trailing
     whitespace, no NUL/CR/LF/TAB/VT/FF, no shell metacharacters, and
     must not be an executable name with embedded arguments.
+
+    Paths with ordinary spaces are only allowed when the string is a
+    drive-absolute or UNC Windows path ending with a recognised
+    executable extension (``.exe`` / ``.cmd`` / ``.bat`` / ``.com``).
+    No other space-containing inputs are permitted — POSIX paths with
+    spaces are fail-closed because arguments cannot be reliably
+    distinguished from path components without filesystem access.
     """
     if not isinstance(executable, str):
         raise ValueError(
@@ -68,45 +79,73 @@ def _validate_executable(executable: object) -> str:
             }[ch]
             raise ValueError(f"executable must not contain {label}")
 
-    # Reject shell metacharacters outright — no legitimate path contains
-    # any of these.
+    # Reject shell metacharacters outright.
     for mc in _SHELL_METACHARS:
         if mc in executable:
             raise ValueError(
                 "executable must not contain shell metacharacters"
             )
 
-    # Structural check for embedded arguments.
-    # A space is legal only as part of a directory path, e.g.:
-    #   C:\Program Files\Claude\claude.exe
-    #   /Program Files/Claude/claude
-    #   \\server\share\Claude Code\claude.exe
-    #
-    # Embedded arguments (e.g. "claude whoami", "claude true",
-    # "C:\...\claude.exe calc.exe") must be rejected.
-    #
-    # Rule: when the string contains spaces, the executable must contain
-    # at least one path separator (\\ or /), AND every space-delimited
-    # token after the first must itself contain at least one path
-    # separator — otherwise it is an embedded argument.
-    parts = executable.split()
-    if len(parts) > 1:
-        # Must contain at least one path separator to justify the spaces.
-        if "\\" not in executable and "/" not in executable:
+    # ── paths without spaces: no embedded‑argument risk ──────────────────
+    if " " not in executable:
+        return executable
+
+    # ── paths with ordinary spaces ───────────────────────────────────────
+    # Only Windows drive‑absolute or UNC paths with a recognised executable
+    # extension are permitted.  Everything else is fail‑closed because we
+    # cannot reliably tell a path component from an argument without
+    # filesystem access.
+
+    # Reject: an executable‑extension followed by whitespace anywhere
+    # before the very end — this catches patterns like
+    #   C:\…\claude.exe /help
+    #   \\srv\…\claude.exe C:\payload.txt
+    if _SUSPICIOUS_EXE_EXT.search(executable[:-1] if executable else ""):
+        raise ValueError(
+            "executable must not contain embedded arguments"
+        )
+
+    # Must end with a recognised executable extension (case‑insensitive).
+    ext_lower = executable.rsplit(".", 1)[-1].lower() if "." in executable else ""
+    if f".{ext_lower}" not in _EXE_EXTENSIONS:
+        raise ValueError(
+            "executable with spaces must end with .exe, .cmd, .bat, or .com"
+        )
+
+    # Drive‑absolute:  X:\...    or  X:/...
+    _DRIVE_RE = re.compile(
+        r"^[A-Za-z]:(?:\\|/)",
+    )
+    if _DRIVE_RE.match(executable):
+        # Must contain only one drive‑colon, and it must be at position 1.
+        if executable.find(":") != 1:
             raise ValueError(
                 "executable must not contain embedded arguments"
             )
+        return executable
 
-        # Every token after the first must be a path component, not a
-        # bare argument.  A lone extension (e.g. "calc.exe") without a
-        # directory separator is an argument, not part of the path.
-        for part in parts[1:]:
-            if "\\" not in part and "/" not in part:
-                raise ValueError(
-                    "executable must not contain embedded arguments"
-                )
+    # UNC:  \\server\share\...
+    if executable.startswith("\\\\"):
+        # Must have at least one backslash after the initial \\, i.e.
+        # \\server\share\...
+        rest = executable[2:]
+        first_sep = rest.find("\\")
+        if first_sep < 1:
+            raise ValueError(
+                "executable must not contain embedded arguments"
+            )
+        share_start = first_sep + 1
+        second_sep = rest.find("\\", share_start)
+        if second_sep < share_start + 1:
+            raise ValueError(
+                "executable must not contain embedded arguments"
+            )
+        return executable
 
-    return executable
+    # Anything else with spaces is ambiguous — fail closed.
+    raise ValueError(
+        "executable must not contain embedded arguments"
+    )
 
 
 def _validate_provider_id(provider_id: object) -> str:
