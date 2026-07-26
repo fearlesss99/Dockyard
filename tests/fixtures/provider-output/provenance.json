@@ -1,0 +1,260 @@
+{
+  "schema_version": "agentdesk.provider-output-evidence/v1",
+  "captures": [
+    {
+      "fixture_path": "tests/fixtures/provider-output/claude/2.1.214/success-minimal.json",
+      "provider_id": "claude",
+      "package_name": "@anthropic-ai/claude-code",
+      "package_version": "2.1.214",
+      "executable_sha256": "da26afacbc58d6f569d0921ff6825772220c734327f5f976c0c73bd0b7dd3cf8",
+      "captured_at": "2026-07-27T00:33:00Z",
+      "sample_id": "success-minimal",
+      "argv_shape": [
+        "-p",
+        "<control_prompt>",
+        "--output-format",
+        "json",
+        "--model",
+        "<model_id>",
+        "--permission-mode",
+        "dontAsk",
+        "--effort",
+        "low",
+        "--no-session-persistence"
+      ],
+      "exit_code": 0,
+      "stdout_bytes": 1549,
+      "stderr_bytes": 0,
+      "raw_stdout_sha256": "06ebbfe7656a202137316272e653352d9d09ee26067613842455737f8941a4de",
+      "raw_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sanitized_stdout_sha256": "d447f50c976d3b58fb3b1b9c80e82b42ce089d4f19f4f2e7e69ff775ef281a85",
+      "sanitized_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "utf8_valid": true,
+      "serialization": "json",
+      "redactions": [
+        {
+          "path": "$.session_id",
+          "kind": "session_id",
+          "reason": "session identifier"
+        },
+        {
+          "path": "$.uuid",
+          "kind": "request_id",
+          "reason": "request identifier"
+        },
+        {
+          "path": "$.total_cost_usd",
+          "kind": "cost",
+          "reason": "account billing info"
+        }
+      ],
+      "source_kind": "real_cli_capture"
+    },
+    {
+      "fixture_path": "tests/fixtures/provider-output/claude/2.1.214/success-unicode.json",
+      "provider_id": "claude",
+      "package_name": "@anthropic-ai/claude-code",
+      "package_version": "2.1.214",
+      "executable_sha256": "da26afacbc58d6f569d0921ff6825772220c734327f5f976c0c73bd0b7dd3cf8",
+      "captured_at": "2026-07-27T00:33:00Z",
+      "sample_id": "success-unicode",
+      "argv_shape": [
+        "-p",
+        "<control_prompt>",
+        "--output-format",
+        "json",
+        "--model",
+        "<model_id>",
+        "--permission-mode",
+        "dontAsk",
+        "--effort",
+        "low",
+        "--no-session-persistence"
+      ],
+      "exit_code": 0,
+      "stdout_bytes": 1575,
+      "stderr_bytes": 0,
+      "raw_stdout_sha256": "d9ec017cd1834b02bdaf6a5913762db9b5a5955d09dad3423c8fe5a42356fb54",
+      "raw_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sanitized_stdout_sha256": "d0d97454dcbe02d43fa25cc702fee1cd84bed85c65119e1d7762861b74a610bd",
+      "sanitized_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "utf8_valid": true,
+      "serialization": "json",
+      "redactions": [
+        {
+          "path": "$.session_id",
+          "kind": "session_id",
+          "reason": "session identifier"
+        },
+        {
+          "path": "$.uuid",
+          "kind": "request_id",
+          "reason": "request identifier"
+        },
+        {
+          "path": "$.total_cost_usd",
+          "kind": "cost",
+          "reason": "account billing info"
+        }
+      ],
+      "source_kind": "real_cli_capture"
+    },
+    {
+      "fixture_path": "tests/fixtures/provider-output/claude/2.1.214/application-boundary.json",
+      "provider_id": "claude",
+      "package_name": "@anthropic-ai/claude-code",
+      "package_version": "2.1.214",
+      "executable_sha256": "da26afacbc58d6f569d0921ff6825772220c734327f5f976c0c73bd0b7dd3cf8",
+      "captured_at": "2026-07-27T00:33:00Z",
+      "sample_id": "application-boundary",
+      "argv_shape": [
+        "-p",
+        "<control_prompt>",
+        "--output-format",
+        "json",
+        "--model",
+        "<model_id>",
+        "--permission-mode",
+        "dontAsk",
+        "--effort",
+        "low",
+        "--no-session-persistence"
+      ],
+      "exit_code": 0,
+      "stdout_bytes": 1679,
+      "stderr_bytes": 0,
+      "raw_stdout_sha256": "0422fdb0cf8b09f754d620bd74bbe1abb74fc7848bdc438ad08205e3a4007a80",
+      "raw_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sanitized_stdout_sha256": "c29a846620b9b9b438bd235d8852fb043d3964afd82f49cc1077de7cfb561921",
+      "sanitized_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "utf8_valid": true,
+      "serialization": "json",
+      "redactions": [
+        {
+          "path": "$.session_id",
+          "kind": "session_id",
+          "reason": "session identifier"
+        },
+        {
+          "path": "$.uuid",
+          "kind": "request_id",
+          "reason": "request identifier"
+        },
+        {
+          "path": "$.total_cost_usd",
+          "kind": "cost",
+          "reason": "account billing info"
+        }
+      ],
+      "source_kind": "real_cli_capture"
+    },
+    {
+      "fixture_path": "tests/fixtures/provider-output/codex/0.144.6/success-minimal.jsonl",
+      "provider_id": "codex",
+      "package_name": "@openai/codex",
+      "package_version": "0.144.6",
+      "executable_sha256": "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477",
+      "captured_at": "2026-07-27T00:33:00Z",
+      "sample_id": "success-minimal",
+      "argv_shape": [
+        "--ask-for-approval",
+        "never",
+        "exec",
+        "--ephemeral",
+        "--json",
+        "--color",
+        "never",
+        "--model",
+        "<model_id>",
+        "--sandbox",
+        "read-only",
+        "-c",
+        "model_reasoning_effort=<value>",
+        "-"
+      ],
+      "exit_code": 1,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "raw_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sanitized_stdout_sha256": "ab0c7b43cd66554182c1f0f4196d6de40b873cfb3a239ae1805eb841c71db988",
+      "sanitized_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "utf8_valid": true,
+      "serialization": "unknown",
+      "redactions": [],
+      "source_kind": "real_cli_capture"
+    },
+    {
+      "fixture_path": "tests/fixtures/provider-output/codex/0.144.6/success-unicode.jsonl",
+      "provider_id": "codex",
+      "package_name": "@openai/codex",
+      "package_version": "0.144.6",
+      "executable_sha256": "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477",
+      "captured_at": "2026-07-27T00:33:00Z",
+      "sample_id": "success-unicode",
+      "argv_shape": [
+        "--ask-for-approval",
+        "never",
+        "exec",
+        "--ephemeral",
+        "--json",
+        "--color",
+        "never",
+        "--model",
+        "<model_id>",
+        "--sandbox",
+        "read-only",
+        "-c",
+        "model_reasoning_effort=<value>",
+        "-"
+      ],
+      "exit_code": 1,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "raw_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sanitized_stdout_sha256": "ab0c7b43cd66554182c1f0f4196d6de40b873cfb3a239ae1805eb841c71db988",
+      "sanitized_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "utf8_valid": true,
+      "serialization": "unknown",
+      "redactions": [],
+      "source_kind": "real_cli_capture"
+    },
+    {
+      "fixture_path": "tests/fixtures/provider-output/codex/0.144.6/application-boundary.jsonl",
+      "provider_id": "codex",
+      "package_name": "@openai/codex",
+      "package_version": "0.144.6",
+      "executable_sha256": "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477",
+      "captured_at": "2026-07-27T00:33:00Z",
+      "sample_id": "application-boundary",
+      "argv_shape": [
+        "--ask-for-approval",
+        "never",
+        "exec",
+        "--ephemeral",
+        "--json",
+        "--color",
+        "never",
+        "--model",
+        "<model_id>",
+        "--sandbox",
+        "read-only",
+        "-c",
+        "model_reasoning_effort=<value>",
+        "-"
+      ],
+      "exit_code": 1,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "raw_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sanitized_stdout_sha256": "ab0c7b43cd66554182c1f0f4196d6de40b873cfb3a239ae1805eb841c71db988",
+      "sanitized_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "utf8_valid": true,
+      "serialization": "unknown",
+      "redactions": [],
+      "source_kind": "real_cli_capture"
+    }
+  ]
+}
