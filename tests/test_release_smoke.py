@@ -1639,6 +1639,72 @@ class ReleaseSmokeTests(unittest.TestCase):
                 f"{', '.join(sorted(extra))}",
             )
 
+    # -- 10d‑bis: Tuple deep-immutability for capability fields ------------
+
+    def test_tc137_capability_fields_are_tuple_not_list(self) -> None:
+        """§2.10.3 must declare required_model_capabilities and
+        selected_model_capabilities as tuple[str, ...], not list[str]."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.3"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "tuple[str, ...]",
+            section,
+            "§2.10.3 must declare capability fields as tuple[str, ...]",
+        )
+        # Explicitly forbid list[str] for the capability columns.
+        import re as _re
+        cap_rows = _re.findall(
+            r"\|\s*\d+\s*\|\s*``(?:required_model_capabilities|selected_model_capabilities)``\s*\|\s*``(.*?)``",
+            section,
+        )
+        for row_type in cap_rows:
+            self.assertNotIn(
+                "list",
+                row_type,
+                f"§2.10.3 capability field type must be tuple, got: {row_type}",
+            )
+            self.assertIn(
+                "tuple",
+                row_type,
+                f"§2.10.3 capability field type must be tuple, got: {row_type}",
+            )
+
+    def test_tc137_snapshot_forbids_mutable_collections(self) -> None:
+        """§2.10.3 must state the snapshot contains no mutable list, dict,
+        or set — all collection fields are immutable."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.3"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "mutable" in target or "immutable" in target,
+            "§2.10.3 must state snapshot is deeply immutable (no mutable collections)",
+        )
+
+    def test_tc137_snapshot_constructor_copies_arrays_to_tuple(self) -> None:
+        """§2.10.3 must state that the snapshot constructor copies external
+        JSON arrays into tuple, preserving order."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.3"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "copy",
+            section.lower(),
+            "§2.10.3 must state that arrays are copied into tuples at construction time",
+        )
+        self.assertIn(
+            "order",
+            section.lower(),
+            "§2.10.3 must state that original order is preserved",
+        )
+
     # -- 10e: DispatchRequest — exactly five fields, no deferred extras –
 
     _REQUEST_REQUIRED_FIELDS = frozenset(
@@ -1985,6 +2051,122 @@ class ReleaseSmokeTests(unittest.TestCase):
                 section,
                 f"ADR §2.10.6 must reference AgentCliInvocation field '{field}'",
             )
+
+    # -- 10ℓ‑bis: Provider mapping — explicit run_dispatch signature --------
+
+    def test_tc137_run_dispatch_signature_frozen(self) -> None:
+        """§2.10.5 must freeze run_dispatch(request, providers) with
+        Mapping[str, AgentCliProvider]."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.10.5")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "run_dispatch",
+            section,
+            "§2.10.5 must freeze run_dispatch public entry point",
+        )
+        self.assertIn(
+            "Mapping",
+            section,
+            "§2.10.5 must reference Mapping[str, AgentCliProvider]",
+        )
+        self.assertIn(
+            "providers",
+            section,
+            "§2.10.5 must reference 'providers' parameter",
+        )
+
+    def test_tc137_no_module_level_mutable_registry(self) -> None:
+        """§2.10.5 must state there is NO register_provider() or
+        unregister_provider() — the ADR says 'There is **no**
+        ``register_provider()``, ``unregister_provider()``'."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.10.5")
+        self.assertIsNotNone(section)
+        # The ADR says "There is **no** ``register_provider()``,
+        # ``unregister_provider()``" — this correctly asserts they don't
+        # exist.  The test checks that the section uses that language.
+        target = section.lower()
+        self.assertTrue(
+            "no module" in target
+            or "does not provide" in target
+            or "no global" in target,
+            "§2.10.5 must state there is no module-level mutable registry",
+        )
+
+    def test_tc137_provider_lookup_key_is_selected_model_provider(self) -> None:
+        """§2.10.5 must state lookup key is selected_model_provider."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.10.5")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "selected_model_provider",
+            section,
+            "§2.10.5 must use selected_model_provider as provider lookup key",
+        )
+
+    def test_tc137_adapter_provider_id_must_match_key(self) -> None:
+        """§2.10.5 must state adapter provider_id equals its mapping key."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.10.5")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            ("provider_id" in target and "equal" in target)
+            or ("provider_id" in target and "match" in target),
+            "§2.10.5 must state adapter provider_id must equal key",
+        )
+
+    # -- 10ℓ‑ter: argv excludes executable --------------------------------
+
+    def test_tc137_argv_excludes_executable(self) -> None:
+        """§2.10.6 must state argv does NOT contain executable — the
+        'argv does **not** include executable' language in the table."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.10.6")
+        self.assertIsNotNone(section)
+        # The table says "Arguments only — does **not** include executable".
+        # Check for the bold negation.
+        target = section.lower()
+        self.assertTrue(
+            "does **not** include executable" in section
+            or "must **not** contain the executable" in section
+            or ("argv" in target and "not" in target and "executable" in target),
+            "§2.10.6 must state argv does not include executable",
+        )
+        # Must show create_subprocess_exec with *invocation.argv.
+        self.assertIn(
+            "create_subprocess_exec",
+            section,
+            "§2.10.6 must reference asyncio.create_subprocess_exec",
+        )
+
+    def test_tc137_subprocess_exec_model_is_exe_star_argv(self) -> None:
+        """§2.10.6 must show the invocation model: executable, *argv."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.10.6")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "*",
+            section,
+            "§2.10.6 must show *invocation.argv unpacking in subprocess call",
+        )
+        self.assertIn(
+            "executable",
+            section.lower(),
+            "§2.10.6 must show executable as separate first argument",
+        )
+
+    def test_tc137_empty_argv_is_legal(self) -> None:
+        """§2.10.6 must state empty argv tuple is legal."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.10.6")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "empty" in target or "zero arguments" in target,
+            "§2.10.6 must state empty argv is legal",
+        )
 
     # -- 10m: Dependency boundary table exists ---------------------------
 

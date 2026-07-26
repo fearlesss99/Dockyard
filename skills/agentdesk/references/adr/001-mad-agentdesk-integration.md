@@ -713,7 +713,8 @@ agent CLI execution gateway.  Every invocation:
 
 * strictly validates a frozen, immutable dispatch request and its
   ten‑field `ModelSelectionSnapshot`;
-* resolves the provider adapter from a registry keyed by
+* resolves the provider adapter from the caller‑supplied
+  ``providers`` mapping keyed by
   ``selected_model_provider``;
 * constructs a safe subprocess invocation via the adapter;
 * launches **exactly one** subprocess;
@@ -768,14 +769,14 @@ missing keys are both rejected.
 | # | Field | Type |
 |---|-------|------|
 | 1 | ``required_model_tier`` | ``str`` |
-| 2 | ``required_model_capabilities`` | ``list[str]`` |
+| 2 | ``required_model_capabilities`` | ``tuple[str, ...]`` |
 | 3 | ``model_binding_id`` | ``str`` |
 | 4 | ``selected_model_provider`` | ``str`` |
 | 5 | ``selected_model_id`` | ``str`` |
 | 6 | ``selected_model_tier`` | ``str`` |
 | 7 | ``selected_deliberation_tier`` | ``str`` |
 | 8 | ``selected_context_window_tokens`` | ``int`` (non‑bool, ≥ 1) |
-| 9 | ``selected_model_capabilities`` | ``list[str]`` |
+| 9 | ``selected_model_capabilities`` | ``tuple[str, ...]`` |
 | 10 | ``model_degradation_approval_id`` | ``str`` or ``null`` |
 
 Rules:
@@ -785,12 +786,26 @@ Rules:
   not supply an independent override.
 * ``model_binding_id`` is the **only** binding identifier.  There is
   no separate ``provider_config_id`` — the snapshot's
-  ``selected_model_provider`` is the adapter registry key.
+  ``selected_model_provider`` is the adapter lookup key.
 * ``selected_model_tier`` is stored but not consumed by TC-13.7;
   it is a passthrough audit field.
 * ``selected_context_window_tokens`` is stored but not consumed by
   TC-13.7; budget arithmetic belongs to ContextBudgetPolicy
   (TC-13.5.1) and WorkerAdapter (TC-13.9).
+* ``required_model_capabilities`` and ``selected_model_capabilities``
+  are **deeply immutable** ``tuple[str, ...]``:
+  * The external selector JSON produces arrays; the snapshot
+    constructor must copy each array into a tuple.
+  * Every element must be a non‑empty string.
+  * Original JSON array order is preserved.
+  * Duplicate capabilities are rejected at construction time.
+  * Post‑construction mutations of the source ``list`` must not
+    affect the snapshot.
+  * The snapshot must not contain any mutable ``list``, ``dict``,
+    or ``set`` — every collection field is an immutable sequence
+    or mapping.  (``required_model_capabilities`` and
+    ``selected_model_capabilities`` are the only collection fields
+    in the ten‑field set; both are ``tuple[str, ...]``.)
 
 ---
 
@@ -837,8 +852,8 @@ Rules:
 #### 2.10.5 Provider Adapter Protocol
 
 TC-13.7 defines ``AgentCliProvider`` as a ``typing.Protocol``
-(runtime‑checkable).  TC-13.7 itself only ships the Protocol and a
-registry; it does **not** bundle any real provider implementation.
+(runtime‑checkable).  TC-13.7 itself only ships the Protocol;
+it does **not** bundle any real provider implementation.
 
 **Required attribute:**
 
@@ -862,12 +877,38 @@ specific stdout parsing is deferred to TC-13.8 / TC-13.9.
 A ``FakeAgentCliProvider`` may exist in ``tests/`` only — it must not
 appear in any production module.
 
-**Registry lookup**:
+**Provider lookup — call‑level explicit mapping**:
 
-The Gateway resolves the adapter via a module‑level registry keyed by
-``provider_id``.  Lookup for an unknown ``provider_id`` is fail‑closed:
-it raises ``ProviderNotSupportedError`` before any subprocess is
-launched.
+TC-13.7 does **not** provide a module‑level mutable registry.  The
+public entry point receives provider instances explicitly:
+
+```python
+async def run_dispatch(
+    request: DispatchRequest,
+    providers: Mapping[str, AgentCliProvider],
+) -> DispatchResult:
+    ...
+```
+
+Rules:
+
+* ``providers`` is a **call‑level explicit dependency** — the Gateway
+  stores no global state.
+* The lookup key is exactly ``request.model_selection.selected_model_provider``.
+* When the key is not present, ``ProviderNotSupportedError`` is raised
+  **before** any subprocess is launched.
+* Every adapter's ``provider_id`` must equal its key in the mapping.
+* Both the provider key and ``provider_id`` must be non‑empty strings.
+* ``providers`` must not be empty — at least one provider must be
+  supplied.
+* The Gateway does **not** mutate the mapping.
+* There is **no** ``register_provider()``, ``unregister_provider()``,
+  or clear‑registry function.
+* TC-13.8 / TC-13.9 callers construct the mapping before invoking
+  ``run_dispatch``.
+* Tests construct a local ``{"fake": FakeAgentCliProvider()}``
+  mapping per call — ``FakeAgentCliProvider`` remains only in the
+  test directory.
 
 ---
 
@@ -879,19 +920,34 @@ fully‑resolved, safe subprocess invocation.
 | # | Field | Type | Rule |
 |---|-------|------|------|
 | 1 | ``executable`` | ``str`` | Absolute path or plain name (resolved via ``shutil.which``) |
-| 2 | ``argv`` | ``tuple[str, ...]`` | Each element is exactly one argument; no shell concatenation |
+| 2 | ``argv`` | ``tuple[str, ...]`` | Arguments only — does **not** include executable; each element is exactly one argument; empty tuple is legal |
 | 3 | ``stdin`` | ``bytes`` or ``None`` | Derived from ``DispatchRequest.prompt``; ``None`` → ``DEVNULL`` |
 | 4 | ``env_overrides`` | ``tuple[tuple[str, str], ...]`` | Pairs of ``(KEY, value)``; keys are unique |
 
+The Gateway executes the invocation as:
+
+```python
+resolved_executable = resolve(invocation.executable)
+await asyncio.create_subprocess_exec(
+    resolved_executable,
+    *invocation.argv,
+    ...
+)
+```
+
 Rules:
 
+* ``argv`` must **not** contain the executable — ``executable`` is a
+  separate field and is passed as the first argument to
+  ``create_subprocess_exec``.  The adapter must not duplicate it.
+* Empty ``argv`` is legal (the subprocess receives zero arguments).
 * ``executable`` is a **single** path or command name — it must not
   embed arguments, flags, or shell metacharacters.  Spaces in the
   path are permitted (the path is passed as a single ``exec*``
   argument).
-* ``argv`` is an immutable tuple; each element is one argument.
-  ``shell=True`` is **never** used — the Gateway exclusively uses
+* ``shell=True`` is **never** used — the Gateway exclusively uses
   ``asyncio.create_subprocess_exec``.
+* ``create_subprocess_shell`` is **never** used.
 * ``stdin`` is produced by the adapter from the sole ``prompt``.
   When ``None`` the Gateway passes ``DEVNULL``.
 * ``env_overrides`` keys are unique.  The Gateway copies the full
