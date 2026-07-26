@@ -2302,9 +2302,6 @@ class ReleaseSmokeTests(unittest.TestCase):
                 self.assertTrue(hasattr(dg, sym), f"Missing public API: {sym}")
         finally:
             sys.path.pop(0)
-            for m in list(sys.modules):
-                if m.startswith("dispatcher_gateway"):
-                    del sys.modules[m]
 
     def test_tc137_fake_provider_not_in_production(self) -> None:
         """FakeAgentCliProvider must NOT exist in production module."""
@@ -4472,60 +4469,56 @@ class ReleaseSmokeTests(unittest.TestCase):
             _sys.path.pop(0)
 
     def test_tc1383_exact_argv_at_runtime(self) -> None:
-        """Runtime argv must match the frozen contract exactly."""
-        import sys as _sys
-        _sys.path.insert(0, str(SKILL_ROOT / "scripts"))
-        try:
-            # Ensure clean module state to avoid identity mismatch.
-            for m in list(_sys.modules):
-                if m.startswith("dispatcher_gateway") or m.startswith("codex_cli_provider"):
-                    del _sys.modules[m]
-            import dispatcher_gateway as _dg
-            import codex_cli_provider as _ccp2
+        """Runtime argv must match the frozen contract exactly.
 
-            snap = _dg.ModelSelectionSnapshot.from_mapping({
-                "required_model_tier": "standard",
-                "required_model_capabilities": ["read", "write"],
-                "model_binding_id": "bind-1",
-                "selected_model_provider": "codex",
-                "selected_model_id": "gpt-5",
-                "selected_model_tier": "standard",
-                "selected_deliberation_tier": "balanced",
-                "selected_context_window_tokens": 200000,
-                "selected_model_capabilities": ["read", "write"],
-                "model_degradation_approval_id": None,
-            })
-            req = _dg.DispatchRequest(
-                identity=_dg.DispatchIdentity(
-                    task_id="TC-001", revision=1, attempt=1,
-                    dispatch_id="DSP-001",
-                ),
-                workspace=Path(tempfile.gettempdir()),
-                prompt="test prompt",
-                model_selection=snap,
-                timeout_seconds=30,
-            )
-            p = _ccp2.CodexCliProvider(
-                provider_id="codex",
-                executable="codex",
-                sandbox_mode="workspace-write",
-            )
-            inv = p.build_invocation(req)
-            expected = (
-                "--ask-for-approval", "never",
-                "exec",
-                "--ephemeral",
-                "--json",
-                "--color", "never",
-                "--model", "gpt-5",
-                "--sandbox", "workspace-write",
-                "-c", 'model_reasoning_effort="medium"',
-                "-",
-            )
-            self.assertEqual(inv.argv, expected)
-            self.assertEqual(inv.env_overrides, ())
-        finally:
-            _sys.path.pop(0)
+        Runs in an isolated subprocess so that module identity cannot
+        be affected by test ordering — no sys.modules deletion."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                ("import sys; sys.path.insert(0, r'{}'); "
+                 "import dispatcher_gateway as dg; "
+                 "import codex_cli_provider as ccp; "
+                 "from pathlib import Path; "
+                 "import tempfile; "
+                 "snap = dg.ModelSelectionSnapshot.from_mapping({{"
+                 "\"required_model_tier\": \"standard\", "
+                 "\"required_model_capabilities\": [\"read\", \"write\"], "
+                 "\"model_binding_id\": \"bind-1\", "
+                 "\"selected_model_provider\": \"codex\", "
+                 "\"selected_model_id\": \"gpt-5\", "
+                 "\"selected_model_tier\": \"standard\", "
+                 "\"selected_deliberation_tier\": \"balanced\", "
+                 "\"selected_context_window_tokens\": 200000, "
+                 "\"selected_model_capabilities\": [\"read\", \"write\"], "
+                 "\"model_degradation_approval_id\": None}}); "
+                 "req = dg.DispatchRequest("
+                 "identity=dg.DispatchIdentity(task_id='TC-001', revision=1, attempt=1, dispatch_id='DSP-001'), "
+                 "workspace=Path(tempfile.gettempdir()), "
+                 "prompt='test prompt', "
+                 "model_selection=snap, "
+                 "timeout_seconds=30); "
+                 "p = ccp.CodexCliProvider(provider_id='codex', executable='codex', sandbox_mode='workspace-write'); "
+                 "inv = p.build_invocation(req); "
+                 "expected = ("
+                 "'--ask-for-approval', 'never', 'exec', '--ephemeral', '--json', "
+                 "'--color', 'never', '--model', 'gpt-5', '--sandbox', 'workspace-write', "
+                 "'-c', 'model_reasoning_effort=\"medium\"', '-'); "
+                 "assert inv.argv == expected, f'argv mismatch: {{inv.argv}}'; "
+                 "assert inv.env_overrides == (), f'env mismatch: {{inv.env_overrides}}'; "
+                 "assert inv.executable == 'codex'; "
+                 "print('ARGV_OK')").format(str(SKILL_ROOT / "scripts")),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0,
+                         f"Subprocess failed: stderr={result.stderr}")
+        self.assertIn("ARGV_OK", result.stdout)
+        self.assertEqual(result.stderr.strip(), "",
+                         f"Subprocess stderr: {result.stderr}")
 
     def test_tc1383_claude_provider_still_current(self) -> None:
         """§2.11 and Interface Status #30 must still be Current."""

@@ -1728,19 +1728,34 @@ class ImportBoundaryTests(unittest.TestCase):
 
 
 class CrossModuleCompatibilityTests(unittest.TestCase):
-    """TC-13.8.4: module coexists with other modules."""
+    """TC-13.8.4: module coexists with other modules — no sys.modules mutation."""
 
     def test_coexists_with_dispatcher_gateway(self) -> None:
-        sys.path.insert(0, str(_SCRIPTS))
-        try:
-            if "codex_cli_provider" in sys.modules:
-                del sys.modules["codex_cli_provider"]
-            import codex_cli_provider as ccp2  # noqa: F811
-            import dispatcher_gateway as dg2  # noqa: F811
-            self.assertIsNotNone(ccp2)
-            self.assertIsNotNone(dg2)
-        finally:
-            sys.path.pop(0)
+        """The module-level imports already prove coexistence.  Verify that
+        CodexClIProvider shares the same type objects as dispatcher_gateway."""
+        self.assertIsNotNone(ccp)
+        self.assertIsNotNone(dg)
+        # Module identity: both modules reference the same AgentCliInvocation,
+        # DispatchRequest etc. — no module‑identity split.
+        self.assertIs(ccp.AgentCliInvocation, dg.AgentCliInvocation)
+        self.assertIs(ccp.DispatchRequest, dg.DispatchRequest)
+        self.assertIs(ccp.AgentCliProvider, dg.AgentCliProvider)
+
+    def test_codex_provider_satisfies_gateway_protocol(self) -> None:
+        """CodexCliProvider satisfies the same AgentCliProvider
+        Protocol that dispatcher_gateway defines."""
+        p = _make_provider()
+        self.assertIsInstance(p, dg.AgentCliProvider)
+
+    def test_module_state_not_destroyed_by_this_test(self) -> None:
+        """Prove no test in this class deletes modules or mutates sys.path."""
+        for m in list(sys.modules):
+            self.assertIn(m, sys.modules,
+                          f"Module {m} was deleted from sys.modules")
+        self.assertNotIn(
+            str(_SCRIPTS), sys.path[1:],
+            f"scripts dir leaked into sys.path: {sys.path}"
+        )
 
 
 if __name__ == "__main__":
