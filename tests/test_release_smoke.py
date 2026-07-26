@@ -5627,21 +5627,20 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("Target", section,
                       "§2.5.16 must state overall remains Target")
 
-    def test_tc1310a_production_module_does_not_exist(self) -> None:
-        """worker_slot_lease.py must NOT exist yet (TC-13.10a is contract
-        only)."""
+    def test_tc1310b_production_module_exists(self) -> None:
+        """worker_slot_lease.py must now exist (TC-13.10b)."""
         prod = (SKILL_ROOT / "scripts" / "worker_slot_lease.py")
-        self.assertFalse(
+        self.assertTrue(
             prod.exists(),
-            f"Production module must not exist yet: {prod}",
+            f"Production module must exist: {prod}",
         )
 
-    def test_tc1310a_test_module_does_not_exist(self) -> None:
-        """test_worker_slot_lease.py must NOT exist yet."""
+    def test_tc1310b_test_module_exists(self) -> None:
+        """test_worker_slot_lease.py must now exist (TC-13.10b)."""
         test_file = REPO_ROOT / "tests" / "test_worker_slot_lease.py"
-        self.assertFalse(
+        self.assertTrue(
             test_file.exists(),
-            f"Test module must not exist yet: {test_file}",
+            f"Test module must exist: {test_file}",
         )
 
     def test_tc1310a_tc139c_still_target(self) -> None:

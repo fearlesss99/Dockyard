@@ -520,6 +520,10 @@ JSON-compatible YAML.  Root object has exactly four keys:
 * Extra or missing slot epoch entries → fail-closed.
 * When the file does not exist, read logic returns a canonical empty
   document; the file is created on first write.
+* The canonical empty document uses a sentinel ``updated_at`` of
+  ``1970-01-01T00:00:00Z`` — this value must **not** depend on the
+  current system clock.  It is a deterministic marker meaning "no real
+  write has occurred yet."
 
 ---
 
@@ -959,6 +963,10 @@ TC-13.10b and TC-13.10c are both **Target**.  TC-13.10 overall remains
 * ADR Interface Status row #15 remains **Target** — TC-13.10.
 * The Notes column references ``agentdesk.worker-slot-lease/v1``; frozen
   contract in §2.5 (TC-13.10a).
+* **TC-13.10b** — data model (``WorkerSlotLease``), validation, runtime
+  store, read-only load, file lock, atomic write — is committed
+  (``worker_slot_lease.py`` + ``test_worker_slot_lease.py``).
+* TC-13.10c (acquire / release / renew / hold fence) remains **Target**.
 * TC-13.9c remains **Target** — not blocked by this contract.
 * TC-13.11 and all subsequent interfaces remain **Target**.
 
