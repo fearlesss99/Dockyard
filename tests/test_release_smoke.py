@@ -639,13 +639,473 @@ class ReleaseSmokeTests(unittest.TestCase):
             "covers verdict=fail/blocked scenarios",
         )
 
-    # -- Item 7: ADR does not reference non-existent TC-12.3.1 dependency ---
+    # -- Item 8: TC-13.4 core type contract -------------------------------
 
-    def test_adr_does_not_reference_nonexistent_tc12_3_1_dependency(self) -> None:
+    TC13_4_VALUES = frozenset(
+        {
+            "TaskDifficulty",
+            "MadDeliberationDepth",
+            "WorkerKind",
+        }
+    )
+
+    TASK_DIFFICULTY_VALUES = frozenset(
+        {"basic", "standard", "advanced", "expert"}
+    )
+
+    MAD_DELIBERATION_DEPTH_VALUES = frozenset(
+        {"fast", "balanced", "deep"}
+    )
+
+    WORKER_KIND_VALUES = frozenset(
+        {"basic_agent", "standard_agent", "advanced_agent", "expert_agent"}
+    )
+
+    NEW_TC13_IDS = frozenset({"TC-13.4", "TC-13.5", "TC-13.7", "TC-13.8"})
+
+    def _parse_future_task_cards_table(self, text: str) -> list[dict[str, str]]:
+        """Parse the ADR §5 Future Task Cards markdown table.
+
+        Returns a list of dicts keyed by normalised header column names
+        (Task Card, Description, Depends on).  Only rows with a TC-*
+        task id are returned.
+        """
+        rows: list[dict[str, str]] = []
+        header: list[str] = []
+        in_table = False
+        for raw in text.splitlines():
+            stripped = raw.strip()
+            if not in_table:
+                if (
+                    stripped.startswith("|")
+                    and "Task Card" in stripped
+                    and "Depends on" in stripped
+                ):
+                    in_table = True
+                    header = [c.strip() for c in stripped.strip("|").split("|")]
+                continue
+            if stripped == "" or stripped.startswith("#"):
+                break
+            if re.match(r"^\|[\s\-:|]+\|", stripped):
+                continue
+            if not stripped.startswith("|"):
+                continue
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            if len(cells) < 2:
+                continue
+            # Only rows whose first cell looks like a task id.
+            if not re.match(r"\bTC-\d+(?:\.\d+)?\b", cells[0]):
+                continue
+            row = {
+                header[i]: cells[i]
+                for i in range(min(len(header), len(cells)))
+            }
+            rows.append(row)
+        return rows
+
+    def _parse_interface_status_table(self, text: str) -> list[dict[str, str]]:
+        """Parse the ADR §1 Interface Status markdown table.
+
+        Returns a list of dicts keyed by normalised header names. Rows
+        whose first cell is a numeric interface number are data rows.
+        """
+        rows: list[dict[str, str]] = []
+        header: list[str] = []
+        in_table = False
+        for raw in text.splitlines():
+            stripped = raw.strip()
+            if not in_table:
+                if (
+                    stripped.startswith("|")
+                    and "Status" in stripped
+                    and "Implemented by" in stripped
+                ):
+                    in_table = True
+                    header = [c.strip() for c in stripped.strip("|").split("|")]
+                continue
+            if stripped == "" or stripped.startswith("#"):
+                break
+            if re.match(r"^\|[\s\-:|]+\|", stripped):
+                continue
+            if not stripped.startswith("|"):
+                continue
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            if len(cells) < 2:
+                continue
+            # Only rows whose first cell is a number.
+            if not re.match(r"^\d+$", cells[0]):
+                continue
+            row = {
+                header[i]: cells[i]
+                for i in range(min(len(header), len(cells)))
+            }
+            rows.append(row)
+        return rows
+
+    def _resolve_col(self, row: dict[str, str], *names: str) -> str:
+        for name in names:
+            val = row.get(name, "")
+            if val.strip():
+                return val.strip()
+        return ""
+
+    # -- 8a: Future Task Cards table includes the four new cards ----------
+
+    def test_future_task_cards_include_tc134_135_137_138(self) -> None:
         adr_text = self._adr_path().read_text(encoding="utf-8")
-        # No task card should depend on TC-12.3.1.
-        self.assertNotIn("TC-12.3.1", adr_text,
-                         "ADR: must not reference non-existent TC-12.3.1")
+        rows = self._parse_future_task_cards_table(adr_text)
+        self.assertGreater(
+            len(rows),
+            5,
+            "ADR §5 must contain a parseable Future Task Cards table",
+        )
+
+        task_ids_seen = {
+            self._resolve_col(row, "Task Card", "Task", "#")
+            for row in rows
+        }
+        missing = self.NEW_TC13_IDS - task_ids_seen
+        self.assertSetEqual(
+            missing,
+            set(),
+            f"ADR §5 Future Task Cards is missing: {', '.join(sorted(missing))}",
+        )
+
+    def test_tc134_135_137_138_descriptions_are_accurate(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        by_id = {
+            self._resolve_col(row, "Task Card", "Task", "#"): row
+            for row in rows
+        }
+
+        tc134 = by_id.get("TC-13.4")
+        self.assertIsNotNone(tc134, "TC-13.4 must exist in Future Task Cards")
+        desc_134 = self._resolve_col(tc134, "Description", "Desc")
+        self.assertIn("TaskDifficulty", desc_134)
+        self.assertIn("MadDeliberationDepth", desc_134)
+        self.assertIn("WorkerKind", desc_134)
+
+        tc135 = by_id.get("TC-13.5")
+        self.assertIsNotNone(tc135, "TC-13.5 must exist in Future Task Cards")
+        desc_135 = self._resolve_col(tc135, "Description", "Desc")
+        self.assertIn("ContextBudgetPolicy", desc_135)
+
+        tc137 = by_id.get("TC-13.7")
+        self.assertIsNotNone(tc137, "TC-13.7 must exist in Future Task Cards")
+        desc_137 = self._resolve_col(tc137, "Description", "Desc")
+        self.assertIn("DispatcherAgentGateway", desc_137)
+
+        tc138 = by_id.get("TC-13.8")
+        self.assertIsNotNone(tc138, "TC-13.8 must exist in Future Task Cards")
+        desc_138 = self._resolve_col(tc138, "Description", "Desc")
+        self.assertIn("Claude", desc_138)
+        self.assertIn("CLI", desc_138)
+
+    def test_future_task_cards_dependencies_are_accurate(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        by_id = {
+            self._resolve_col(row, "Task Card", "Task", "#"): row
+            for row in rows
+        }
+
+        # TC-13.4 depends on TC-13.3
+        tc134_dep = self._resolve_col(by_id.get("TC-13.4", {}), "Depends on", "Dep")
+        self.assertIn("TC-13.3", tc134_dep,
+                      "TC-13.4 must depend on TC-13.3")
+
+        # TC-13.5 depends on TC-13.4
+        tc135_dep = self._resolve_col(by_id.get("TC-13.5", {}), "Depends on", "Dep")
+        self.assertIn("TC-13.4", tc135_dep,
+                      "TC-13.5 must depend on TC-13.4")
+
+        # TC-13.6 depends on TC-13.2 and TC-13.4
+        tc136_dep = self._resolve_col(by_id.get("TC-13.6", {}), "Depends on", "Dep")
+        self.assertIn("TC-13.2", tc136_dep,
+                      "TC-13.6 must depend on TC-13.2")
+        self.assertIn("TC-13.4", tc136_dep,
+                      "TC-13.6 must depend on TC-13.4")
+
+        # TC-13.7 depends on TC-13.4 and TC-13.6
+        tc137_dep = self._resolve_col(by_id.get("TC-13.7", {}), "Depends on", "Dep")
+        self.assertIn("TC-13.4", tc137_dep,
+                      "TC-13.7 must depend on TC-13.4")
+        self.assertIn("TC-13.6", tc137_dep,
+                      "TC-13.7 must depend on TC-13.6")
+
+        # TC-13.8 depends on TC-13.4
+        tc138_dep = self._resolve_col(by_id.get("TC-13.8", {}), "Depends on", "Dep")
+        self.assertIn("TC-13.4", tc138_dep,
+                      "TC-13.8 must depend on TC-13.4")
+
+        # TC-13.9 depends on TC-13.5, TC-13.7, TC-13.8
+        tc139_dep = self._resolve_col(by_id.get("TC-13.9", {}), "Depends on", "Dep")
+        self.assertIn("TC-13.5", tc139_dep,
+                      "TC-13.9 must depend on TC-13.5")
+        self.assertIn("TC-13.7", tc139_dep,
+                      "TC-13.9 must depend on TC-13.7")
+        self.assertIn("TC-13.8", tc139_dep,
+                      "TC-13.9 must depend on TC-13.8")
+
+    # -- 8b: TC-13.4 section contains all three enums with exact values ----
+
+    def test_tc134_section_defines_three_enums(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        # Extract the TC-13.4 section — either a dedicated sub-section or
+        # the §2.8 heading.
+        section = _extract_markdown_section(adr_text, "### 2.8")
+        self.assertIsNotNone(section, "ADR must contain a §2.8 for TC-13.4")
+        self.assertIn("TC-13.4", section,
+                      "ADR §2.8 must reference TC-13.4")
+
+        for enum_name in sorted(self.TC13_4_VALUES):
+            self.assertIn(
+                enum_name,
+                section,
+                f"ADR §2.8 must define {enum_name}",
+            )
+
+    def test_task_difficulty_exact_values(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.8.1")
+        self.assertIsNotNone(section, "ADR must contain §2.8.1 TaskDifficulty")
+        for value in sorted(self.TASK_DIFFICULTY_VALUES):
+            # Look for the value as a code-quoted key or table cell.
+            self.assertIn(
+                f"`{value}`",
+                section,
+                f"ADR §2.8.1 must contain `{value}`",
+            )
+
+    def test_mad_deliberation_depth_exact_values(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.8.2")
+        self.assertIsNotNone(section, "ADR must contain §2.8.2 MadDeliberationDepth")
+        for value in sorted(self.MAD_DELIBERATION_DEPTH_VALUES):
+            self.assertIn(
+                f"`{value}`",
+                section,
+                f"ADR §2.8.2 must contain `{value}`",
+            )
+
+    def test_worker_kind_exact_values(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.8.3")
+        self.assertIsNotNone(section, "ADR must contain §2.8.3 WorkerKind")
+        for value in sorted(self.WORKER_KIND_VALUES):
+            self.assertIn(
+                f"`{value}`",
+                section,
+                f"ADR §2.8.3 must contain `{value}`",
+            )
+
+    # -- 8c: Conceptual separation from model tier / deliberation tier ----
+
+    def test_task_difficulty_is_distinct_from_model_tier(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.8.1")
+        self.assertIsNotNone(section)
+
+        # Must explicitly state it is NOT a model tier.
+        self.assertIn(
+            "not",
+            section.lower(),
+            "ADR §2.8.1 must explicitly state TaskDifficulty is not a model tier",
+        )
+        # Must warn against interchanging the two even when strings coincide.
+        self.assertIn(
+            "interchangeable",
+            section.lower(),
+            "ADR §2.8.1 must warn against interchanging with model tier",
+        )
+        # Must name model-bindings/v2 or "model tier".
+        has_model_ref = (
+            "model-bindings/v2" in section
+            or "model tier" in section.lower()
+        )
+        self.assertTrue(
+            has_model_ref,
+            "ADR §2.8.1 must reference model tier or model-bindings/v2",
+        )
+
+    def test_mad_deliberation_depth_is_distinct_from_deliberation_tier(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.8.2")
+        self.assertIsNotNone(section)
+
+        # Must name the AgentDesk deliberation_tier enum for contrast.
+        self.assertIn(
+            "efficient",
+            section,
+            "ADR §2.8.2 must reference 'efficient' to contrast with 'fast'",
+        )
+        # Must state the two sets are separate / distinct.
+        self.assertTrue(
+            "separate" in section.lower() or "distinct" in section.lower()
+            or "different" in section.lower()
+            or "not an agentdesk" in section.lower(),
+            "ADR §2.8.2 must state MadDeliberationDepth is distinct from "
+            "AgentDesk deliberation_tier",
+        )
+
+    # -- 8d: TC-13.4 explicitly excludes budget calc and WorkerAdapter ----
+
+    def test_tc134_excludes_context_budget_policy(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.8.4")
+        self.assertIsNotNone(section, "ADR must contain §2.8.4 Non-Goals")
+
+        # Must reference TC-13.5 as the owner of budget calculation.
+        self.assertIn(
+            "TC-13.5",
+            section,
+            "ADR §2.8.4 must reference TC-13.5 for budget calculation",
+        )
+
+    def test_tc134_excludes_worker_adapter_implementation(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.8.4")
+        self.assertIsNotNone(section)
+
+        # Must explicitly exclude Worker scheduling / slot / lease.
+        self.assertIn(
+            "TC-13.9",
+            section,
+            "ADR §2.8.4 must reference TC-13.9 as out-of-scope",
+        )
+
+    # -- 8e: New interfaces are Target, not Current ------------------------
+
+    def test_new_tc13_interfaces_are_target_not_current(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        self.assertGreater(
+            len(rows),
+            0,
+            "ADR must contain a parseable Interface Status table",
+        )
+
+        for row in rows:
+            impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)?)\b", impl_cell)
+            # Collect any new TC-13.x task IDs found in this row.
+            new_ids = [tid for tid in task_ids if tid in self.NEW_TC13_IDS]
+            if not new_ids:
+                continue
+
+            status_cell = self._resolve_col(row, "Status")
+            self.assertIn(
+                "Target",
+                status_cell,
+                f"ADR Interface Status: {', '.join(new_ids)} "
+                f"must be Target, got status={status_cell!r}",
+            )
+            self.assertNotIn(
+                "Current",
+                status_cell,
+                f"ADR Interface Status: {', '.join(new_ids)} "
+                "must NOT be marked Current",
+            )
+
+    # -- 8f: Interface Status rows for the new cards -----------------------
+
+    def test_interface_status_contains_new_card_rows(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        impl_cells = [
+            self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            for row in rows
+        ]
+        impl_text = " ".join(impl_cells)
+
+        for tid in sorted(self.NEW_TC13_IDS):
+            self.assertIn(
+                tid,
+                impl_text,
+                f"ADR Interface Status must contain {tid}",
+            )
+
+    # -- 8g: WorkerKind is a logical label, not a runtime binding ----------
+
+    def _extract_table_cells(self, section: str, col_idx: int = 0) -> set[str]:
+        """Extract stripped cell values from a given column of the first
+        markdown table in *section*.
+
+        Returns the set of unique, stripped cell values (backtick-free
+        but preserving underscores).
+        """
+        values: set[str] = set()
+        in_table = False
+        for raw in section.splitlines():
+            stripped = raw.strip()
+            if not in_table:
+                if stripped.startswith("|") and not re.match(
+                    r"^\|[\s\-:|]+\|", stripped
+                ):
+                    in_table = True
+            if not in_table:
+                continue
+            if re.match(r"^\|[\s\-:|]+\|", stripped):
+                continue
+            if stripped == "" or not stripped.startswith("|"):
+                break
+            parts = [c.strip() for c in stripped.strip("|").split("|")]
+            if col_idx < len(parts):
+                # Only strip backticks and whitespace; keep underscores.
+                cell = parts[col_idx].strip().replace("`", "")
+                if cell and cell != "—" and cell.lower() not in ("value", "semantic"):
+                    values.add(cell)
+        return values
+
+    def test_worker_kind_does_not_contain_runtime_fields(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.8.3")
+        self.assertIsNotNone(section)
+
+        # Only inspect the *value* column of the WorkerKind table,
+        # not the prose that explains what WorkerKind excludes.
+        value_cells = self._extract_table_cells(section, col_idx=0)
+        self.assertSetEqual(
+            value_cells,
+            self.WORKER_KIND_VALUES,
+            f"ADR §2.8.3 WorkerKind table must contain exactly "
+            f"{sorted(self.WORKER_KIND_VALUES)}",
+        )
+
+        # Verify that the prose explicitly states WorkerKind is a
+        # logical label, not a binding.
+        self.assertIn(
+            "logical",
+            section.lower(),
+            "ADR §2.8.3 must state WorkerKind is a logical label",
+        )
+
+    # -- 8h: ContextBudgetPolicy percentages and reserved rule --------------
+
+    def test_context_budget_policy_percentages_in_tc135_description(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        by_id = {
+            self._resolve_col(row, "Task Card", "Task", "#"): row
+            for row in rows
+        }
+        tc135 = by_id.get("TC-13.5")
+        self.assertIsNotNone(tc135)
+
+        desc = self._resolve_col(tc135, "Description", "Desc")
+        for pct in ("15%", "30%", "50%", "65%"):
+            self.assertIn(
+                pct,
+                desc,
+                f"TC-13.5 description must mention {pct}",
+            )
+        self.assertIn(
+            "35%",
+            desc,
+            "TC-13.5 description must mention ≥35% reserved",
+        )
 
     # -- Preserved original tests ------------------------------------------
 

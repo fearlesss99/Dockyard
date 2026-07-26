@@ -37,6 +37,10 @@ marked **Current** exist and are callable today; interfaces marked
 | 24 | AgentDesk HTML Dashboard | **Target** | TC-13.20 | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target → Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
 | 26 | `agentdesk.mad-refs/v1` runtime schema | **Target** | TC-13.6 | Gitignored runtime record of MAD invocations |
+| 27 | AgentDesk shared core data types | **Target** | TC-13.4 | `TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind` enums; no budget calculation or WorkerAdapter implementation |
+| 28 | AgentDesk ContextBudgetPolicy | **Target** | TC-13.5 | Per-tier budget percentages; 15% / 30% / 50% / 65%; retains ≥35% reserved; depends on TC-13.4 |
+| 29 | AgentDesk DispatcherAgentGateway | **Target** | TC-13.7 | Config-driven subprocess dispatch via agent CLI; depends on TC-13.4, TC-13.6 |
+| 30 | Claude Code CLI contract | **Target** | TC-13.8 | Public CLI interface contract for `claude` invocation; depends on TC-13.4 |
 
 ---
 
@@ -455,12 +459,114 @@ a Worker slot does not reset the provider rate-limit window.
   should be sent (replayable intent).  They use separate ID namespaces and
   must not be conflated.
 
-### 2.7 Skill and Dashboard Data Sharing
+### 2.8 Shared Core Data Types (Target — TC-13.4)
 
-The Skill (PM/Worker runbooks) and the HTML Dashboard both consume data
-through a **read-only StateProvider** (TC-13.17).  Neither writes to canonical
-state directly — all writes go through `ControlPlaneTransitionService`
-(TC-13.11).
+TC-13.4 freezes three shared enumerations used across the MAD–AgentDesk
+integration.  These types carry **no** provider identity, model ID,
+thread ID, worktree path, budget calculation, lease, slot, escalation,
+retry logic, or subprocess mechanics.  They are pure semantic tags.
+
+**All three enums use lowercase strings as their stable serialisation
+values.  Unknown values MUST be treated as fail-closed — consumers must
+not silently fall back to a default or guess a meaning.**
+
+---
+
+#### 2.8.1 `TaskDifficulty`
+
+`TaskDifficulty` describes the **difficulty** of a task — its inherent
+complexity, risk, and reasoning depth — independently of any model tier
+or binding.  It is **not** a model tier, even when the string values
+happen to coincide with AgentDesk model-tier labels.
+
+| Value | Semantic |
+|-------|----------|
+| `basic` | Low-risk, well-bounded, mechanical or informational tasks with minimal context |
+| `standard` | Routine single-module implementation, testing, documentation, known-pattern fixes |
+| `advanced` | Cross-module implementation, complex debugging, ambiguous constraints, security/compat-sensitive work |
+| `expert` | Architecture, critical migrations, high-risk review, complex decision support with costly failure |
+
+Rules:
+
+- `TaskDifficulty` strings are **not** interchangeable with
+  `agentdesk.model-bindings/v2` tier labels (`basic` / `standard` /
+  `advanced` / `expert`), even though the four string values are
+  identical today.  Model tier describes execution-resource capability;
+  difficulty describes task-intrinsic complexity.  A future
+  specification may diverge the two sets; consumers must not couple
+  them structurally.
+- `TaskDifficulty` does **not** dictate which model to select, which
+  percentage budget to apply, or which Worker slot to allocate.
+- Adding a new difficulty value requires a new revision of this type
+  contract.
+
+---
+
+#### 2.8.2 `MadDeliberationDepth`
+
+`MadDeliberationDepth` is the **public deliberation depth** recognised
+by MAD.  It is **not** an AgentDesk model deliberation tier
+(`efficient` / `balanced` / `deep`), even though `balanced` and `deep`
+appear in both sets.
+
+| Value | Semantic |
+|-------|----------|
+| `fast` | Fast, cost-minimising deliberation for clearly-scoped questions |
+| `balanced` | Standard engineering-tradeoff deliberation |
+| `deep` | Multi-constraint, long-chain reasoning, or high-stakes deliberation |
+
+Rules:
+
+- `MadDeliberationDepth` values belong to the `mad.*` semantic space.
+  The AgentDesk `deliberation_tier` enum (`efficient` / `balanced` /
+  `deep`) maps to provider-specific reasoning controls and belongs to
+  the `agentdesk.*` semantic space.  `fast` ≠ `efficient`; the two
+  enums are separate by design.
+- Gateway and WorkerAdapter code must map between the two enums
+  explicitly rather than casting strings across namespaces.
+
+---
+
+#### 2.8.3 `WorkerKind`
+
+`WorkerKind` describes the **logical Worker type** for dispatch.  It
+carries no provider, model revision, thread ID, worktree path, or lease.
+
+| Value | Semantic |
+|-------|----------|
+| `basic_agent` | Basic-tier Worker for low-complexity, mechanical tasks |
+| `standard_agent` | Standard-tier Worker for routine engineering tasks |
+| `advanced_agent` | Advanced-tier Worker for cross-module, constrained, or sensitive tasks |
+| `expert_agent` | Expert-tier Worker for architecture, critical migrations, or high-risk decisions |
+
+Rules:
+
+- `WorkerKind` is a **logical slot label**, not a concrete runtime
+  binding.  Mapping a `WorkerKind` to a specific provider, model
+  revision, or worktree is the responsibility of the WorkerAdapter
+  (TC-13.9) and WorkerSlotLease (TC-13.10).
+- `WorkerKind` does **not** encode concurrency limits (2 global / 1 per
+  worktree), budget percentages, or escalation behaviour — those
+  belong to ContextBudgetPolicy (TC-13.5) and WorkerAdapter (TC-13.9).
+- A `WorkerKind` value must not be used as a model tier, and a model
+  tier must not be used as a `WorkerKind`.
+
+---
+
+#### 2.8.4 Non-Goals of TC-13.4
+
+TC-13.4 explicitly does **not** include:
+
+- Budget calculation, context-window arithmetic, or token budgeting
+  (→ TC-13.5)
+- Model selection, provider binding, or `select_model.py` logic
+- Any subprocess invocation, CLI call, or filesystem write
+- Worker scheduling, slot allocation, lease acquisition, or
+  concurrency fencing (→ TC-13.9, TC-13.10)
+- Retry, escalation, or rate-limit logic (→ TC-13.13, TC-13.14)
+- Task-card, outbox, or event schema changes
+- A runtime data file; these enums are compile-time / specification
+  constants only
 
 ---
 
@@ -506,8 +612,12 @@ use opaque foreign keys, not embedded schema objects.
 | Task Card | Description | Depends on |
 |-----------|-------------|------------|
 | TC-13.2 | MAD `agents --format json` + `mad.run-result/v1` schema | This ADR |
-| TC-13.6 | AgentDesk MAD Decision Gateway + `agentdesk.mad-refs/v1` | This ADR |
-| TC-13.9 | WorkerAdapter + four-tier Worker slots | TC-13.6 |
+| TC-13.4 | AgentDesk shared core data types (`TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind`) | TC-13.3 |
+| TC-13.5 | AgentDesk ContextBudgetPolicy (per-tier percentages: 15% / 30% / 50% / 65%; ≥35% reserved) | TC-13.4 |
+| TC-13.6 | AgentDesk MAD Decision Gateway + `agentdesk.mad-refs/v1` | TC-13.2, TC-13.4 |
+| TC-13.7 | AgentDesk DispatcherAgentGateway (config-driven subprocess dispatch) | TC-13.4, TC-13.6 |
+| TC-13.8 | Claude Code CLI contract (public CLI interface for `claude` invocation) | TC-13.4 |
+| TC-13.9 | WorkerAdapter + four-tier Worker slots | TC-13.5, TC-13.7, TC-13.8 |
 | TC-13.10 | WorkerSlotLease implementation | TC-13.9 |
 | TC-13.11 | ControlPlaneTransitionService | TC-13.2 |
 | TC-13.12 | ApprovalGate (TASK_APPROVAL structured scope) | TC-13.11 |
