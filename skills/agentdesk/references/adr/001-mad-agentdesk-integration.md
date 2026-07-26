@@ -395,7 +395,7 @@ Strict JSON root:
       "depth": "deep",
       "stdout_sha256": "<sha256-hex>",
       "report_sha256": "<sha256-hex>",
-      "status": "completed | completed_with_warnings",
+      "status": "<MAD status string>",
       "archive_path": "<absolute-path>",
       "created_at": "<RFC3339 UTC>"
     }

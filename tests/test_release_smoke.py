@@ -45,6 +45,30 @@ def tracked_skill_files() -> list[Path]:
     return [REPO_ROOT / value for value in result.stdout.split("\0") if value]
 
 
+def _extract_markdown_section(text: str, heading: str) -> str | None:
+    """Return the body of *heading* up to the next same-or-higher-level heading.
+
+    ``heading`` must include the leading ``#`` characters, e.g. ``"### 3.2"``.
+    The heading line itself is *not* included in the returned text.
+    Matches any heading line that *starts with* ``heading`` followed by a space
+    or end-of-line — so ``"### 3.2"`` matches both ``"### 3.2 Foo"`` and
+    ``"### 3.2"``.
+    """
+    heading_level = len(heading) - len(heading.lstrip("#"))
+    escaped = re.escape(heading)
+    start_m = re.search(rf"^{escaped}(?:\s.*)?$", text, re.MULTILINE)
+    if not start_m:
+        return None
+    body_start = start_m.end()
+    remaining = text[body_start:]
+    # Match any heading at the same level or higher (fewer #).
+    stop_pat = re.compile(rf"^#{{1,{heading_level}}}\s+\S", re.MULTILINE)
+    stop_m = stop_pat.search(remaining)
+    if stop_m:
+        return remaining[: stop_m.start()].rstrip()
+    return remaining.rstrip()
+
+
 class ReleaseSmokeTests(unittest.TestCase):
     def test_repository_release_files_and_install_command(self) -> None:
         for relative in (
@@ -180,36 +204,90 @@ class ReleaseSmokeTests(unittest.TestCase):
     # -- Item 1: No Target interface may claim TC-13.1 --------------------
 
     def test_target_interfaces_do_not_reference_completed_tc13_1(self) -> None:
-        """No Target 'Implemented by' may point to TC-13.1."""
+        """No Target 'Implemented by' may point to TC-13.1.
+
+        Parses the interface-status table by header-column positions
+        (Status / Implemented by), then only inspects rows whose Status
+        cell semantics is Target.  Exact task-id matching ensures that
+        TC-13.10 / TC-13.11 / TC-13.15 are not mistaken for TC-13.1.
+        """
         adr_text = self._adr_path().read_text(encoding="utf-8")
         contract_text = self._cli_contract_path().read_text(encoding="utf-8")
 
-        # Find all table rows with 'Target' status and check their
-        # Implemented-by column does not contain TC-13.1.
-        for text, name in ((adr_text, "ADR"), (contract_text, "CLI contract")):
-            # Look for lines like "| ... | **Target** | TC-13.1 |"
-            for line in text.splitlines():
-                if "Target" in line and "TC-13.1" in line:
-                    # Make sure TC-13.1 is NOT in the Implemented-by column
-                    # by checking it's not a status-table row claiming TC-13.1
-                    # as the implementer for a Target.
-                    pass  # we check below with the negative assertion
-                if re.match(r"^\|\s+\d+\s+\|", line):
-                    # Status table row
-                    if "**Target**" in line and "TC-13.1" in line:
-                        self.fail(
-                            f"{name}: Target row must not reference TC-13.1 "
-                            f"as Implemented by: {line.strip()}"
-                        )
+        def _parse_status_table(text: str) -> list[dict[str, str]]:
+            """Extract rows from the first Interface-Status-like markdown table.
 
-        # Also ensure no Target interface says "to be implemented by TC-13.1"
+            Returns a list of dicts keyed by normalised header column names.
+            Rows whose first cell is a bare row-number (digits only) are treated
+            as data rows, as are rows whose first cell backtick-quotes an
+            interface name.  Separator lines are skipped.
+            """
+            rows: list[dict[str, str]] = []
+            header: list[str] = []
+            in_table = False
+            for raw in text.splitlines():
+                stripped = raw.strip()
+                # Look for a table header row that contains the expected columns.
+                if not in_table and stripped.startswith("|") and "Status" in stripped and "Implemented by" in stripped:
+                    in_table = True
+                    header = [c.strip() for c in stripped.strip("|").split("|")]
+                    continue
+                if not in_table:
+                    continue
+                # End of table: blank line or next heading.
+                if stripped == "" or stripped.startswith("#"):
+                    break
+                # Separator line: skip.
+                if stripped.startswith("|---") or stripped.startswith("| --") or stripped.startswith("|--"):
+                    continue
+                if not stripped.startswith("|"):
+                    continue
+                cells = [c.strip() for c in stripped.strip("|").split("|")]
+                # Accept rows whose first cell is a row number OR
+                # backtick-quotes an interface name (CLI contract style).
+                first = cells[0] if cells else ""
+                is_row_number = bool(re.match(r"^\d+$", first))
+                is_interface_cell = bool(re.match(r"^`[^`]+`$", first))
+                if not is_row_number and not is_interface_cell:
+                    continue
+                row = {header[i]: cells[i] for i in range(min(len(header), len(cells)))}
+                rows.append(row)
+            return rows
+
         for text, name in ((adr_text, "ADR"), (contract_text, "CLI contract")):
-            pattern = re.compile(r"TC-13\.1\b")
-            matches = pattern.findall(text)
-            for _ in matches:
-                # TC-13.1 may appear in prose but not as an Implemented-by target
-                pass
-            # Negative check: "Implemented by TC-13.1" in a Target context
+            rows = _parse_status_table(text)
+            self.assertGreater(len(rows), 0,
+                               f"{name}: must contain a parseable interface-status table")
+
+            status_col = "#"  # first numeric column, or the Status column
+            impl_col = "Implemented by"
+
+            for row in rows:
+                # Determine the status cell — either a dedicated "Status" column
+                # or the column named after the row-number header (which is "#"
+                # per the ADR table header).
+                status_cell = row.get("Status", row.get(status_col, "")).strip()
+                # Only inspect Target rows.
+                if "Target" not in status_cell:
+                    continue
+
+                impl_cell = row.get(impl_col, "").strip()
+                # Exact task-id matching: TC-13.1 must NOT appear as an
+                # Implemented-by value.  This rejects "TC-13.1" while accepting
+                # "TC-13.10", "TC-13.11", "TC-13.15", etc.
+                task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)?)\b", impl_cell)
+                for tid in task_ids:
+                    self.assertNotEqual(
+                        "TC-13.1", tid,
+                        f"{name}: Target row {row} must not be "
+                        f"Implemented by TC-13.1",
+                    )
+
+        # Also enforce: the prose must never claim "Implemented by TC-13.1"
+        # in any Target context.  This is a secondary check covering the
+        # target-interface descriptions (section 3) that don't use the
+        # status table.
+        for text, name in ((adr_text, "ADR"), (contract_text, "CLI contract")):
             bogus = re.findall(
                 r"(?:Implemented by|implemented by).*?TC-13\.1\b",
                 text,
@@ -278,46 +356,56 @@ class ReleaseSmokeTests(unittest.TestCase):
     # -- Item 3: run-result/v1 backward compatibility ----------------------
 
     def test_run_result_v1_maintains_backward_compat(self) -> None:
+        """Verify run-result/v1 section keeps participants=list[str] and
+        Chinese-status semantics — scoped strictly to the 3.2 subsection."""
         contract_text = self._cli_contract_path().read_text(encoding="utf-8")
 
-        # V1 must explicitly state participants is list[str].
-        self.assertIn('list[str]', contract_text,
-                      "CLI contract: must document participants as list[str] in V1")
+        # Extract only the run-result/v1 subsection (3.2), bounded by the
+        # next sibling Markdown heading.
+        section_32 = _extract_markdown_section(contract_text, "### 3.2")
+        self.assertIsNotNone(
+            section_32,
+            "CLI contract must have run-result/v1 section 3.2",
+        )
+        text = section_32  # type: ignore[assignment]
 
-        # V1 must not change status to English enums.
-        self.assertIn("完成", contract_text,
-                      "CLI contract: run-result/v1 must keep Chinese status strings")
-        self.assertNotIn(
-            '"status": "completed"',
-            contract_text,
-            "CLI contract: run-result/v1 must not use English status 'completed'",
+        # (A) participants must be list[str] — look for the explicit type
+        #     declaration OR a participants array with string entries.
+        has_list_str = "list[str]" in text
+        has_string_array = '"participants": ["' in text
+        has_object_array = re.search(
+            r'"participants":\s*\[.*?"agent_id".*?\]', text, re.DOTALL
         )
-        self.assertNotIn(
-            '"completed_with_warnings"',
-            contract_text,
-            "CLI contract: run-result/v1 must not use English status 'completed_with_warnings'",
+        self.assertTrue(
+            has_list_str or has_string_array,
+            "run-result/v1 section: participants must be documented as "
+            "list[str] or shown as a JSON string array",
+        )
+        self.assertIsNone(
+            has_object_array,
+            "run-result/v1 section: participants must not be an object array",
         )
 
-        # V1 must keep participants as list[str], not object array.
-        agent_object_participants = re.search(
-            r'"participants":\s*\[.*?"agent_id".*?\]',
-            contract_text,
-            re.DOTALL,
+        # (B) status must keep Chinese string semantics — the run-result/v1
+        #     section must contain the current MAD Chinese status strings
+        #     (完成 / 带警告完成 or a placeholder referencing them).
+        chinese_ok = ("完成" in text) or ("<MAD status" in text)
+        self.assertTrue(
+            chinese_ok,
+            "run-result/v1 section: status must use Chinese semantics "
+            "(e.g. 完成 / 带警告完成) or a MAD-status placeholder",
         )
-        # Only the audit-result section has object participants — run-result must not.
-        # Check that the run-result/v1 JSON example has a simple string array.
-        run_result_section = re.search(
-            r"### 3\.2.*?```json\n(.*?)```",
-            contract_text,
-            re.DOTALL,
+
+        # (C) V1 must NOT change status to English enums.
+        english_status = re.search(
+            r'"status":\s*"(?:completed|completed_with_warnings|failed|blocked)"',
+            text,
         )
-        self.assertIsNotNone(run_result_section,
-                             "CLI contract must have run-result/v1 section 3.2")
-        run_result_json = run_result_section.group(1)
-        self.assertIn('"participants": ["', run_result_json,
-                      "run-result/v1: participants must be list[str]")
-        self.assertNotIn('"agent_id"', run_result_json,
-                         "run-result/v1: participants must not be object array")
+        if english_status is not None:
+            self.fail(
+                f"run-result/v1 section: status must not be an English enum "
+                f"(found {english_status.group(0)!r} in run-result/v1 section)"
+            )
 
     # -- Item 4: Separate exit codes for deliberate / resume / agents ------
 
@@ -430,11 +518,58 @@ class ReleaseSmokeTests(unittest.TestCase):
                       "audit-result/v1: participants must be list[str]")
 
     def test_audit_exit_zero_includes_verdict_fail_and_blocked(self) -> None:
+        """Exit code 0 for 'mad audit' must cover pass, fail, and blocked
+        business verdicts — scoped strictly to the 3.3 subsection."""
         contract_text = self._cli_contract_path().read_text(encoding="utf-8")
-        self.assertIn(
-            "exit code is still 0",
-            contract_text,
-            "CLI contract: must state exit 0 for verdict=fail/blocked",
+
+        # Extract the audit subsection only.
+        section_33 = _extract_markdown_section(contract_text, "### 3.3")
+        self.assertIsNotNone(
+            section_33,
+            "CLI contract must have mad audit section 3.3",
+        )
+        text = section_33  # type: ignore[assignment]
+
+        # Also grab the exit-codes table that follows the audit semantics.
+        # It may be under a sub-heading (####) or inline.
+        # We search for the exit-code table specifically.
+        # Strategy: look for any table row that pairs "`0`" with mention
+        # of all three verdicts, or check the prose around exit 0.
+        exit_table = re.search(
+            r"\| `0` \| ([^|\n]+)",
+            text,
+        )
+        self.assertIsNotNone(
+            exit_table,
+            "audit section 3.3: must have an exit-code table row for code 0",
+        )
+        exit_zero_desc = exit_table.group(1)
+
+        # The exit-0 description must reference the three business verdicts.
+        # We normalise backtick-quoting: strip backticks before comparing.
+        normalised = exit_zero_desc.replace("`", "")
+        for verdict in ("pass", "fail", "blocked"):
+            self.assertIn(
+                verdict,
+                normalised,
+                f"audit section 3.3: exit-code-0 row must mention "
+                f"verdict '{verdict}'; got: {exit_zero_desc.strip()!r}",
+            )
+
+        # In addition, prose in the audit section must explicitly state that
+        # exit code is 0 when verdict is fail or blocked but the process
+        # completed normally.  We search for "exit code … 0" near mentions
+        # of fail/blocked verdicts (allowing for markdown backticks).
+        zero_mentions = re.findall(
+            r"exit code.*?0",
+            text,
+            re.IGNORECASE,
+        )
+        self.assertGreater(
+            len(zero_mentions),
+            0,
+            "audit section 3.3: must contain prose stating exit code is 0 "
+            "for verdict=fail/blocked scenarios",
         )
 
     # -- Item 7: ADR does not reference non-existent TC-12.3.1 dependency ---

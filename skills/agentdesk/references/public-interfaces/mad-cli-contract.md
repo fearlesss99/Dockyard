@@ -348,7 +348,7 @@ Uses a strict JSON root object:
       "depth": "deep",
       "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "report_sha256": "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a",
-      "status": "completed_with_warnings",
+      "status": "<MAD status string>",
       "archive_path": "/absolute/path/to/MAD_HOME/deliberations/20260726T120000Z-a1b2c3d4",
       "created_at": "2026-07-26T12:05:00Z"
     }
@@ -367,7 +367,7 @@ Field rules:
 | `depth` | string | `"fast"`, `"balanced"`, or `"deep"` |
 | `stdout_sha256` | string | SHA-256 of raw stdout bytes (before JSON parse) |
 | `report_sha256` | string | SHA-256 of the parsed `report` field's UTF-8 bytes |
-| `status` | string | From MAD stdout's `status` field |
+| `status` | string | From MAD stdout's `status` field — Chinese string semantics (e.g. `"完成"`, `"带警告完成"`) |
 | `archive_path` | string | Absolute path from MAD stdout; runtime-only, never in Git |
 | `created_at` | string | RFC 3339 UTC timestamp |
 
