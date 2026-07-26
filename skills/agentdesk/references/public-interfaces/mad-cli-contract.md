@@ -18,7 +18,7 @@ a Target interface as if it were Current.
 | `mad deliberate --format json` (formal) | **Target** | TC-13.2 | `mad.run-result/v1` |
 | `mad resume --format json` | **Current** | N/A (MVP) | Informal (same shape as deliberate) |
 | `mad audit` | **Target** | TC-13.15 | `mad.audit-result/v1` |
-| `agentdesk.mad-refs/v1` | **Target** | TC-13.6 | Runtime MAD invocation record |
+| `agentdesk.mad-refs/v1` | **Current** | TC-13.6 | Runtime MAD invocation record |
 
 ---
 
@@ -330,7 +330,7 @@ Key semantics:
 
 ## 4. Runtime Schema: `agentdesk.mad-refs/v1`
 
-**Status: Target — to be implemented by TC-13.6**
+**Status: Current — implemented by TC-13.6**
 
 Gitignored runtime file at `.agentdesk/runtime/mad-refs.yaml`.
 Uses a strict JSON root object:

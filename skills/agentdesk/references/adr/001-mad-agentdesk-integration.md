@@ -23,7 +23,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 10 | AgentDesk PM lease | **Current** | N/A (existing) | `agentdesk.pm-lease/v1` in `.agentdesk/runtime/` |
 | 11 | AgentDesk event / outbox | **Current** | N/A (existing) | `agentdesk.state-event/v2`, `agentdesk.outbox-message/v2` |
 | 12 | AgentDesk double-commit protocol | **Current** | N/A (existing) | `implementation_commit` → `report_commit` |
-| 13 | AgentDesk MAD Decision Gateway | **Target** | TC-13.6 | Config-driven subprocess invocation of `mad` for planning/deliberation |
+| 13 | AgentDesk MAD Decision Gateway | **Current** | TC-13.6 | Config-driven subprocess invocation of `mad` for planning/deliberation |
 | 14 | AgentDesk WorkerAdapter + four-tier slots | **Target** | TC-13.9 | Basic/Standard/Advanced/Expert; provider/model from bindings only |
 | 15 | AgentDesk WorkerSlotLease | **Target** | TC-13.10 | `agentdesk.worker-slot-lease/v1` |
 | 16 | AgentDesk ControlPlaneTransitionService | **Target** | TC-13.11 | CAS-write tasks, immutable events, replayable outbox |
@@ -36,7 +36,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 23 | E2E / Recovery tests | **Target** | TC-13.19 | End-to-end validation and recovery scenarios |
 | 24 | AgentDesk HTML Dashboard | **Target** | TC-13.20 | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target → Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
-| 26 | `agentdesk.mad-refs/v1` runtime schema | **Target** | TC-13.6 | Gitignored runtime record of MAD invocations |
+| 26 | `agentdesk.mad-refs/v1` runtime schema | **Current** | TC-13.6 | Gitignored runtime record of MAD invocations |
 | 27 | AgentDesk shared core data types | **Current** | TC-13.4 | `TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind` enums; no budget calculation or WorkerAdapter implementation |
 | 28 | AgentDesk ContextBudgetPolicy | **Current** | TC-13.5.1 | Per-tier budget: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; min(floor %, cap); six-field BudgetResult; retains ≥35% reserved; depends on TC-13.4 |
 | 29 | AgentDesk DispatcherAgentGateway | **Target** | TC-13.7 | Config-driven subprocess dispatch via agent CLI; depends on TC-13.4, TC-13.6 |
@@ -381,7 +381,7 @@ call types (`agents`, `deliberate`, `audit`).
 | `archive_path` | Parsed from JSON | `agentdesk.mad-refs/v1` → `archive_path` (runtime-only, never in Git) |
 | `verdict` / `issues` | Parsed from JSON | Audit event (Git-tracked) |
 
-### 2.3 `agentdesk.mad-refs/v1` Runtime Schema (Target — TC-13.6)
+### 2.3 `agentdesk.mad-refs/v1` Runtime Schema (Current — TC-13.6)
 
 Gitignored runtime file at `.agentdesk/runtime/mad-refs.yaml`.
 Strict JSON root:
