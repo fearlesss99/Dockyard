@@ -1470,6 +1470,542 @@ class ReleaseSmokeTests(unittest.TestCase):
             )
             self.assertEqual(ignored.returncode, 0, ignored.stdout)
 
+    # ── Item 10: TC-13.7 DispatcherAgentGateway frozen contract ──────────
+
+    # These tests verify the contract freeze (§2.10), not the
+    # implementation.  dispatcher_gateway.py does NOT exist yet — this
+    # is pure ADR‑structural validation at the contract level.
+
+    # -- 10a: §2.10 heading must exist and remain Target ----------------
+
+    def test_tc137_section_210_heading_exists_and_is_target(self) -> None:
+        """ADR §2.10 must exist as an independent heading, marked Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(
+            section,
+            "ADR must contain ### 2.10 DispatcherAgentGateway frozen contract",
+        )
+        heading_m = re.search(
+            r"^### 2\.10\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m, "ADR must have a §2.10 heading")
+        heading = heading_m.group(0)
+        self.assertIn(
+            "Target",
+            heading,
+            f"§2.10 heading must say Target, got: {heading.strip()!r}",
+        )
+        self.assertIn(
+            "TC-13.7",
+            heading,
+            f"§2.10 heading must reference TC-13.7, got: {heading.strip()!r}",
+        )
+
+    def test_tc137_section_210_contains_frozen_contract_markers(self) -> None:
+        """§2.10 must contain Frozen Contract in the heading or nearby prose."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section)
+        # The heading or opening paragraph must use "Frozen Contract" language.
+        self.assertIn(
+            "Frozen Contract",
+            section,
+            "ADR §2.10 must mention 'Frozen Contract'",
+        )
+
+    # -- 10b: Interface Status #29 remains Target -----------------------
+
+    def test_tc137_interface_status_row_29_is_target(self) -> None:
+        """ADR Interface Status row #29 (TC-13.7) must remain Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        tc137_row = None
+        for row in rows:
+            impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell)
+            if "TC-13.7" in task_ids:
+                tc137_row = row
+                break
+
+        self.assertIsNotNone(
+            tc137_row,
+            "ADR Interface Status must contain row #29 Implemented-by TC-13.7",
+        )
+        status_cell = self._resolve_col(tc137_row, "Status")
+        self.assertIn(
+            "Target",
+            status_cell,
+            f"ADR Interface Status #29 (TC-13.7) must be Target, "
+            f"got status={status_cell!r}",
+        )
+        self.assertNotIn(
+            "Current",
+            status_cell,
+            "ADR Interface Status #29 (TC-13.7) must NOT be marked Current",
+        )
+
+    # -- 10c: DispatchIdentity — exactly four fields, includes revision -
+
+    _DISPATCH_IDENTITY_FIELDS = frozenset(
+        {"task_id", "revision", "attempt", "dispatch_id"}
+    )
+
+    def test_tc137_dispatch_identity_exact_four_fields(self) -> None:
+        """§2.10.2 must define DispatchIdentity with exactly task_id,
+        revision, attempt, dispatch_id."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.2"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section, "ADR §2.10 must contain a DispatchIdentity section")
+
+        for field in sorted(self._DISPATCH_IDENTITY_FIELDS):
+            self.assertIn(
+                field,
+                section,
+                f"ADR §2.10.2 must reference DispatchIdentity field '{field}'",
+            )
+
+    def test_tc137_dispatch_identity_includes_revision(self) -> None:
+        """DispatchIdentity must include revision — this was missing in
+        the prior planning draft."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.2"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "revision",
+            section,
+            "ADR §2.10.2 must include 'revision' in DispatchIdentity",
+        )
+
+    # -- 10d: ModelSelectionSnapshot — exact ten fields ------------------
+
+    _SNAPSHOT_KEYS = frozenset({
+        "required_model_tier", "required_model_capabilities",
+        "model_binding_id", "selected_model_provider",
+        "selected_model_id", "selected_model_tier",
+        "selected_deliberation_tier", "selected_context_window_tokens",
+        "selected_model_capabilities", "model_degradation_approval_id",
+    })
+
+    def test_tc137_snapshot_exact_ten_fields(self) -> None:
+        """§2.10.3 must define ModelSelectionSnapshot with exactly ten fields."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.3"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(
+            section, "ADR §2.10 must contain a ModelSelectionSnapshot section",
+        )
+        for key in sorted(self._SNAPSHOT_KEYS):
+            self.assertIn(
+                key,
+                section,
+                f"ADR §2.10.3 must reference snapshot field '{key}'",
+            )
+
+    def test_tc137_snapshot_no_extra_keys(self) -> None:
+        """The snapshot field table in §2.10.3 must list exactly the ten
+        frozen fields — no 11th field row."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.3"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section)
+
+        # Parse the table rows for field names — each table row
+        # must be one of the known 10 fields.  No 11th row.
+        import re as _re
+        field_names_in_table: set[str] = set()
+        for raw in section.splitlines():
+            stripped = raw.strip()
+            # Match a table row whose second cell is a ``...`` field name.
+            m = _re.match(
+                r"^\|\s*\d+\s*\|\s*``([a-z_]+)``\s*\|",
+                stripped,
+            )
+            if m:
+                field_names_in_table.add(m.group(1))
+        if field_names_in_table:
+            extra = field_names_in_table - self._SNAPSHOT_KEYS
+            self.assertSetEqual(
+                extra,
+                set(),
+                f"§2.10.3 table contains field(s) outside frozen ten: "
+                f"{', '.join(sorted(extra))}",
+            )
+
+    # -- 10e: DispatchRequest — exactly five fields, no deferred extras –
+
+    _REQUEST_REQUIRED_FIELDS = frozenset(
+        {"identity", "workspace", "prompt", "model_selection", "timeout_seconds"}
+    )
+    _REQUEST_FORBIDDEN_FIELDS = frozenset({
+        "provider_config_id", "environment_allowlist", "stdin_bytes",
+        "project_root", "task_difficulty", "worker_kind",
+        "budget_tokens", "lease_id", "slot_id", "retry_count",
+        "escalation_level", "approval_id", "rate_limit_token",
+    })
+
+    def test_tc137_dispatch_request_exact_five_fields(self) -> None:
+        """§2.10.4 must define DispatchRequest with exactly five fields."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.4"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(
+            section, "ADR §2.10 must contain a DispatchRequest section",
+        )
+        for field in sorted(self._REQUEST_REQUIRED_FIELDS):
+            self.assertIn(
+                field,
+                section,
+                f"ADR §2.10.4 must reference DispatchRequest field '{field}'",
+            )
+
+    def test_tc137_dispatch_request_forbids_deferred_fields(self) -> None:
+        """§2.10.4 request field table must contain exactly the five
+        frozen fields — no provider_config_id, environment_allowlist,
+        stdin_bytes, or other deferred fields."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.4"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section)
+
+        # Parse the request field table — each numbered row must be one
+        # of the 5 frozen fields.  provider_config_id must not be a row.
+        import re as _re
+        field_names: set[str] = set()
+        for raw in section.splitlines():
+            stripped = raw.strip()
+            m = _re.match(
+                r"^\|\s*\d+\s*\|\s*``([a-z_]+)``\s*\|",
+                stripped,
+            )
+            if m:
+                field_names.add(m.group(1))
+        if field_names:
+            extra = field_names - self._REQUEST_REQUIRED_FIELDS
+            self.assertSetEqual(
+                extra,
+                set(),
+                f"§2.10.4 request table has extra field(s): "
+                f"{', '.join(sorted(extra))}",
+            )
+            missing = self._REQUEST_REQUIRED_FIELDS - field_names
+            self.assertSetEqual(
+                missing,
+                set(),
+                f"§2.10.4 request table is missing field(s): "
+                f"{', '.join(sorted(missing))}",
+            )
+
+    # -- 10f: DispatchResult — exactly eight fields, no timed_out etc. ---
+
+    _RESULT_REQUIRED = frozenset({
+        "identity", "provider", "model_id", "duration_seconds",
+        "stdout", "stderr", "stdout_sha256", "stderr_sha256",
+    })
+    _RESULT_FORBIDDEN = frozenset({
+        "timed_out", "cancelled", "process_id", "command_receipt",
+        "archive_path", "report_sha256", "deliberation_id",
+        "executor_model",
+    })
+
+    def test_tc137_dispatch_result_exact_eight_fields(self) -> None:
+        """§2.10.7 must define DispatchResult with exactly eight fields."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.7"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(
+            section, "ADR §2.10 must contain a DispatchResult section",
+        )
+        for field in sorted(self._RESULT_REQUIRED):
+            self.assertIn(
+                field,
+                section,
+                f"ADR §2.10.7 must reference DispatchResult field '{field}'",
+            )
+
+    def test_tc137_dispatch_result_forbids_timed_out_and_cancelled(self) -> None:
+        """§2.10.7 result field table must NOT contain timed_out or
+        cancelled — those outcomes use exceptions."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.7"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section)
+
+        # Parse the result field table rows.
+        import re as _re
+        field_names: set[str] = set()
+        for raw in section.splitlines():
+            stripped = raw.strip()
+            m = _re.match(
+                r"^\|\s*\d+\s*\|\s*``([a-z_]+)``\s*\|",
+                stripped,
+            )
+            if m:
+                field_names.add(m.group(1))
+        self.assertNotIn(
+            "timed_out",
+            field_names,
+            "§2.10.7 result table must NOT include 'timed_out' — timeout uses exceptions",
+        )
+        self.assertNotIn(
+            "cancelled",
+            field_names,
+            "§2.10.7 result table must NOT include 'cancelled' — cancellation uses exceptions",
+        )
+
+    def test_tc137_dispatch_result_forbids_process_id_and_command_receipt(self) -> None:
+        """§2.10.7 result field table must NOT contain process_id or
+        command_receipt — runtime-only identifiers not exposed."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.7"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section)
+
+        import re as _re
+        field_names: set[str] = set()
+        for raw in section.splitlines():
+            stripped = raw.strip()
+            m = _re.match(
+                r"^\|\s*\d+\s*\|\s*``([a-z_]+)``\s*\|",
+                stripped,
+            )
+            if m:
+                field_names.add(m.group(1))
+        self.assertNotIn(
+            "process_id",
+            field_names,
+            "§2.10.7 result table must NOT include 'process_id' — runtime-only identifier",
+        )
+        self.assertNotIn(
+            "command_receipt",
+            field_names,
+            "§2.10.7 result table must NOT include 'command_receipt' — runtime-only identifier",
+        )
+
+    # -- 10g: Exception-only failure semantics ---------------------------
+
+    def test_tc137_failure_uses_exceptions_not_flags(self) -> None:
+        """§2.10.8 must state that non‑zero exit, timeout, and cancellation
+        all use exceptions, not success‑result flags."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.8"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(
+            section, "ADR §2.10 must contain a Failure Semantics section",
+        )
+        self.assertIn(
+            "DispatchTimeoutError",
+            section,
+            "ADR §2.10.8 must reference DispatchTimeoutError",
+        )
+        self.assertIn(
+            "DispatchCancelledError",
+            section,
+            "ADR §2.10.8 must reference DispatchCancelledError",
+        )
+        self.assertIn(
+            "DispatchNonZeroExitError",
+            section,
+            "ADR §2.10.8 must reference DispatchNonZeroExitError",
+        )
+
+    # -- 10h: Stdout/stderr are opaque bytes -----------------------------
+
+    def test_tc137_stdout_stderr_are_opaque_bytes(self) -> None:
+        """§2.10.7 and §2.10.8 together must state stdout/stderr are
+        opaque bytes — no decoding is attempted by the Gateway."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        # Only check the output/failure subsections — the intro list
+        # mentions "opaque bytes" but §2.10.8 explicitly says
+        # "There is no DispatchOutputDecodeError".  The contract is
+        # that DispatchResult.stdout/stderr are ``bytes`` and the
+        # Gateway never decodes them.
+        sec_result = _extract_markdown_section(adr_text, "#### 2.10.7")
+        self.assertIsNotNone(sec_result)
+        self.assertIn(
+            "bytes",
+            sec_result,
+            "§2.10.7 stdout/stderr fields must be of type bytes",
+        )
+        # §2.10.8 must state there is no OutputDecodeError (i.e. it
+        # is explicitly excluded — the word appears in the negation).
+        sec_failure = _extract_markdown_section(adr_text, "#### 2.10.8")
+        self.assertIsNotNone(sec_failure)
+        self.assertIn(
+            "DispatchOutputDecodeError",
+            sec_failure,
+            "§2.10.8 must explicitly note that DispatchOutputDecodeError does not exist",
+        )
+
+    # -- 10i: Executable path allows spaces but forbids shell command ----
+
+    def test_tc137_executable_path_allows_spaces_no_shell_command(self) -> None:
+        """§2.10.9 must allow spaces in executable path but forbid
+        embedding arguments or using shell=True."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.9"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(
+            section, "ADR §2.10 must contain an Executable Security section",
+        )
+        self.assertIn(
+            "shell=",
+            section.lower(),
+            "ADR §2.10.9 must reference shell=True/shell=False",
+        )
+        self.assertIn(
+            "which(",
+            section.replace("shutil.which()", "which("),
+            "ADR §2.10.9 must reference shutil.which for executable resolution",
+        )
+
+    # -- 10j: Fake adapter not in production planning --------------------
+
+    def test_tc137_fake_adapter_not_in_production(self) -> None:
+        """§2.10.5 must state that FakeAgentCliProvider may exist only in
+        tests/, never in a production module."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.5"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(
+            section, "ADR §2.10 must contain a Provider Adapter Protocol section",
+        )
+        self.assertIn(
+            "Fake",
+            section,
+            "ADR §2.10.5 must mention FakeAgentCliProvider restriction",
+        )
+
+    # -- 10k: TC-13.8 / TC-13.9 responsibilities not pre-empted ----------
+
+    def test_tc137_does_not_preempt_tc138_tc139(self) -> None:
+        """§2.10 must not define Claude‑specific parameters or WorkerKind
+        mapping or budget logic — those belong to TC-13.8/13.9.
+
+        Uses structural parsing: the responsibility boundary list and
+        exclusion list in §2.10.1 provide the authoritative scope."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.10.1")
+        self.assertIsNotNone(section)
+        # §2.10.1 exclusion list must explicitly state TC-13.7 does NOT
+        # consume WorkerKind, TaskDifficulty, ContextBudgetPolicy, or
+        # BudgetResult.
+        self.assertIn(
+            "WorkerKind",
+            section,
+            "§2.10.1 exclusion list must mention WorkerKind",
+        )
+        self.assertIn(
+            "ContextBudgetPolicy",
+            section,
+            "§2.10.1 exclusion list must mention ContextBudgetPolicy",
+        )
+        # §2.10.1 must state TC-13.7 does NOT know Claude specifics.
+        prohibited_claude = (
+            "--permission-mode" in section
+            or "permission-mode" in section
+        )
+        self.assertTrue(
+            prohibited_claude,
+            "§2.10.1 must mention that Claude CLI specifics are excluded "
+            "(e.g. '--permission-mode')",
+        )
+
+    # -- 10ℓ: Protocol definition checks ---------------------------------
+
+    def test_tc137_agent_cli_provider_protocol_defined(self) -> None:
+        """§2.10.5 must define AgentCliProvider Protocol with provider_id
+        and build_invocation.  parse_result must not be a listed method."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.5"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "AgentCliProvider",
+            section,
+            "ADR §2.10.5 must define AgentCliProvider",
+        )
+        self.assertIn(
+            "build_invocation",
+            section,
+            "ADR §2.10.5 must reference build_invocation method",
+        )
+        self.assertIn(
+            "provider_id",
+            section,
+            "ADR §2.10.5 must reference provider_id attribute",
+        )
+        # parse_result may be mentioned in the exclusion note, but must
+        # NOT appear as a required method in the Protocol *table*.
+        # Parse the method table rows.
+        import re as _re
+        method_names: set[str] = set()
+        for raw in section.splitlines():
+            stripped = raw.strip()
+            m = _re.match(
+                r"^\|\s*``([a-z_]+)\([^)]*\)``\s*\|",
+                stripped,
+            )
+            if m:
+                method_names.add(m.group(1))
+        self.assertNotIn(
+            "parse_result",
+            method_names,
+            "§2.10.5 Protocol method table must NOT list parse_result",
+        )
+
+    def test_tc137_agent_cli_invocation_frozen_fields(self) -> None:
+        """§2.10.6 must define AgentCliInvocation with exact fields."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.6"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(
+            section, "ADR §2.10 must contain an AgentCliInvocation section",
+        )
+        for field in ("executable", "argv", "stdin", "env_overrides"):
+            self.assertIn(
+                field,
+                section,
+                f"ADR §2.10.6 must reference AgentCliInvocation field '{field}'",
+            )
+
+    # -- 10m: Dependency boundary table exists ---------------------------
+
+    def test_tc137_dependency_boundary_table_exists(self) -> None:
+        """§2.10.12 must contain a dependency boundary table listing
+        TC-13.4, TC-13.6–TC-13.11, TC-13.18."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.12"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(
+            section, "ADR §2.10 must contain a Dependency Boundary section",
+        )
+        for tc in ("TC-13.4", "TC-13.6", "TC-13.8", "TC-13.9",
+                   "TC-13.10", "TC-13.11", "TC-13.18"):
+            self.assertIn(
+                tc,
+                section,
+                f"ADR §2.10.12 must reference {tc} in dependency boundary",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

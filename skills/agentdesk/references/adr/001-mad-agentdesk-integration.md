@@ -39,7 +39,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 26 | `agentdesk.mad-refs/v1` runtime schema | **Current** | TC-13.6 | Gitignored runtime record of MAD invocations |
 | 27 | AgentDesk shared core data types | **Current** | TC-13.4 | `TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind` enums; no budget calculation or WorkerAdapter implementation |
 | 28 | AgentDesk ContextBudgetPolicy | **Current** | TC-13.5.1 | Per-tier budget: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; min(floor %, cap); six-field BudgetResult; retains ≥35% reserved; depends on TC-13.4 |
-| 29 | AgentDesk DispatcherAgentGateway | **Target** | TC-13.7 | Config-driven subprocess dispatch via agent CLI; depends on TC-13.4, TC-13.6 |
+| 29 | AgentDesk DispatcherAgentGateway | **Target** | TC-13.7 | Frozen contract (§2.10); execution-only single-shot agent CLI boundary; depends on TC-13.4, TC-13.6 |
 | 30 | Claude Code CLI contract | **Target** | TC-13.8 | Public CLI interface contract for `claude` invocation; depends on TC-13.4 |
 
 ---
@@ -676,6 +676,415 @@ today.
 
 ---
 
+### 2.10 DispatcherAgentGateway — Frozen Contract (Target — TC-13.7)
+
+TC-13.7 defines an **execution-only** boundary for a single agent CLI
+subprocess dispatch.  This section is the Frozen Contract — the freeze
+of all TC-13.7 public interfaces — and does **not**
+mark TC-13.7 as Current.
+
+TC-13.7 freezes:
+
+1.  **responsibility boundary** — what the Gateway does and what it
+    explicitly does not do;
+2.  **immutable input types** — `DispatchIdentity`,
+    `ModelSelectionSnapshot`, `DispatchRequest`;
+3.  **provider adapter Protocol** — `AgentCliProvider` and the
+    `AgentCliInvocation` value it produces;
+4.  **immutable result type** — `DispatchResult` (exit‑0 success only);
+5.  **failure semantics** — exception‑only paths for non‑zero exit,
+    timeout, cancellation, and structural errors;
+6.  **output semantics** — stdout/stderr as opaque bytes with SHA‑256
+    hashing;
+7.  **executable security** — absolute‑path / ``shutil.which()``
+    resolution, ``shell=False`` locked;
+8.  **state & persistence boundary** — zero file writes, zero
+    canonical‑state, event, outbox, or report writes;
+9.  **timeout & cancellation** — full process‑tree termination;
+10. **dependency boundary** — what TC-13.7 consumes vs what is deferred
+    to TC-13.8, TC-13.9, TC-13.10, TC-13.11, and TC-13.18.
+
+---
+
+#### 2.10.1 Exact Responsibility Boundary
+
+TC-13.7 is a **single‑shot**, **config‑driven**, **provider‑agnostic**
+agent CLI execution gateway.  Every invocation:
+
+* strictly validates a frozen, immutable dispatch request and its
+  ten‑field `ModelSelectionSnapshot`;
+* resolves the provider adapter from a registry keyed by
+  ``selected_model_provider``;
+* constructs a safe subprocess invocation via the adapter;
+* launches **exactly one** subprocess;
+* captures raw stdout and stderr as `bytes`;
+* handles normal exit (code 0), non‑zero exit, timeout, and caller
+  cancellation;
+* returns an immutable, classified ``DispatchResult`` (success) **or**
+  raises a precise exception (every other outcome).
+
+TC-13.7 **explicitly does NOT**:
+
+* write canonical state, dispatch files, events, outbox messages,
+  delivery reports, transport receipts, or any other Git‑tracked
+  artifact;
+* retry, escalate, approve, rate‑limit, or re‑queue;
+* consume ``WorkerKind``, ``TaskDifficulty``,
+  ``ContextBudgetPolicy``, or ``BudgetResult``;
+* acquire, release, or validate slot leases or fencing tokens;
+* know Claude CLI specifics (`--permission-mode`, tool allowlists,
+  etc.);
+* implement WorkerAdapter lifecycle or WorkflowOrchestrator
+  coordination;
+* invoke ``mad`` in any form — the MAD Gateway (TC-13.6) and ``mad``
+  refs are separate domains.
+
+---
+
+#### 2.10.2 DispatchIdentity — Frozen Audit Identity
+
+Immutable, four‑field identity carried by every request and result.
+All values originate from an already‑frozen dispatch / outbox committed
+before the Gateway is invoked.
+
+| Field | Type | Rule |
+|-------|------|------|
+| ``task_id`` | ``str`` | Non‑empty |
+| ``revision`` | ``int`` | Non‑bool, ≥ 1 |
+| ``attempt`` | ``int`` | Non‑bool, ≥ 1 |
+| ``dispatch_id`` | ``str`` | Non‑empty |
+
+The Gateway **must not** generate, modify, or derive any of these
+values.  They are opaque audit markers from the caller's perspective.
+
+---
+
+#### 2.10.3 ModelSelectionSnapshot — Frozen Ten‑Field Snapshot
+
+An immutable snapshot whose key set must **exactly** match the
+deterministic selector output (TC-13.3 / TC-13.4).  Extra keys and
+missing keys are both rejected.
+
+| # | Field | Type |
+|---|-------|------|
+| 1 | ``required_model_tier`` | ``str`` |
+| 2 | ``required_model_capabilities`` | ``list[str]`` |
+| 3 | ``model_binding_id`` | ``str`` |
+| 4 | ``selected_model_provider`` | ``str`` |
+| 5 | ``selected_model_id`` | ``str`` |
+| 6 | ``selected_model_tier`` | ``str`` |
+| 7 | ``selected_deliberation_tier`` | ``str`` |
+| 8 | ``selected_context_window_tokens`` | ``int`` (non‑bool, ≥ 1) |
+| 9 | ``selected_model_capabilities`` | ``list[str]`` |
+| 10 | ``model_degradation_approval_id`` | ``str`` or ``null`` |
+
+Rules:
+
+* ``provider``, ``model_id``, and ``deliberation_tier`` for the
+  subprocess call are taken **only** from this snapshot — callers must
+  not supply an independent override.
+* ``model_binding_id`` is the **only** binding identifier.  There is
+  no separate ``provider_config_id`` — the snapshot's
+  ``selected_model_provider`` is the adapter registry key.
+* ``selected_model_tier`` is stored but not consumed by TC-13.7;
+  it is a passthrough audit field.
+* ``selected_context_window_tokens`` is stored but not consumed by
+  TC-13.7; budget arithmetic belongs to ContextBudgetPolicy
+  (TC-13.5.1) and WorkerAdapter (TC-13.9).
+
+---
+
+#### 2.10.4 DispatchRequest — Frozen Input
+
+Exactly five fields — every field has a verifiable origin in an
+already‑frozen dispatch/outbox or runtime configuration.
+
+| # | Field | Type | Rule |
+|---|-------|------|------|
+| 1 | ``identity`` | ``DispatchIdentity`` | Frozen audit identity |
+| 2 | ``workspace`` | ``Path`` | Absolute, existing directory |
+| 3 | ``prompt`` | ``str`` | Non‑empty; sole source of task content |
+| 4 | ``model_selection`` | ``ModelSelectionSnapshot`` | Exactly ten fields, validated |
+| 5 | ``timeout_seconds`` | ``int`` | Non‑bool, ≥ 1 |
+
+Fields **explicitly excluded** from TC-13.7 (deferred to later TCs):
+
+* ``project_root`` — Gateway resolves paths from ``workspace``.
+* ``provider_config_id`` — ``selected_model_provider`` from the
+  snapshot is the adapter registry key.
+* ``environment_allowlist`` — environment filtering is deferred to
+  TC-13.8 per‑provider contracts; TC-13.7 copies the full parent
+  environment and applies adapter‑declared overrides.
+* ``stdin_bytes`` — ``prompt`` is the **sole** task content source;
+  the adapter produces ``stdin`` bytes from it inside
+  ``build_invocation``.  No separate caller‑supplied stdin channel
+  exists.
+* ``task_difficulty``, ``worker_kind``, ``budget_tokens``,
+  ``lease_id``, ``slot_id``, ``retry_count``,
+  ``escalation_level``, ``approval_id``, ``rate_limit_token``.
+
+Rules:
+
+* ``workspace`` must exist and be an absolute directory.
+* ``prompt`` is the **only** source of task content — the adapter
+  derives ``stdin`` from it.
+* ``timeout_seconds`` is a positive integer (non‑bool).
+* The entire request is frozen before Gateway invocation; the Gateway
+  does not enrich, derive, or persist any additional fields.
+
+---
+
+#### 2.10.5 Provider Adapter Protocol
+
+TC-13.7 defines ``AgentCliProvider`` as a ``typing.Protocol``
+(runtime‑checkable).  TC-13.7 itself only ships the Protocol and a
+registry; it does **not** bundle any real provider implementation.
+
+**Required attribute:**
+
+| Name | Type | Rule |
+|------|------|------|
+| ``provider_id`` | ``str`` | Must equal ``selected_model_provider`` from the snapshot |
+
+**Required method:**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| ``build_invocation(request)`` | ``AgentCliInvocation`` | Produce a fully‑resolved subprocess invocation from a validated ``DispatchRequest`` |
+
+``build_invocation`` receives the **entire** frozen ``DispatchRequest``
+(identity + workspace + prompt + snapshot + timeout) and returns a
+self‑contained ``AgentCliInvocation``.
+
+``parse_result()`` is **not** part of the TC-13.7 Protocol.  Provider‑
+specific stdout parsing is deferred to TC-13.8 / TC-13.9.
+
+A ``FakeAgentCliProvider`` may exist in ``tests/`` only — it must not
+appear in any production module.
+
+**Registry lookup**:
+
+The Gateway resolves the adapter via a module‑level registry keyed by
+``provider_id``.  Lookup for an unknown ``provider_id`` is fail‑closed:
+it raises ``ProviderNotSupportedError`` before any subprocess is
+launched.
+
+---
+
+#### 2.10.6 AgentCliInvocation — Frozen Invocation Value
+
+Returned by ``AgentCliProvider.build_invocation()``.  Represents a
+fully‑resolved, safe subprocess invocation.
+
+| # | Field | Type | Rule |
+|---|-------|------|------|
+| 1 | ``executable`` | ``str`` | Absolute path or plain name (resolved via ``shutil.which``) |
+| 2 | ``argv`` | ``tuple[str, ...]`` | Each element is exactly one argument; no shell concatenation |
+| 3 | ``stdin`` | ``bytes`` or ``None`` | Derived from ``DispatchRequest.prompt``; ``None`` → ``DEVNULL`` |
+| 4 | ``env_overrides`` | ``tuple[tuple[str, str], ...]`` | Pairs of ``(KEY, value)``; keys are unique |
+
+Rules:
+
+* ``executable`` is a **single** path or command name — it must not
+  embed arguments, flags, or shell metacharacters.  Spaces in the
+  path are permitted (the path is passed as a single ``exec*``
+  argument).
+* ``argv`` is an immutable tuple; each element is one argument.
+  ``shell=True`` is **never** used — the Gateway exclusively uses
+  ``asyncio.create_subprocess_exec``.
+* ``stdin`` is produced by the adapter from the sole ``prompt``.
+  When ``None`` the Gateway passes ``DEVNULL``.
+* ``env_overrides`` keys are unique.  The Gateway copies the full
+  parent environment and then applies each ``(KEY, value)`` pair.
+* The adapter **does not** receive the full parent environment —
+  it only declares the overrides it needs.
+* The Gateway **must not** log, persist, or return the content of
+  environment variables in any result, exception, event, or report.
+  API keys must never appear in Gateway output.
+
+---
+
+#### 2.10.7 DispatchResult — Frozen Success Result (Exit 0 Only)
+
+``DispatchResult`` is returned **only** when the subprocess exits
+cleanly with code 0.  Every other outcome uses exceptions (§2.10.8).
+
+| # | Field | Type | Rule |
+|---|-------|------|------|
+| 1 | ``identity`` | ``DispatchIdentity`` | Echoed from request |
+| 2 | ``provider`` | ``str`` | Echoed from ``selected_model_provider`` |
+| 3 | ``model_id`` | ``str`` | Echoed from ``selected_model_id`` |
+| 4 | ``duration_seconds`` | ``float`` | Wall‑clock duration |
+| 5 | ``stdout`` | ``bytes`` | Raw subprocess stdout |
+| 6 | ``stderr`` | ``bytes`` | Raw subprocess stderr |
+| 7 | ``stdout_sha256`` | ``str`` | 64 lowercase hex of raw ``stdout`` bytes |
+| 8 | ``stderr_sha256`` | ``str`` | 64 lowercase hex of raw ``stderr`` bytes |
+
+Fields **explicitly excluded**:
+
+* ``timed_out`` — timeout uses exceptions, not a flag.
+* ``cancelled`` — cancellation uses exceptions, not a flag.
+* ``process_id`` — runtime‑only identifier; not exposed.
+* ``command_receipt`` — adapter‑internal detail; not exposed.
+* ``archive_path``, ``report_sha256``, ``deliberation_id``, ``status``
+  — these are MAD Gateway (TC-13.6) concepts, not DispatcherAgentGateway
+  concepts.
+* ``executor_model`` extension fields — the Gateway does not decide
+  what enters the terminal executor_model; that is the caller's
+  responsibility (TC-13.9 / TC-13.11).
+
+Rules:
+
+* ``provider`` and ``model_id`` are **echoed** from the frozen
+  snapshot — the Gateway cannot substitute or resolve them.
+* ``stdout`` and ``stderr`` are raw ``bytes`` — the Gateway does not
+  decode, truncate, or interpret them.
+* SHA‑256 digests are computed on the **original bytes** before any
+  processing.
+* The raw bytes are an in‑memory return value only; the Gateway does
+  **not** persist them and does **not** decide whether they enter a
+  Git‑tracked artifact.
+
+---
+
+#### 2.10.8 Failure Semantics — Exception‑Only
+
+Every non‑success path raises a specific exception.  ``DispatchResult``
+is **never** returned for a non‑zero exit, timeout, or cancellation.
+
+| Condition | Exception | Carries |
+|-----------|-----------|---------|
+| Structural input error | ``DispatchInputError`` | field name, value |
+| Snapshot validation failure | ``DispatchSnapshotError`` | missing/extra key details |
+| Provider not registered | ``ProviderNotSupportedError`` | ``provider_id`` |
+| Executable not found / not executable | ``ExecutableNotFoundError`` | ``executable`` |
+| Invocation structure error | ``DispatchInvocationError`` | adapter‑side validation failure |
+| Subprocess launch failure (OSError) | ``DispatchLaunchError`` | original exception |
+| Subprocess exceeds ``timeout_seconds`` | ``DispatchTimeoutError`` | ``timeout_seconds`` |
+| Caller cancellation | ``DispatchCancelledError`` | — |
+| Non‑zero exit code | ``DispatchNonZeroExitError`` | ``exit_code``, ``stdout_sha256``, ``stderr_sha256``, length‑capped stderr preview |
+
+``DispatchNonZeroExitError`` may carry:
+
+* ``exit_code`` — the raw integer exit code;
+* ``stdout_sha256`` / ``stderr_sha256`` — SHA‑256 of raw bytes;
+* ``stderr_preview`` — a **length‑capped** (max 500 chars) preview,
+  decoded with ``errors="replace"`` to guard against non‑UTF‑8.
+
+``DispatchNonZeroExitError`` must **never** carry:
+
+* the full environment;
+* the full argv;
+* the raw ``stdout`` or ``stderr`` bytes;
+* any un‑redacted secret material.
+
+There is no ``DispatchOutputDecodeError`` — the Gateway treats
+stdout/stderr as opaque bytes and does not attempt UTF‑8 decoding.
+Provider‑specific decoding belongs to TC-13.8 / TC-13.9.
+
+Output size limits are **not** frozen as a TC-13.7 public
+configuration knob.  Naïve post‑``communicate()`` length checks do not
+prevent memory pressure; a proper streaming or capped‑reader design is
+deferred as a future security hardening item.
+
+---
+
+#### 2.10.9 Executable Security
+
+Frozen rules:
+
+1. If ``executable`` is an absolute path, it must point to a regular
+   file with the execute bit set (``os.access(path, os.X_OK)``).
+2. If ``executable`` is a plain name (no directory separator), it is
+   resolved via ``shutil.which()`` on the parent ``PATH``.
+3. Spaces in the executable path are permitted — the path is passed
+   as a single argument to ``exec*``.
+4. ``executable`` must not embed command arguments — it is a pure
+   path.
+5. Each element of ``argv`` is one argument; ``argv`` is never a
+   shell string.
+6. The Gateway uses ``asyncio.create_subprocess_exec`` exclusively.
+7. ``shell=True`` and ``create_subprocess_shell`` are **never** used.
+   Tests must prove this by verifying the subprocess‑creation mock
+   receives no ``shell`` keyword argument.
+
+---
+
+#### 2.10.10 State & Persistence Boundary
+
+TC-13.7 is a **pure execution boundary** with **zero file writes**:
+
+* It does **not** read canonical dispatch files, ``tasks.yaml``,
+  events, or outbox.
+* It does **not** write any file — not to ``.agentdesk/runtime/``,
+  not to ``docs/pm/``, not to any Git‑tracked path.
+* It does **not** write transport receipts, dispatch receipts, or
+  callback receipts.
+* It does **not** validate the terminal ``executor_model`` against
+  the snapshot.
+* It does **not** decide which result fields are copied into a
+  delivery report or event — that is the caller's responsibility
+  (TC-13.9 / TC-13.11).
+
+The caller receives the ``DispatchResult`` in memory and may use its
+fields according to later TC contracts.  This ADR does **not** pre‑
+authorise writing ``duration_seconds``, ``exit_code``, or SHA
+digests into ``executor_model`` — those decisions belong to the TC
+that defines ``executor_model`` semantics.
+
+---
+
+#### 2.10.11 Timeout & Cancellation
+
+Both timeout and caller cancellation must terminate the **entire**
+process tree:
+
+* **Timeout**: the Gateway uses ``asyncio.wait_for`` with the
+  request's ``timeout_seconds``.  When the deadline is exceeded, the
+  Gateway terminates the process tree and raises
+  ``DispatchTimeoutError``.
+* **Cancellation**: when the calling ``asyncio.Task`` is cancelled,
+  the Gateway terminates the process tree and raises
+  ``DispatchCancelledError``.
+
+The **exact** termination sequence (SIGTERM → grace → SIGKILL on
+POSIX; ``taskkill /T /F`` on Windows) follows the pattern validated
+in TC-13.6 but must be implemented independently — TC-13.7 must not
+import TC-13.6's ``mad_gateway`` module (which carries MAD‑specific
+command, environment, and parser logic).
+
+The Gateway does **not** return partial stdout after timeout or
+cancellation.  The Gateway does **not** retry.
+
+---
+
+#### 2.10.12 Dependency Boundary
+
+| TC | Relationship to TC-13.7 |
+|----|--------------------------|
+| **TC-13.4** | Consumed — ``core_types`` enums are the only allowed import from the shared type layer |
+| **TC-13.6** | Depends on — the Gateway pattern (subprocess lifecycle, executable resolution, process‑tree termination) is validated by TC-13.6; TC-13.7 must implement its own without importing ``mad_gateway`` |
+| **TC-13.8** | Separate — defines the Claude‑specific ``AgentCliProvider`` implementation and CLI contract; TC-13.7 must not reference Claude |
+| **TC-13.9** | Consumer — WorkerAdapter calls the Gateway, maps ``WorkerKind``, applies budget, and manages delivery lifecycle |
+| **TC-13.10** | Separate — slot lease and fencing are independent of a single subprocess execution |
+| **TC-13.11** | Consumer — ControlPlaneTransitionService invokes the Gateway and writes canonical state / events / outbox from the result |
+| **TC-13.18** | Consumer — WorkflowOrchestrator coordinates Gateway calls |
+
+---
+
+#### 2.10.13 Status
+
+This section (§2.10) is a **contract freeze**, not an implementation
+completion marker.
+
+* ADR Interface Status row #29 “AgentDesk DispatcherAgentGateway”
+  remains **Target**.
+* TC-13.8 and all subsequent Target interfaces remain **Target**.
+* TC-13.7 will be marked **Current** only when
+  ``dispatcher_gateway.py`` and matching tests are committed.
+
+---
+
 ## 3. Ownership Boundaries
 
 | Domain | Owned by | Description |
@@ -721,7 +1130,7 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.4 | AgentDesk shared core data types (`TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind`) | TC-13.3 |
 | TC-13.5.1 | AgentDesk ContextBudgetPolicy (per-tier percentages: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; ≥35% reserved) | TC-13.4 |
 | TC-13.6 | AgentDesk MAD Decision Gateway + `agentdesk.mad-refs/v1` | TC-13.2, TC-13.4 |
-| TC-13.7 | AgentDesk DispatcherAgentGateway (config-driven subprocess dispatch) | TC-13.4, TC-13.6 |
+| TC-13.7 | AgentDesk DispatcherAgentGateway (frozen contract §2.10; execution-only single-shot agent CLI boundary) | TC-13.4, TC-13.6 |
 | TC-13.8 | Claude Code CLI contract (public CLI interface for `claude` invocation) | TC-13.4 |
 | TC-13.9 | WorkerAdapter + four-tier Worker slots | TC-13.5.1, TC-13.7, TC-13.8 |
 | TC-13.10 | WorkerSlotLease implementation | TC-13.9 |
