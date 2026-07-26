@@ -1288,28 +1288,114 @@ Required flags:
 | `--permission-mode` | Configured safe mode (see §2.11.7) |
 | `--effort` | Mapped effort (see §2.11.6) |
 | `--no-session-persistence` | (flag, no argument) |
+| `--allowedTools` | Each allowed tool as a separate argv element (see below) |
+| `--disallowedTools` | Each disallowed tool as a separate argv element (see below) |
 
 `executable` and `argv` are strictly separated:
 
 ```python
-AgentCliInvocation(
-    executable=config.executable,       # e.g. "claude"
-    argv=(                             # does NOT include executable
+def build_invocation(
+    self,
+    request: DispatchRequest,
+) -> AgentCliInvocation:
+
+    mapped_effort = _EFFORT_MAP[request.model_selection.selected_deliberation_tier]
+
+    argv = [
         "-p",
-        CONTROL_PROMPT,                # fixed constant
+        _CONTROL_PROMPT,
         "--output-format", "json",
         "--model", request.model_selection.selected_model_id,
-        "--permission-mode", config.permission_mode,
+        "--permission-mode", self.permission_mode,
         "--effort", mapped_effort,
         "--no-session-persistence",
-    ),
-    stdin=request.prompt.encode("utf-8"),
-    env_overrides=(),
+    ]
+
+    if self.allowed_tools:
+        argv.extend(["--allowedTools", *self.allowed_tools])
+
+    if self.disallowed_tools:
+        argv.extend(["--disallowedTools", *self.disallowed_tools])
+
+    return AgentCliInvocation(
+        executable=self.executable,
+        argv=tuple(argv),
+        stdin=request.prompt.encode("utf-8"),
+        env_overrides=(),
+    )
+```
+
+**argv ordering rules (frozen):**
+
+1. Base flags: `-p`, `CONTROL_PROMPT`, `--output-format json`,
+   `--model ...`, `--permission-mode ...`, `--effort ...`,
+   `--no-session-persistence`.
+2. `--allowedTools` block (if non-empty): the flag followed by each
+   tool expression as a separate argv element.
+3. `--disallowedTools` block (if non-empty): the flag followed by each
+   tool expression as a separate argv element.
+4. Allowed block always precedes disallowed block.
+5. When a tuple is empty, the corresponding flag and its arguments
+   are omitted entirely.
+6. The flag is emitted once — it is NOT repeated per tool.
+7. `executable` does NOT appear in `argv`.
+8. The result is always `tuple(argv)`.
+
+**Tool flag casing is frozen exactly:**
+
+```text
+--allowedTools
+--disallowedTools
+```
+
+**Precise example** (non-empty both):
+
+```python
+allowed_tools = ("Read", "Bash(git status:*)")
+disallowed_tools = ("WebFetch",)
+
+argv == (
+    "-p",
+    _CONTROL_PROMPT,
+    "--output-format", "json",
+    "--model", selected_model_id,
+    "--permission-mode", permission_mode,
+    "--effort", mapped_effort,
+    "--no-session-persistence",
+    "--allowedTools",
+    "Read",
+    "Bash(git status:*)",
+    "--disallowedTools",
+    "WebFetch",
 )
 ```
 
-* `argv` must **not** include the executable.
-* No shell string — each argument is a separate `argv` element.
+**Precise example** (allowed only — disallowed omitted):
+
+```python
+allowed_tools = ("Bash(curl:*)",)
+disallowed_tools = ()
+
+argv == (
+    "-p",
+    _CONTROL_PROMPT,
+    "--output-format", "json",
+    "--model", selected_model_id,
+    "--permission-mode", permission_mode,
+    "--effort", mapped_effort,
+    "--no-session-persistence",
+    "--allowedTools",
+    "Bash(curl:*)",
+)
+```
+
+**Non-negotiable:**
+
+* Each tool expression is a separate `argv` element.
+* Multiple tools are NOT joined by commas, spaces, or shell
+  concatenation.
+* The task prompt must NOT appear in tool flags.
+* No shell string — each element is a separate `argv` token.
 * No shell wrapper (`cmd /c`, `powershell -Command`, `bash -c`).
 
 ---
@@ -1416,35 +1502,169 @@ disallowed_tools: tuple[str, ...]
 * Mutating the source list after construction does **not** affect the
   provider's stored tuples.
 * Both tuples may be empty.
-* When empty, the corresponding CLI argument is omitted entirely.
+* When empty, the corresponding `--allowedTools` / `--disallowedTools`
+  block is omitted entirely from `argv` (see §2.11.4).
 
-When non-empty, each entry is serialized as a separate `argv` element.
-No shell string concatenation is performed.
+When non-empty, each entry is serialized as a separate `argv` element
+following the flag.  No shell string concatenation is performed.
 
-Tool allow/deny priority behavior is **not** frozen — this contract
-only guarantees faithful forwarding of both tuples to the Claude CLI.
+**Intersection must be fail-closed:**
+
+```python
+if not set(allowed_tools).isdisjoint(disallowed_tools):
+    raise ValueError(
+        "allowed_tools and disallowed_tools must be disjoint"
+    )
+```
+
+The same exact tool string must **not** appear in both tuples.  This is
+validated at construction time — the provider raises `ValueError`, not
+a warning.
+
+Must **not:**
+
+* guess deny-priority or allow-priority;
+* silently remove the entry from one side;
+* case-fold before comparing;
+* trim before comparing.
+
+The intersection check uses exact string equality on the validated
+entries (after individual-entry validation — non-empty, no whitespace,
+etc.).
 
 ---
 
-#### 2.11.9 Configuration Object
+#### 2.11.9 ClaudeCodeProvider — Frozen Public API
 
-A frozen (immutable after construction) configuration object with at
-minimum these fields:
+`ClaudeCodeProvider` **is** the configuration.  There is no separate
+`ClaudeCodeProviderConfig` class.
 
-| Field | Type | Constraint |
-|-------|------|------------|
-| `provider_id` | `str` | `"claude"` or `"claudecode"` only |
-| `executable` | `str` | Non-empty; default `"claude"`; no embedded arguments or shell metacharacters |
-| `permission_mode` | `str` | One of `default`, `plan`, `acceptEdits`, `dontAsk` |
-| `allowed_tools` | `tuple[str, ...]` | Deeply immutable; empty allowed |
-| `disallowed_tools` | `tuple[str, ...]` | Deeply immutable; empty allowed |
+```python
+from __future__ import annotations
 
-`executable` path resolution (e.g. `shutil.which`) is performed by
-`DispatcherAgentGateway`, not by the provider.
+from dataclasses import dataclass
 
-**Must not** appear in configuration: API key, OAuth token, session ID,
-resume ID, workspace/cwd, prompt, timeout, model override, retry config,
-lease or slot identifiers, persistence paths.
+from .dispatcher_gateway import (
+    AgentCliInvocation,
+    AgentCliProvider,
+    DispatchRequest,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeCodeProvider:
+    """Claude Code CLI adapter — TC-13.8 frozen contract."""
+
+    provider_id: str
+    executable: str
+    permission_mode: str
+    allowed_tools: tuple[str, ...]
+    disallowed_tools: tuple[str, ...]
+
+    _CONTROL_PROMPT: str = (
+        "Read the task instructions from stdin and execute them."
+    )
+
+    def __post_init__(self) -> None:
+        # Reject at construction — ValueError on any illegal input.
+        ...
+
+    def build_invocation(
+        self,
+        request: DispatchRequest,
+    ) -> AgentCliInvocation:
+        ...
+
+
+__all__ = ["ClaudeCodeProvider"]
+```
+
+**Exactly five fields — no more, no less:**
+
+| # | Field | Type | Constraint |
+|---|-------|------|------------|
+| 1 | `provider_id` | `str` | `"claude"` or `"claudecode"` only; satisfies `AgentCliProvider.provider_id` |
+| 2 | `executable` | `str` | See executable rules below |
+| 3 | `permission_mode` | `str` | `"default"`, `"plan"`, `"acceptEdits"`, or `"dontAsk"` |
+| 4 | `allowed_tools` | `tuple[str, ...]` | Deeply immutable; may be empty |
+| 5 | `disallowed_tools` | `tuple[str, ...]` | Deeply immutable; may be empty |
+
+`_CONTROL_PROMPT` is a **private** module-level constant (not in
+`__all__`).  It is a compile-time string literal — it never contains
+task content, paths, dispatch IDs, or any request data.
+
+**Forbidden sixth field** — these must **never** appear on
+`ClaudeCodeProvider`:
+
+```text
+cwd
+workspace
+prompt
+timeout
+model
+model_id
+effort
+env
+env_overrides
+api_key
+token
+session_id
+resume_id
+retry
+slot
+lease
+persistence_path
+```
+
+`env_overrides=()` is a fixed value on the generated `AgentCliInvocation`,
+not a sixth provider field.
+
+**Executable rules:**
+
+* Must be `str`, non-empty, not pure whitespace.
+* Must not contain leading or trailing whitespace.
+* Must not contain NUL (`\x00`), CR (`\r`), or LF (`\n`).
+* Must not contain embedded arguments — no shell-command-as-string.
+* A path containing ordinary spaces (e.g.
+  `C:\Program Files\Claude\claude.exe`) **is** legal and must not be
+  rejected as "embedded arguments".
+* The provider does **not** call `shlex.split()`, `shutil.which()`,
+  `os.fspath`, or any other path-resolution function — executable
+  resolution remains the Gateway's responsibility (§2.10.9).
+
+**Construction rejection — `ValueError`:** `ClaudeCodeProvider.__init__`
+and `__post_init__` raise `ValueError` (not a custom exception class,
+not a warning) for:
+
+* `provider_id` not `"claude"` or `"claudecode"`;
+* `executable` empty, pure whitespace, contains NUL/CR/LF, or contains
+  embedded arguments;
+* `permission_mode` not in the safe set (§2.11.7);
+* any tool entry not a `str`, empty, or with leading/trailing whitespace;
+* duplicate tool entry;
+* non-empty intersection between `allowed_tools` and
+  `disallowed_tools` (see §2.11.8).
+
+**`build_invocation` rejection — `ValueError`:** raises `ValueError`
+for:
+
+* unknown `selected_deliberation_tier` (see §2.11.6);
+* any other request field that cannot be mapped per this contract.
+
+**Gateway wrapping:** `run_dispatch()` (TC-13.7) wraps provider
+exceptions into `DispatchInvocationError`.  TC-13.8 does **not**
+introduce a parallel public exception hierarchy.
+
+**Module public surface** — the production module
+`skills/agentdesk/scripts/claude_code_provider.py` will export
+exactly one public symbol:
+
+```python
+__all__ = ["ClaudeCodeProvider"]
+```
+
+No module-level registry, no `register_provider()`, no
+`unregister_provider()`.
 
 ---
 
@@ -1504,19 +1724,21 @@ within TC-13.8 scope.
 
 The provider must **reject** (fail closed, no silent recovery) for:
 
-| Condition | Action |
-|-----------|--------|
-| `provider_id` not `"claude"` or `"claudecode"` | Raise |
-| `executable` empty or `None` | Raise |
-| `executable` contains embedded arguments or shell metacharacters | Raise |
-| Unknown `selected_deliberation_tier` | Raise |
-| Unknown or forbidden `permission_mode` | Raise |
-| Tool entry not a string | Raise |
-| Tool entry empty string | Raise |
-| Tool entry has leading/trailing whitespace | Raise |
-| Duplicate tool entry | Raise |
-| `provider_id` ≠ mapping key | Rejected by Gateway (TC-13.7) |
-| Prompt cannot be transmitted per UTF-8 contract | Raise — no replacement or trimming |
+| Condition | Exception |
+|-----------|-----------|
+| `provider_id` not `"claude"` or `"claudecode"` | `ValueError` at construction |
+| `executable` empty, pure whitespace, or `None` | `ValueError` at construction |
+| `executable` contains NUL, CR, or LF | `ValueError` at construction |
+| `executable` contains embedded arguments | `ValueError` at construction |
+| `permission_mode` not in safe set | `ValueError` at construction |
+| Tool entry not a `str` | `ValueError` at construction |
+| Tool entry empty string | `ValueError` at construction |
+| Tool entry has leading/trailing whitespace | `ValueError` at construction |
+| Duplicate tool entry in same tuple | `ValueError` at construction |
+| allowed ∩ disallowed not disjoint | `ValueError` at construction |
+| Unknown `selected_deliberation_tier` | `ValueError` in `build_invocation` |
+| `provider_id` ≠ mapping key | `DispatchInputError` by Gateway (TC-13.7) |
+| Prompt cannot be transmitted per UTF-8 contract | `ValueError` — no replacement or trimming |
 
 No silent correction, trimming, fallback, or alias normalization is
 permitted.

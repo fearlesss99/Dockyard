@@ -3211,6 +3211,542 @@ class ReleaseSmokeTests(unittest.TestCase):
                 f"§2.11 must exclude '{excluded}' from TC-13.8 scope",
             )
 
+    # -- Item 15: TC-13.8 precise public API remediation -------------------
+
+    # ── 15a: ClaudeCodeProvider class as frozen slotted dataclass ───────
+
+    def test_tc138_class_is_claudecodeprovider_frozen_slots(self) -> None:
+        """§2.11.9 must declare ClaudeCodeProvider as
+        @dataclass(frozen=True, slots=True)."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section, "ADR must contain §2.11.9")
+        self.assertIn(
+            "ClaudeCodeProvider",
+            section,
+            "§2.11.9 must declare ClaudeCodeProvider class",
+        )
+        self.assertIn(
+            "frozen=True",
+            section,
+            "§2.11.9 must declare frozen=True",
+        )
+        self.assertIn(
+            "slots=True",
+            section,
+            "§2.11.9 must declare slots=True",
+        )
+
+    def test_tc138_no_separate_config_class(self) -> None:
+        """§2.11.9 must state there is no separate
+        ClaudeCodeProviderConfig class — the negation must exist."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        # The ADR says "no separate ClaudeCodeProviderConfig" — verify
+        # the negation language exists.  The name appears in the negation.
+        target = section.lower()
+        self.assertTrue(
+            "no separate" in target
+            or "there is no separate" in target
+            or "is no separate" in target,
+            "§2.11.9 must state there is no separate config class",
+        )
+
+    def test_tc138_no_at_minimum_language(self) -> None:
+        """§2.11.9 must NOT say 'at minimum these fields' — the five
+        fields are exact."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        self.assertNotIn(
+            "at minimum",
+            section.lower(),
+            "§2.11.9 must NOT contain 'at minimum' — five fields are exact",
+        )
+
+    # ── 15b: Exactly five fields ────────────────────────────────────────
+
+    _EXACT_FIVE_FIELDS = frozenset({
+        "provider_id",
+        "executable",
+        "permission_mode",
+        "allowed_tools",
+        "disallowed_tools",
+    })
+
+    _FORBIDDEN_SIXTH = frozenset({
+        "cwd", "workspace", "prompt", "timeout", "model", "model_id",
+        "effort", "env", "env_overrides", "api_key", "token",
+        "session_id", "resume_id", "retry", "slot", "lease",
+        "persistence_path",
+    })
+
+    def test_tc138_exact_five_fields_declared(self) -> None:
+        """§2.11.9 must list exactly five fields: provider_id,
+        executable, permission_mode, allowed_tools, disallowed_tools."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        for field in sorted(self._EXACT_FIVE_FIELDS):
+            self.assertIn(
+                field,
+                section,
+                f"§2.11.9 must declare field '{field}'",
+            )
+
+    def test_tc138_forbids_sixth_field_cwd_secret_model(self) -> None:
+        """§2.11.9 must explicitly forbid cwd, workspace, prompt,
+        timeout, model, secrets, session, persistence from
+        ClaudeCodeProvider fields."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        for field in sorted(self._FORBIDDEN_SIXTH):
+            self.assertIn(
+                field,
+                section,
+                f"§2.11.9 must forbid '{field}' as a provider field",
+            )
+
+    def test_tc138_env_overrides_is_invocation_not_provider_field(self) -> None:
+        """§2.11.9 must state env_overrides is a fixed
+        AgentCliInvocation value, not a sixth provider field."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "not a sixth" in target
+            or "not a provider field" in target
+            or "fixed value on the generated" in target,
+            "§2.11.9 must state env_overrides is not a provider field",
+        )
+
+    # ── 15c: __all__ and _CONTROL_PROMPT ─────────────────────────────────
+
+    def test_tc138_exact_all_claudecodeprovider(self) -> None:
+        """§2.11.9 must freeze __all__ = ['ClaudeCodeProvider']."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            '__all__ = ["ClaudeCodeProvider"]',
+            section,
+            "§2.11.9 must freeze exact __all__",
+        )
+
+    def test_tc138_control_prompt_is_private_not_in_all(self) -> None:
+        """§2.11.9 must show _CONTROL_PROMPT as private, not in __all__."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "_CONTROL_PROMPT",
+            section,
+            "§2.11.9 must define _CONTROL_PROMPT",
+        )
+        # Must be private (leading underscore) and not in __all__.
+        self.assertIn(
+            "private",
+            section.lower(),
+            "§2.11.9 must state _CONTROL_PROMPT is private",
+        )
+
+    # ── 15d: build_invocation signature ──────────────────────────────────
+
+    def test_tc138_build_invocation_returns_agent_cli_invocation(self) -> None:
+        """§2.11.9 must define build_invocation(request) -> AgentCliInvocation."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "build_invocation",
+            section,
+            "§2.11.9 must define build_invocation method",
+        )
+        self.assertIn(
+            "DispatchRequest",
+            section,
+            "§2.11.9 must show DispatchRequest parameter",
+        )
+        self.assertIn(
+            "AgentCliInvocation",
+            section,
+            "§2.11.9 must show AgentCliInvocation return type",
+        )
+
+    # ── 15e: ValueError semantics ────────────────────────────────────────
+
+    def test_tc138_construction_rejection_uses_valueerror(self) -> None:
+        """§2.11.9 must state construction rejects illegal input with
+        ValueError."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "ValueError",
+            section,
+            "§2.11.9 must use ValueError for construction rejection",
+        )
+
+    def test_tc138_build_invocation_rejection_uses_valueerror(self) -> None:
+        """§2.11.9 must state build_invocation raises ValueError for
+        unmappable request fields."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "build_invocation" in target and "valueerror" in target,
+            "§2.11.9 must state build_invocation uses ValueError",
+        )
+
+    def test_tc138_no_parallel_exception_hierarchy(self) -> None:
+        """§2.11.9 must state TC-13.8 does NOT introduce a parallel
+        public exception hierarchy."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        # Text may be split across lines — normalize whitespace.
+        target = " ".join(section.split())
+        self.assertIn(
+            "does **not** introduce a parallel public exception hierarchy",
+            target,
+            "§2.11.9 must state TC-13.8 does NOT introduce a parallel "
+            "exception hierarchy",
+        )
+
+    def test_tc138_gateway_wraps_provider_exceptions(self) -> None:
+        """§2.11.9 must state Gateway wraps provider ValueError into
+        DispatchInvocationError."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "DispatchInvocationError",
+            section,
+            "§2.11.9 must reference DispatchInvocationError wrapping",
+        )
+
+    # ── 15f: Executable precise rules ────────────────────────────────────
+
+    def test_tc138_executable_allows_ordinary_spaces(self) -> None:
+        """§2.11.9 must state executable paths may contain ordinary
+        spaces (e.g. Windows paths)."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "program files" in target
+            or "ordinary space" in target
+            or "c:\\program files" in target,
+            "§2.11.9 must allow ordinary spaces in executable paths",
+        )
+
+    def test_tc138_executable_forbids_nul_cr_lf(self) -> None:
+        """§2.11.9 must forbid NUL, CR, LF in executable."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "NUL",
+            section,
+            "§2.11.9 must forbid NUL in executable",
+        )
+        self.assertIn(
+            "CR",
+            section,
+            "§2.11.9 must forbid CR in executable",
+        )
+        self.assertIn(
+            "LF",
+            section,
+            "§2.11.9 must forbid LF in executable",
+        )
+
+    def test_tc138_executable_forbids_leading_trailing_whitespace(self) -> None:
+        """§2.11.9 must forbid leading/trailing whitespace in
+        executable."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "leading or trailing" in target
+            or "leading and trailing" in target
+            or "not contain leading" in target,
+            "§2.11.9 must forbid leading/trailing whitespace in executable",
+        )
+
+    def test_tc138_provider_does_not_resolve_executable(self) -> None:
+        """§2.11.9 must state provider does not call shutil.which or
+        shlex.split."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "shutil.which" in target or "shlex.split" in target,
+            "§2.11.9 must state provider does not resolve executable",
+        )
+
+    # ── 15g: Tool argv serialization ────────────────────────────────────
+
+    def test_tc138_tool_flag_exact_casing(self) -> None:
+        """§2.11.4 must use exact flag casing --allowedTools and
+        --disallowedTools."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.4")
+        self.assertIsNotNone(section, "ADR must contain §2.11.4")
+        self.assertIn(
+            "--allowedTools",
+            section,
+            "§2.11.4 must use --allowedTools (exact casing)",
+        )
+        self.assertIn(
+            "--disallowedTools",
+            section,
+            "§2.11.4 must use --disallowedTools (exact casing)",
+        )
+
+    def test_tc138_tool_allowed_block_before_disallowed(self) -> None:
+        """§2.11.4 must state allowed block precedes disallowed block
+        in argv."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.4")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "allowed block always precedes" in target
+            or "allowed block" in target and "precedes" in target
+            or ("precedes" in target and "disallowed" in target),
+            "§2.11.4 must state allowed block precedes disallowed block",
+        )
+
+    def test_tc138_single_flag_per_tool_block(self) -> None:
+        """§2.11.4 must state flag is emitted once per block, not
+        repeated per tool."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.4")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "flag is emitted once" in target
+            or "not repeated per tool" in target
+            or "not repeated" in target,
+            "§2.11.4 must state flag is not repeated per tool",
+        )
+
+    def test_tc138_tool_expressions_are_separate_argv_elements(self) -> None:
+        """§2.11.4 must show each tool expression is a separate argv
+        element."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.4")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "separate `argv` element" in section
+            or "separate argv element" in target
+            or "not joined" in target,
+            "§2.11.4 must state tools are separate argv elements",
+        )
+
+    def test_tc138_empty_tool_tuple_omits_block(self) -> None:
+        """§2.11.4 must state empty tuple omits the corresponding flag
+        block entirely."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.4")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "omitted entirely" in target
+            or "omitted" in target,
+            "§2.11.4 must state empty tuple omits flag block",
+        )
+
+    def test_tc138_tool_argv_example_allowed_and_disallowed(self) -> None:
+        """§2.11.4 must contain a precise argv example with both
+        --allowedTools and --disallowedTools non-empty."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.4")
+        self.assertIsNotNone(section)
+        # Must show both flags in the same example.
+        self.assertIn(
+            'Bash(git status:*)',
+            section,
+            "§2.11.4 must contain example with Bash(git status:*)",
+        )
+        self.assertIn(
+            "WebFetch",
+            section,
+            "§2.11.4 must contain example disallowing WebFetch",
+        )
+
+    def test_tc138_tool_argv_example_allowed_only(self) -> None:
+        """§2.11.4 must contain a precise argv example where
+        disallowed_tools is empty and the block is omitted."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.4")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            'Bash(curl:*)',
+            section,
+            "§2.11.4 must contain example with Bash(curl:*) allowed only",
+        )
+        # The disallowed block should be absent in this example.
+        self.assertIn(
+            "disallowed_tools = ()",
+            section,
+            "§2.11.4 must show disallowed_tools = () example",
+        )
+
+    def test_tc138_tool_prompt_not_in_tool_flags(self) -> None:
+        """§2.11.4 must forbid task prompt in tool flags."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.4")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "task prompt" in target and "not" in target,
+            "§2.11.4 must forbid task prompt in tool flags",
+        )
+
+    # ── 15h: Tool intersection fail-closed ──────────────────────────────
+
+    def test_tc138_tool_intersection_must_be_disjoint(self) -> None:
+        """§2.11.8 must require set(allowed).isdisjoint(disallowed)."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.8")
+        self.assertIsNotNone(section, "ADR must contain §2.11.8")
+        self.assertIn(
+            "isdisjoint",
+            section,
+            "§2.11.8 must use isdisjoint for intersection check",
+        )
+
+    def test_tc138_tool_intersection_raises_valueerror(self) -> None:
+        """§2.11.8 must state non-disjoint tools raise ValueError at
+        construction."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.8")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "ValueError",
+            section,
+            "§2.11.8 must use ValueError for non-disjoint tools",
+        )
+
+    def test_tc138_tool_intersection_no_guessing_priority(self) -> None:
+        """§2.11.8 must forbid guessing deny-priority or allow-priority."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.8")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "not guess" in target
+            or "no guessing" in target
+            or "must **not** guess" in section
+            or ("deny" in target and "priority" in target and "not" in target),
+            "§2.11.8 must forbid guessing priority",
+        )
+
+    def test_tc138_tool_intersection_no_case_folding(self) -> None:
+        """§2.11.8 must forbid case-folding before intersection check."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.8")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "case-fold" in target or "case fold" in target
+            or "not case" in target,
+            "§2.11.8 must forbid case-folding in intersection check",
+        )
+
+    # ── 15i: No production provider module ──────────────────────────────
+
+    def test_tc138_no_production_provider_module_exists(self) -> None:
+        """claude_code_provider.py must NOT exist — TC-13.8 is still
+        Target."""
+        provider_path = (
+            SKILL_ROOT / "scripts" / "claude_code_provider.py"
+        )
+        self.assertFalse(
+            provider_path.exists(),
+            "claude_code_provider.py must NOT exist — TC-13.8 is Target",
+        )
+
+    # ── 15j: §2.11 and #30 still Target ─────────────────────────────────
+
+    def test_tc138_section_211_still_target(self) -> None:
+        """§2.11 heading must still say Target — no premature promotion."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        heading_m = re.search(
+            r"^### 2\.11\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m)
+        heading = heading_m.group(0)
+        self.assertIn(
+            "Target",
+            heading,
+            f"§2.11 heading must still say Target, got: {heading.strip()!r}",
+        )
+        self.assertNotIn(
+            "Current",
+            heading,
+            f"§2.11 heading must NOT say Current, got: {heading.strip()!r}",
+        )
+
+    def test_tc138_row_30_still_target(self) -> None:
+        """ADR Interface Status #30 must still be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        row_30 = None
+        for row in rows:
+            number_cell = self._resolve_col(row, "#")
+            if number_cell == "30":
+                row_30 = row
+                break
+        self.assertIsNotNone(row_30)
+        status = self._resolve_col(row_30, "Status")
+        self.assertIn("Target", status,
+                      f"#30 must still be Target, got: {status}")
+
+    def test_tc138_row_14_tc139_still_target(self) -> None:
+        """ADR Interface Status row for TC-13.9 (WorkerAdapter) must
+        still be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        tc139_row = None
+        for row in rows:
+            impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell)
+            if "TC-13.9" in task_ids:
+                tc139_row = row
+                break
+        self.assertIsNotNone(tc139_row,
+                             "ADR must contain row for TC-13.9")
+        status = self._resolve_col(tc139_row, "Status")
+        self.assertIn("Target", status,
+                      f"TC-13.9 must still be Target, got: {status}")
+        self.assertNotIn("Current", status,
+                         "TC-13.9 must NOT be Current")
+
+    # ── 15k: No Codex provider started ──────────────────────────────────
+
+    def test_tc138_no_codex_provider_started(self) -> None:
+        """codex_code_provider.py must NOT exist — Codex is not started."""
+        codex_path = (
+            SKILL_ROOT / "scripts" / "codex_code_provider.py"
+        )
+        self.assertFalse(
+            codex_path.exists(),
+            "codex_code_provider.py must NOT exist",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
