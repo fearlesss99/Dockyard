@@ -5274,6 +5274,145 @@ class ReleaseSmokeTests(unittest.TestCase):
             "§2.5.6 must state per-worktree limits are per-WorkerKind",
         )
 
+    # ── TC-13.10a acquire duplicate-pair rules (post-remediation) ────────
+
+    def test_tc1310a_subsections_are_exactly_1_through_16(self) -> None:
+        """§2.5 subsections must be exactly 2.5.1 through 2.5.16, contiguous."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        import re as _re
+        found = sorted(
+            int(m.group(1))
+            for m in _re.finditer(r"^#### 2\.5\.(\d+)\s", adr_text, _re.MULTILINE)
+        )
+        self.assertEqual(
+            found,
+            list(range(1, 17)),
+            "§2.5 must have exactly subsections 1–16, contiguous, no gaps",
+        )
+
+    def test_tc1310a_no_section_2517(self) -> None:
+        """§2.5.17 must NOT exist."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        import re as _re
+        m = _re.search(r"^#### 2\.5\.17\s", adr_text, _re.MULTILINE)
+        self.assertIsNone(m, "§2.5.17 must not exist")
+
+    def test_tc1310a_paragraph_marker_range(self) -> None:
+        """The Frozen Contract paragraph must state §2.5.1–§2.5.16."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        self.assertIn("§2.5.1–§2.5.16", adr_text,
+                      "Frozen contract paragraph must reference §2.5.1–§2.5.16")
+        self.assertNotIn("§2.5.17", adr_text,
+                         "Frozen contract paragraph must NOT reference §2.5.17")
+
+    def test_tc1310a_duplicate_active_acquire_must_fail(self) -> None:
+        """§2.5.6: same (worker_kind, canonical_worktree) active pair must
+        get WorkerSlotCapacityError, not a second slot."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.6")
+        self.assertIsNotNone(section)
+        self.assertIn("WorkerSlotCapacityError", section,
+                      "§2.5.6 must use WorkerSlotCapacityError for duplicate active pair")
+        target = _strip_md_fmt(section.lower())
+        self.assertIn("not return the existing lease", target)
+
+    def test_tc1310a_duplicate_active_acquire_does_not_occupy_second_slot(
+        self,
+    ) -> None:
+        """§2.5.6: duplicate active acquire must not occupy a second slot."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.6")
+        self.assertIsNotNone(section)
+        target = _strip_md_fmt(section.lower())
+        self.assertIn("not occupy a second slot", target)
+
+    def test_tc1310a_duplicate_active_acquire_does_not_increment_epoch(
+        self,
+    ) -> None:
+        """§2.5.6: duplicate active acquire must not increment any epoch."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.6")
+        self.assertIsNotNone(section)
+        target = _strip_md_fmt(section.lower())
+        self.assertIn("not increment any epoch", target)
+
+    def test_tc1310a_duplicate_active_acquire_does_not_write_store(
+        self,
+    ) -> None:
+        """§2.5.6: duplicate active acquire must not write the store file."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.6")
+        self.assertIsNotNone(section)
+        target = _strip_md_fmt(section.lower())
+        self.assertIn("not write the store file", target)
+
+    def test_tc1310a_expired_pair_cleared_then_reacquire_allowed(self) -> None:
+        """§2.5.6: expired pair is cleaned during stale cleanup, then
+        acquire proceeds normally."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.6")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertIn("stale lease is removed", target)
+
+    def test_tc1310a_expired_pair_same_slot_epoch_incremented(self) -> None:
+        """§2.5.6: re-using the same stable slot_id after expiry increments
+        the epoch from the previous value."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.6")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertIn("epoch is incremented from the previous epoch", target)
+
+    def test_tc1310a_two_worktrees_fill_two_global_slots(self) -> None:
+        """§2.5.6: two distinct worktrees for same WorkerKind can occupy
+        both global slots."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.6")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "two different canonical worktrees" in target
+            or "two distinct worktrees" in target
+            or "both global slots" in target,
+            "§2.5.6 must allow two worktrees to fill both global slots",
+        )
+
+    def test_tc1310a_third_worktree_global_capacity(self) -> None:
+        """§2.5.6: a third distinct worktree for same WorkerKind →
+        WorkerSlotCapacityError (global)."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.6")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertIn("third distinct worktree", target)
+
+    def test_tc1310a_different_worker_kind_same_worktree_no_block(self) -> None:
+        """§2.5.6: different WorkerKind leases on the same worktree do
+        NOT block each other."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.6")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "not block each other" in target
+            or "do not block" in target
+            or "does not block" in target,
+            "§2.5.6 must state different WorkerKinds do not block each other on same worktree",
+        )
+
+    def test_tc1310a_no_old_second_call_acquires_different_slot(self) -> None:
+        """§2.5.6 must NOT contain the old wording 'a second call with
+        the same arguments acquires a different slot'."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.6")
+        self.assertIsNotNone(section)
+        self.assertNotIn(
+            "a second call with the same arguments acquires a different slot",
+            section,
+            "§2.5.6 must NOT contain the old duplicate-acquire wording",
+        )
+
     def test_tc1310a_release_validates_all_six_identity_fields(self) -> None:
         """§2.5.7 release must validate all six identity fields."""
         adr_text = self._adr_path().read_text(encoding="utf-8")

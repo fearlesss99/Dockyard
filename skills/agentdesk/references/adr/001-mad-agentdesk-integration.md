@@ -439,7 +439,7 @@ consumes the policy's `BudgetResult`; this section describes the
 
 ### 2.5 Worker Slot Lease (Target — TC-13.10)
 
-> **Frozen Contract — TC-13.10a.**  Subsections §2.5.1–§2.5.17 below are
+> **Frozen Contract — TC-13.10a.**  Subsections §2.5.1–§2.5.16 below are
 > the frozen contract for ``agentdesk.worker-slot-lease/v1``.  The
 > production implementation is split across TC-13.10b (data model,
 > validation, runtime store, atomic I/O) and TC-13.10c (acquire / release
@@ -650,10 +650,40 @@ unlock
    ``advanced_agent`` lease on the same worktree.
 4. When no free slot exists for the requested ``WorkerKind`` →
    ``WorkerSlotCapacityError``.
-5. Acquire is **not** idempotent — a second call with the same arguments
-   acquires a different slot (if one is free) and gets a different
-   ``lease_id`` and ``lease_epoch``.  Callers must guard against
-   double-acquire if they need idempotency.
+5. Acquire must reject a duplicate active pair with ``WorkerSlotCapacityError``
+   (per-worktree) — see the full duplicate rules below.
+6. Two different canonical worktrees for the same ``WorkerKind`` may occupy
+   both global slots for that tier.
+7. A third distinct worktree for the same ``WorkerKind`` → global capacity
+   reached → ``WorkerSlotCapacityError``.
+8. Different ``WorkerKind`` leases on the same canonical worktree do **not**
+   block each other; each operates under its own independent per-worktree
+   limit.
+
+**Duplicate active-pair rules (frozen):**
+
+When ``acquire`` finds a matching ``(worker_kind, canonical_worktree)``
+pair that is **not** expired after stale cleanup, it must:
+
+* reject the acquire with ``WorkerSlotCapacityError``;
+* **not** return the existing lease;
+* **not** create a new lease;
+* **not** occupy a second slot;
+* **not** increment any epoch in ``slot_epochs``;
+* **not** update ``updated_at``;
+* **not** write the store file — the original file bytes are unchanged.
+
+When the matching pair **was** present but expired before stale cleanup:
+
+* the stale lease is removed during cleanup;
+* the acquire proceeds normally (lowest-numbered free stable slot for
+  the ``WorkerKind``);
+* if the re-used slot is the same stable ``slot_id`` as the expired
+  lease, its epoch is incremented from the previous epoch value
+  (retained in ``slot_epochs``).
+
+Acquire does **not** offer idempotent replay — a second active acquire
+is a definite capacity error, never a silent success.
 
 ---
 
