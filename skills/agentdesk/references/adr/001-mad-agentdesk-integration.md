@@ -679,9 +679,10 @@ today.
 ### 2.10 DispatcherAgentGateway — Frozen Contract (Current — TC-13.7)
 
 TC-13.7 defines an **execution-only** boundary for a single agent CLI
-subprocess dispatch.  This section is the Frozen Contract — the freeze
-of all TC-13.7 public interfaces — and does **not**
-mark TC-13.7 as Current.
+subprocess dispatch.  This section preserves the Frozen Contract — the
+frozen TC-13.7 public interfaces.  TC-13.7 is now **Current**: a
+matching production module (`dispatcher_gateway.py`) and test suite
+exist, and the DispatcherAgentGateway interface status is Current.
 
 TC-13.7 freezes:
 

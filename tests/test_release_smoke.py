@@ -2373,6 +2373,195 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertNotIn("mad_gateway", src)
         self.assertNotIn("mad_refs", src)
 
+    # -- Item 13: TC-13.7 Current status consistency regression ----------
+
+    def test_tc137_section_210_body_does_not_contain_stale_freezing_language(self) -> None:
+        """§2.10 body must NOT contain 'does not mark TC-13.7 as Current'
+        or equivalent stale wording — scoped strictly to the §2.10
+        subsection body."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section, "ADR must contain §2.10")
+        # Stale frozen-contract language that was removed.
+        self.assertNotIn(
+            "does not mark TC-13.7 as Current",
+            section,
+            "§2.10 must NOT contain 'does not mark TC-13.7 as Current'",
+        )
+        self.assertNotIn(
+            "does **not** mark TC-13.7 as Current",
+            section,
+            "§2.10 must NOT contain 'does **not** mark TC-13.7 as Current'",
+        )
+        # Equivalent patterns: "TC-13.7 has not yet been"
+        self.assertNotIn(
+            "has not yet been",
+            section,
+            "§2.10 must NOT contain 'has not yet been' stale wording",
+        )
+        self.assertNotIn(
+            "is not yet Current",
+            section,
+            "§2.10 must NOT contain 'is not yet Current' stale wording",
+        )
+        self.assertNotIn(
+            "not yet marked Current",
+            section,
+            "§2.10 must NOT contain 'not yet marked Current' stale wording",
+        )
+
+    def test_tc137_section_210_body_asserts_current_status(self) -> None:
+        """§2.10 body must affirm TC-13.7 is Current with production
+        module and test suite — scoped to the §2.10 subsection."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section, "ADR must contain §2.10")
+        self.assertIn(
+            "Current",
+            section,
+            "§2.10 body must contain 'Current'",
+        )
+        # Must reference the production module or test suite as evidence.
+        self.assertIn(
+            "dispatcher_gateway.py",
+            section,
+            "§2.10 must reference dispatcher_gateway.py as production evidence",
+        )
+        # The Frozen Contract language must still be present — we're
+        # preserving the contract, just updating the status marker.
+        self.assertIn(
+            "Frozen Contract",
+            section,
+            "§2.10 must preserve 'Frozen Contract' language",
+        )
+
+    def test_interface_status_row_30_claude_cli_is_target(self) -> None:
+        """ADR Interface Status row #30 (Claude Code CLI contract, TC-13.8)
+        must be Target — NOT Current."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        tc138_row = None
+        for row in rows:
+            impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell)
+            if "TC-13.8" in task_ids:
+                tc138_row = row
+                break
+
+        self.assertIsNotNone(
+            tc138_row,
+            "ADR Interface Status must contain row #30 Implemented-by TC-13.8",
+        )
+        status_cell = self._resolve_col(tc138_row, "Status")
+        self.assertIn(
+            "Target",
+            status_cell,
+            f"ADR Interface Status #30 (TC-13.8) must be Target, "
+            f"got status={status_cell!r}",
+        )
+        self.assertNotIn(
+            "Current",
+            status_cell,
+            "ADR Interface Status #30 (TC-13.8) must NOT be marked Current",
+        )
+
+    def test_interface_status_row_30_claude_cli_row_number(self) -> None:
+        """Verify row #30 in the Interface Status table is Claude Code CLI
+        contract with TC-13.8 — check the row number cell directly."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        # Find the row whose first column (the row number) is exactly "30".
+        row_30 = None
+        for row in rows:
+            number_cell = self._resolve_col(row, "#")
+            if number_cell == "30":
+                row_30 = row
+                break
+
+        self.assertIsNotNone(
+            row_30,
+            "ADR Interface Status must contain a row numbered 30",
+        )
+        # Verify this is the Claude Code CLI contract row.
+        desc_or_name = self._resolve_col(
+            row_30, "Interface", "Description", "Desc"
+        )
+        self.assertIn(
+            "Claude",
+            desc_or_name,
+            f"ADR Interface Status row #30 must be Claude Code CLI, "
+            f"got: {desc_or_name!r}",
+        )
+        # Verify status is Target.
+        status_cell = self._resolve_col(row_30, "Status")
+        self.assertIn(
+            "Target",
+            status_cell,
+            f"ADR Interface Status row #30 must be Target, "
+            f"got status={status_cell!r}",
+        )
+        # Verify TC-13.8 is in the Implemented-by cell.
+        impl_cell = self._resolve_col(row_30, "Implemented by", "Impl", "Notes")
+        self.assertIn(
+            "TC-13.8",
+            impl_cell,
+            f"ADR Interface Status row #30 must reference TC-13.8, "
+            f"got: {impl_cell!r}",
+        )
+
+    def test_tc138_tc139_not_prematurely_marked_current_in_table(self) -> None:
+        """TC-13.8 and TC-13.9 must NOT have 'Current' status in any
+        Interface Status row — scoped to the parsed table, not full-text
+        fuzzy match."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        protected_ids = {"TC-13.8", "TC-13.9"}
+        for row in rows:
+            impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            task_ids = set(re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell))
+            if not (task_ids & protected_ids):
+                continue
+            status_cell = self._resolve_col(row, "Status")
+            self.assertNotIn(
+                "Current",
+                status_cell,
+                f"TC-{', '.join(sorted(task_ids & protected_ids))} "
+                f"must NOT be Current in row: {row}",
+            )
+
+    def test_tc138_tc139_sections_not_marked_current(self) -> None:
+        """§2.1 (TC-13.8 target) and §2.4 (TC-13.9 target) headings
+        must NOT say Current — scoped to the heading line regex."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+
+        # §2.1 and §2.4 are Target sections.  They must not say Current.
+        for section_num in ("2.1", "2.4"):
+            heading_m = re.search(
+                rf"^### {re.escape(section_num)}\s.*$",
+                adr_text,
+                re.MULTILINE,
+            )
+            self.assertIsNotNone(
+                heading_m,
+                f"ADR must have a §{section_num} heading",
+            )
+            heading = heading_m.group(0)
+            self.assertNotIn(
+                "Current",
+                heading,
+                f"§{section_num} heading must NOT say Current, "
+                f"got: {heading.strip()!r}",
+            )
+            self.assertIn(
+                "Target",
+                heading,
+                f"§{section_num} heading must say Target, "
+                f"got: {heading.strip()!r}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
