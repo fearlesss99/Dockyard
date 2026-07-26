@@ -2511,13 +2511,13 @@ class ReleaseSmokeTests(unittest.TestCase):
             f"got: {impl_cell!r}",
         )
 
-    def test_tc138_tc139a_not_prematurely_marked_current_in_table(self) -> None:
-        """TC-13.9a must NOT have 'Current' status in any
-        Interface Status row — TC-13.8 is now Current."""
+    def test_tc139c_not_prematurely_marked_current_in_table(self) -> None:
+        """TC-13.9c must NOT have 'Current' status in any
+        Interface Status row — TC-13.9b is now Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
-        protected_ids = {"TC-13.9a"}
+        protected_ids = {"TC-13.9c"}
         for row in rows:
             impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
             task_ids = set(re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell))
@@ -2531,9 +2531,9 @@ class ReleaseSmokeTests(unittest.TestCase):
                 f"must NOT be Current in row: {row}",
             )
 
-    def test_tc138_tc139a_sections_not_marked_current(self) -> None:
-        """§2.1 (MAD target) and §2.13 (TC-13.9a target) headings
-        must NOT say Current — §2.11 (TC-13.8) is now Current."""
+    def test_target_sections_not_marked_current(self) -> None:
+        """§2.1 and §2.4 are Target sections and must not say Current.
+        §2.13 is now Current (TC-13.9b)."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
 
         # §2.1 and §2.4 are Target sections.  They must not say Current.
@@ -2560,6 +2560,15 @@ class ReleaseSmokeTests(unittest.TestCase):
                 f"§{section_num} heading must say Target, "
                 f"got: {heading.strip()!r}",
             )
+
+        # §2.13 should now be Current.
+        heading_213_m = re.search(
+            r"^### 2\.13\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_213_m)
+        heading_213 = heading_213_m.group(0)
+        self.assertIn("Current", heading_213,
+                      f"§2.13 must now say Current, got: {heading_213.strip()!r}")
 
     # -- Item 14: TC-13.8 Claude Code CLI Provider frozen contract --------
 
@@ -3133,42 +3142,16 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     # ── 14o: TC-13.9 still Target ───────────────────────────────────────
 
-    def test_tc138_tc139a_still_target_in_interface_status(self) -> None:
-        """TC-13.9a must still be Target in Interface Status table."""
+    def test_tc139c_target_in_future_task_cards(self) -> None:
+        """TC-13.9c must be in Future Task Cards §5."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
-        rows = self._parse_interface_status_table(adr_text)
-
-        tc139a_row = None
-        for row in rows:
-            impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
-            task_ids = re.findall(r"\bTC-\d+\.\d+[a-z]?\b", impl_cell)
-            if "TC-13.9a" in task_ids:
-                tc139a_row = row
-                break
-
-        # Fallback: also search for "TC-13.9a" in the Notes column
-        if tc139a_row is None:
-            for row in rows:
-                notes = self._resolve_col(row, "Notes")
-                if "TC-13.9a" in notes:
-                    tc139a_row = row
-                    break
-
-        self.assertIsNotNone(
-            tc139a_row,
-            "ADR Interface Status must contain a row for TC-13.9a",
-        )
-        status_cell = self._resolve_col(tc139a_row, "Status")
-        self.assertIn(
-            "Target",
-            status_cell,
-            f"TC-13.9a must still be Target, got: {status_cell}",
-        )
-        self.assertNotIn(
-            "Current",
-            status_cell,
-            "TC-13.9a must NOT be marked Current",
-        )
+        rows = self._parse_future_task_cards_table(adr_text)
+        task_ids_seen = {
+            self._resolve_col(row, "Task Card", "Task", "#")
+            for row in rows
+        }
+        self.assertIn("TC-13.9c", task_ids_seen,
+                      "ADR §5 Future Task Cards must contain TC-13.9c")
 
     # ── 14p: #29 DispatcherAgentGateway still Current ──────────────────
 
@@ -3781,34 +3764,33 @@ class ReleaseSmokeTests(unittest.TestCase):
             f"§2.11 heading must NOT say Target, got: {heading.strip()!r}",
         )
 
-    def test_tc138_row_14_tc139a_still_target(self) -> None:
-        """ADR Interface Status row for TC-13.9a (WorkerAdapter) must
-        still be Target."""
+    def test_tc139b_row_14_now_current(self) -> None:
+        """ADR Interface Status row for TC-13.9b (WorkerAdapter) must
+        now be Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
-        tc139a_row = None
+        tc139b_row = None
         for row in rows:
             impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
             task_ids = re.findall(r"\bTC-\d+\.\d+[a-z]?\b", impl_cell)
-            if "TC-13.9a" in task_ids:
-                tc139a_row = row
+            if "TC-13.9b" in task_ids:
+                tc139b_row = row
                 break
 
-        # Fallback: also search for "TC-13.9a" in the Notes column
-        if tc139a_row is None:
+        if tc139b_row is None:
             for row in rows:
                 notes = self._resolve_col(row, "Notes")
-                if "TC-13.9a" in notes:
-                    tc139a_row = row
+                if "TC-13.9b" in notes:
+                    tc139b_row = row
                     break
-        self.assertIsNotNone(tc139a_row,
-                             "ADR must contain row for TC-13.9a")
-        status = self._resolve_col(tc139a_row, "Status")
-        self.assertIn("Target", status,
-                      f"TC-13.9a must still be Target, got: {status}")
-        self.assertNotIn("Current", status,
-                         "TC-13.9a must NOT be Current")
+        self.assertIsNotNone(tc139b_row,
+                             "ADR must contain row for TC-13.9b")
+        status = self._resolve_col(tc139b_row, "Status")
+        self.assertIn("Current", status,
+                      f"TC-13.9b must now be Current, got: {status}")
+        self.assertNotIn("Target", status,
+                         f"TC-13.9b must NOT be Target, got: {status}")
 
     # — 15k: No Codex provider started —
 
@@ -3975,20 +3957,41 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIsNotNone(row_30)
         self.assertIn("Current", self._resolve_col(row_30, "Status"))
 
-    def test_tc138_tc139a_target_post_remediation(self) -> None:
-        """After remediation, TC-13.9a must still be Target."""
+    def test_tc139b_now_current_post_remediation(self) -> None:
+        """After remediation, TC-13.9b must now be Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
-        tc139a_row = None
+        tc139b_row = None
         for row in rows:
             impl = self._resolve_col(row, "Implemented by", "Impl", "Notes")
-            if "TC-13.9a" in re.findall(r"\bTC-\d+\.\d+[a-z]?\b", impl):
-                tc139a_row = row
+            if "TC-13.9b" in re.findall(r"\bTC-\d+\.\d+[a-z]?\b", impl):
+                tc139b_row = row
                 break
-        self.assertIsNotNone(tc139a_row)
-        status = self._resolve_col(tc139a_row, "Status")
-        self.assertIn("Target", status)
-        self.assertNotIn("Current", status)
+        # Fallback: search in Notes
+        if tc139b_row is None:
+            for row in rows:
+                notes = self._resolve_col(row, "Notes")
+                if "TC-13.9b" in notes:
+                    tc139b_row = row
+                    break
+        self.assertIsNotNone(tc139b_row,
+                             "ADR must contain row for TC-13.9b")
+        status = self._resolve_col(tc139b_row, "Status")
+        self.assertIn("Current", status)
+        self.assertNotIn("Target", status)
+
+    def test_tc139c_still_target(self) -> None:
+        """TC-13.9c must still be Target in Future Task Cards."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        by_id = {
+            self._resolve_col(row, "Task Card", "Task", "#"): row
+            for row in rows
+        }
+        tc139c = by_id.get("TC-13.9c")
+        self.assertIsNotNone(tc139c, "ADR §5 must contain TC-13.9c")
+        # TC-13.9c is a future task card — it does not have a dedicated
+        # Interface Status row.  Verify it's in §5 only.
 
     def test_tc138_production_file_now_exists(self) -> None:
         """claude_code_provider.py must now exist."""
@@ -4548,20 +4551,20 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIsNotNone(heading_m)
         self.assertIn("Current", heading_m.group(0))
 
-    def test_tc1383_tc139a_still_target(self) -> None:
-        """TC-13.9a must still be Target."""
+    def test_tc1383_tc139b_now_current(self) -> None:
+        """TC-13.9b must now be Current (production module exists)."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
-        tc139a_row = None
+        tc139b_row = None
         for row in rows:
             impl = self._resolve_col(row, "Implemented by", "Impl", "Notes")
-            if "TC-13.9a" in re.findall(r"\bTC-\d+\.\d+[a-z]?\b", impl):
-                tc139a_row = row
+            if "TC-13.9b" in re.findall(r"\bTC-\d+\.\d+[a-z]?\b", impl):
+                tc139b_row = row
                 break
-        self.assertIsNotNone(tc139a_row, "ADR must contain TC-13.9a row")
-        status = self._resolve_col(tc139a_row, "Status")
-        self.assertIn("Target", status)
-        self.assertNotIn("Current", status)
+        self.assertIsNotNone(tc139b_row, "ADR must contain TC-13.9b row")
+        status = self._resolve_col(tc139b_row, "Status")
+        self.assertIn("Current", status)
+        self.assertNotIn("Target", status)
 
     def test_tc1383_future_task_cards_has_1383_and_1384(self) -> None:
         """ADR §5 Future Task Cards must include TC-13.8.3 and
@@ -4617,8 +4620,8 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("concurrency slots deferred to TC-13.10", notes,
                       "Interface #14 must clarify concurrency slots belong to TC-13.10")
 
-    def test_tc139a_interface_row_14_still_target(self) -> None:
-        """Interface #14 must still be Target."""
+    def test_tc139a_interface_row_14_now_current(self) -> None:
+        """Interface #14 must now be Current (TC-13.9b)."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         row_14 = None
@@ -4628,23 +4631,26 @@ class ReleaseSmokeTests(unittest.TestCase):
                 break
         self.assertIsNotNone(row_14)
         status = self._resolve_col(row_14, "Status")
-        self.assertIn("Target", status)
-        self.assertNotIn("Current", status)
+        self.assertIn("Current", status)
+        self.assertNotIn("Target", status)
+        impl = self._resolve_col(row_14, "Implemented by", "Impl", "Notes")
+        self.assertIn("TC-13.9b", impl,
+                      f"Interface #14 must reference TC-13.9b, got: {impl}")
 
-    def test_tc139a_section_213_exists_and_is_target(self) -> None:
-        """§2.13 must exist and be marked Target (TC-13.9a)."""
+    def test_tc139a_section_213_exists_and_is_current(self) -> None:
+        """§2.13 must exist and be marked Current (TC-13.9b)."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         heading_m = re.search(
             r"^### 2\.13\s.*$", adr_text, re.MULTILINE,
         )
         self.assertIsNotNone(heading_m, "ADR must have a §2.13 heading")
         heading = heading_m.group(0)
-        self.assertIn("Target", heading,
-                      f"§2.13 heading must say Target, got: {heading.strip()!r}")
-        self.assertIn("TC-13.9a", heading,
-                      f"§2.13 heading must reference TC-13.9a, got: {heading.strip()!r}")
-        self.assertNotIn("Current", heading,
-                         f"§2.13 heading must NOT say Current, got: {heading.strip()!r}")
+        self.assertIn("Current", heading,
+                      f"§2.13 heading must say Current, got: {heading.strip()!r}")
+        self.assertIn("TC-13.9b", heading,
+                      f"§2.13 heading must reference TC-13.9b, got: {heading.strip()!r}")
+        self.assertNotIn("Target", heading,
+                         f"§2.13 heading must NOT say Target, got: {heading.strip()!r}")
 
     def test_tc139a_run_worker_four_exact_params(self) -> None:
         """§2.13.2 must define run_worker with exactly four parameters."""
@@ -4960,11 +4966,11 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("__all__", section,
                       "§2.13.3 must declare __all__ with exactly two symbols")
 
-    def test_tc139a_worker_adapter_py_does_not_exist_yet(self) -> None:
-        """worker_adapter.py must NOT exist — TC-13.9a is contract-only."""
-        self.assertFalse(
+    def test_tc139b_worker_adapter_py_exists(self) -> None:
+        """worker_adapter.py must now exist — TC-13.9b is Current."""
+        self.assertTrue(
             (SKILL_ROOT / "scripts" / "worker_adapter.py").is_file(),
-            "worker_adapter.py must NOT exist — TC-13.9a is contract freeze only",
+            "worker_adapter.py must exist — TC-13.9b is Current",
         )
 
     def test_tc139a_future_task_cards_has_139a_139b_139c(self) -> None:

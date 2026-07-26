@@ -24,7 +24,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 11 | AgentDesk event / outbox | **Current** | N/A (existing) | `agentdesk.state-event/v2`, `agentdesk.outbox-message/v2` |
 | 12 | AgentDesk double-commit protocol | **Current** | N/A (existing) | `implementation_commit` → `report_commit` |
 | 13 | AgentDesk MAD Decision Gateway | **Current** | TC-13.6 | Config-driven subprocess invocation of `mad` for planning/deliberation |
-| 14 | AgentDesk WorkerAdapter — four-tier Worker execution orchestration | **Target** | TC-13.9a | Basic/Standard/Advanced/Expert; WorkerKind + TaskDifficulty as independent inputs; provider/model from bindings only; budget computed, not enforced; concurrency slots deferred to TC-13.10 |
+| 14 | AgentDesk WorkerAdapter — four-tier Worker execution orchestration | **Current** | TC-13.9b | Basic/Standard/Advanced/Expert; WorkerKind + TaskDifficulty as independent inputs; provider/model from bindings only; budget computed, not enforced; concurrency slots deferred to TC-13.10 |
 | 15 | AgentDesk WorkerSlotLease | **Target** | TC-13.10 | `agentdesk.worker-slot-lease/v1` |
 | 16 | AgentDesk ControlPlaneTransitionService | **Target** | TC-13.11 | CAS-write tasks, immutable events, replayable outbox |
 | 17 | AgentDesk ApprovalGate | **Target** | TC-13.12 | TASK_APPROVAL with structured scope (dispatch/accept/integrate) |
@@ -42,7 +42,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 29 | AgentDesk DispatcherAgentGateway | **Current** | TC-13.7 | Frozen contract (§2.10); execution-only single-shot agent CLI boundary; depends on TC-13.4, TC-13.6 |
 | 30 | Claude Code CLI contract | **Current** | TC-13.8 | Public CLI interface contract for `claude` invocation; depends on TC-13.4 |
 | 31 | AgentDesk Codex CLI Provider | **Current** | TC-13.8.4 | Frozen contract §2.12 established by TC-13.8.3; production module implemented by TC-13.8.4 |
-| 32 | AgentDesk WorkerAdapter Core — Frozen Contract | **Target** | TC-13.9a | §2.13; run_worker(request, worker_kind, task_difficulty, providers) → WorkerResult; budget informational only; output remains opaque bytes; no retry/slot/lease/state writes |
+| 32 | AgentDesk WorkerAdapter Core — Frozen Contract | **Current** | TC-13.9b | §2.13; run_worker(request, worker_kind, task_difficulty, providers) → WorkerResult; budget informational only; output remains opaque bytes; no retry/slot/lease/state writes |
 
 ---
 
@@ -2567,7 +2567,7 @@ All of the above remain **Target** for their respective task cards.
 
 ---
 
-### 2.13 WorkerAdapter Core — Frozen Contract (Target — TC-13.9a)
+### 2.13 WorkerAdapter Core — Frozen Contract (Current — TC-13.9b)
 
 TC-13.9a freezes the **core execution orchestration** contract for
 `worker_adapter.py`.  It covers WorkerKind / TaskDifficulty separation,
@@ -2919,13 +2919,12 @@ concurrency fencing must not be blocked by output-decoding work.
 #### 2.13.14 Status
 
 * ADR Interface Status row #32 "AgentDesk WorkerAdapter Core — Frozen
-  Contract" is **Target** (TC-13.9a).
+  Contract" is **Current** (TC-13.9b).
 * This section (§2.13) is the Frozen Contract for TC-13.9a — it governs
-  future implementation (`worker_adapter.py`) and test work.
-* No production module exists yet — `worker_adapter.py` and
-  `test_worker_adapter.py` must not be created by TC-13.9a.
-* TC-13.9b (production implementation) and TC-13.9c (output decoding)
-  remain **Target**.
+  the implemented production module (`worker_adapter.py`) and test suite.
+* The production module `worker_adapter.py` and matching test suite
+  `test_worker_adapter.py` exist and are committed.
+* TC-13.9c (output decoding) remains **Target**.
 * TC-13.10, TC-13.11, TC-13.13, TC-13.14, and TC-13.18 remain **Target**.
 * All Current interfaces remain **Current**.
 
