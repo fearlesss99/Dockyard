@@ -979,10 +979,10 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     # -- 8e: New interfaces (TC-13.7/8) remain Target; TC-13.4 and TC-13.5 are now Current
 
-    STILL_TARGET_TC13_IDS = frozenset({"TC-13.8"})
+    STILL_TARGET_TC13_IDS = frozenset()
 
     def test_new_non_tc134_interfaces_remain_target(self) -> None:
-        """TC-13.7, TC-13.8 must still be Target.
+        """TC-13.7 must be Current; TC-13.9 must still be Target.
 
         TC-13.4 and TC-13.5 are now Current (completed), so they are
         excluded from this check.
@@ -2329,11 +2329,11 @@ class ReleaseSmokeTests(unittest.TestCase):
                       f"#29 must be Current, got: {status}")
 
     def test_tc137_tc138_139_still_target(self) -> None:
-        """TC-13.8 and TC-13.9 must still be Target."""
+        """TC-13.8 is now Current and TC-13.9 must still be Target."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
-        still_target = {"TC-13.8", "TC-13.9"}
+        still_target = {"TC-13.9"}
         for row in rows:
             impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
             task_ids = set(re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell))
@@ -2435,9 +2435,9 @@ class ReleaseSmokeTests(unittest.TestCase):
             "§2.10 must preserve 'Frozen Contract' language",
         )
 
-    def test_interface_status_row_30_claude_cli_is_target(self) -> None:
+    def test_interface_status_row_30_claude_cli_is_current(self) -> None:
         """ADR Interface Status row #30 (Claude Code CLI contract, TC-13.8)
-        must be Target — NOT Current."""
+        must now be Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
@@ -2455,15 +2455,15 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
         status_cell = self._resolve_col(tc138_row, "Status")
         self.assertIn(
-            "Target",
+            "Current",
             status_cell,
-            f"ADR Interface Status #30 (TC-13.8) must be Target, "
+            f"ADR Interface Status #30 (TC-13.8) must be Current, "
             f"got status={status_cell!r}",
         )
         self.assertNotIn(
-            "Current",
+            "Target",
             status_cell,
-            "ADR Interface Status #30 (TC-13.8) must NOT be marked Current",
+            "ADR Interface Status #30 (TC-13.8) must NOT be marked Target",
         )
 
     def test_interface_status_row_30_claude_cli_row_number(self) -> None:
@@ -2494,12 +2494,12 @@ class ReleaseSmokeTests(unittest.TestCase):
             f"ADR Interface Status row #30 must be Claude Code CLI, "
             f"got: {desc_or_name!r}",
         )
-        # Verify status is Target.
+        # Verify status is Current.
         status_cell = self._resolve_col(row_30, "Status")
         self.assertIn(
-            "Target",
+            "Current",
             status_cell,
-            f"ADR Interface Status row #30 must be Target, "
+            f"ADR Interface Status row #30 must be Current, "
             f"got status={status_cell!r}",
         )
         # Verify TC-13.8 is in the Implemented-by cell.
@@ -2512,13 +2512,12 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_tc138_tc139_not_prematurely_marked_current_in_table(self) -> None:
-        """TC-13.8 and TC-13.9 must NOT have 'Current' status in any
-        Interface Status row — scoped to the parsed table, not full-text
-        fuzzy match."""
+        """TC-13.9 must NOT have 'Current' status in any
+        Interface Status row — TC-13.8 is now Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
-        protected_ids = {"TC-13.8", "TC-13.9"}
+        protected_ids = {"TC-13.9"}
         for row in rows:
             impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
             task_ids = set(re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell))
@@ -2533,8 +2532,8 @@ class ReleaseSmokeTests(unittest.TestCase):
             )
 
     def test_tc138_tc139_sections_not_marked_current(self) -> None:
-        """§2.1 (TC-13.8 target) and §2.4 (TC-13.9 target) headings
-        must NOT say Current — scoped to the heading line regex."""
+        """§2.1 (MAD target) and §2.4 (TC-13.9 target) headings
+        must NOT say Current — §2.11 (TC-13.8) is now Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
 
         # §2.1 and §2.4 are Target sections.  They must not say Current.
@@ -2566,8 +2565,8 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     # ── 14a: §2.11 section existence and heading ──────────────────────────
 
-    def test_tc138_section_211_exists_and_is_target(self) -> None:
-        """ADR §2.11 must exist as an independent heading marked Target
+    def test_tc138_section_211_exists_and_is_current(self) -> None:
+        """ADR §2.11 must exist as an independent heading marked Current
         with TC-13.8."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "### 2.11")
@@ -2581,14 +2580,14 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIsNotNone(heading_m, "ADR must have a §2.11 heading")
         heading = heading_m.group(0)
         self.assertIn(
-            "Target",
-            heading,
-            f"§2.11 heading must say Target, got: {heading.strip()!r}",
-        )
-        self.assertNotIn(
             "Current",
             heading,
-            f"§2.11 heading must NOT say Current, got: {heading.strip()!r}",
+            f"§2.11 heading must say Current, got: {heading.strip()!r}",
+        )
+        self.assertNotIn(
+            "Target",
+            heading,
+            f"§2.11 heading must NOT say Target, got: {heading.strip()!r}",
         )
         self.assertIn(
             "TC-13.8",
@@ -2596,11 +2595,11 @@ class ReleaseSmokeTests(unittest.TestCase):
             f"§2.11 heading must reference TC-13.8, got: {heading.strip()!r}",
         )
 
-    # ── 14b: Interface Status #30 is Target ─────────────────────────────
+    # ── 14b: Interface Status #30 is Current ─────────────────────────────
 
-    def test_tc138_interface_status_row_30_is_target(self) -> None:
+    def test_tc138_interface_status_row_30_is_current(self) -> None:
         """ADR Interface Status row #30 (Claude Code CLI, TC-13.8) must
-        be Target."""
+        be Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
@@ -2618,15 +2617,15 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
         status_cell = self._resolve_col(tc138_row, "Status")
         self.assertIn(
-            "Target",
+            "Current",
             status_cell,
-            f"ADR Interface Status #30 (TC-13.8) must be Target, "
+            f"ADR Interface Status #30 (TC-13.8) must be Current, "
             f"got status={status_cell!r}",
         )
         self.assertNotIn(
-            "Current",
+            "Target",
             status_cell,
-            "ADR Interface Status #30 (TC-13.8) must NOT be marked Current",
+            "ADR Interface Status #30 (TC-13.8) must NOT be marked Target",
         )
 
     # ── 14c: AgentCliProvider reference and AgentCliInvocation fields ────
@@ -3664,42 +3663,81 @@ class ReleaseSmokeTests(unittest.TestCase):
             "§2.11.8 must forbid case-folding in intersection check",
         )
 
-    # ── 15i: No production provider module ──────────────────────────────
+    # ── 15i: Production provider module exists ──────────────────────────────
 
-    def test_tc138_no_production_provider_module_exists(self) -> None:
-        """claude_code_provider.py must NOT exist — TC-13.8 is still
-        Target."""
+    def test_tc138_production_provider_module_exists(self) -> None:
+        """claude_code_provider.py must exist — TC-13.8 is now Current."""
         provider_path = (
             SKILL_ROOT / "scripts" / "claude_code_provider.py"
         )
-        self.assertFalse(
-            provider_path.exists(),
-            "claude_code_provider.py must NOT exist — TC-13.8 is Target",
+        self.assertTrue(
+            provider_path.is_file(),
+            "claude_code_provider.py must exist — TC-13.8 is Current",
         )
 
-    # ── 15j: §2.11 and #30 still Target ─────────────────────────────────
-
-    def test_tc138_section_211_still_target(self) -> None:
-        """§2.11 heading must still say Target — no premature promotion."""
-        adr_text = self._adr_path().read_text(encoding="utf-8")
-        heading_m = re.search(
-            r"^### 2\.11\s.*$", adr_text, re.MULTILINE,
+    def test_tc138_test_file_exists(self) -> None:
+        """test_claude_code_provider.py must exist."""
+        test_path = (
+            REPO_ROOT / "tests" / "test_claude_code_provider.py"
         )
-        self.assertIsNotNone(heading_m)
-        heading = heading_m.group(0)
-        self.assertIn(
-            "Target",
-            heading,
-            f"§2.11 heading must still say Target, got: {heading.strip()!r}",
-        )
-        self.assertNotIn(
-            "Current",
-            heading,
-            f"§2.11 heading must NOT say Current, got: {heading.strip()!r}",
+        self.assertTrue(
+            test_path.is_file(),
+            "test_claude_code_provider.py must exist — TC-13.8 is Current",
         )
 
-    def test_tc138_row_30_still_target(self) -> None:
-        """ADR Interface Status #30 must still be Target."""
+    def test_tc138_module_exports_claude_code_provider(self) -> None:
+        """Module must export ClaudeCodeProvider."""
+        import sys as _sys
+        _sys.path.insert(0, str(SKILL_ROOT / "scripts"))
+        try:
+            import claude_code_provider as _ccp
+            self.assertTrue(hasattr(_ccp, "ClaudeCodeProvider"),
+                            "Module must export ClaudeCodeProvider")
+            self.assertEqual(_ccp.__all__, ["ClaudeCodeProvider"])
+        finally:
+            _sys.path.pop(0)
+
+    def test_tc138_dataclass_exact_five_fields(self) -> None:
+        """ClaudeCodeProvider must have exactly five fields."""
+        from dataclasses import fields as _fields
+        import sys as _sys
+        _sys.path.insert(0, str(SKILL_ROOT / "scripts"))
+        try:
+            import claude_code_provider as _ccp
+            field_names = {f.name for f in _fields(_ccp.ClaudeCodeProvider)}
+            self.assertSetEqual(
+                field_names,
+                {"provider_id", "executable", "permission_mode",
+                 "allowed_tools", "disallowed_tools"},
+            )
+        finally:
+            _sys.path.pop(0)
+
+    def test_tc138_control_prompt_not_in_fields_or_all(self) -> None:
+        """_CONTROL_PROMPT must not be a dataclass field or in __all__."""
+        from dataclasses import fields as _fields
+        import sys as _sys
+        _sys.path.insert(0, str(SKILL_ROOT / "scripts"))
+        try:
+            import claude_code_provider as _ccp
+            field_names = {f.name for f in _fields(_ccp.ClaudeCodeProvider)}
+            self.assertNotIn("_CONTROL_PROMPT", field_names)
+            self.assertNotIn("_CONTROL_PROMPT", _ccp.__all__)
+        finally:
+            _sys.path.pop(0)
+
+    def test_tc138_top_level_import_correct(self) -> None:
+        """Production module must use top-level 'from dispatcher_gateway import'."""
+        src = (
+            SKILL_ROOT / "scripts" / "claude_code_provider.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("from dispatcher_gateway import", src)
+        self.assertNotIn("from .dispatcher_gateway import", src)
+
+    # ── 15j: #30 and §2.11 now Current ─────────────────────────────────
+
+    def test_tc138_interface_status_row_30_is_current(self) -> None:
+        """ADR Interface Status #30 must now be Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
@@ -3711,8 +3749,29 @@ class ReleaseSmokeTests(unittest.TestCase):
                 break
         self.assertIsNotNone(row_30)
         status = self._resolve_col(row_30, "Status")
-        self.assertIn("Target", status,
-                      f"#30 must still be Target, got: {status}")
+        self.assertIn("Current", status,
+                      f"#30 must now be Current, got: {status}")
+        self.assertNotIn("Target", status,
+                         f"#30 must NOT be Target, got: {status}")
+
+    def test_tc138_section_211_is_current(self) -> None:
+        """§2.11 heading must now say Current."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        heading_m = re.search(
+            r"^### 2\.11\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m)
+        heading = heading_m.group(0)
+        self.assertIn(
+            "Current",
+            heading,
+            f"§2.11 heading must now say Current, got: {heading.strip()!r}",
+        )
+        self.assertNotIn(
+            "Target",
+            heading,
+            f"§2.11 heading must NOT say Target, got: {heading.strip()!r}",
+        )
 
     def test_tc138_row_14_tc139_still_target(self) -> None:
         """ADR Interface Status row for TC-13.9 (WorkerAdapter) must
@@ -3876,11 +3935,11 @@ class ReleaseSmokeTests(unittest.TestCase):
             "§2.11.9 must freeze __all__ with only ClaudeCodeProvider",
         )
 
-    # ── 16c: §2.11 and #30 still Target ────────────────────────────────
+    # ── 16c: §2.11 and #30 now Current ────────────────────────────────
 
-    def test_tc138_section_211_and_row_30_target_post_remediation(self) -> None:
-        """After remediation, §2.11 and Interface Status #30 must still
-        be Target."""
+    def test_tc138_section_211_and_row_30_current_post_remediation(self) -> None:
+        """After remediation, §2.11 and Interface Status #30 must now
+        be Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
 
         # §2.11 heading.
@@ -3888,7 +3947,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             r"^### 2\.11\s.*$", adr_text, re.MULTILINE,
         )
         self.assertIsNotNone(heading_m)
-        self.assertIn("Target", heading_m.group(0))
+        self.assertIn("Current", heading_m.group(0))
 
         # #30 in interface table.
         rows = self._parse_interface_status_table(adr_text)
@@ -3898,7 +3957,7 @@ class ReleaseSmokeTests(unittest.TestCase):
                 row_30 = row
                 break
         self.assertIsNotNone(row_30)
-        self.assertIn("Target", self._resolve_col(row_30, "Status"))
+        self.assertIn("Current", self._resolve_col(row_30, "Status"))
 
     def test_tc138_tc139_target_post_remediation(self) -> None:
         """After remediation, TC-13.9 must still be Target."""
@@ -3915,11 +3974,11 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("Target", status)
         self.assertNotIn("Current", status)
 
-    def test_tc138_production_file_still_absent(self) -> None:
-        """claude_code_provider.py must still NOT exist."""
-        self.assertFalse(
-            (SKILL_ROOT / "scripts" / "claude_code_provider.py").exists(),
-            "claude_code_provider.py must NOT exist",
+    def test_tc138_production_file_now_exists(self) -> None:
+        """claude_code_provider.py must now exist."""
+        self.assertTrue(
+            (SKILL_ROOT / "scripts" / "claude_code_provider.py").is_file(),
+            "claude_code_provider.py must exist — TC-13.8 is Current",
         )
 
 

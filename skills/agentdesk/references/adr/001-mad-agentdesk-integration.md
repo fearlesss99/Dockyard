@@ -40,7 +40,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 27 | AgentDesk shared core data types | **Current** | TC-13.4 | `TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind` enums; no budget calculation or WorkerAdapter implementation |
 | 28 | AgentDesk ContextBudgetPolicy | **Current** | TC-13.5.1 | Per-tier budget: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; min(floor %, cap); six-field BudgetResult; retains ≥35% reserved; depends on TC-13.4 |
 | 29 | AgentDesk DispatcherAgentGateway | **Current** | TC-13.7 | Frozen contract (§2.10); execution-only single-shot agent CLI boundary; depends on TC-13.4, TC-13.6 |
-| 30 | Claude Code CLI contract | **Target** | TC-13.8 | Public CLI interface contract for `claude` invocation; depends on TC-13.4 |
+| 30 | Claude Code CLI contract | **Current** | TC-13.8 | Public CLI interface contract for `claude` invocation; depends on TC-13.4 |
 
 ---
 
@@ -1150,13 +1150,13 @@ This section (§2.10) is now an implemented contract.
 * TC-13.7 is marked **Current** — ``dispatcher_gateway.py`` and matching
   tests are committed.
 
-### 2.11 Claude Code CLI Provider — Frozen Contract (Target — TC-13.8)
+### 2.11 Claude Code CLI Provider — Frozen Contract (Current — TC-13.8)
 
 TC-13.8 defines the **Claude Code CLI Provider** — a concrete
 `AgentCliProvider` adapter for the `claude` CLI.  This section is the
-Frozen Contract for TC-13.8 public interfaces.  TC-13.8 is **Target**:
-no production provider module exists yet; this contract governs all
-future implementation and test work.
+Frozen Contract for TC-13.8 public interfaces.  TC-13.8 is **Current**:
+the production provider module (`claude_code_provider.py`) and matching
+test suite (`test_claude_code_provider.py`) exist and are committed.
 
 ---
 
@@ -1796,12 +1796,14 @@ All of the above remain **Target** for their respective task cards.
 
 #### 2.11.15 Status
 
-* ADR Interface Status row #30 "Claude Code CLI contract" is **Target**.
+* ADR Interface Status row #30 "Claude Code CLI contract"
+  is **Current**.
 * This section (§2.11) is the Frozen Contract for TC-13.8 — it governs
-  all future implementation and test work.
+  future implementation and test work.
 * TC-13.7 and all prior Current interfaces remain **Current**.
-* TC-13.8 will become **Current** only when a matching production
-  provider module and complete test suite are committed.
+* TC-13.8 is **Current** — the production provider module
+  (`claude_code_provider.py`) and complete test suite
+  (`test_claude_code_provider.py`) are committed.
 
 ---
 
