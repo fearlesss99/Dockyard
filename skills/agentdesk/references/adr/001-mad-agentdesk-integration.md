@@ -37,7 +37,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 24 | AgentDesk HTML Dashboard | **Target** | TC-13.20 | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target → Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
 | 26 | `agentdesk.mad-refs/v1` runtime schema | **Target** | TC-13.6 | Gitignored runtime record of MAD invocations |
-| 27 | AgentDesk shared core data types | **Target** | TC-13.4 | `TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind` enums; no budget calculation or WorkerAdapter implementation |
+| 27 | AgentDesk shared core data types | **Current** | TC-13.4 | `TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind` enums; no budget calculation or WorkerAdapter implementation |
 | 28 | AgentDesk ContextBudgetPolicy | **Target** | TC-13.5 | Per-tier budget percentages; 15% / 30% / 50% / 65%; retains ≥35% reserved; depends on TC-13.4 |
 | 29 | AgentDesk DispatcherAgentGateway | **Target** | TC-13.7 | Config-driven subprocess dispatch via agent CLI; depends on TC-13.4, TC-13.6 |
 | 30 | Claude Code CLI contract | **Target** | TC-13.8 | Public CLI interface contract for `claude` invocation; depends on TC-13.4 |
@@ -466,7 +466,7 @@ through a **read-only StateProvider** (TC-13.17).  Neither writes to canonical
 state directly — all writes go through `ControlPlaneTransitionService`
 (TC-13.11).
 
-### 2.8 Shared Core Data Types (Target — TC-13.4)
+### 2.8 Shared Core Data Types (Current — TC-13.4)
 
 TC-13.4 freezes three shared enumerations used across the MAD–AgentDesk
 integration.  These types carry **no** provider identity, model ID,

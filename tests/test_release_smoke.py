@@ -975,9 +975,16 @@ class ReleaseSmokeTests(unittest.TestCase):
             "ADR §2.8.4 must reference TC-13.9 as out-of-scope",
         )
 
-    # -- 8e: New interfaces are Target, not Current ------------------------
+    # -- 8e: New interfaces (TC-13.5/7/8) remain Target; TC-13.4 is now Current
 
-    def test_new_tc13_interfaces_are_target_not_current(self) -> None:
+    STILL_TARGET_TC13_IDS = frozenset({"TC-13.5", "TC-13.7", "TC-13.8"})
+
+    def test_new_non_tc134_interfaces_remain_target(self) -> None:
+        """TC-13.5, TC-13.7, TC-13.8 must still be Target.
+
+        TC-13.4 is now Current (completed by this card), so it is
+        excluded from this check.
+        """
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         self.assertGreater(
@@ -989,24 +996,74 @@ class ReleaseSmokeTests(unittest.TestCase):
         for row in rows:
             impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
             task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)?)\b", impl_cell)
-            # Collect any new TC-13.x task IDs found in this row.
-            new_ids = [tid for tid in task_ids if tid in self.NEW_TC13_IDS]
-            if not new_ids:
+            still_target = [
+                tid for tid in task_ids if tid in self.STILL_TARGET_TC13_IDS
+            ]
+            if not still_target:
                 continue
 
             status_cell = self._resolve_col(row, "Status")
             self.assertIn(
                 "Target",
                 status_cell,
-                f"ADR Interface Status: {', '.join(new_ids)} "
+                f"ADR Interface Status: {', '.join(still_target)} "
                 f"must be Target, got status={status_cell!r}",
             )
             self.assertNotIn(
                 "Current",
                 status_cell,
-                f"ADR Interface Status: {', '.join(new_ids)} "
+                f"ADR Interface Status: {', '.join(still_target)} "
                 "must NOT be marked Current",
             )
+
+    def test_tc134_interface_row_is_now_current(self) -> None:
+        """TC-13.4's Interface Status row (#27) must be Current."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        tc134_row = None
+        for row in rows:
+            impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)?)\b", impl_cell)
+            if "TC-13.4" in task_ids:
+                tc134_row = row
+                break
+
+        self.assertIsNotNone(
+            tc134_row,
+            "ADR Interface Status must contain a row Implemented-by TC-13.4",
+        )
+        status_cell = self._resolve_col(tc134_row, "Status")
+        self.assertIn(
+            "Current",
+            status_cell,
+            f"ADR Interface Status #27 (TC-13.4) must be Current, "
+            f"got status={status_cell!r}",
+        )
+
+    def test_section_28_heading_is_current(self) -> None:
+        """§2.8 heading must read (Current — TC-13.4)."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.8")
+        self.assertIsNotNone(section, "ADR must contain §2.8")
+
+        # Re-read the heading line directly so we don't rely on
+        # section-body-only extraction.
+        heading_m = re.search(
+            r"^### 2\.8\s.*$", adr_text, re.MULTILINE
+        )
+        self.assertIsNotNone(heading_m, "ADR must have a §2.8 heading")
+        heading = heading_m.group(0)
+        self.assertIn(
+            "Current",
+            heading,
+            f"§2.8 heading must say Current, got: {heading.strip()!r}",
+        )
+        self.assertNotIn(
+            "Target",
+            heading,
+            f"§2.8 heading must NOT say Target, got: {heading.strip()!r}",
+        )
 
     # -- 8f: Interface Status rows for the new cards -----------------------
 
