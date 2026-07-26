@@ -59,6 +59,7 @@ class _CoreEnum(str, enum.Enum):
         return self.value
 
 
+@enum.unique
 class TaskDifficulty(_CoreEnum):
     """Task-intrinsic difficulty, independent of model tier or binding.
 
@@ -83,6 +84,7 @@ class TaskDifficulty(_CoreEnum):
     EXPERT = "expert"
 
 
+@enum.unique
 class MadDeliberationDepth(_CoreEnum):
     """Public deliberation depth recognised by MAD.
 
@@ -103,6 +105,7 @@ class MadDeliberationDepth(_CoreEnum):
     DEEP = "deep"
 
 
+@enum.unique
 class WorkerKind(_CoreEnum):
     """Logical Worker type for dispatch — no provider, model, or lease.
 

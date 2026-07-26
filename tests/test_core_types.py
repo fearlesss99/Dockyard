@@ -102,27 +102,41 @@ class ExactValueSetsTests(unittest.TestCase):
 
 
 class ExactMemberNameSetsTests(unittest.TestCase):
-    """Member names match the contract exactly — @unique guarantees no aliases."""
+    """Member names match the contract exactly — ``__members__`` must equal
+    the iteration count, proving that no aliases exist.
+    """
 
     def test_task_difficulty_member_names(self) -> None:
         expected = frozenset({"BASIC", "STANDARD", "ADVANCED", "EXPERT"})
-        actual = frozenset(m.name for m in TD)
-        self.assertSetEqual(expected, actual)
-        self.assertEqual(len(list(TD)), 4, "must have exactly 4 members, no aliases")
+        self.assertSetEqual(expected, set(TD.__members__))
+        self.assertEqual(
+            len(TD.__members__),
+            len(list(TD)),
+            "TaskDifficulty: __members__ count must equal iteration count — "
+            "any difference indicates an alias",
+        )
 
     def test_mad_deliberation_depth_member_names(self) -> None:
         expected = frozenset({"FAST", "BALANCED", "DEEP"})
-        actual = frozenset(m.name for m in MDD)
-        self.assertSetEqual(expected, actual)
-        self.assertEqual(len(list(MDD)), 3, "must have exactly 3 members, no aliases")
+        self.assertSetEqual(expected, set(MDD.__members__))
+        self.assertEqual(
+            len(MDD.__members__),
+            len(list(MDD)),
+            "MadDeliberationDepth: __members__ count must equal iteration "
+            "count — any difference indicates an alias",
+        )
 
     def test_worker_kind_member_names(self) -> None:
         expected = frozenset(
             {"BASIC_AGENT", "STANDARD_AGENT", "ADVANCED_AGENT", "EXPERT_AGENT"}
         )
-        actual = frozenset(m.name for m in WK)
-        self.assertSetEqual(expected, actual)
-        self.assertEqual(len(list(WK)), 4, "must have exactly 4 members, no aliases")
+        self.assertSetEqual(expected, set(WK.__members__))
+        self.assertEqual(
+            len(WK.__members__),
+            len(list(WK)),
+            "WorkerKind: __members__ count must equal iteration count — "
+            "any difference indicates an alias",
+        )
 
 
 # =========================================================================
@@ -389,6 +403,34 @@ class NoForbiddenExportsTests(unittest.TestCase):
                 f"core_types must not expose names containing '{fragment}': "
                 f"{offending}",
             )
+
+
+# =========================================================================
+# 11 — enum.unique duplicate-value smoke test (stdlib-only)
+# =========================================================================
+
+
+class EnumUniqueSmokeTest(unittest.TestCase):
+    """Prove that ``enum.unique`` detects duplicate values in a str,Enum.
+
+    This test defines a *temporary* enum with a duplicate value inside
+    the test method itself — it does not modify any production enum.
+    """
+
+    def test_duplicate_values_in_str_enum_triggers_value_error(self) -> None:
+        class _TestEnum(str, enum.Enum):
+            A = "dup"
+            B = "dup"
+
+        with self.assertRaises(
+            ValueError,
+            msg="enum.unique must raise ValueError for duplicate values",
+        ) as ctx:
+            enum.unique(_TestEnum)
+        msg = str(ctx.exception)
+        # Python's error message identifies the duplicate value.
+        self.assertIn("dup", msg,
+                      "error must name the duplicate value 'dup'")
 
 
 if __name__ == "__main__":
