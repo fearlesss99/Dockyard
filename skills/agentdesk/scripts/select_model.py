@@ -446,18 +446,7 @@ def _validated_bindings(
         if not isinstance(enabled, bool):
             raise SelectionError(f"{context}.enabled must be true or false")
 
-        context_window_tokens = raw.get("context_window_tokens")
-        if context_window_tokens is not None:
-            if not isinstance(context_window_tokens, int) or isinstance(context_window_tokens, bool):
-                raise SelectionError(
-                    f"{context}.context_window_tokens must be a positive integer"
-                )
-            if context_window_tokens < 1:
-                raise SelectionError(
-                    f"{context}.context_window_tokens must be >= 1, got {context_window_tokens!r}"
-                )
-
-        # Reject extra keys
+        # Reject extra / missing keys first — exact 7 fields required.
         actual_keys = set(raw)
         if actual_keys != BINDING_REQUIRED_KEYS:
             missing = sorted(BINDING_REQUIRED_KEYS - actual_keys)
@@ -470,6 +459,18 @@ def _validated_bindings(
             raise SelectionError(
                 f"{context} must contain exactly the 7 binding fields; "
                 + "; ".join(parts)
+            )
+
+        # All 7 fields present — validate context_window_tokens unconditionally.
+        context_window_tokens = raw["context_window_tokens"]
+        if isinstance(context_window_tokens, bool) or not isinstance(context_window_tokens, int):
+            raise SelectionError(
+                f"{context}.context_window_tokens must be a positive integer, "
+                f"got {context_window_tokens!r}"
+            )
+        if context_window_tokens < 1:
+            raise SelectionError(
+                f"{context}.context_window_tokens must be >= 1, got {context_window_tokens!r}"
             )
 
         bindings.append(

@@ -163,6 +163,21 @@ class BindingExactFieldsTests(unittest.TestCase):
         self.assertIn("context_window_tokens", msg)
         self.assertTrue("missing" in msg.lower() or "exactly the 7" in msg.lower())
 
+    def test_selector_rejects_null_context_window_tokens(self):
+        """null context_window_tokens rejected — exact 7 keys pass but value is null."""
+        binding = dict(_VALID_BINDING)
+        binding["context_window_tokens"] = None
+        doc = {
+            "schema_version": "agentdesk.model-bindings/v2",
+            "updated_at": None,
+            "bindings": {"tb": binding},
+        }
+        with self.assertRaises(_SELECTOR.SelectionError) as ctx:
+            _SELECTOR._validated_bindings(doc)
+        msg = str(ctx.exception)
+        self.assertIn("context_window_tokens", msg)
+        self.assertIn("positive integer", msg)
+
     def test_validator_rejects_extra_binding_field(self):
         binding = dict(_VALID_BINDING)
         binding["extra_foo"] = True
@@ -738,14 +753,16 @@ class DispatchModelSelectionProductionPathTests(unittest.TestCase):
         sel = _make_ten_field_selection()
         sel["extra_key"] = "bad"
         reporter, output = self._call_dispatch_snapshot(sel)
-        # _require_keys won't catch extra; _require_exact_keys is not called
-        # on dispatch model_selection (only on executor_model). The validator
-        # uses _require_keys which only catches missing, not extra.
-        # But if there ARE errors from the snapshot validation, verify
-        # it's not about the extra key being silently accepted in a way
-        # that contradicts schema behaviour.
-        # The outbox validator DOES check exact keys; see Outbox tests.
-        pass
+        self.assertGreaterEqual(reporter.errors, 1, output)
+        self.assertIn("unexpected key", output)
+        self.assertIn("extra_key", output)
+
+    def test_valid_exact_ten_field_dispatch(self):
+        sel = _make_ten_field_selection()
+        reporter, output = self._call_dispatch_snapshot(sel)
+        self.assertNotIn("missing required key", output)
+        self.assertNotIn("unexpected key", output)
+        self.assertNotIn("selected_context_window_tokens", output)
 
     def test_true_window_value_in_dispatch(self):
         sel = _make_ten_field_selection(

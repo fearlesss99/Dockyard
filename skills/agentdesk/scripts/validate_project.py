@@ -2563,7 +2563,7 @@ def _validate_dispatch_model_snapshot(
         else:
             reporter.warn(f"post-execution runtime binding drift: {message}")
 
-    _require_keys(selection, MODEL_SELECTION_FIELDS, selection_context, reporter)
+    _require_exact_keys(selection, set(MODEL_SELECTION_FIELDS), selection_context, reporter)
     requirement = (
         task_card.get("_model_requirement") if isinstance(task_card, dict) else None
     )
