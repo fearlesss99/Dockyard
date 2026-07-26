@@ -5,11 +5,15 @@ stdlib-only unittest; no third-party packages, I/O, subprocess, or network.
 
 from __future__ import annotations
 
+import ast
 import enum
 import importlib
 import io
 import json
+import os
+import subprocess
 import sys
+import textwrap
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -901,6 +905,11 @@ class ReverseAdversarialTests(unittest.TestCase):
             context_budget.compute_budget(200000, TD.BASIC, 99)  # type: ignore[misc]
 
 
+# =========================================================================
+# 15 — Corrupt percent table (in-process, normal mode)
+# =========================================================================
+
+
 class CorruptPercentTableTests(unittest.TestCase):
     """Verify that a corrupt percent table triggers assertion or
     ValueError — never silently computes wrong values.
@@ -935,6 +944,14 @@ class CorruptPercentTableTests(unittest.TestCase):
         context_budget._BUDGET_PERCENT = {d: 100 for d in TD}
         context_budget._BUDGET_CAP = {d: 10**9 for d in TD}
         with self.assertRaises(AssertionError):
+            context_budget.compute_budget(200000, TD.BASIC)
+
+    def test_percent_bool_rejected(self) -> None:
+        """percent=True must trigger AssertionError."""
+        context_budget._BUDGET_PERCENT = {d: True for d in TD}  # type: ignore[dict-item]
+        context_budget._BUDGET_CAP = {d: 10**9 for d in TD}
+        with self.assertRaises(AssertionError,
+                               msg="bool percent must trigger AssertionError"):
             context_budget.compute_budget(200000, TD.BASIC)
 
 
@@ -987,6 +1004,196 @@ class CorruptCapTableTests(unittest.TestCase):
         with self.assertRaises(AssertionError,
                                msg="string cap must trigger AssertionError"):
             context_budget.compute_budget(200000, TD.BASIC)
+
+
+# =========================================================================
+# 15a — python -O subprocess tests (verifies no bare assert survives)
+# =========================================================================
+
+# Script that runs under python -O to test corrupt internal tables.
+# It is intentionally self-contained: imports the real production module,
+# mutates the private tables, calls compute_budget, and reports results
+# via exit codes and stdout markers.
+_OPT_TEST_SCRIPT = textwrap.dedent("""\
+import sys, os
+
+# Fix sys.path so the production module is importable.
+_SCRIPTS = os.environ["_CONTEXT_BUDGET_SCRIPTS_DIR"]
+sys.path.insert(0, _SCRIPTS)
+import core_types
+import context_budget
+
+TD = core_types.TaskDifficulty
+
+# Configure corrupt state from env vars.
+corrupt = os.environ["_CORRUPT_TYPE"]
+value_raw = os.environ["_CORRUPT_VALUE"]
+
+if value_raw == "true":
+    value = True
+elif value_raw == "false":
+    value = False
+elif value_raw == "neg":
+    value = -1
+elif value_raw.startswith("f:"):
+    value = float(value_raw[2:])
+elif value_raw.startswith("s:"):
+    value = value_raw[2:]
+else:
+    value = int(value_raw)
+
+if corrupt == "percent":
+    context_budget._BUDGET_PERCENT = {d: value for d in TD}
+    # Lift caps so they don't mask the percent corruption.
+    context_budget._BUDGET_CAP = {d: 10**9 for d in TD}
+else:  # cap
+    context_budget._BUDGET_CAP = {d: value for d in TD}
+
+try:
+    result = context_budget.compute_budget(200000, TD.BASIC)
+    # If no exception raised, print the result fields.
+    print(f"OK_BUDGET:{result.budget_tokens}")
+    print(f"OK_RESERVED:{result.reserved_tokens}")
+except (ValueError, TypeError, AssertionError) as exc:
+    print(f"ERROR:{type(exc).__name__}:{exc}")
+    sys.exit(1)
+except Exception as exc:
+    print(f"UNEXPECTED:{type(exc).__name__}:{exc}")
+    sys.exit(2)
+""")
+
+
+def _run_opt_test(corrupt_type: str, value_str: str) -> subprocess.CompletedProcess[str]:
+    """Run the opt-mode test script with the given corruption."""
+    return subprocess.run(
+        [sys.executable, "-O", "-c", _OPT_TEST_SCRIPT],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            **{k: v for k, v in os.environ.items()},
+            "_CONTEXT_BUDGET_SCRIPTS_DIR": str(_SCRIPTS),
+            "_CORRUPT_TYPE": corrupt_type,
+            "_CORRUPT_VALUE": value_str,
+        },
+    )
+
+
+class OptModeInvariantsTests(unittest.TestCase):
+    """Verify that corrupt internal tables are rejected under python -O.
+
+    Uses real subprocess with python -O to ensure no bare assert
+    silently passes.
+    """
+
+    def test_percent_70_rejected_under_opt(self) -> None:
+        """percent=70 must trigger error under python -O."""
+        proc = _run_opt_test("percent", "70")
+        self.assertNotEqual(proc.returncode, 0,
+                            f"percent=70 must error under -O; stdout={proc.stdout}")
+        self.assertNotIn("OK_BUDGET", proc.stdout,
+                         "percent=70 must NOT return a budget result under -O")
+        self.assertIn("ERROR:", proc.stdout,
+                      "percent=70 must print ERROR marker under -O")
+
+    def test_percent_70_does_not_return_700_300(self) -> None:
+        """percent=70 MUST NOT return budget=700, reserved=300."""
+        proc = _run_opt_test("percent", "70")
+        self.assertNotIn("OK_BUDGET:700", proc.stdout,
+                         "percent=70 must NOT return budget_tokens=700")
+        self.assertNotIn("OK_RESERVED:300", proc.stdout,
+                         "percent=70 must NOT return reserved_tokens=300")
+
+    def test_percent_100_rejected_under_opt(self) -> None:
+        """percent=100 must trigger error under python -O."""
+        proc = _run_opt_test("percent", "100")
+        self.assertNotEqual(proc.returncode, 0,
+                            f"percent=100 must error under -O; stdout={proc.stdout}")
+        self.assertNotIn("OK_BUDGET", proc.stdout,
+                         "percent=100 must NOT return a budget result under -O")
+
+    def test_percent_65_passes_under_opt(self) -> None:
+        """percent=65 (valid) must return normally under python -O."""
+        proc = _run_opt_test("percent", "65")
+        self.assertEqual(proc.returncode, 0,
+                         f"percent=65 must pass under -O; stderr={proc.stderr} "
+                         f"stdout={proc.stdout}")
+        # 200000 * 65 // 100 = 130000, cap lifted to 10**9
+        self.assertIn("OK_BUDGET:130000", proc.stdout,
+                      "percent=65 must compute budget=130000")
+        self.assertIn("OK_RESERVED:70000", proc.stdout,
+                      "percent=65 must compute reserved=70000")
+
+    def test_percent_bool_rejected_under_opt(self) -> None:
+        """percent=True must trigger error under python -O."""
+        proc = _run_opt_test("percent", "true")
+        self.assertNotEqual(proc.returncode, 0,
+                            f"percent=True must error under -O; stdout={proc.stdout}")
+        self.assertNotIn("OK_BUDGET", proc.stdout,
+                         "percent=True must NOT return a budget result under -O")
+
+    def test_cap_bool_rejected_under_opt(self) -> None:
+        """cap=True must trigger error under python -O."""
+        proc = _run_opt_test("cap", "true")
+        self.assertNotEqual(proc.returncode, 0,
+                            f"cap=True must error under -O; stdout={proc.stdout}")
+
+    def test_cap_float_rejected_under_opt(self) -> None:
+        """cap=3.14 must trigger error under python -O."""
+        proc = _run_opt_test("cap", "f:3.14")
+        self.assertNotEqual(proc.returncode, 0,
+                            f"cap=3.14 must error under -O; stdout={proc.stdout}")
+
+    def test_cap_string_rejected_under_opt(self) -> None:
+        """cap='64000' must trigger error under python -O."""
+        proc = _run_opt_test("cap", "s:64000")
+        self.assertNotEqual(proc.returncode, 0,
+                            f"cap='64000' must error under -O; stdout={proc.stdout}")
+
+    def test_cap_negative_rejected_under_opt(self) -> None:
+        """cap=-1 must trigger error under python -O."""
+        proc = _run_opt_test("cap", "neg")
+        self.assertNotEqual(proc.returncode, 0,
+                            f"cap=-1 must error under -O; stdout={proc.stdout}")
+
+
+# =========================================================================
+# 15b — AST check: compute_budget() has no ast.Assert nodes
+# =========================================================================
+
+
+class ASTNoAssertTests(unittest.TestCase):
+    """Supplemental evidence: compute_budget() contains no ast.Assert."""
+
+    def test_no_ast_assert_in_compute_budget(self) -> None:
+        module_path = _SCRIPTS / "context_budget.py"
+        source = module_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        func_node = None
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name == "compute_budget":
+                    func_node = node
+                    break
+
+        self.assertIsNotNone(
+            func_node,
+            "compute_budget function must exist in context_budget.py",
+        )
+
+        # Walk the function body and reject any ast.Assert node.
+        assert_nodes: list[ast.Assert] = []
+        for node in ast.walk(func_node):
+            if isinstance(node, ast.Assert):
+                assert_nodes.append(node)
+
+        self.assertEqual(
+            len(assert_nodes), 0,
+            f"compute_budget() must contain zero bare assert statements; "
+            f"found {len(assert_nodes)}: "
+            f"{[ast.dump(n) for n in assert_nodes]}",
+        )
 
 
 if __name__ == "__main__":

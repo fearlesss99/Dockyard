@@ -27,6 +27,9 @@ and positive non-bool ``int`` window sizes are accepted.  The computed
 ``budget_tokens`` must be ≥ 1 — callers get a ``ValueError`` for
 windows too small to yield a usable budget at the requested difficulty.
 
+All internal-invariant checks use explicit ``raise AssertionError``,
+never bare ``assert`` — they must survive ``python -O``.
+
 Non-goals (explicitly excluded from this module):
 
 * WorkerAdapter, slot allocation, lease, or concurrency fencing
@@ -132,7 +135,21 @@ def compute_budget(
     percent = _BUDGET_PERCENT[difficulty]
     cap = _BUDGET_CAP[difficulty]
 
-    # ── Validate cap (module-private table, but guard against corruption) ─
+    # ── 3a. Validate percent (module-private table, but guard against
+    #        corruption — must survive python -O) ───────────────────────
+    if isinstance(percent, bool) or not isinstance(percent, int):
+        raise AssertionError(
+            f"budget percent for {difficulty.value} must be int, "
+            f"got {type(percent).__name__}: {percent!r}"
+        )
+    if not (1 <= percent <= 65):
+        raise AssertionError(
+            f"budget percent for {difficulty.value} must be in [1, 65], "
+            f"got {percent}"
+        )
+
+    # ── 3b. Validate cap (module-private table, but guard against
+    #        corruption — must survive python -O) ───────────────────────
     if isinstance(cap, bool) or not isinstance(cap, int):
         raise AssertionError(
             f"budget cap for {difficulty.value} must be int, "
@@ -156,14 +173,42 @@ def compute_budget(
             f"budget would be {budget_tokens} token(s)"
         )
 
-    # ── 6. Invariant: at least 35 % reserved ───────────────────────────
+    # ── 6. Invariants (explicit raise — survive python -O) ─────────────
+
+    # 6a. budget_tokens <= percentage_budget
+    if budget_tokens > percentage_budget:
+        raise AssertionError(
+            f"invariant broken: budget_tokens={budget_tokens} > "
+            f"percentage_budget={percentage_budget} "
+            f"(window={context_window_tokens}, difficulty={difficulty.value}, "
+            f"percent={percent}, cap={cap})"
+        )
+
+    # 6b. budget_tokens <= cap
+    if budget_tokens > cap:
+        raise AssertionError(
+            f"invariant broken: budget_tokens={budget_tokens} > "
+            f"cap={cap} "
+            f"(window={context_window_tokens}, difficulty={difficulty.value})"
+        )
+
+    # 6c. budget_tokens + reserved_tokens == context_window_tokens
+    if budget_tokens + reserved_tokens != context_window_tokens:
+        raise AssertionError(
+            f"invariant broken: budget_tokens={budget_tokens} + "
+            f"reserved_tokens={reserved_tokens} != "
+            f"context_window_tokens={context_window_tokens}"
+        )
+
+    # 6d. reserved_tokens >= ceil(35 %)
     minimum_reserved = (context_window_tokens * 35 + 99) // 100  # ceil(35%)
-    assert reserved_tokens >= minimum_reserved, (
-        f"invariant broken: reserved={reserved_tokens} < "
-        f"minimum_reserved={minimum_reserved} "
-        f"(window={context_window_tokens}, difficulty={difficulty.value}, "
-        f"percent={percent}, cap={cap})"
-    )
+    if reserved_tokens < minimum_reserved:
+        raise AssertionError(
+            f"invariant broken: reserved={reserved_tokens} < "
+            f"minimum_reserved={minimum_reserved} "
+            f"(window={context_window_tokens}, difficulty={difficulty.value}, "
+            f"percent={percent}, cap={cap})"
+        )
 
     return BudgetResult(
         context_window_tokens=context_window_tokens,
