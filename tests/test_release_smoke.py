@@ -3747,6 +3747,181 @@ class ReleaseSmokeTests(unittest.TestCase):
             "codex_code_provider.py must NOT exist",
         )
 
+    # -- Item 16: TC-13.8 contract code example executability ------------
+
+    # ── 16a: _CONTROL_PROMPT is module-level, not a class field ───────
+
+    def test_tc138_control_prompt_is_module_level_before_class(self) -> None:
+        """§2.11.9 code example must place _CONTROL_PROMPT before
+        @dataclass/class, not inside the class body."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        # _CONTROL_PROMPT must appear before the @dataclass line in the
+        # code fence example.
+        code_fence_m = re.search(r"```python\n(.*?)```", section, re.DOTALL)
+        self.assertIsNotNone(code_fence_m,
+                             "§2.11.9 must contain a Python code block")
+        code = code_fence_m.group(1)
+        # Find positions of _CONTROL_PROMPT and @dataclass.
+        ctrl_pos = code.find("_CONTROL_PROMPT")
+        dataclass_pos = code.find("@dataclass")
+        self.assertGreater(ctrl_pos, -1,
+                           "§2.11.9 code must contain _CONTROL_PROMPT")
+        self.assertLess(
+            ctrl_pos, dataclass_pos,
+            "§2.11.9 _CONTROL_PROMPT must appear before @dataclass "
+            "(module-level, not class-level)",
+        )
+
+    def test_tc138_control_prompt_is_module_constant_not_dataclass_field(self) -> None:
+        """§2.11.9 prose must state _CONTROL_PROMPT is a module-level
+        constant and explicitly NOT a dataclass field."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        # Normalise whitespace to handle line breaks.
+        flat = " ".join(section.split())
+        self.assertIn(
+            "not a dataclass field",
+            flat,
+            "§2.11.9 must state _CONTROL_PROMPT is NOT a dataclass field",
+        )
+        self.assertIn(
+            "module-level constant",
+            flat,
+            "§2.11.9 must state _CONTROL_PROMPT is a module-level constant",
+        )
+
+    def test_tc138_dataclass_fields_exactly_five(self) -> None:
+        """§2.11.9 must state dataclasses.fields(ClaudeCodeProvider)
+        returns exactly five fields."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "exactly five",
+            section.lower(),
+            "§2.11.9 must state dataclasses.fields() returns exactly five",
+        )
+
+    def test_tc138_class_body_does_not_contain_control_prompt_field(self) -> None:
+        """§2.11.9 class body code must NOT show _CONTROL_PROMPT as a
+        typed field inside ClaudeCodeProvider."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        # Extract the class body from the code fence.
+        code_fence_m = re.search(r"```python\n(.*?)```", section, re.DOTALL)
+        self.assertIsNotNone(code_fence_m)
+        code = code_fence_m.group(1)
+        # _CONTROL_PROMPT as a class-level typed annotation would be
+        # indented inside the class.  Check it's not.
+        for line in code.splitlines():
+            if "_CONTROL_PROMPT" in line and line.strip().startswith("_"):
+                self.assertTrue(
+                    line.startswith("_CONTROL_PROMPT"),
+                    f"§2.11.9 _CONTROL_PROMPT must not be indented inside "
+                    f"class — got: {line.strip()!r}",
+                )
+
+    # ── 16b: Top-level import from dispatcher_gateway ──────────────────
+
+    def test_tc138_import_uses_top_level_dispatcher_gateway(self) -> None:
+        """§2.11.9 must use 'from dispatcher_gateway import ...'
+        (top-level), NOT relative import."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            "from dispatcher_gateway import",
+            section,
+            "§2.11.9 must use top-level 'from dispatcher_gateway import'",
+        )
+
+    def test_tc138_forbids_relative_import_of_dispatcher_gateway(self) -> None:
+        """§2.11.9 must NOT contain 'from .dispatcher_gateway import'."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        self.assertNotIn(
+            "from .dispatcher_gateway import",
+            section,
+            "§2.11.9 must NOT use relative import for dispatcher_gateway",
+        )
+
+    def test_tc138_no_init_py_required(self) -> None:
+        """§2.11.9 must NOT require adding __init__.py to
+        skills/agentdesk/scripts/."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        # Either explicitly states no __init__.py needed, or simply
+        # uses top-level import without qualification.
+        self.assertIn(
+            "from dispatcher_gateway import",
+            section,
+            "§2.11.9 import style must not require __init__.py",
+        )
+
+    def test_tc138_all_still_exact_claudecodeprovider(self) -> None:
+        """§2.11.9 must still freeze __all__ = ['ClaudeCodeProvider']
+        exactly, with no _CONTROL_PROMPT in it."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.11.9")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            '__all__ = ["ClaudeCodeProvider"]',
+            section,
+            "§2.11.9 must freeze __all__ with only ClaudeCodeProvider",
+        )
+
+    # ── 16c: §2.11 and #30 still Target ────────────────────────────────
+
+    def test_tc138_section_211_and_row_30_target_post_remediation(self) -> None:
+        """After remediation, §2.11 and Interface Status #30 must still
+        be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+
+        # §2.11 heading.
+        heading_m = re.search(
+            r"^### 2\.11\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m)
+        self.assertIn("Target", heading_m.group(0))
+
+        # #30 in interface table.
+        rows = self._parse_interface_status_table(adr_text)
+        row_30 = None
+        for row in rows:
+            if self._resolve_col(row, "#") == "30":
+                row_30 = row
+                break
+        self.assertIsNotNone(row_30)
+        self.assertIn("Target", self._resolve_col(row_30, "Status"))
+
+    def test_tc138_tc139_target_post_remediation(self) -> None:
+        """After remediation, TC-13.9 must still be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        tc139_row = None
+        for row in rows:
+            impl = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            if "TC-13.9" in re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl):
+                tc139_row = row
+                break
+        self.assertIsNotNone(tc139_row)
+        status = self._resolve_col(tc139_row, "Status")
+        self.assertIn("Target", status)
+        self.assertNotIn("Current", status)
+
+    def test_tc138_production_file_still_absent(self) -> None:
+        """claude_code_provider.py must still NOT exist."""
+        self.assertFalse(
+            (SKILL_ROOT / "scripts" / "claude_code_provider.py").exists(),
+            "claude_code_provider.py must NOT exist",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

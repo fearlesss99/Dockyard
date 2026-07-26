@@ -1544,10 +1544,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .dispatcher_gateway import (
+from dispatcher_gateway import (
     AgentCliInvocation,
     AgentCliProvider,
     DispatchRequest,
+)
+
+_CONTROL_PROMPT = (
+    "Read the task instructions from stdin and execute them."
 )
 
 
@@ -1560,10 +1564,6 @@ class ClaudeCodeProvider:
     permission_mode: str
     allowed_tools: tuple[str, ...]
     disallowed_tools: tuple[str, ...]
-
-    _CONTROL_PROMPT: str = (
-        "Read the task instructions from stdin and execute them."
-    )
 
     def __post_init__(self) -> None:
         # Reject at construction — ValueError on any illegal input.
@@ -1589,9 +1589,11 @@ __all__ = ["ClaudeCodeProvider"]
 | 4 | `allowed_tools` | `tuple[str, ...]` | Deeply immutable; may be empty |
 | 5 | `disallowed_tools` | `tuple[str, ...]` | Deeply immutable; may be empty |
 
-`_CONTROL_PROMPT` is a **private** module-level constant (not in
-`__all__`).  It is a compile-time string literal — it never contains
-task content, paths, dispatch IDs, or any request data.
+`_CONTROL_PROMPT` is a **private** module-level constant (not a
+dataclass field, not a `ClassVar`, not in `__all__`).  ``dataclasses
+.fields(ClaudeCodeProvider)`` returns **exactly five** field objects.
+It is a compile-time string literal — it never contains task content,
+paths, dispatch IDs, or any request data.
 
 **Forbidden sixth field** — these must **never** appear on
 `ClaudeCodeProvider`:
