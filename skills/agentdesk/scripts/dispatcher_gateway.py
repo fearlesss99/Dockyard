@@ -238,6 +238,113 @@ class ModelSelectionSnapshot:
         return ModelSelectionSnapshot(**kwargs)  # type: ignore[arg-type]
 
 
+def _validate_snapshot(snapshot: ModelSelectionSnapshot) -> None:
+    """Re‑validate every field of an already‑constructed snapshot.
+
+    This catches snapshots built directly via the dataclass constructor,
+    bypassing ``from_mapping()``.  Must be called in ``run_dispatch()``
+    before any provider lookup or subprocess launch.
+
+    Raises :exc:`DispatchSnapshotError` for any field‑level violation.
+    """
+    if not isinstance(snapshot, ModelSelectionSnapshot):
+        raise DispatchSnapshotError(
+            f"snapshot must be ModelSelectionSnapshot, got {type(snapshot).__name__}"
+        )
+
+    # ── six required string fields ──────────────────────────────────────
+    _str_fields: list[tuple[str, str]] = [
+        ("required_model_tier", snapshot.required_model_tier),
+        ("model_binding_id", snapshot.model_binding_id),
+        ("selected_model_provider", snapshot.selected_model_provider),
+        ("selected_model_id", snapshot.selected_model_id),
+        ("selected_model_tier", snapshot.selected_model_tier),
+        ("selected_deliberation_tier", snapshot.selected_deliberation_tier),
+    ]
+    for name, val in _str_fields:
+        if not isinstance(val, str) or not val:
+            raise DispatchSnapshotError(
+                f"'{name}' must be a non-empty string, got {val!r}"
+            )
+
+    # ── required_model_capabilities — must be tuple ─────────────────────
+    _validate_capability_field(
+        snapshot.required_model_capabilities, "required_model_capabilities"
+    )
+
+    # ── selected_model_capabilities — must be tuple ─────────────────────
+    _validate_capability_field(
+        snapshot.selected_model_capabilities, "selected_model_capabilities"
+    )
+
+    # ── selected_context_window_tokens — non‑bool int ≥ 1 ───────────────
+    cw = snapshot.selected_context_window_tokens
+    if isinstance(cw, bool) or not isinstance(cw, int):
+        raise DispatchSnapshotError(
+            f"'selected_context_window_tokens' must be a non‑bool int ≥ 1, "
+            f"got {cw!r}"
+        )
+    if cw < 1:
+        raise DispatchSnapshotError(
+            f"'selected_context_window_tokens' must be ≥ 1, got {cw}"
+        )
+
+    # ── model_degradation_approval_id — None or non‑empty str ────────────
+    appr = snapshot.model_degradation_approval_id
+    if appr is None:
+        pass
+    elif isinstance(appr, str) and appr:
+        pass
+    else:
+        raise DispatchSnapshotError(
+            f"'model_degradation_approval_id' must be a non‑empty str or None, "
+            f"got {appr!r}"
+        )
+
+    # ── no mutable collections anywhere in the snapshot ─────────────────
+    # The dataclass fields were type‑checked above; this is a deeper
+    # structural guard against list/dict/set sneaking in.
+    for f_name in (
+        "required_model_capabilities",
+        "selected_model_capabilities",
+        "required_model_tier",
+        "model_binding_id",
+        "selected_model_provider",
+        "selected_model_id",
+        "selected_model_tier",
+        "selected_deliberation_tier",
+        "selected_context_window_tokens",
+        "model_degradation_approval_id",
+    ):
+        v = getattr(snapshot, f_name)
+        if isinstance(v, (list, dict, set)):
+            raise DispatchSnapshotError(
+                f"'{f_name}' must not be a mutable collection, got {type(v).__name__}"
+            )
+
+
+def _validate_capability_field(
+    value: object,
+    field_name: str,
+) -> None:
+    """Validate a capability field on an already‑constructed snapshot."""
+    if not isinstance(value, tuple):
+        raise DispatchSnapshotError(
+            f"'{field_name}' must be a tuple, got {type(value).__name__}"
+        )
+    seen: set[str] = set()
+    for i, item in enumerate(value):
+        if not isinstance(item, str) or not item:
+            raise DispatchSnapshotError(
+                f"'{field_name}[{i}]' must be a non‑empty string, got {item!r}"
+            )
+        if item in seen:
+            raise DispatchSnapshotError(
+                f"'{field_name}' must not contain duplicates: {item!r}"
+            )
+        seen.add(item)
+
+
 def _validate_and_copy_capabilities(
     raw_value: object,
     field_name: str,
@@ -500,7 +607,11 @@ def _resolve_executable(executable: str) -> str:
 
 
 def _validate_invocation(invocation: AgentCliInvocation) -> None:
-    """Validate an ``AgentCliInvocation`` before launching a subprocess."""
+    """Validate an ``AgentCliInvocation`` before launching a subprocess.
+
+    Error messages must NOT include env values, stdin bytes, or full
+    (key, value) pairs — only indices, types, lengths, and (safe) key names.
+    """
     if not isinstance(invocation, AgentCliInvocation):
         raise DispatchInvocationError(
             f"invocation must be AgentCliInvocation, got {type(invocation).__name__}"
@@ -532,7 +643,8 @@ def _validate_invocation(invocation: AgentCliInvocation) -> None:
     # stdin
     if invocation.stdin is not None and not isinstance(invocation.stdin, bytes):
         raise DispatchInvocationError(
-            f"invocation.stdin must be bytes or None, got {type(invocation.stdin).__name__}"
+            "invocation.stdin must be bytes or None, "
+            f"got {type(invocation.stdin).__name__}"
         )
 
     # env_overrides
@@ -545,13 +657,14 @@ def _validate_invocation(invocation: AgentCliInvocation) -> None:
     for i, pair in enumerate(invocation.env_overrides):
         if not isinstance(pair, tuple) or len(pair) != 2:
             raise DispatchInvocationError(
-                f"invocation.env_overrides[{i}] must be a 2‑tuple, got {pair!r}"
+                f"invocation.env_overrides[{i}] must be a 2‑tuple "
+                f"(got type={type(pair).__name__}, len={len(pair) if hasattr(pair, '__len__') else '?'})"
             )
-        key, value = pair
-        if not isinstance(key, str) or not isinstance(value, str):
+        key, _value = pair
+        if not isinstance(key, str) or not isinstance(_value, str):
             raise DispatchInvocationError(
                 f"invocation.env_overrides[{i}] must be (str, str), "
-                f"got ({type(key).__name__}, {type(value).__name__})"
+                f"got ({type(key).__name__}, {type(_value).__name__})"
             )
         if not key:
             raise DispatchInvocationError(
@@ -559,9 +672,9 @@ def _validate_invocation(invocation: AgentCliInvocation) -> None:
             )
         if "=" in key:
             raise DispatchInvocationError(
-                f"invocation.env_overrides[{i}] key must not contain '=': {key!r}"
+                f"invocation.env_overrides[{i}] key must not contain '='"
             )
-        if "\0" in key or "\0" in value:
+        if "\0" in key or "\0" in _value:
             raise DispatchInvocationError(
                 f"invocation.env_overrides[{i}] must not contain NUL"
             )
@@ -579,9 +692,19 @@ def _validate_providers(
     providers: Mapping[str, AgentCliProvider],
     selected_provider: str,
 ) -> AgentCliProvider:
-    """Validate the providers mapping and return the matching adapter.
+    """Validate the entire providers mapping and return the matching adapter.
 
-    Raises :exc:`ProviderNotSupportedError` if the provider is missing.
+    Iterates **every** entry in the mapping to verify:
+    * each key is a non‑empty str;
+    * each adapter has a readable, non‑empty str ``provider_id``;
+    * each adapter's ``provider_id`` matches its key exactly.
+
+    Only after full validation is the selected adapter returned.
+
+    Raises:
+      :exc:`DispatchInputError` — mapping structure or key illegal.
+      :exc:`ProviderNotSupportedError` — selected key not present.
+      :exc:`DispatchInvocationError` — adapter provider_id mismatch / error.
     """
     if not isinstance(providers, Mapping):
         raise DispatchInputError(
@@ -590,27 +713,34 @@ def _validate_providers(
     if len(providers) == 0:
         raise DispatchInputError("providers must not be empty")
 
+    # Validate every entry.
+    for key, adapter in providers.items():
+        if not isinstance(key, str) or not key:
+            raise DispatchInputError(
+                f"providers key must be a non‑empty str, got {key!r}"
+            )
+
+        try:
+            pid = adapter.provider_id
+        except Exception as exc:
+            raise DispatchInvocationError(
+                f"failed to read provider_id from adapter for key {key!r}"
+            ) from exc
+
+        if not isinstance(pid, str) or not pid:
+            raise DispatchInvocationError(
+                f"adapter.provider_id for key {key!r} must be a non‑empty str, "
+                f"got {pid!r}"
+            )
+        if pid != key:
+            raise DispatchInvocationError(
+                f"adapter.provider_id {pid!r} does not match mapping key {key!r}"
+            )
+
+    # Lookup the selected adapter.
     adapter = providers.get(selected_provider)
     if adapter is None:
         raise ProviderNotSupportedError(selected_provider)
-
-    # adapter.provider_id must match its key
-    try:
-        pid = adapter.provider_id
-    except Exception as exc:
-        raise DispatchInvocationError(
-            f"failed to read provider_id from adapter: {exc}"
-        ) from exc
-
-    if not isinstance(pid, str) or not pid:
-        raise DispatchInvocationError(
-            f"adapter.provider_id must be a non‑empty string, got {pid!r}"
-        )
-    if pid != selected_provider:
-        raise DispatchInvocationError(
-            f"adapter.provider_id {pid!r} does not match mapping key "
-            f"{selected_provider!r}"
-        )
 
     return adapter
 
@@ -708,6 +838,9 @@ async def run_dispatch(
     _validate_request(request)
     snapshot = request.model_selection
 
+    # ── 1b. Re‑validate snapshot (catches direct‑constructor bypass) ───
+    _validate_snapshot(snapshot)
+
     # ── 2. Validate providers mapping ─────────────────────────────────
     selected_provider = snapshot.selected_model_provider
     adapter = _validate_providers(providers, selected_provider)
@@ -717,7 +850,7 @@ async def run_dispatch(
         invocation = adapter.build_invocation(request)
     except Exception as exc:
         raise DispatchInvocationError(
-            f"adapter.build_invocation failed: {exc}"
+            f"adapter.build_invocation raised {type(exc).__name__}"
         ) from exc
 
     # ── 4. Validate invocation ────────────────────────────────────────

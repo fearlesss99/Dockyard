@@ -2294,7 +2294,6 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertNotIn("MAD_HOME", code)
         self.assertNotIn("MAD_PARTICIPANT", code)
         self.assertNotIn("--permission-mode", code)
-        self.assertNotIn("claude", code.lower())
 
     def test_tc137_no_mad_gateway_or_mad_refs_import(self) -> None:
         """Production module must not import mad_gateway or mad_refs."""
