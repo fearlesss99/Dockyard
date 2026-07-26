@@ -45,7 +45,12 @@
         {
           "path": "$.total_cost_usd",
           "kind": "cost",
-          "reason": "account billing info"
+          "reason": "account billing information"
+        },
+        {
+          "path": "$.modelUsage.*.costUSD",
+          "kind": "cost",
+          "reason": "per-model billing information"
         }
       ],
       "source_kind": "real_cli_capture"
@@ -94,7 +99,12 @@
         {
           "path": "$.total_cost_usd",
           "kind": "cost",
-          "reason": "account billing info"
+          "reason": "account billing information"
+        },
+        {
+          "path": "$.modelUsage.*.costUSD",
+          "kind": "cost",
+          "reason": "per-model billing information"
         }
       ],
       "source_kind": "real_cli_capture"
@@ -143,117 +153,14 @@
         {
           "path": "$.total_cost_usd",
           "kind": "cost",
-          "reason": "account billing info"
+          "reason": "account billing information"
+        },
+        {
+          "path": "$.modelUsage.*.costUSD",
+          "kind": "cost",
+          "reason": "per-model billing information"
         }
       ],
-      "source_kind": "real_cli_capture"
-    },
-    {
-      "fixture_path": "tests/fixtures/provider-output/codex/0.144.6/success-minimal.jsonl",
-      "provider_id": "codex",
-      "package_name": "@openai/codex",
-      "package_version": "0.144.6",
-      "executable_sha256": "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477",
-      "captured_at": "2026-07-27T00:33:00Z",
-      "sample_id": "success-minimal",
-      "argv_shape": [
-        "--ask-for-approval",
-        "never",
-        "exec",
-        "--ephemeral",
-        "--json",
-        "--color",
-        "never",
-        "--model",
-        "<model_id>",
-        "--sandbox",
-        "read-only",
-        "-c",
-        "model_reasoning_effort=<value>",
-        "-"
-      ],
-      "exit_code": 1,
-      "stdout_bytes": 0,
-      "stderr_bytes": 0,
-      "raw_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "raw_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "sanitized_stdout_sha256": "ab0c7b43cd66554182c1f0f4196d6de40b873cfb3a239ae1805eb841c71db988",
-      "sanitized_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "utf8_valid": true,
-      "serialization": "unknown",
-      "redactions": [],
-      "source_kind": "real_cli_capture"
-    },
-    {
-      "fixture_path": "tests/fixtures/provider-output/codex/0.144.6/success-unicode.jsonl",
-      "provider_id": "codex",
-      "package_name": "@openai/codex",
-      "package_version": "0.144.6",
-      "executable_sha256": "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477",
-      "captured_at": "2026-07-27T00:33:00Z",
-      "sample_id": "success-unicode",
-      "argv_shape": [
-        "--ask-for-approval",
-        "never",
-        "exec",
-        "--ephemeral",
-        "--json",
-        "--color",
-        "never",
-        "--model",
-        "<model_id>",
-        "--sandbox",
-        "read-only",
-        "-c",
-        "model_reasoning_effort=<value>",
-        "-"
-      ],
-      "exit_code": 1,
-      "stdout_bytes": 0,
-      "stderr_bytes": 0,
-      "raw_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "raw_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "sanitized_stdout_sha256": "ab0c7b43cd66554182c1f0f4196d6de40b873cfb3a239ae1805eb841c71db988",
-      "sanitized_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "utf8_valid": true,
-      "serialization": "unknown",
-      "redactions": [],
-      "source_kind": "real_cli_capture"
-    },
-    {
-      "fixture_path": "tests/fixtures/provider-output/codex/0.144.6/application-boundary.jsonl",
-      "provider_id": "codex",
-      "package_name": "@openai/codex",
-      "package_version": "0.144.6",
-      "executable_sha256": "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477",
-      "captured_at": "2026-07-27T00:33:00Z",
-      "sample_id": "application-boundary",
-      "argv_shape": [
-        "--ask-for-approval",
-        "never",
-        "exec",
-        "--ephemeral",
-        "--json",
-        "--color",
-        "never",
-        "--model",
-        "<model_id>",
-        "--sandbox",
-        "read-only",
-        "-c",
-        "model_reasoning_effort=<value>",
-        "-"
-      ],
-      "exit_code": 1,
-      "stdout_bytes": 0,
-      "stderr_bytes": 0,
-      "raw_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "raw_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "sanitized_stdout_sha256": "ab0c7b43cd66554182c1f0f4196d6de40b873cfb3a239ae1805eb841c71db988",
-      "sanitized_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "utf8_valid": true,
-      "serialization": "unknown",
-      "redactions": [],
       "source_kind": "real_cli_capture"
     }
   ]
