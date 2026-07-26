@@ -865,6 +865,11 @@ async def run_dispatch(
     # ── 7. Launch subprocess ──────────────────────────────────────────
     started = _time_module.monotonic()
 
+    # ── workspace is the authoritative cwd — never the parent process
+    #     working directory, never an adapter argv hint, and never
+    #     derived from env / executable.  The adapter has no say in it.
+    workspace = str(request.workspace)
+
     try:
         if sys.platform == "win32":
             process = await asyncio.create_subprocess_exec(
@@ -875,6 +880,7 @@ async def run_dispatch(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                cwd=workspace,
             )
         else:
             process = await asyncio.create_subprocess_exec(
@@ -885,6 +891,7 @@ async def run_dispatch(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                cwd=workspace,
                 start_new_session=True,
             )
     except OSError as exc:

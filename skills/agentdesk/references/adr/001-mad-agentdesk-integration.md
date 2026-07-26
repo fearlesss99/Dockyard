@@ -841,6 +841,11 @@ Fields **explicitly excluded** from TC-13.7 (deferred to later TCs):
 Rules:
 
 * ``workspace`` must exist and be an absolute directory.
+* ``workspace`` is the **authoritative subprocess working directory**.
+  The Gateway must pass it directly as ``cwd`` to
+  ``asyncio.create_subprocess_exec`` on every invocation — on both
+  Windows and POSIX.  The adapter has no say in the working directory;
+  ``AgentCliInvocation`` carries no ``cwd`` field.
 * ``prompt`` is the **only** source of task content — the adapter
   derives ``stdin`` from it.
 * ``timeout_seconds`` is a positive integer (non‑bool).
@@ -931,6 +936,7 @@ resolved_executable = resolve(invocation.executable)
 await asyncio.create_subprocess_exec(
     resolved_executable,
     *invocation.argv,
+    cwd=str(request.workspace),   # authoritative — never from the adapter
     ...
 )
 ```
@@ -957,6 +963,11 @@ Rules:
 * The Gateway **must not** log, persist, or return the content of
   environment variables in any result, exception, event, or report.
   API keys must never appear in Gateway output.
+* **No ``cwd`` field.**  The working directory is the sole
+  responsibility of the Gateway and is taken from
+  ``DispatchRequest.workspace`` (§2.10.4).  ``AgentCliInvocation``
+  carries exactly four fields — the adapter has no ability to
+  influence, override, or suggest the subprocess working directory.
 
 ---
 

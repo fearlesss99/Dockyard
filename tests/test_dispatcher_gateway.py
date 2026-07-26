@@ -958,6 +958,336 @@ class SubprocessExecutionTests(unittest.TestCase):
 
 
 # =========================================================================
+# 8b. Workspace enforcement — cwd = request.workspace
+# =========================================================================
+
+
+class WorkspaceCwdEnforcementTests(unittest.TestCase):
+    """Workspace enforcement: create_subprocess_exec must receive
+    cwd=request.workspace on both Windows and POSIX."""
+
+    def test_posix_cwd_is_request_workspace(self) -> None:
+        """POSIX branch: create_subprocess_exec receives cwd=request.workspace."""
+        workspace = Path(tempfile.gettempdir())
+
+        async def _check():
+            proc = _FakeProcess(returncode=0, stdout=b"ok", stderr=b"")
+            target = "dispatcher_gateway.asyncio.create_subprocess_exec"
+            with mock.patch(target, return_value=proc) as mock_exec:
+                with mock.patch.object(sys, "platform", "linux"):
+                    await run_dispatch(
+                        _make_request(workspace=workspace),
+                        _make_providers(),
+                    )
+                mock_exec.assert_called_once()
+                call_kwargs = mock_exec.call_args[1]
+                self.assertEqual(call_kwargs["cwd"], str(workspace))
+                return True
+
+        self.assertTrue(_run_async(_check()))
+
+    def test_windows_cwd_is_request_workspace(self) -> None:
+        """Windows branch: create_subprocess_exec receives cwd=request.workspace."""
+        workspace = Path(tempfile.gettempdir())
+
+        async def _check():
+            proc = _FakeProcess(returncode=0, stdout=b"ok", stderr=b"")
+            target = "dispatcher_gateway.asyncio.create_subprocess_exec"
+            with mock.patch(target, return_value=proc) as mock_exec:
+                with mock.patch.object(sys, "platform", "win32"):
+                    await run_dispatch(
+                        _make_request(workspace=workspace),
+                        _make_providers(),
+                    )
+                mock_exec.assert_called_once()
+                call_kwargs = mock_exec.call_args[1]
+                self.assertEqual(call_kwargs["cwd"], str(workspace))
+                return True
+
+        self.assertTrue(_run_async(_check()))
+
+    def test_workspace_with_spaces_passed_as_string(self) -> None:
+        """Workspace path containing spaces is passed as a single string cwd."""
+        with tempfile.TemporaryDirectory(prefix="test dir with spaces") as tmp:
+            workspace = Path(tmp)
+
+            async def _check():
+                proc = _FakeProcess(returncode=0, stdout=b"ok", stderr=b"")
+                target = "dispatcher_gateway.asyncio.create_subprocess_exec"
+                with mock.patch(target, return_value=proc) as mock_exec:
+                    await run_dispatch(
+                        _make_request(workspace=workspace),
+                        _make_providers(),
+                    )
+                call_kwargs = mock_exec.call_args[1]
+                self.assertEqual(call_kwargs["cwd"], str(workspace))
+                self.assertIn(" ", call_kwargs["cwd"])
+                return True
+
+            self.assertTrue(_run_async(_check()))
+
+    def test_provider_argv_has_directory_does_not_affect_cwd(self) -> None:
+        """A directory appearing in adapter argv must not affect cwd."""
+        workspace = Path(tempfile.gettempdir())
+
+        async def _check():
+            proc = _FakeProcess(returncode=0, stdout=b"ok", stderr=b"")
+            target = "dispatcher_gateway.asyncio.create_subprocess_exec"
+            with mock.patch(target, return_value=proc) as mock_exec:
+                provider = FakeAgentCliProvider(
+                    provider_id="fake",
+                    executable=_get_helper_exe(),
+                    argv=("--add-dir", "/some/other/path", "--other-flag"),
+                )
+                await run_dispatch(
+                    _make_request(workspace=workspace),
+                    {"fake": provider},
+                )
+                call_kwargs = mock_exec.call_args[1]
+                self.assertEqual(call_kwargs["cwd"], str(workspace))
+                # argv contains /some/other/path but cwd is still workspace
+                return True
+
+        self.assertTrue(_run_async(_check()))
+
+    def test_env_overrides_contain_directory_does_not_affect_cwd(self) -> None:
+        """env_overrides containing a PATH-like directory must not affect cwd."""
+        workspace = Path(tempfile.gettempdir())
+
+        async def _check():
+            proc = _FakeProcess(returncode=0, stdout=b"ok", stderr=b"")
+            target = "dispatcher_gateway.asyncio.create_subprocess_exec"
+            with mock.patch(target, return_value=proc) as mock_exec:
+                provider = FakeAgentCliProvider(
+                    provider_id="fake",
+                    executable=_get_helper_exe(),
+                    env_overrides=(("EXTRA_DIR", "/some/other/dir"),),
+                )
+                await run_dispatch(
+                    _make_request(workspace=workspace),
+                    {"fake": provider},
+                )
+                call_kwargs = mock_exec.call_args[1]
+                self.assertEqual(call_kwargs["cwd"], str(workspace))
+                return True
+
+        self.assertTrue(_run_async(_check()))
+
+    def test_parent_cwd_different_from_workspace(self) -> None:
+        """When parent cwd differs from request.workspace, the subprocess
+        must still receive request.workspace as cwd."""
+        workspace = Path(tempfile.gettempdir())
+        original_cwd = Path.cwd()
+
+        # Ensure parent cwd is different from workspace (tempdir)
+        # tempfile.gettempdir() is usually different from the project root.
+        self.assertNotEqual(original_cwd, workspace,
+                           "Test requires workspace != parent cwd")
+        if original_cwd == workspace:
+            # Fallback: use a subdirectory
+            workspace = original_cwd / "sub"
+
+        async def _check():
+            proc = _FakeProcess(returncode=0, stdout=b"ok", stderr=b"")
+            target = "dispatcher_gateway.asyncio.create_subprocess_exec"
+            with mock.patch(target, return_value=proc) as mock_exec:
+                await run_dispatch(
+                    _make_request(workspace=workspace),
+                    _make_providers(),
+                )
+            mock_exec.assert_called_once()
+            call_kwargs = mock_exec.call_args[1]
+            self.assertEqual(call_kwargs["cwd"], str(workspace))
+            return True
+
+        self.assertTrue(_run_async(_check()))
+
+    def test_parent_cwd_unchanged(self) -> None:
+        """Path.cwd() must be unchanged before and after run_dispatch."""
+        cwd_before = Path.cwd()
+
+        async def _check():
+            proc = _FakeProcess(returncode=0, stdout=b"ok", stderr=b"")
+            target = "dispatcher_gateway.asyncio.create_subprocess_exec"
+            with mock.patch(target, return_value=proc):
+                await run_dispatch(
+                    _make_request(workspace=Path(tempfile.gettempdir())),
+                    _make_providers(),
+                )
+            return True
+
+        self.assertTrue(_run_async(_check()))
+        cwd_after = Path.cwd()
+        self.assertEqual(cwd_before, cwd_after,
+                        "Path.cwd() must not change across run_dispatch")
+
+    def test_relative_workspace_rejected_before_provider_lookup(self) -> None:
+        """Relative workspace rejected before adapter.build_invocation."""
+        with mock.patch(
+            "dispatcher_gateway.asyncio.create_subprocess_exec"
+        ) as mock_exec:
+            mock_exec.side_effect = RuntimeError("subprocess must not be called")
+
+            class _AngryProvider:
+                @property
+                def provider_id(self) -> str:
+                    return "fake"
+
+                def build_invocation(self, request):
+                    raise AssertionError("must never be called")
+
+            providers = {"fake": _AngryProvider()}
+            try:
+                _run_async(run_dispatch(
+                    _make_request(workspace=Path("relative/path")),
+                    providers,
+                ))
+                self.fail("Should have raised")
+            except dg.DispatchInputError:
+                pass
+            # No subprocess, no adapter call
+            mock_exec.assert_not_called()
+
+    def test_nonexistent_workspace_rejected_before_provider_lookup(self) -> None:
+        """Non-existent workspace rejected before adapter.build_invocation."""
+        with mock.patch(
+            "dispatcher_gateway.asyncio.create_subprocess_exec"
+        ) as mock_exec:
+            mock_exec.side_effect = RuntimeError("subprocess must not be called")
+
+            class _AngryProvider:
+                @property
+                def provider_id(self) -> str:
+                    return "fake"
+
+                def build_invocation(self, request):
+                    raise AssertionError("must never be called")
+
+            providers = {"fake": _AngryProvider()}
+            try:
+                _run_async(run_dispatch(
+                    _make_request(workspace=Path("/nonexistent/path/xyz_123")),
+                    providers,
+                ))
+                self.fail("Should have raised")
+            except dg.DispatchInputError:
+                pass
+            mock_exec.assert_not_called()
+
+    def test_file_workspace_rejected_before_provider_lookup(self) -> None:
+        """File-as-workspace rejected before adapter.build_invocation."""
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(b"not a directory")
+            tmp_file = f.name
+        try:
+            with mock.patch(
+                "dispatcher_gateway.asyncio.create_subprocess_exec"
+            ) as mock_exec:
+                mock_exec.side_effect = RuntimeError("subprocess must not be called")
+
+                class _AngryProvider:
+                    @property
+                    def provider_id(self) -> str:
+                        return "fake"
+
+                    def build_invocation(self, request):
+                        raise AssertionError("must never be called")
+
+                providers = {"fake": _AngryProvider()}
+                try:
+                    _run_async(run_dispatch(
+                        _make_request(workspace=Path(tmp_file)),
+                        providers,
+                    ))
+                    self.fail("Should have raised")
+                except dg.DispatchInputError:
+                    pass
+                mock_exec.assert_not_called()
+        finally:
+            os.unlink(tmp_file)
+
+    def test_no_file_writes_on_workspace_failure(self) -> None:
+        """No file writes when workspace validation fails."""
+        with mock.patch("builtins.open",
+                        side_effect=RuntimeError("no file writes")):
+            try:
+                _run_async(run_dispatch(
+                    _make_request(workspace=Path("/nonexistent/path/xyz_123")),
+                    _make_providers(),
+                ))
+                self.fail("Should have raised")
+            except dg.DispatchInputError:
+                pass
+
+
+# =========================================================================
+# 8c. Structural regression — AgentCliInvocation stays 4 fields
+# =========================================================================
+
+
+class StructuralNoCwdRegressionTests(unittest.TestCase):
+    """AgentCliInvocation stays exactly 4 fields; no cwd field;
+    DispatchRequest stays exactly 5 fields."""
+
+    def test_agent_cli_invocation_still_four_fields(self) -> None:
+        field_names = {f.name for f in fields(AgentCliInvocation)}
+        self.assertSetEqual(
+            field_names,
+            {"executable", "argv", "stdin", "env_overrides"},
+        )
+
+    def test_agent_cli_invocation_has_no_cwd_field(self) -> None:
+        self.assertFalse(hasattr(AgentCliInvocation, "cwd"),
+                         "AgentCliInvocation must NOT have a cwd field")
+
+    def test_dispatch_request_still_five_fields(self) -> None:
+        field_names = {f.name for f in fields(DispatchRequest)}
+        self.assertSetEqual(
+            field_names,
+            {"identity", "workspace", "prompt", "model_selection", "timeout_seconds"},
+        )
+
+    def test_fake_provider_has_no_cwd_config(self) -> None:
+        """FakeAgentCliProvider must not accept cwd as a config parameter."""
+        fake = FakeAgentCliProvider(
+            provider_id="fake",
+            executable=_get_helper_exe(),
+        )
+        self.assertFalse(hasattr(fake, "cwd"),
+                         "FakeAgentCliProvider must NOT have a cwd attribute")
+        # __init__ must reject cwd keyword
+        with self.assertRaises(TypeError):
+            FakeAgentCliProvider(
+                provider_id="fake",
+                executable=_get_helper_exe(),
+                cwd="/some/path",  # type: ignore[call-arg]
+            )
+
+    def test_production_module_has_no_adapter_cwd_override(self) -> None:
+        """Production module must not allow adapter to override cwd."""
+        code = self._code_only()
+        self.assertNotIn("invocation.cwd", code)
+        self.assertNotIn(".cwd", code.replace("Path.cwd", ""))
+
+    def _code_only(self) -> str:
+        """Return source without docstrings and comments."""
+        src = (_SCRIPTS / "dispatcher_gateway.py").read_text(encoding="utf-8")
+        in_docstring = False
+        lines: list[str] = []
+        for line in src.splitlines():
+            stripped = line.strip()
+            if '"""' in stripped:
+                in_docstring = not in_docstring
+                continue
+            if in_docstring:
+                continue
+            if stripped.startswith("#"):
+                continue
+            lines.append(line)
+        return "\n".join(lines)
+
+
+# =========================================================================
 # 9. stdin/stdout/stderr
 # =========================================================================
 

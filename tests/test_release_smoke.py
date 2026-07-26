@@ -2052,6 +2052,78 @@ class ReleaseSmokeTests(unittest.TestCase):
                 section,
                 f"ADR §2.10.6 must reference AgentCliInvocation field '{field}'",
             )
+        # The word "cwd" may appear in the prose rule explaining there is
+        # no cwd field — but a numbered table row ``| # | ``cwd`` |``
+        # must NOT exist.  Check for the table-row pattern.
+        self.assertNotRegex(
+            section,
+            r"\|\s*\d+\s*\|\s*``cwd``\s*\|",
+            "ADR §2.10.6 must NOT list cwd as a numbered AgentCliInvocation field",
+        )
+
+    # -- 10f‑bis: Workspace is the authoritative cwd -------------------------
+
+    def test_tc137_workspace_is_authoritative_cwd(self) -> None:
+        """§2.10.4 must state workspace is the authoritative cwd; §2.10.6
+        must state AgentCliInvocation carries no cwd field."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        sec_request = _extract_markdown_section(
+            adr_text, "#### 2.10.4"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(sec_request)
+        self.assertIn(
+            "authoritative",
+            sec_request,
+            "§2.10.4 must state workspace is the authoritative subprocess "
+            "working directory",
+        )
+        self.assertIn(
+            "cwd",
+            sec_request,
+            "§2.10.4 must reference cwd for create_subprocess_exec",
+        )
+
+    def test_tc137_agent_cli_invocation_no_cwd(self) -> None:
+        """§2.10.6 must forbid a cwd field on AgentCliInvocation."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.10.6"
+        ) or _extract_markdown_section(adr_text, "### 2.10")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "no ``cwd`` field" in target
+            or "no cwd field" in target
+            or "four fields" in target,
+            "§2.10.6 must state there is no cwd field on AgentCliInvocation",
+        )
+
+    def test_tc137_dispatcher_module_has_no_adapter_cwd(self) -> None:
+        """Production dispatcher_gateway.py must not expose a cwd override
+        to providers."""
+        dg_path = SKILL_ROOT / "scripts" / "dispatcher_gateway.py"
+        src = dg_path.read_text(encoding="utf-8")
+        # Strip docstrings / comments
+        in_docstring = False
+        lines: list[str] = []
+        for line in src.splitlines():
+            stripped = line.strip()
+            if '"""' in stripped:
+                in_docstring = not in_docstring
+                continue
+            if in_docstring:
+                continue
+            if stripped.startswith("#"):
+                continue
+            lines.append(line)
+        code = "\n".join(lines)
+        # The only ".cwd" in the production code should be Path.cwd() in
+        # test assertions; the workspace=str(request.workspace) is fine.
+        # invocation.cwd must never appear.
+        self.assertNotIn("invocation.cwd", code,
+                         "Production code must not reference invocation.cwd")
+        self.assertNotIn("adapter.cwd", code,
+                         "Production code must not reference adapter cwd")
 
     # -- 10ℓ‑bis: Provider mapping — explicit run_dispatch signature --------
 
