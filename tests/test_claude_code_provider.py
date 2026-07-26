@@ -788,6 +788,94 @@ class ExecutableValidationTests(unittest.TestCase):
                 disallowed_tools=(),
             )
 
+    # ── Second-path-argument bypasses (runner / exe name without extension) ──
+
+    def test_runner_second_drive_payload_exe_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"C:\Program Files\Claude\claude C:\tmp\payload.exe",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_runner_second_drive_payload_cmd_rejected(self) -> None:
+        """Contains two drive colons — would pass the old find(':') != 1 check."""
+        # Verify the input genuinely has two drive colons.
+        value = r"C:\Program Files\Claude\runner D:\tmp\payload.cmd"
+        self.assertEqual(value.count(":"), 2, "Test value must contain two colons")
+        self.assertNotEqual(value.find(":"), value.rfind(":"),
+                           "Test value must have colons at different positions")
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=value,
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_runner_second_drive_forward_slash_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"C:\Program Files\Claude\runner D:/tmp/payload.exe",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_runner_slash_help_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"C:\Program Files\Claude\runner /help",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_runner_slash_payload_exe_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"C:\Program Files\Claude\runner /tmp/payload.exe",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_unc_runner_other_share_payload_exe_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"\\server\share\Claude Code\runner \\other\share\payload.exe",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_unc_runner_drive_payload_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"\\server\share\Claude Code\runner C:\tmp\payload.exe",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
+    def test_unc_runner_slash_help_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ClaudeCodeProvider(
+                provider_id="claude",
+                executable=r"\\server\share\Claude Code\runner /help",
+                permission_mode="plan",
+                allowed_tools=(),
+                disallowed_tools=(),
+            )
+
     # ── Table-driven bypass test ─────────────────────────────────────────
 
     def test_bypass_table_driven_all_rejected(self) -> None:
@@ -817,6 +905,15 @@ class ExecutableValidationTests(unittest.TestCase):
             "claude\targument",
             "claude\vargument",
             "claude\fargument",
+            # ── new second-path bypass values ──
+            r"C:\Program Files\Claude\claude C:\tmp\payload.exe",
+            r"C:\Program Files\Claude\runner D:\tmp\payload.cmd",
+            r"C:\Program Files\Claude\runner D:/tmp/payload.exe",
+            r"C:\Program Files\Claude\runner /help",
+            r"C:\Program Files\Claude\runner /tmp/payload.exe",
+            r"\\server\share\Claude Code\runner \\other\share\payload.exe",
+            r"\\server\share\Claude Code\runner C:\tmp\payload.exe",
+            r"\\server\share\Claude Code\runner /help",
         ]
         for value in bypass_values:
             with self.subTest(executable=value):

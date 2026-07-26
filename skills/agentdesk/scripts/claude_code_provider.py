@@ -38,6 +38,12 @@ _SHELL_METACHARS = frozenset(
 # Recognised executable extensions, case-insensitive.
 _EXE_EXTENSIONS = frozenset({".exe", ".cmd", ".bat", ".com"})
 _SUSPICIOUS_EXE_EXT = re.compile(r"(?i)\.(?:exe|cmd|bat|com)\s")
+# A whitespace followed by a second absolute path or slash‑argument.
+_SECOND_PATH_OR_SLASH_ARG = re.compile(
+    r"\s(?:[A-Za-z]:[\\/]|\\\\|/)"
+)
+# Drive‑absolute pattern — compiled once at module load.
+_DRIVE_RE = re.compile(r"^[A-Za-z]:(?:\\|/)")
 _EFFORT_MAP = {
     "efficient": "low",
     "balanced": "medium",
@@ -105,6 +111,17 @@ def _validate_executable(executable: object) -> str:
             "executable must not contain embedded arguments"
         )
 
+    # Reject: a whitespace followed by a second absolute path
+    # (drive letter, UNC, or slash) — catches:
+    #   C:\…\runner D:\tmp\payload.cmd
+    #   C:\…\claude C:\tmp\payload.exe
+    #   \\srv\…\runner \\other\share\payload.exe
+    #   C:\…\runner /help
+    if _SECOND_PATH_OR_SLASH_ARG.search(executable):
+        raise ValueError(
+            "executable must not contain embedded arguments"
+        )
+
     # Must end with a recognised executable extension (case‑insensitive).
     ext_lower = executable.rsplit(".", 1)[-1].lower() if "." in executable else ""
     if f".{ext_lower}" not in _EXE_EXTENSIONS:
@@ -113,12 +130,9 @@ def _validate_executable(executable: object) -> str:
         )
 
     # Drive‑absolute:  X:\...    or  X:/...
-    _DRIVE_RE = re.compile(
-        r"^[A-Za-z]:(?:\\|/)",
-    )
     if _DRIVE_RE.match(executable):
-        # Must contain only one drive‑colon, and it must be at position 1.
-        if executable.find(":") != 1:
+        # Must contain exactly one drive‑colon, at index 1.
+        if executable.count(":") != 1 or executable.find(":") != 1:
             raise ValueError(
                 "executable must not contain embedded arguments"
             )
