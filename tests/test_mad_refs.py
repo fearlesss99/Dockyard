@@ -153,19 +153,30 @@ class ImportSideEffectTests(unittest.TestCase):
     """Importing ``mad_refs`` produces no stdout/stderr."""
 
     def test_import_produces_no_output(self) -> None:
-        name = "mad_refs"
-        if name in sys.modules:
-            del sys.modules[name]
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            sys.path.insert(0, str(_SCRIPTS))
-            try:
-                importlib.import_module(name)
-            finally:
-                sys.path.remove(str(_SCRIPTS))
-        self.assertEqual(stdout.getvalue(), "")
-        self.assertEqual(stderr.getvalue(), "")
+        """Import in an isolated subprocess to avoid sys.modules contamination."""
+        import subprocess as _sp
+        scripts_dir = str(_SCRIPTS)
+        proc = _sp.run(
+            [sys.executable, "-c", fr"""
+import importlib, io, sys
+from contextlib import redirect_stdout, redirect_stderr
+name = "mad_refs"
+stdout = io.StringIO()
+stderr = io.StringIO()
+with redirect_stdout(stdout), redirect_stderr(stderr):
+    sys.path.insert(0, {scripts_dir!r})
+    try:
+        importlib.import_module(name)
+    finally:
+        sys.path.remove({scripts_dir!r})
+sys.stdout.write(stdout.getvalue())
+sys.stderr.write(stderr.getvalue())
+"""],
+            capture_output=True,
+            timeout=15,
+        )
+        self.assertEqual(proc.stdout.decode("utf-8", errors="replace"), "")
+        self.assertEqual(proc.stderr.decode("utf-8", errors="replace"), "")
 
     def test_module_has_no_io_on_load(self) -> None:
         names = set(dir(mad_refs))

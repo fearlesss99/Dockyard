@@ -308,26 +308,116 @@ class ModulePropertiesTests(unittest.TestCase):
             self.assertIn(name, mad_gateway.__all__, f"{name} missing from __all__")
 
     def test_import_produces_no_output(self) -> None:
-        name = "mad_gateway"
-        for mod_name in list(sys.modules):
-            if mod_name == name or mod_name.startswith(name + "."):
-                del sys.modules[mod_name]
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            sys.path.insert(0, str(_SCRIPTS))
-            try:
-                importlib.import_module(name)
-            finally:
-                sys.path.remove(str(_SCRIPTS))
-        self.assertEqual(stdout.getvalue(), "")
-        self.assertEqual(stderr.getvalue(), "")
+        """Import in an isolated subprocess to avoid sys.modules contamination."""
+        import subprocess as _sp
+        scripts_dir = str(_SCRIPTS)
+        proc = _sp.run(
+            [sys.executable, "-c", fr"""
+import importlib, io, sys
+from contextlib import redirect_stdout, redirect_stderr
+name = "mad_gateway"
+stdout = io.StringIO()
+stderr = io.StringIO()
+with redirect_stdout(stdout), redirect_stderr(stderr):
+    sys.path.insert(0, {scripts_dir!r})
+    try:
+        importlib.import_module(name)
+    finally:
+        sys.path.remove({scripts_dir!r})
+sys.stdout.write(stdout.getvalue())
+sys.stderr.write(stderr.getvalue())
+"""],
+            capture_output=True,
+            timeout=15,
+        )
+        self.assertEqual(proc.stdout.decode("utf-8", errors="replace"), "")
+        self.assertEqual(proc.stderr.decode("utf-8", errors="replace"), "")
 
     def test_no_mad_internal_imports(self) -> None:
         """Must not import from MAD's own packages."""
         source = (_SCRIPTS / "mad_gateway.py").read_text(encoding="utf-8")
         self.assertNotIn("from mad.", source)
         self.assertNotIn("import mad.", source)
+
+
+# =========================================================================
+# 1b — Import isolation regression tests (module-identity stability)
+# =========================================================================
+
+
+class ImportIsolationRegressionTests(unittest.TestCase):
+    """After test_import_produces_no_output, module identities are intact."""
+
+    def test_mad_gateway_module_identity_intact_after_import_test(self) -> None:
+        """sys.modules['mad_gateway'] unchanged after the import test runs."""
+        pre = id(sys.modules["mad_gateway"])
+        # Run the import test (it uses a subprocess — must not affect us)
+        ModulePropertiesTests("test_import_produces_no_output").run()
+        post = id(sys.modules["mad_gateway"])
+        self.assertEqual(pre, post,
+            "sys.modules['mad_gateway'] must be the same object "
+            "after test_import_produces_no_output")
+
+    def test_mad_refs_module_identity_intact_after_import_test(self) -> None:
+        """sys.modules['mad_refs'] unchanged after the import test runs."""
+        pre = id(sys.modules["mad_refs"])
+        ModulePropertiesTests("test_import_produces_no_output").run()
+        post = id(sys.modules["mad_refs"])
+        self.assertEqual(pre, post,
+            "sys.modules['mad_refs'] must be the same object "
+            "after test_import_produces_no_output")
+
+    def test_mad_gateway_mad_refs_is_sys_modules(self) -> None:
+        """mad_gateway.mad_refs is sys.modules['mad_refs']."""
+        self.assertIs(
+            mad_gateway.mad_refs, sys.modules["mad_refs"],
+            "mad_gateway.mad_refs must be the same object as "
+            "sys.modules['mad_refs']",
+        )
+
+    def test_mad_gateway_depth_type_identity(self) -> None:
+        """mad_gateway references the same MadDeliberationDepth from core_types."""
+        # mad_gateway does `from core_types import MadDeliberationDepth`
+        # Verify it's the same object as core_types.MadDeliberationDepth.
+        self.assertIs(
+            mad_gateway.MadDeliberationDepth,
+            core_types.MadDeliberationDepth,
+            "mad_gateway.MadDeliberationDepth must be "
+            "core_types.MadDeliberationDepth",
+        )
+
+    def test_sys_path_unchanged_after_import_test(self) -> None:
+        """sys.path identical before and after test_import_produces_no_output."""
+        pre = list(sys.path)
+        ModulePropertiesTests("test_import_produces_no_output").run()
+        post = list(sys.path)
+        self.assertEqual(pre, post,
+            "sys.path must be unchanged after test_import_produces_no_output")
+
+    def test_append_mad_ref_mock_works_after_import_test(self) -> None:
+        """After the import test runs, mocking append_mad_ref still works."""
+        ModulePropertiesTests("test_import_produces_no_output").run()
+        m = mock.MagicMock(return_value={"refs": []})
+        async def _test():
+            await _run_gateway_with_mock(
+                self, append_mad_ref_override=m,
+            )
+            self.assertEqual(m.call_count, 1,
+                "append_mad_ref mock must receive exactly one call")
+        asyncio.run(_test())
+
+    def test_import_test_twice_no_identity_split(self) -> None:
+        """Running the import test twice does not split module identities."""
+        pre_gw = id(sys.modules["mad_gateway"])
+        pre_mr = id(sys.modules["mad_refs"])
+        ModulePropertiesTests("test_import_produces_no_output").run()
+        ModulePropertiesTests("test_import_produces_no_output").run()
+        post_gw = id(sys.modules["mad_gateway"])
+        post_mr = id(sys.modules["mad_refs"])
+        self.assertEqual(pre_gw, post_gw,
+            "mad_gateway identity must be intact after two import test runs")
+        self.assertEqual(pre_mr, post_mr,
+            "mad_refs identity must be intact after two import test runs")
 
 
 # =========================================================================
@@ -755,12 +845,13 @@ class NonZeroExitCodeTests(unittest.TestCase):
         self._assert_exit_raises(255, mad_gateway.GatewayUnknownExitError)
 
     def test_non_zero_exit_does_not_call_append_mad_ref(self) -> None:
-        with mock.patch("mad_refs.append_mad_ref") as mock_append:
-            async def _test():
-                with self.assertRaises(mad_gateway.GatewayNonZeroExitError):
-                    await _run_gateway_with_mock(self, exit_code=1)
-                mock_append.assert_not_called()
-            asyncio.run(_test())
+        m = mock.MagicMock()
+        async def _test():
+            with self.assertRaises(mad_gateway.GatewayNonZeroExitError):
+                await _run_gateway_with_mock(self, exit_code=1,
+                    append_mad_ref_override=m)
+            m.assert_not_called()
+        asyncio.run(_test())
 
 
 # =========================================================================
@@ -784,18 +875,22 @@ class TimeoutTests(unittest.TestCase):
         asyncio.run(_test())
 
     def test_timeout_does_not_call_append_mad_ref(self) -> None:
-        with mock.patch("mad_refs.append_mad_ref") as mock_append:
-            async def _test():
-                fake = _fake_process_factory(
-                    exit_code=-1,
-                    raise_on_wait=TimeoutError(),
-                )
-                with mock.patch("asyncio.create_subprocess_exec", return_value=fake):
-                    with self.assertRaises(mad_gateway.GatewayTimeoutError):
-                        cfg, inp = await _make_cfg_inp(self)
+        m = mock.MagicMock()
+        async def _test():
+            fake = _fake_process_factory(
+                exit_code=-1,
+                raise_on_wait=TimeoutError(),
+            )
+            with mock.patch("asyncio.create_subprocess_exec", return_value=fake):
+                with self.assertRaises(mad_gateway.GatewayTimeoutError):
+                    cfg, inp = await _make_cfg_inp(self)
+                    # Patch after cfg creation so config validation passes
+                    with mock.patch.object(
+                        mad_gateway.mad_refs, "append_mad_ref", m,
+                    ):
                         await mad_gateway.run_gateway(cfg, inp)
-                mock_append.assert_not_called()
-            asyncio.run(_test())
+            m.assert_not_called()
+        asyncio.run(_test())
 
 
 # =========================================================================
@@ -963,15 +1058,16 @@ class StdoutValidationFailureTests(unittest.TestCase):
         asyncio.run(_test())
 
     def test_validation_failure_does_not_call_append(self) -> None:
-        with mock.patch("mad_refs.append_mad_ref") as mock_append:
-            async def _test():
-                p = _make_result_payload()
-                del p["report"]
-                raw = _result_bytes(p)
-                with self.assertRaises(mad_gateway.GatewayOutputValidationError):
-                    await _run_gateway_with_mock(self, stdout_bytes=raw)
-                mock_append.assert_not_called()
-            asyncio.run(_test())
+        m = mock.MagicMock()
+        async def _test():
+            p = _make_result_payload()
+            del p["report"]
+            raw = _result_bytes(p)
+            with self.assertRaises(mad_gateway.GatewayOutputValidationError):
+                await _run_gateway_with_mock(self, stdout_bytes=raw,
+                    append_mad_ref_override=m)
+            m.assert_not_called()
+        asyncio.run(_test())
 
 
 # =========================================================================
