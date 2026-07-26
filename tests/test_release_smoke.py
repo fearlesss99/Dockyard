@@ -852,10 +852,10 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("TC-13.8.4", tc139a_dep,
                       "TC-13.9a must depend on TC-13.8.4")
 
-        # TC-13.10 depends on TC-13.9b, not TC-13.9c
-        tc1310_dep = self._resolve_col(by_id.get("TC-13.10", {}), "Depends on", "Dep")
-        self.assertIn("TC-13.9b", tc1310_dep,
-                      "TC-13.10 must depend on TC-13.9b (production, not decoder)")
+        # TC-13.10a depends on this ADR (split from old TC-13.10)
+        tc1310a_dep = self._resolve_col(by_id.get("TC-13.10a", {}), "Depends on", "Dep")
+        self.assertIn("This ADR", tc1310a_dep,
+                      "TC-13.10a must depend on This ADR")
 
     # -- 8b: TC-13.4 section contains all three enums with exact values ----
 
@@ -4985,19 +4985,578 @@ class ReleaseSmokeTests(unittest.TestCase):
             self.assertIn(tid, task_ids_seen,
                           f"ADR §5 must contain {tid}")
 
-    def test_tc139a_tc1310_depends_on_tc139b_not_tc139c(self) -> None:
-        """ADR §5: TC-13.10 depends on TC-13.9b, not TC-13.9c."""
+    def test_tc139a_tc1310a_depends_on_adr(self) -> None:
+        """ADR §5: TC-13.10a depends on This ADR."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_future_task_cards_table(adr_text)
         by_id = {
             self._resolve_col(row, "Task Card", "Task", "#"): row
             for row in rows
         }
-        tc1310 = by_id.get("TC-13.10")
-        self.assertIsNotNone(tc1310, "TC-13.10 must exist in Future Task Cards")
-        tc1310_dep = self._resolve_col(tc1310, "Depends on", "Dep")
-        self.assertIn("TC-13.9b", tc1310_dep,
-                      "TC-13.10 must depend on TC-13.9b")
+        tc1310a = by_id.get("TC-13.10a")
+        self.assertIsNotNone(tc1310a, "TC-13.10a must exist in Future Task Cards")
+        tc1310a_dep = self._resolve_col(tc1310a, "Depends on", "Dep")
+        self.assertIn("This ADR", tc1310a_dep,
+                      "TC-13.10a must depend on This ADR")
+
+    def test_tc139a_tc1310_split_in_future_task_cards(self) -> None:
+        """ADR §5 must list TC-13.10a, TC-13.10b, TC-13.10c as separate rows."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        task_ids_seen = {
+            self._resolve_col(row, "Task Card", "Task", "#")
+            for row in rows
+        }
+        for tid in ("TC-13.10a", "TC-13.10b", "TC-13.10c"):
+            self.assertIn(tid, task_ids_seen,
+                          f"ADR §5 must contain {tid}")
+
+    def test_tc139a_tc1310b_depends_on_tc1310a(self) -> None:
+        """ADR §5: TC-13.10b depends on TC-13.10a."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        by_id = {
+            self._resolve_col(row, "Task Card", "Task", "#"): row
+            for row in rows
+        }
+        tc1310b = by_id.get("TC-13.10b")
+        self.assertIsNotNone(tc1310b, "TC-13.10b must exist in Future Task Cards")
+        tc1310b_dep = self._resolve_col(tc1310b, "Depends on", "Dep")
+        self.assertIn("TC-13.10a", tc1310b_dep,
+                      "TC-13.10b must depend on TC-13.10a")
+
+    def test_tc139a_tc1310c_depends_on_tc1310b(self) -> None:
+        """ADR §5: TC-13.10c depends on TC-13.10b."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        by_id = {
+            self._resolve_col(row, "Task Card", "Task", "#"): row
+            for row in rows
+        }
+        tc1310c = by_id.get("TC-13.10c")
+        self.assertIsNotNone(tc1310c, "TC-13.10c must exist in Future Task Cards")
+        tc1310c_dep = self._resolve_col(tc1310c, "Depends on", "Dep")
+        self.assertIn("TC-13.10b", tc1310c_dep,
+                      "TC-13.10c must depend on TC-13.10b")
+
+    # ── TC-13.10a WorkerSlotLease frozen contract ───────────────────────
+
+    _EIGHT_STABLE_SLOTS = frozenset({
+        "basic_agent-1",
+        "basic_agent-2",
+        "standard_agent-1",
+        "standard_agent-2",
+        "advanced_agent-1",
+        "advanced_agent-2",
+        "expert_agent-1",
+        "expert_agent-2",
+    })
+
+    _TEN_LEASE_FIELDS = frozenset({
+        "lease_id",
+        "lease_epoch",
+        "slot_id",
+        "worker_kind",
+        "holder_dispatch_id",
+        "holder_instance_id",
+        "canonical_worktree",
+        "acquired_at",
+        "heartbeat_at",
+        "expires_at",
+    })
+
+    _LEASE_FORBIDDEN_FIELDS = frozenset({
+        "task_id",
+        "revision",
+        "attempt",
+        "provider",
+        "model_id",
+        "task_difficulty",
+        "prompt",
+        "PID",
+        "retry count",
+    })
+
+    _FOUR_ROOT_KEYS = frozenset({
+        "schema_version",
+        "updated_at",
+        "slot_epochs",
+        "leases",
+    })
+
+    _EXCEPTION_CLASSES = frozenset({
+        "WorkerSlotLeaseError",
+        "WorkerSlotValidationError",
+        "WorkerSlotCapacityError",
+        "WorkerSlotContentionError",
+        "WorkerSlotNotHeldError",
+        "WorkerSlotFencingError",
+    })
+
+    def test_tc1310a_section_25_heading_is_frozen_contract(self) -> None:
+        """§2.5 heading must mention Frozen Contract — TC-13.10a."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        heading_m = re.search(
+            r"^### 2\.5\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m, "ADR must have a §2.5 heading")
+        heading = heading_m.group(0)
+        self.assertIn("Target", heading,
+                      "§2.5 heading must still say Target")
+        self.assertIn("TC-13.10", heading,
+                      "§2.5 heading must reference TC-13.10")
+
+    def test_tc1310a_frozen_contract_marker_in_section(self) -> None:
+        """§2.5 must contain 'Frozen Contract — TC-13.10a' marker."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.5")
+        self.assertIsNotNone(section, "ADR must contain §2.5")
+        self.assertIn("Frozen Contract — TC-13.10a", section,
+                      "§2.5 must contain the frozen contract marker")
+
+    def test_tc1310a_eight_stable_slot_ids(self) -> None:
+        """§2.5.1 must define exactly eight stable slot IDs."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.1")
+        self.assertIsNotNone(section, "ADR must contain §2.5.1")
+        for slot_id in sorted(self._EIGHT_STABLE_SLOTS):
+            self.assertIn(
+                slot_id, section,
+                f"§2.5.1 must contain slot ID {slot_id!r}",
+            )
+        # Must forbid random / dynamic slot IDs.
+        self.assertIn("Random", section,
+                      "§2.5.1 must forbid random slot IDs")
+
+    def test_tc1310a_no_random_slot_id_rule(self) -> None:
+        """§2.5.1 must forbid random/dynamic slot IDs."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.1")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "forbidden" in target or "must not" in target or "no " in target,
+            "§2.5.1 must forbid random slot IDs",
+        )
+
+    def test_tc1310a_runtime_store_path(self) -> None:
+        """§2.5.2 must specify .agentdesk/runtime/worker-slot-lease.yaml."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.2")
+        self.assertIsNotNone(section, "ADR must contain §2.5.2")
+        self.assertIn(
+            ".agentdesk/runtime/worker-slot-lease.yaml",
+            section,
+            "§2.5.2 must specify the runtime store path",
+        )
+
+    def test_tc1310a_four_exact_root_keys(self) -> None:
+        """§2.5.2 root object must have exactly 4 keys."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.2")
+        self.assertIsNotNone(section)
+        for key in sorted(self._FOUR_ROOT_KEYS):
+            self.assertIn(
+                f'"{key}"', section,
+                f"§2.5.2 must include root key {key!r}",
+            )
+
+    def test_tc1310a_slot_epochs_persist_after_release(self) -> None:
+        """§2.5.2: release must preserve slot_epochs entry."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.2")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "preserv" in target or "retain" in target or "persist" in target,
+            "§2.5.2 must state epoch is preserved on release",
+        )
+
+    def test_tc1310a_worker_kind_is_frozen_lease_field(self) -> None:
+        """§2.5.3 must list worker_kind as frozen lease field."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.3")
+        self.assertIsNotNone(section, "ADR must contain §2.5.3")
+        self.assertIn("worker_kind", section,
+                      "§2.5.3 must list worker_kind as frozen field")
+
+    def test_tc1310a_exact_ten_lease_fields(self) -> None:
+        """§2.5.3 WorkerSlotLease must have exactly 10 fields."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.3")
+        self.assertIsNotNone(section)
+        # Parse the numbered field table in §2.5.3
+        import re as _re
+        field_names: set[str] = set()
+        for raw in section.splitlines():
+            stripped = raw.strip()
+            m = _re.match(
+                r"^\|\s*\d+\s*\|\s*``([a-z_]+)``\s*\|",
+                stripped,
+            )
+            if m:
+                field_names.add(m.group(1))
+        if field_names:
+            self.assertSetEqual(
+                field_names,
+                self._TEN_LEASE_FIELDS,
+                "§2.5.3 WorkerSlotLease must have exactly 10 fields",
+            )
+
+    def test_tc1310a_lease_forbidden_fields(self) -> None:
+        """§2.5.3 must explicitly forbid task_id, revision, attempt, etc."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.3")
+        self.assertIsNotNone(section)
+        for field in sorted(self._LEASE_FORBIDDEN_FIELDS):
+            self.assertIn(
+                field, section,
+                f"§2.5.3 must forbid field {field!r}",
+            )
+
+    def test_tc1310a_lease_id_format(self) -> None:
+        """§2.5.4 must define WSL-<32 hex> format."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.4")
+        self.assertIsNotNone(section, "ADR must contain §2.5.4")
+        self.assertIn("WSL-", section,
+                      "§2.5.4 must define WSL- prefix for lease IDs")
+        self.assertIn("32", section,
+                      "§2.5.4 must require 32 hex characters")
+
+    def test_tc1310a_ttl_and_heartbeat_constants(self) -> None:
+        """§2.5.5 must freeze LEASE_TTL_SECONDS=60 and
+        MAX_HEARTBEAT_INTERVAL_SECONDS=20."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.5")
+        self.assertIsNotNone(section, "ADR must contain §2.5.5")
+        self.assertIn("LEASE_TTL_SECONDS", section)
+        self.assertIn("60", section,
+                      "§2.5.5 must set LEASE_TTL_SECONDS to 60")
+        self.assertIn("MAX_HEARTBEAT_INTERVAL_SECONDS", section)
+        self.assertIn("20", section,
+                      "§2.5.5 must set MAX_HEARTBEAT_INTERVAL_SECONDS to 20")
+
+    def test_tc1310a_explicit_utc_datetime_required(self) -> None:
+        """§2.5.5 must require timezone-aware UTC datetime; reject naive."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.5")
+        self.assertIsNotNone(section)
+        self.assertIn("UTC", section,
+                      "§2.5.5 must require UTC datetime")
+        target = section.lower()
+        self.assertTrue(
+            "naive" in target or "timezone-aware" in target
+            or "offset" in target,
+            "§2.5.5 must reject naive datetime",
+        )
+
+    def test_tc1310a_acquire_stale_cleanup_before_capacity(self) -> None:
+        """§2.5.6 acquire must clean stale leases before counting capacity."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.6")
+        self.assertIsNotNone(section, "ADR must contain §2.5.6")
+        target = section.lower()
+        self.assertTrue(
+            "before" in target and ("capacit" in target or "count" in target),
+            "§2.5.6 must state stale cleanup runs before capacity check",
+        )
+
+    def test_tc1310a_per_worktree_per_worker_kind_independent(self) -> None:
+        """§2.5.6 per-worktree limits are independent per WorkerKind."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.6")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "independ" in target or "does not block" in target
+            or "different workerkind" in target,
+            "§2.5.6 must state per-worktree limits are per-WorkerKind",
+        )
+
+    def test_tc1310a_release_validates_all_six_identity_fields(self) -> None:
+        """§2.5.7 release must validate all six identity fields."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.7")
+        self.assertIsNotNone(section, "ADR must contain §2.5.7")
+        for field in ("slot_id", "lease_id", "lease_epoch", "worker_kind",
+                       "holder_dispatch_id", "holder_instance_id"):
+            self.assertIn(
+                field, section,
+                f"§2.5.7 must validate {field} on release",
+            )
+
+    def test_tc1310a_double_release_fail_closed(self) -> None:
+        """§2.5.7 double release must be WorkerSlotNotHeldError."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.7")
+        self.assertIsNotNone(section)
+        self.assertIn("WorkerSlotNotHeldError", section,
+                      "§2.5.7 must name WorkerSlotNotHeldError for double release")
+        target = section.lower()
+        self.assertTrue(
+            "fail-closed" in target or "fail closed" in target
+            or "not silently" in target or "must not" in target,
+            "§2.5.7 must state double release is fail-closed",
+        )
+
+    def test_tc1310a_renew_expired_lease_fencing_error(self) -> None:
+        """§2.5.8 renew of expired lease must be WorkerSlotFencingError."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.8")
+        self.assertIsNotNone(section, "ADR must contain §2.5.8")
+        self.assertIn("WorkerSlotFencingError", section,
+                      "§2.5.8 must use WorkerSlotFencingError for expired renew")
+        target = section.lower()
+        self.assertTrue(
+            "cannot be resurrected" in target
+            or "cannot" in target,
+            "§2.5.8 must state expired lease cannot be resurrected via renew",
+        )
+
+    def test_tc1310a_renew_does_not_change_epoch(self) -> None:
+        """§2.5.8 renew must never change lease_epoch."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.8")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "never" in target and "epoch" in target,
+            "§2.5.8 must state epoch is never changed by renew",
+        )
+
+    def test_tc1310a_hold_fence_context_manager(self) -> None:
+        """§2.5.9 must define hold_worker_slot_fence context manager."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.9")
+        self.assertIsNotNone(section, "ADR must contain §2.5.9")
+        self.assertIn("hold_worker_slot_fence", section,
+                      "§2.5.9 must define hold_worker_slot_fence")
+
+    def test_tc1310a_lock_free_validate_not_for_state_auth(self) -> None:
+        """§2.5.9 must forbid using lock-free validate for state auth."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.9")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "must not" in target or "never" in target,
+            "§2.5.9 must forbid lock-free validation for state writes",
+        )
+
+    def test_tc1310a_global_lock_ordering_frozen(self) -> None:
+        """§2.5.9 must freeze lock ordering: worker-slot → state."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.9")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "lock" in target and "order" in target,
+            "§2.5.9 must define global lock ordering",
+        )
+
+    def test_tc1310a_file_lock_o_creat_o_excl(self) -> None:
+        """§2.5.10 must specify O_CREAT | O_EXCL."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.10")
+        self.assertIsNotNone(section, "ADR must contain §2.5.10")
+        self.assertIn("O_CREAT", section,
+                      "§2.5.10 must specify O_CREAT | O_EXCL")
+
+    def test_tc1310a_no_auto_stale_lock_removal(self) -> None:
+        """§2.5.10 must forbid automatic stale lock removal."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.10")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "not" in target and ("automat" in target or "assum" in target
+                                 or "mtime" in target),
+            "§2.5.10 must forbid automatic stale lock removal",
+        )
+
+    def test_tc1310a_atomic_write_pattern(self) -> None:
+        """§2.5.11 must specify mkstemp + fsync + os.replace + dir fsync."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.11")
+        self.assertIsNotNone(section, "ADR must contain §2.5.11")
+        self.assertIn("os.replace", section,
+                      "§2.5.11 must specify os.replace")
+        self.assertIn("fsync", section,
+                      "§2.5.11 must specify fsync")
+
+    def test_tc1310a_worktree_symlink_rejected(self) -> None:
+        """§2.5.12 must reject symlink/reparse-point workspace."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.12")
+        self.assertIsNotNone(section, "ADR must contain §2.5.12")
+        target = section.lower()
+        self.assertTrue(
+            "symlink" in target or "reparse" in target,
+            "§2.5.12 must reject symlink/reparse-point workspace",
+        )
+
+    def test_tc1310a_worktree_str_lower_forbidden(self) -> None:
+        """§2.5.12 must forbid str.lower() as substitute for proper
+        normalisation."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.12")
+        self.assertIsNotNone(section)
+        self.assertIn("str.lower()", section,
+                      "§2.5.12 must explicitly forbid str.lower()")
+
+    def test_tc1310a_exception_hierarchy(self) -> None:
+        """§2.5.13 must define exactly the frozen exception hierarchy."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.13")
+        self.assertIsNotNone(section, "ADR must contain §2.5.13")
+        for exc_name in sorted(self._EXCEPTION_CLASSES):
+            self.assertIn(
+                exc_name, section,
+                f"§2.5.13 must define {exc_name}",
+            )
+
+    def test_tc1310a_no_config_error_in_hierarchy(self) -> None:
+        """§2.5.13 must state No WorkerSlotConfigError and not list it
+        in the hierarchy diagram."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.13")
+        self.assertIsNotNone(section)
+        # The hierarchy diagram must NOT include WorkerSlotConfigError.
+        # The prose may mention it to say it is excluded.
+        self.assertIn("No ``WorkerSlotConfigError``", section,
+                      "§2.5.13 must state No WorkerSlotConfigError")
+
+    def test_tc1310a_exception_message_safety(self) -> None:
+        """§2.5.13 must forbid prompt/stdout/stderr/secrets in exception
+        messages."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.13")
+        self.assertIsNotNone(section)
+        for forbidden in ("prompt", "stdout", "stderr", "Secrets",
+                          "holder_instance_id", "canonical_worktree"):
+            self.assertIn(
+                forbidden, section,
+                f"§2.5.13 must forbid {forbidden} in exception messages",
+            )
+
+    def test_tc1310a_module_boundaries_no_worker_adapter(self) -> None:
+        """§2.5.14 must forbid calling WorkerAdapter / DispatcherGateway."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.14")
+        self.assertIsNotNone(section, "ADR must contain §2.5.14")
+        self.assertIn("run_worker", section,
+                      "§2.5.14 must forbid calling run_worker")
+        self.assertIn("worker_adapter", section,
+                      "§2.5.14 must forbid importing worker_adapter")
+
+    def test_tc1310a_module_boundaries_no_state_writes(self) -> None:
+        """§2.5.14 must forbid writing tasks/events/outbox/report."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.14")
+        self.assertIsNotNone(section)
+        for forbidden in ("tasks.yaml", "events", "outbox", "delivery report"):
+            self.assertIn(
+                forbidden, section,
+                f"§2.5.14 must forbid writing {forbidden}",
+            )
+
+    def test_tc1310a_independent_of_pm_lease(self) -> None:
+        """§2.5 must state Worker slot lease is independent of PM lease."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.5")
+        self.assertIsNotNone(section)
+        self.assertIn("independent of the PM lease", section,
+                      "§2.5 must state independence from PM lease")
+
+    def test_tc1310a_task_card_split_in_contract(self) -> None:
+        """§2.5.15 must define TC-13.10a/b/c split and dependencies."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.15")
+        self.assertIsNotNone(section, "ADR must contain §2.5.15")
+        for tid in ("TC-13.10a", "TC-13.10b", "TC-13.10c"):
+            self.assertIn(
+                tid, section,
+                f"§2.5.15 must reference {tid}",
+            )
+
+    def test_tc1310a_status_remains_target(self) -> None:
+        """§2.5.16 must state TC-13.10 overall remains Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.5.16")
+        self.assertIsNotNone(section, "ADR must contain §2.5.16")
+        self.assertIn("Target", section,
+                      "§2.5.16 must state overall remains Target")
+
+    def test_tc1310a_production_module_does_not_exist(self) -> None:
+        """worker_slot_lease.py must NOT exist yet (TC-13.10a is contract
+        only)."""
+        prod = (SKILL_ROOT / "scripts" / "worker_slot_lease.py")
+        self.assertFalse(
+            prod.exists(),
+            f"Production module must not exist yet: {prod}",
+        )
+
+    def test_tc1310a_test_module_does_not_exist(self) -> None:
+        """test_worker_slot_lease.py must NOT exist yet."""
+        test_file = REPO_ROOT / "tests" / "test_worker_slot_lease.py"
+        self.assertFalse(
+            test_file.exists(),
+            f"Test module must not exist yet: {test_file}",
+        )
+
+    def test_tc1310a_tc139c_still_target(self) -> None:
+        """TC-13.9c must still be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        # TC-13.9c is not in the interface status table — check §5.
+        section = _extract_markdown_section(adr_text, "## 5. Future Task Cards")
+        self.assertIsNotNone(section)
+        self.assertIn("TC-13.9c", section,
+                      "TC-13.9c must remain in Future Task Cards")
+
+    def test_tc1310a_tc1311_still_target(self) -> None:
+        """TC-13.11 must still be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        tc1311_row = None
+        for row in rows:
+            impl = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            if "TC-13.11" in re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl):
+                tc1311_row = row
+                break
+        self.assertIsNotNone(tc1311_row, "ADR must contain TC-13.11 row")
+        status = self._resolve_col(tc1311_row, "Status")
+        self.assertIn("Target", status)
+        self.assertNotIn("Current", status)
+
+    def test_tc1310a_tc1318_depends_on_tc1310c(self) -> None:
+        """ADR §5: TC-13.18 must depend on TC-13.10c."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        by_id = {
+            self._resolve_col(row, "Task Card", "Task", "#"): row
+            for row in rows
+        }
+        tc1318 = by_id.get("TC-13.18")
+        self.assertIsNotNone(tc1318, "TC-13.18 must exist in Future Task Cards")
+        tc1318_dep = self._resolve_col(tc1318, "Depends on", "Dep")
+        self.assertIn("TC-13.10c", tc1318_dep,
+                      "TC-13.18 must depend on TC-13.10c")
+
+    def test_tc1310a_tc1311_depends_on_tc1310c(self) -> None:
+        """ADR §5: TC-13.11 must depend on TC-13.10c."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        by_id = {
+            self._resolve_col(row, "Task Card", "Task", "#"): row
+            for row in rows
+        }
+        tc1311 = by_id.get("TC-13.11")
+        self.assertIsNotNone(tc1311, "TC-13.11 must exist in Future Task Cards")
+        tc1311_dep = self._resolve_col(tc1311, "Depends on", "Dep")
+        self.assertIn("TC-13.10c", tc1311_dep,
+                      "TC-13.11 must depend on TC-13.10c")
 
     def test_tc139a_claude_provider_still_current(self) -> None:
         """§2.11 and Interface Status #30 must still be Current."""
@@ -5018,17 +5577,17 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("Current", heading_m.group(0))
 
     def test_tc139a_tc1310_still_target(self) -> None:
-        """Interface Status row for TC-13.10 must still be Target."""
+        """Interface Status row for TC-13.10a must still be Target."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
-        tc1310_row = None
+        tc1310a_row = None
         for row in rows:
             impl = self._resolve_col(row, "Implemented by", "Impl", "Notes")
-            if "TC-13.10" in re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl):
-                tc1310_row = row
+            if "TC-13.10a" in re.findall(r"\b(TC-\d+(?:\.\d+)*[a-z]?)\b", impl):
+                tc1310a_row = row
                 break
-        self.assertIsNotNone(tc1310_row, "ADR must contain TC-13.10 row")
-        status = self._resolve_col(tc1310_row, "Status")
+        self.assertIsNotNone(tc1310a_row, "ADR must contain TC-13.10a row")
+        status = self._resolve_col(tc1310a_row, "Status")
         self.assertIn("Target", status)
         self.assertNotIn("Current", status)
 

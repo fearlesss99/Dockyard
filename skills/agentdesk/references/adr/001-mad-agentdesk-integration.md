@@ -25,7 +25,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 12 | AgentDesk double-commit protocol | **Current** | N/A (existing) | `implementation_commit` → `report_commit` |
 | 13 | AgentDesk MAD Decision Gateway | **Current** | TC-13.6 | Config-driven subprocess invocation of `mad` for planning/deliberation |
 | 14 | AgentDesk WorkerAdapter — four-tier Worker execution orchestration | **Current** | TC-13.9b | Basic/Standard/Advanced/Expert; WorkerKind + TaskDifficulty as independent inputs; provider/model from bindings only; budget computed, not enforced; concurrency slots deferred to TC-13.10 |
-| 15 | AgentDesk WorkerSlotLease | **Target** | TC-13.10 | `agentdesk.worker-slot-lease/v1` |
+| 15 | AgentDesk WorkerSlotLease | **Target** | TC-13.10a | `agentdesk.worker-slot-lease/v1`; frozen contract §2.5; TC-13.10b/c remain Target |
 | 16 | AgentDesk ControlPlaneTransitionService | **Target** | TC-13.11 | CAS-write tasks, immutable events, replayable outbox |
 | 17 | AgentDesk ApprovalGate | **Target** | TC-13.12 | TASK_APPROVAL with structured scope (dispatch/accept/integrate) |
 | 18 | AgentDesk EscalationService | **Target** | TC-13.13 | Difficulty escalation independent of rate-limit |
@@ -439,20 +439,498 @@ consumes the policy's `BudgetResult`; this section describes the
 
 ### 2.5 Worker Slot Lease (Target — TC-13.10)
 
-Each Worker slot lease is independent of the PM lease.  Fields:
+> **Frozen Contract — TC-13.10a.**  Subsections §2.5.1–§2.5.17 below are
+> the frozen contract for ``agentdesk.worker-slot-lease/v1``.  The
+> production implementation is split across TC-13.10b (data model,
+> validation, runtime store, atomic I/O) and TC-13.10c (acquire / release
+> / renew / hold fence).  The overall interface remains **Target** until
+> TC-13.10c is committed.
 
-- `lease_id` — unique per acquisition.
-- `lease_epoch` — incremented on each re-acquisition; all state writes check it.
-- `slot_id` — references the Worker slot.
-- `holder_dispatch_id` — which dispatch holds this slot.
-- `holder_instance_id` — which runtime instance holds this slot.
-- `canonical_worktree` — normalised, case-insensitive real path; reparse points
-  rejected.
-- `acquired_at`, `heartbeat_at`, `expires_at` — lifecycle timestamps.
+Each Worker slot lease is independent of the PM lease.  A **provider
+request permit** is independent of the Worker lifecycle slot: rate-limiting
+a provider (429) does not release the Worker slot, and releasing a Worker
+slot does not reset the provider rate-limit window.
 
-A **provider request permit** is independent of the Worker lifecycle slot:
-rate-limiting a provider (429) does not release the Worker slot, and releasing
-a Worker slot does not reset the provider rate-limit window.
+---
+#### 2.5.1 Stable Slot Identifiers
+
+Eight stable slots are frozen — two per ``WorkerKind``:
+
+```text
+basic_agent-1     basic_agent-2
+standard_agent-1  standard_agent-2
+advanced_agent-1  advanced_agent-2
+expert_agent-1    expert_agent-2
+```
+
+**Frozen rules:**
+
+1. Slot IDs are permanent — they are never created or destroyed at runtime.
+2. The same slot can be acquired, released, and re-acquired indefinitely.
+3. On the first acquire of a given slot, ``lease_epoch`` is set to 1.
+4. Each subsequent acquire of the same slot increments ``lease_epoch`` by 1.
+5. ``renew`` does **not** increment the epoch.
+6. ``release`` does **not** delete the epoch from ``slot_epochs`` — the
+   current epoch value persists in the store so that the next acquire can
+   pick the correct successor.
+7. When selecting a free slot, the lowest-numbered available stable slot
+   for the requested ``WorkerKind`` is chosen — this guarantees
+   deterministic allocation.
+8. Random / dynamic slot IDs are forbidden.
+9. Parsing arbitrary free-form slot IDs is forbidden.
+10. The capacity (2 per ``WorkerKind``) is hard-coded and cannot be
+    overridden by configuration.
+
+---
+
+#### 2.5.2 Runtime Store
+
+Path: ``.agentdesk/runtime/worker-slot-lease.yaml`` (gitignored, runtime-only).
+
+JSON-compatible YAML.  Root object has exactly four keys:
+
+```json
+{
+  "schema_version": "agentdesk.worker-slot-lease/v1",
+  "updated_at": "2026-07-27T00:00:00Z",
+  "slot_epochs": {
+    "basic_agent-1": 0,
+    "basic_agent-2": 0,
+    "standard_agent-1": 0,
+    "standard_agent-2": 0,
+    "advanced_agent-1": 0,
+    "advanced_agent-2": 0,
+    "expert_agent-1": 0,
+    "expert_agent-2": 0
+  },
+  "leases": {}
+}
+```
+
+**Frozen rules:**
+
+* ``slot_epochs`` contains exactly the eight stable slot IDs.
+* Initial epoch for every slot is ``0``.
+* Epoch is a non-bool integer ``>= 0``.
+* ``release`` preserves the current epoch in ``slot_epochs``; the value
+  is never reset to 0.
+* ``leases`` contains only currently-held slots (empty when no Workers are
+  active).
+* Extra or missing root keys → fail-closed.
+* Extra or missing slot epoch entries → fail-closed.
+* When the file does not exist, read logic returns a canonical empty
+  document; the file is created on first write.
+
+---
+
+#### 2.5.3 Lease Fields — Exact Ten
+
+``worker_kind`` is added to the ADR field set as a frozen field so that
+capacity classification is self-contained within the lease store.
+
+```python
+@dataclass(frozen=True, slots=True)
+class WorkerSlotLease:
+    lease_id: str
+    lease_epoch: int
+    slot_id: str
+    worker_kind: WorkerKind
+    holder_dispatch_id: str
+    holder_instance_id: str
+    canonical_worktree: str
+    acquired_at: str
+    heartbeat_at: str
+    expires_at: str
+```
+
+**Exactly ten fields — no more, no less:**
+
+| # | Field | Type | Rule |
+|---|-------|------|------|
+| 1 | ``lease_id`` | ``str`` | Unique per acquisition; non-empty |
+| 2 | ``lease_epoch`` | ``int`` | Non-bool, ``>= 1``; incremented on each re-acquire of the same slot |
+| 3 | ``slot_id`` | ``str`` | One of the eight stable slot IDs |
+| 4 | ``worker_kind`` | ``WorkerKind`` | Must match the tier of ``slot_id`` |
+| 5 | ``holder_dispatch_id`` | ``str`` | Which dispatch holds this slot; non-empty |
+| 6 | ``holder_instance_id`` | ``str`` | Which runtime instance holds this slot; non-empty |
+| 7 | ``canonical_worktree`` | ``str`` | Normalised real path (see §2.5.13); non-empty |
+| 8 | ``acquired_at`` | ``str`` | RFC 3339 UTC |
+| 9 | ``heartbeat_at`` | ``str`` | RFC 3339 UTC; updated on every renew |
+| 10 | ``expires_at`` | ``str`` | RFC 3339 UTC; ``acquired_at + LEASE_TTL_SECONDS`` |
+
+**Fields permanently forbidden from ``WorkerSlotLease``:**
+
+```text
+task_id        — derivable from holder_dispatch_id via outbox
+revision       — derivable from holder_dispatch_id via outbox
+attempt        — derivable from holder_dispatch_id via outbox
+provider       — belongs to ModelSelectionSnapshot
+model_id       — belongs to ModelSelectionSnapshot
+task_difficulty — independent of slot allocation
+prompt         — never stored in lease
+PID            — runtime-only, not comparable across restarts
+process handle — non-serialisable
+retry count    — belongs to escalation layer
+```
+
+---
+
+#### 2.5.4 Lease ID
+
+Format:
+
+```text
+WSL-<32 lowercase hex>
+```
+
+**Frozen rules:**
+
+* Generated fresh on every ``acquire``.
+* Unique across the entire file.
+* Not derived from ``dispatch_id``, ``task_id``, or any other business
+  identifier.
+* Must not embed paths, ``WorkerKind``, or holder information.
+* 32 hex characters (128 bits) — not 8 or 16.
+
+---
+
+#### 2.5.5 TTL and Timestamps
+
+Frozen constants:
+
+```text
+LEASE_TTL_SECONDS             = 60
+MAX_HEARTBEAT_INTERVAL_SECONDS = 20
+```
+
+**Frozen rules:**
+
+* All public API functions accept an explicit timezone-aware UTC
+  ``datetime``.
+* Naive ``datetime`` → rejected (``TypeError`` or ``ValueError``).
+* Non-UTC offset → rejected.
+* On acquire: ``acquired_at == heartbeat_at == now``; ``expires_at == now
+  + LEASE_TTL_SECONDS``.
+* On renew: only ``heartbeat_at`` and ``expires_at`` are updated;
+  ``lease_id``, ``lease_epoch``, ``slot_id``, ``acquired_at``, and holder
+  fields are unchanged.
+* ``now >= expires_at`` → stale (expired).
+* Monotonic time is **not** written to the file — the file always stores
+  UTC wall-clock timestamps.
+* Callers cannot override the TTL.
+* Heartbeat scheduling (the 20 s cadence) belongs to TC-13.18
+  (``WorkflowOrchestrator``), not to this module.
+
+---
+
+#### 2.5.6 Acquire Semantics
+
+The entire operation executes inside one exclusive lock:
+
+```text
+lock
+read existing store (or canonical empty document)
+validate schema
+remove expired active leases (all WorkerKinds)
+select the lowest-numbered free stable slot for the requested WorkerKind
+  → if none free: WorkerSlotCapacityError
+increment slot_epochs[slot_id]
+create lease entry with the new epoch
+write store atomically
+unlock
+```
+
+**Frozen rules:**
+
+1. Stale-lease cleanup runs **before** capacity counting — an expired
+   holder must not block a new acquire.
+2. Only one active lease per ``(WorkerKind, canonical_worktree)`` pair.
+3. Per-worktree limits are enforced independently for each ``WorkerKind``
+   — a ``basic_agent`` lease on worktree A does not block an
+   ``advanced_agent`` lease on the same worktree.
+4. When no free slot exists for the requested ``WorkerKind`` →
+   ``WorkerSlotCapacityError``.
+5. Acquire is **not** idempotent — a second call with the same arguments
+   acquires a different slot (if one is free) and gets a different
+   ``lease_id`` and ``lease_epoch``.  Callers must guard against
+   double-acquire if they need idempotency.
+
+---
+
+#### 2.5.7 Release Semantics
+
+The entire operation executes inside one exclusive lock:
+
+```text
+lock
+read store
+validate:
+  slot_id exists in leases
+  lease_id matches
+  lease_epoch matches
+  worker_kind matches
+  holder_dispatch_id matches
+  holder_instance_id matches
+delete leases[slot_id]
+preserve slot_epochs[slot_id] (do NOT reset or delete)
+update updated_at
+write store atomically
+unlock
+```
+
+**Frozen rules:**
+
+* All six identity fields are validated before deletion.
+* Only ``leases[slot_id]`` is removed — the corresponding
+  ``slot_epochs[slot_id]`` is retained.
+* Repeating the same release (slot already gone) → fail-closed
+  (``WorkerSlotNotHeldError``).  The module does **not** silently treat
+  a missing slot as success.
+* An expired lease may still be released (expiry is a separate concern
+  from intentional release).
+
+---
+
+#### 2.5.8 Renew Semantics
+
+The entire operation executes inside one exclusive lock:
+
+```text
+lock
+read store
+find the slot
+validate full lease identity (all six fields)
+validate lease is not expired
+  → if expired: WorkerSlotFencingError
+update heartbeat_at = now
+update expires_at = now + LEASE_TTL_SECONDS
+preserve lease_id, lease_epoch, slot_id, worker_kind,
+         holder_dispatch_id, holder_instance_id, acquired_at
+write store atomically
+unlock
+```
+
+**Frozen rules:**
+
+* An expired lease **cannot** be resurrected via renew — the caller must
+  ``release`` and ``acquire`` again, which yields a higher epoch.
+* ``lease_epoch`` is **never** changed by renew.
+
+---
+
+#### 2.5.9 Fencing API — Lock-Held Context
+
+A lock-free ``validate_lease()`` function **must not** be used to
+authorise state commits.  The only fencing-gate API is a context manager
+that holds the worker-slot lock across the entire protected operation:
+
+```python
+@contextmanager
+def hold_worker_slot_fence(
+    project_root: Path,
+    lease: WorkerSlotLease,
+    now: datetime,
+) -> Iterator[None]:
+    ...
+```
+
+**Semantics:**
+
+1. Acquire the worker-slot exclusive lock.
+2. Read and validate the store.
+3. Verify the lease's full identity (all six fields match the current
+   store).
+4. Verify the lease is not expired (``now < expires_at``).
+5. Yield — the caller performs its fenced state transition inside the
+   ``with`` block while the lock is held.
+6. In the ``finally`` block, release the lock.
+7. This function does **not** modify the lease — it does not auto-renew,
+   does not extend the expiry, and does not update ``heartbeat_at``.
+
+**Global lock ordering** (frozen):
+
+```text
+1. acquire worker-slot lease lock    (.worker-slot-lease.lock)
+2. acquire control-plane / state lock
+3. atomic state / event write
+4. release control-plane / state lock
+5. release worker-slot lease lock
+```
+
+**No component may acquire these two locks in the reverse order.**
+TC-13.11 (``ControlPlaneTransitionService``) must perform its
+authoritative state writes inside ``hold_worker_slot_fence``.
+
+Diagnostic / read-only functions may exist (e.g. ``read_worker_slot_leases``,
+``find_lease_by_dispatch``) but they must **never** be used to gate state
+writes.
+
+---
+
+#### 2.5.10 File Lock
+
+Lock path: ``.agentdesk/runtime/.worker-slot-lease.lock``.
+
+**Frozen rules:**
+
+* ``os.open(path, O_CREAT | O_EXCL | O_WRONLY)`` — exclusive creation.
+* Contention → ``WorkerSlotContentionError`` raised immediately.
+* No waiting, no sleeping, no automatic retry.
+* No automatic removal of a lock based on mtime — a lock file is never
+  assumed to be stale by normal API functions.
+* Crash-orphaned locks can only be removed by an explicit recovery task
+  (out of scope for TC-13.10).
+* No ``force_unlock`` function in the public API.
+* Every successful lock acquisition must have a corresponding release
+  in a ``finally`` block.
+* A process must **never** delete a lock file it did not create.
+
+---
+
+#### 2.5.11 Atomic Write
+
+Follows the established pattern from ``mad_refs.py`` and ``render_views.py``:
+
+* Unique temporary file in the same directory (``tempfile.mkstemp``).
+* UTF-8, ``ensure_ascii=False``.
+* Stable key ordering / formatting.
+* Trailing newline.
+* ``os.fsync`` on the file descriptor before closing.
+* ``os.replace`` to atomically swap the temp file into place.
+* Best-effort ``os.fsync`` on the parent directory after replacement.
+* On any exception before ``os.replace``, the temporary file is cleaned
+  up in a ``finally`` block.
+* The original file bytes are **never** modified by a failed write — only
+  ``os.replace`` mutates the target path, and the temp file is discarded
+  on failure.
+
+On Windows: directory ``fsync`` behaves differently than on POSIX and may
+raise ``OSError``.  The implementation must silently accept that specific
+error on Windows rather than claiming directory fsync is universally
+supported.  File-level ``fsync`` (step 5) is required on all platforms.
+
+---
+
+#### 2.5.12 Worktree Normalisation
+
+The public ``acquire`` input is a ``Path`` — callers pass the workspace
+path directly without pre-normalisation:
+
+```python
+def acquire_worker_slot(
+    ...,
+    workspace: Path,
+    ...,
+) -> WorkerSlotLease:
+    ...
+```
+
+The module internally normalises:
+
+1. Require ``workspace.is_absolute()`` — reject relative paths.
+2. Require ``workspace.exists()`` and ``workspace.is_dir()``.
+3. Reject a workspace that is itself a symlink or reparse point
+   (``Path.is_symlink()`` on POSIX; on Windows, ``is_symlink()`` and
+   junction / mount-point detection via ``os.path.realpath()``
+   comparison).
+4. Resolve via ``os.path.realpath()``.
+5. On Windows: apply ``os.path.normcase()`` to the resolved real path.
+6. On POSIX: preserve case (``normcase`` is a no-op).
+7. Store the resulting normalised absolute string as
+   ``canonical_worktree``.
+
+Calling ``str.lower()`` on a path without ``realpath`` resolution is
+**forbidden** — it is not a substitute for proper normalisation and would
+not resolve symlinks or reparse points.
+
+Windows reparse-point detection must use standard-library facilities
+only (``os.path``, ``pathlib``); third-party packages are prohibited.
+
+---
+
+#### 2.5.13 Exception Hierarchy
+
+Frozen:
+
+```text
+WorkerSlotLeaseError
+├── WorkerSlotValidationError   — schema / field violations
+├── WorkerSlotCapacityError     — no free slot for the requested WorkerKind
+├── WorkerSlotContentionError   — lock already held
+├── WorkerSlotNotHeldError      — release / renew of unknown slot
+└── WorkerSlotFencingError      — epoch mismatch / expired lease
+```
+
+No ``WorkerSlotConfigError`` — TTL and capacity are hard-coded, not
+configured.
+
+Exception messages must **not** contain:
+
+* The task prompt
+* stdout / stderr content
+* Secrets
+* The full process environment
+* The full value of ``holder_instance_id``
+* The full value of ``canonical_worktree``
+
+Exception messages may contain safe identifiers: ``slot_id``,
+``lease_id``, field names, and the exception class name.
+
+---
+
+#### 2.5.14 Module Boundaries
+
+TC-13.10 must **not**:
+
+* Call ``run_worker`` or import ``worker_adapter``.
+* Call ``run_dispatch`` or import ``dispatcher_gateway``.
+* Launch subprocesses.
+* Write to ``tasks.yaml``, events, outbox, or delivery reports.
+* Execute Git commands or create / remove worktrees.
+* Implement retry, escalation, or rate-limit logic.
+* Read or write the PM lease file.
+* Cancel running processes whose lease has expired.
+
+The ``WorkflowOrchestrator`` (TC-13.18) is responsible for the full
+lifecycle:
+
+```text
+acquire → heartbeat / renew → run_worker → fenced state transition → release
+```
+
+---
+
+#### 2.5.15 Task-Card Split
+
+* **TC-13.10a** — this frozen contract section (§2.5).
+* **TC-13.10b** — data model (``WorkerSlotLease`` dataclass),
+  validation, runtime store read / write, atomic I/O, file lock.
+  Depends on TC-13.10a.
+* **TC-13.10c** — ``acquire_worker_slot``, ``release_worker_slot``,
+  ``renew_worker_slot``, ``hold_worker_slot_fence``, stale cleanup,
+  fencing validation (lock-held).  Depends on TC-13.10b.
+
+Dependencies:
+
+```text
+TC-13.10b → TC-13.10a
+TC-13.10c → TC-13.10b
+TC-13.11  → TC-13.10c
+TC-13.18  → TC-13.10c + TC-13.11 + …
+```
+
+TC-13.10b and TC-13.10c are both **Target**.  TC-13.10 overall remains
+**Target** until TC-13.10c is committed.
+
+---
+
+#### 2.5.16 Status
+
+* ADR Interface Status row #15 remains **Target** — TC-13.10.
+* The Notes column references ``agentdesk.worker-slot-lease/v1``; frozen
+  contract in §2.5 (TC-13.10a).
+* TC-13.9c remains **Target** — not blocked by this contract.
+* TC-13.11 and all subsequent interfaces remain **Target**.
 
 ### 2.6 Approval, Escalation, Event, and Outbox Separation
 
@@ -2911,8 +3389,10 @@ This section defines the per-card scope:
   (Claude JSON + Codex JSONL).  Depends on TC-13.9b + reliable
   Claude/Codex output-schema evidence.
 
-TC-13.10 (`WorkerSlotLease`) depends on TC-13.9b, not on TC-13.9c —
-concurrency fencing must not be blocked by output-decoding work.
+TC-13.10a (`WorkerSlotLease` frozen contract — §2.5) depends on this ADR.
+TC-13.10b (data model, store, atomic I/O) depends on TC-13.10a.
+TC-13.10c (acquire / release / renew / hold fence) depends on TC-13.10b.
+Concurrency fencing must not be blocked by output-decoding work.
 
 ---
 
@@ -2982,15 +3462,17 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.9a | WorkerAdapter core contract freeze (§2.13) | TC-13.5.1, TC-13.7, TC-13.8, TC-13.8.4 |
 | TC-13.9b | WorkerAdapter core production implementation (`worker_adapter.py`) | TC-13.9a |
 | TC-13.9c | Provider output decoding investigation and contract (Claude JSON + Codex JSONL) | TC-13.9b + reliable Claude/Codex output-schema evidence |
-| TC-13.10 | WorkerSlotLease implementation | TC-13.9b |
-| TC-13.11 | ControlPlaneTransitionService | TC-13.2 |
+| TC-13.10a | WorkerSlotLease frozen contract (§2.5) | This ADR |
+| TC-13.10b | WorkerSlotLease data model, validation, runtime store, atomic I/O, file lock | TC-13.10a |
+| TC-13.10c | WorkerSlotLease acquire / release / renew / hold fence | TC-13.10b |
+| TC-13.11 | ControlPlaneTransitionService | TC-13.10c, TC-13.2 |
 | TC-13.12 | ApprovalGate (TASK_APPROVAL structured scope) | TC-13.11 |
 | TC-13.13 | EscalationService | TC-13.11 |
 | TC-13.14 | RateLimit service | TC-13.11 |
 | TC-13.15 | MAD `audit` sub-command (`mad.audit-result/v1`) | TC-13.2 |
 | TC-13.16 | AgentDesk MadAuditGateway | TC-13.15 |
 | TC-13.17 | StateProvider (read-only) | TC-13.11 |
-| TC-13.18 | WorkflowOrchestrator (full integration) | TC-13.10, 13.11, 13.12, 13.13, 13.14, 13.16, 13.17 |
+| TC-13.18 | WorkflowOrchestrator (full integration) | TC-13.10c, 13.11, 13.12, 13.13, 13.14, 13.16, 13.17 |
 | TC-13.19 | E2E / Recovery tests | TC-13.18 |
 | TC-13.20 | HTML Dashboard | TC-13.17, TC-13.19 |
 | TC-13.21 | ADR status update (Target → Current) | TC-13.19 |
