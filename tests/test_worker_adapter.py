@@ -1253,6 +1253,170 @@ class NoWorkerKindDerivationTests(unittest.TestCase):
         source = (_SCRIPTS / "worker_adapter.py").read_text(encoding="utf-8")
         self.assertNotIn("git", source.lower())
 
+    # ── Error message source checks ────────────────────────────────────
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_no_worker_kind_repr_in_source(self) -> None:
+        """worker_kind validation must not use !r, repr(), or str()
+        on the input value."""
+        source = (_SCRIPTS / "worker_adapter.py").read_text(encoding="utf-8")
+        # Extract the worker_kind validation block — lines between
+        # "# Validate worker_kind" and the next "# ──" marker
+        lines = source.splitlines()
+        in_block = False
+        block: list[str] = []
+        for line in lines:
+            if "validate worker_kind" in line.casefold():
+                in_block = True
+                continue
+            if in_block:
+                if line.strip().startswith("# ──"):
+                    break
+                block.append(line)
+        block_text = "\n".join(block)
+        self.assertNotIn("worker_kind!r", block_text)
+        self.assertNotIn("repr(worker_kind)", block_text)
+        self.assertNotIn("str(worker_kind)", block_text)
+
+    def test_no_task_difficulty_repr_in_source(self) -> None:
+        """task_difficulty validation must not use !r, repr(), or str()
+        on the input value."""
+        source = (_SCRIPTS / "worker_adapter.py").read_text(encoding="utf-8")
+        lines = source.splitlines()
+        in_block = False
+        block: list[str] = []
+        for line in lines:
+            if "validate task_difficulty" in line.casefold():
+                in_block = True
+                continue
+            if in_block:
+                if line.strip().startswith("# ──"):
+                    break
+                block.append(line)
+        block_text = "\n".join(block)
+        self.assertNotIn("task_difficulty!r", block_text)
+        self.assertNotIn("repr(task_difficulty)", block_text)
+        self.assertNotIn("str(task_difficulty)", block_text)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Error Message Value Leakage — negative tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+_SENSITIVE_MARKER = "SECRET_TASK_PROMPT_13_9B"
+
+
+class ErrorMessageLeakageTests(unittest.IsolatedAsyncioTestCase):
+    """TypeError messages must not include the rejected input value."""
+
+    async def test_worker_kind_rejection_does_not_leak_value(self) -> None:
+        with mock.patch.object(wa_module, "compute_budget") as mock_budget, \
+             mock.patch.object(wa_module, "run_dispatch") as mock_dispatch:
+            with self.assertRaises(TypeError) as ctx:
+                await run_worker(
+                    request=_make_request(),
+                    worker_kind=_SENSITIVE_MARKER,
+                    task_difficulty=TaskDifficulty.BASIC,
+                    providers={"fake": mock.Mock()},
+                )
+            mock_budget.assert_not_called()
+            mock_dispatch.assert_not_called()
+
+        msg = str(ctx.exception)
+        self.assertIn("worker_kind", msg,
+                      "error must name the parameter")
+        self.assertIn("WorkerKind", msg,
+                      "error must name the expected type")
+        self.assertNotIn(_SENSITIVE_MARKER, msg,
+                         "error must not leak the rejected value")
+
+    async def test_task_difficulty_rejection_does_not_leak_value(self) -> None:
+        with mock.patch.object(wa_module, "compute_budget") as mock_budget, \
+             mock.patch.object(wa_module, "run_dispatch") as mock_dispatch:
+            with self.assertRaises(TypeError) as ctx:
+                await run_worker(
+                    request=_make_request(),
+                    worker_kind=WorkerKind.BASIC_AGENT,
+                    task_difficulty=_SENSITIVE_MARKER,
+                    providers={"fake": mock.Mock()},
+                )
+            mock_budget.assert_not_called()
+            mock_dispatch.assert_not_called()
+
+        msg = str(ctx.exception)
+        self.assertIn("task_difficulty", msg,
+                      "error must name the parameter")
+        self.assertIn("TaskDifficulty", msg,
+                      "error must name the expected type")
+        self.assertNotIn(_SENSITIVE_MARKER, msg,
+                         "error must not leak the rejected value")
+
+
+class ReprNotCalledTests(unittest.IsolatedAsyncioTestCase):
+    """Passing a malicious object whose __repr__ raises must still produce
+    a clean TypeError without calling __repr__."""
+
+    class _ReprMustNotBeCalled:
+        """An object whose __repr__ blows up — so we can prove it's unused."""
+        def __repr__(self) -> str:
+            raise AssertionError("repr must not be called")
+
+    async def test_worker_kind_malicious_repr_not_called(self) -> None:
+        bad = self._ReprMustNotBeCalled()
+        with mock.patch.object(wa_module, "compute_budget") as mock_budget, \
+             mock.patch.object(wa_module, "run_dispatch") as mock_dispatch:
+            with self.assertRaises(TypeError) as ctx:
+                await run_worker(
+                    request=_make_request(),
+                    worker_kind=bad,
+                    task_difficulty=TaskDifficulty.BASIC,
+                    providers={"fake": mock.Mock()},
+                )
+            mock_budget.assert_not_called()
+            mock_dispatch.assert_not_called()
+        msg = str(ctx.exception)
+        self.assertIn("worker_kind", msg)
+        self.assertIn("WorkerKind", msg)
+        self.assertIn("ReprMustNotBeCalled", msg,
+                      "error may include the type name")
+
+    async def test_task_difficulty_malicious_repr_not_called(self) -> None:
+        bad = self._ReprMustNotBeCalled()
+        with mock.patch.object(wa_module, "compute_budget") as mock_budget, \
+             mock.patch.object(wa_module, "run_dispatch") as mock_dispatch:
+            with self.assertRaises(TypeError) as ctx:
+                await run_worker(
+                    request=_make_request(),
+                    worker_kind=WorkerKind.BASIC_AGENT,
+                    task_difficulty=bad,
+                    providers={"fake": mock.Mock()},
+                )
+            mock_budget.assert_not_called()
+            mock_dispatch.assert_not_called()
+        msg = str(ctx.exception)
+        self.assertIn("task_difficulty", msg)
+        self.assertIn("TaskDifficulty", msg)
+        self.assertIn("ReprMustNotBeCalled", msg,
+                      "error may include the type name")
+
+    async def test_same_malicious_object_both_params(self) -> None:
+        """Pass the same malicious object to both worker_kind and
+        task_difficulty — both must produce clean TypeErrors."""
+        bad = self._ReprMustNotBeCalled()
+        # First: as worker_kind (rejected first in validation order)
+        with mock.patch.object(wa_module, "compute_budget") as mock_budget, \
+             mock.patch.object(wa_module, "run_dispatch") as mock_dispatch:
+            with self.assertRaises(TypeError) as ctx:
+                await run_worker(
+                    request=_make_request(),
+                    worker_kind=bad,
+                    task_difficulty=bad,
+                    providers={"fake": mock.Mock()},
+                )
+            mock_budget.assert_not_called()
+            mock_dispatch.assert_not_called()
+        # Must be the worker_kind TypeError (first validation in order)
+        msg = str(ctx.exception)
+        self.assertIn("worker_kind", msg)
+        self.assertNotIn("AssertionError", msg)
+        self.assertNotIn("repr must not be called", msg)

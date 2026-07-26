@@ -78,15 +78,15 @@ async def run_worker(
     # ── 2. Validate worker_kind ──────────────────────────────────────
     if not isinstance(worker_kind, WorkerKind):
         raise TypeError(
-            f"worker_kind must be a WorkerKind member, "
-            f"got {type(worker_kind).__name__}: {worker_kind!r}"
+            "worker_kind must be a WorkerKind member; "
+            f"got type {type(worker_kind).__name__}"
         )
 
     # ── 3. Validate task_difficulty ───────────────────────────────────
     if not isinstance(task_difficulty, TaskDifficulty):
         raise TypeError(
-            f"task_difficulty must be a TaskDifficulty member, "
-            f"got {type(task_difficulty).__name__}: {task_difficulty!r}"
+            "task_difficulty must be a TaskDifficulty member; "
+            f"got type {type(task_difficulty).__name__}"
         )
 
     # ── 4. Validate providers ────────────────────────────────────────
