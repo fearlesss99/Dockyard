@@ -136,6 +136,7 @@ model_selection:
   selected_model_id: "<stable-model-revision>"
   selected_model_tier: advanced
   selected_deliberation_tier: balanced
+  selected_context_window_tokens: 200000
   selected_model_capabilities: [coding, testing]
   model_degradation_approval_id: APR-TC031-R2-A1-0001
 payload:
@@ -155,11 +156,11 @@ payload:
 - 角色回调通过消息模板发送；PM 校验后将其作为证据写入新的状态 event。角色不直接写控制面 event/outbox。
 - 旧 revision、旧 dispatch 或旧 attempt 的消息只记审计，不改变当前状态。
 - `event_id` 必须指向 first-state commit 中匹配的 `TASK_DISPATCHED` event；task/revision/attempt/dispatch 四元组也必须一致。
-- `model_selection` 的键集合必须恰好是 selector 的九个固定字段，并与 `current_dispatch.model_selection` 深度完全相等（包括数组值和顺序）；不得缺键、加键、手算、重命名或静默改写。同一 dispatch 的重放完全复用该对象。
+- `model_selection` 的键集合必须恰好是 selector 的十个固定字段，并与 `current_dispatch.model_selection` 深度完全相等（包括数组值和顺序）；不得缺键、加键、手算、重命名或静默改写。同一 dispatch 的重放完全复用该对象。
 - provider 使用移动 alias 时，在 provider 支持的范围内把它解析为稳定 model revision 后再写入 outbox 与 report。
 - `TASK_DISPATCHED.payload_digest` 必须等于该 outbox Git blob 的实际 UTF-8/LF 字节 SHA-256；只写合法格式但摘要不匹配仍失败。
 
-任务进入 `returned`、`accepted`、`integrated`，或进入已有 report 的 `cancelled` / `superseded` 后会清空 `current_dispatch`。此时 strict validator 从 report 的 `dispatch_id` 与九字段 `executor_model` 反向定位原 event/outbox 并继续对账；event/outbox 的工作树副本必须存在，且与原始 Git blob 字节不变。
+任务进入 `returned`、`accepted`、`integrated`，或进入已有 report 的 `cancelled` / `superseded` 后会清空 `current_dispatch`。此时 strict validator 从 report 的 `dispatch_id` 与十字段 `executor_model` 反向定位原 event/outbox 并继续对账；event/outbox 的工作树副本必须存在，且与原始 Git blob 字节不变。
 
 ## 8. 本机 routes、transport receipts 与 timed PM lease 镜像
 
@@ -255,12 +256,13 @@ expires_at: "2026-07-12T06:01:20Z"
 
 ```json
 {
-  "schema_version": "agentdesk.model-bindings/v1",
+  "schema_version": "agentdesk.model-bindings/v2",
   "updated_at": "2026-07-12T06:00:00Z",
   "bindings": {
     "local-coder-advanced": {
       "provider": "<provider>", "model_id": "<model-id-or-stable-revision>",
       "tier": "advanced", "deliberation_tier": "balanced",
+      "context_window_tokens": 200000,
       "capabilities": ["coding", "testing"], "enabled": true
     }
   }
@@ -302,7 +304,7 @@ PM callback source_thread_id：<runtime-only-source-thread-id>
 回调必须原样携带 task_id、revision、dispatch_id 和 attempt。
 ```
 
-消息中的 `required-deliberation-tier` 只是从 `task_card_commit` 的 frozen role policy 派生的 display-only 提示，不是 selection snapshot 的第十个字段；权威 snapshot 仍只有 outbox/账本中的九字段。
+消息中的 `required-deliberation-tier` 只是从 `task_card_commit` 的 frozen role policy 派生的 display-only 提示，不是 selection snapshot 的第十一个字段；权威 snapshot 仍只有 outbox/账本中的十字段。
 
 ### 9.2 交付回调
 
@@ -339,7 +341,7 @@ blocked_reason：<none-or-reason>
 
 ### 派发事务
 
-PM 必须持有逻辑 lease；`mode: timed` 时还要验证本机/协调器 lease 未过期。随后校验依赖、冲突面、owner approval，并在状态迁移前验证 PM/岗位真实 task、精确标题、host、独立 worktree、single-flight 和 callback route；新建 Codex 可见任务还必须有显式用户授权。分配 attempt/dispatch ID，并使用完整 `task_card_commit` 运行确定性 `scripts/select_model.py`。若 `require_pm_approval` 发生降级，先生成匹配 approval event（可与派发同 commit）；再将 selector 的九字段 JSON 原样复制进账本和 outbox。finalize outbox 后计算其 raw-byte digest，写 `TASK_DISPATCHED` event，运行 pre-commit 结构检查，并把首次 `current_dispatch`、event、outbox、账本和视图一并提交。strict 通过后才向 verified thread 投递并写 dispatch receipt；投递失败只重放同一 outbox，不生成新 attempt，也不进入 `InProgress`。
+PM 必须持有逻辑 lease；`mode: timed` 时还要验证本机/协调器 lease 未过期。随后校验依赖、冲突面、owner approval，并在状态迁移前验证 PM/岗位真实 task、精确标题、host、独立 worktree、single-flight 和 callback route；新建 Codex 可见任务还必须有显式用户授权。分配 attempt/dispatch ID，并使用完整 `task_card_commit` 运行确定性 `scripts/select_model.py`。若 `require_pm_approval` 发生降级，先生成匹配 approval event（可与派发同 commit）；再将 selector 的十字段 JSON 原样复制进账本和 outbox。finalize outbox 后计算其 raw-byte digest，写 `TASK_DISPATCHED` event，运行 pre-commit 结构检查，并把首次 `current_dispatch`、event、outbox、账本和视图一并提交。strict 通过后才向 verified thread 投递并写 dispatch receipt；投递失败只重放同一 outbox，不生成新 attempt，也不进入 `InProgress`。
 
 一次 dispatch 只冻结一个 primary execution binding。未经声明不得把实质工作委派给更弱或未记录的子 Agent；承担实质性目标、改动或验收证据的 subagent 必须获得自己的 dispatch/execution evidence。仅做非实质机械辅助且不影响结论的工具调用不产生第二权威执行者。
 
@@ -365,7 +367,7 @@ PM 按 base commit 审查 diff、源码、检查结果和范围并写 acceptance
 8. `blocked_paths` 优先于 `allowed_paths`；除当前派发的精确 `report_path` 例外外，实际 diff 不得命中 blocked paths。
 9. `conflict_surfaces` 相交的活动任务默认不得并行，除非 PM 在决策记录中批准。
 10. `required_checks` 只能引用 `CHECKS.yaml` 中受控的 `check_id`，不得自动执行任务文本中的任意 shell 字符串。
-11. 每个 Active role 在 `task_card_commit` 的 `ROLE-POLICIES.yaml` 中存在；模型等级、deliberation 和能力硬要求计算正确，selector 的恰好九字段在 current dispatch/outbox 完全相等。
+11. 每个 Active role 在 `task_card_commit` 的 `ROLE-POLICIES.yaml` 中存在；模型等级、deliberation 和能力硬要求计算正确，selector 的恰好十字段在 current dispatch/outbox 完全相等。
 12. 每个活动 attempt 只有一个按 `task_id + revision + attempt` 推导的 `report_path`；它是角色对控制面目录的唯一写入例外，且不得覆盖旧报告。
 13. `event_id`、`message_id`、`dispatch_id` 在各自命名空间唯一，attempt 只能递增；消息重放不得递增。新 revision 的 draft/首次 ready 从 attempt 0 开始；返工回到 ready 时保留已使用的最大 attempt，但活动 `dispatch_id` 必须清空，下一次派发再递增。
 14. `current_dispatch` 在 dispatched / in_progress / review_ready 时必填；draft / ready / returned / accepted / integrated / cancelled / superseded 时不得保留活动派发。blocked 仅在 `blocked_attempt_valid: true` 时可保留。
@@ -376,7 +378,7 @@ PM 按 base commit 审查 diff、源码、检查结果和范围并写 acceptance
 19. 时间戳使用 UTC RFC 3339 且单调不减；任务卡只定义 owner approval 的 gate、capability 和 approver，当前有效授权只写入账本 `granted_approval_ids`。无证据时不得越过指定节点。
 20. 状态迁移符合 [核心协议与状态机](protocol.md)，不得跳过 `review_ready` 直接 accepted。
 21. runtime 标识不得进入已跟踪文件；每次写账本都须持有效逻辑 PM lease、携带当前 `lease_epoch` 并使用 compare-and-swap / 原子替换。
-22. 每个 active 或 report-backed terminal dispatch 都能追溯到 first-state commit 同时新增的唯一 `TASK_DISPATCHED` event/outbox；outbox 外键、四元组、九字段 snapshot 与 raw-byte digest 全部匹配，工作树证据未偏离 Git blob。
+22. 每个 active 或 report-backed terminal dispatch 都能追溯到 first-state commit 同时新增的唯一 `TASK_DISPATCHED` event/outbox；outbox 外键、四元组、十字段 snapshot 与 raw-byte digest 全部匹配，工作树证据未偏离 Git blob。
 23. `require_pm_approval` 降级有同 commit 或更早、范围匹配、未过期且派发前/时未撤销的唯一 approval；selection ID 同时在 `granted_approval_ids`。approval epoch 不大于 dispatch epoch；每个 approval 最多一个严格后代 revocation，且撤销时间/epoch 不早于批准。
 24. report executor model 与派发快照完全一致；一个 dispatch 只有一个 primary binding，实质 subagent 有独立 dispatch/evidence；模型等级不授予或替代 approval/capability 权限。
 25. Standard / Automated 的每个活动 dispatch 有 distinct verified PM/Worker route，实际标题精确匹配，host/worktree 可达，并有真实 `dispatch_receipt`；placeholder thread ID 或只有 outbox 不算投递。

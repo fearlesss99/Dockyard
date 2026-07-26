@@ -131,11 +131,11 @@ DoR 未满足时只能保持 Draft/Blocked，不得靠“角色先做起来再�
 4. 分配唯一 worktree、branch、next attempt、`dispatch_id` 和角色 lease；一次 dispatch 只绑定一个 primary execution model。worktree HEAD 等于冻结 base，且不与其他 attempt 共用。
 5. 复验目标岗位 task/thread。若没有 verified route，先检查用户是否明确授权创建该可见任务；没有则保持 Ready 并询问。获得授权后严格执行 `list_projects → create_thread → set_thread_title → read_thread/list_threads verify`，再写 `routes/v2 status: verified`。随后运行 `validate_runtime.py --project <repo> --role-id <role-id>`；失败时不得派卡。完整步骤见 [Codex 任务运行时适配器](codex-runtime-adapter.md)。
 6. 使用完整 `task_card_commit` 运行 `scripts/select_model.py`。若 `require_pm_approval` 选中低于 preferred 的 tier，分配全仓唯一 `APR-*` 并加入 task 的 `granted_approval_ids`，由 PM 创建范围匹配、未过期的 `MODEL_DEGRADATION_APPROVED` event；它必须在派发 commit 中新增或已存在于其祖先，原记录保持 `revoked_at: null`，approval epoch 不大于 dispatch epoch，且派发前/时不存在匹配 revocation event。
-7. 把 selector JSON 的恰好九字段原样复制到 `current_dispatch.model_selection` 和 outbox `model_selection`；两者必须深度完全相等。失败时保持 Ready/Blocked。
+7. 把 selector JSON 的恰好十字段原样复制到 `current_dispatch.model_selection` 和 outbox `model_selection`；两者必须深度完全相等。失败时保持 Ready/Blocked。
 8. 完成含匹配 `event_id` 与四元组的 `task.dispatch` outbox；对其仓库 UTF-8/LF 原始字节计算 SHA-256，写入 `TASK_DISPATCHED.payload_digest`，之后不再改 outbox。
 9. 生成视图并运行 `validate_project.py --pre-commit`；它只做拟提交结构检查且应提示不能证明原子 Git 历史。检查 scoped diff。
 10. 用一个 commit 首次加入该 `current_dispatch`，并同时新增 `TASK_DISPATCHED` event、outbox、更新后的账本/视图以及 same-commit approval event（如有）。dispatch 与 approval 的 `lease_epoch` 均为整数且不小于 1；同 commit 时必须相同。
-11. 不带迁移 flag 运行 strict validator 与 view `--check`，证明 first-state 原子提交、ID 唯一、摘要、approval 和九字段一致；通过后才用 `send_message_to_thread` 把自包含任务投递到 verified worker route，并写入以 `dispatch_id` 为键的 transport receipt。
+11. 不带迁移 flag 运行 strict validator 与 view `--check`，证明 first-state 原子提交、ID 唯一、摘要、approval 和十字段一致；通过后才用 `send_message_to_thread` 把自包含任务投递到 verified worker route，并写入以 `dispatch_id` 为键的 transport receipt。
 12. 收到与当前派发一致的角色 ack 后，把 receipt 更新为 `acknowledged` 并迁移到 `InProgress`；receipt 证明 transport，ack 证明接单。发送失败时不写成功 receipt、不进入 InProgress，只重放原 outbox并复用全部 IDs、目标与 snapshot。每次活动态 transport 更新后运行 `validate_runtime.py --project <repo> --role-id <role-id> --check-active`。
 
 ### 5.3 验收
@@ -406,7 +406,7 @@ Lite 仍不得共享 checkout、覆盖旧 report 或把 QA 当最终验收人。
 - [ ] `task_id + revision + attempt`、dispatch ID、state event ID、outbox message ID、callback ID 分别唯一。
 - [ ] role 存在、Active，且 card type 与角色能力相容。
 - [ ] Active role 的 `role_no` / `role_id` / `role_name` 唯一完整；真实 PM/Worker tasks 独立可读，`actual_title == expected_title == role_no . role_name`。
-- [ ] role policy 在 `task_card_commit` 可读；selector snapshot 恰好九字段，满足 tier、deliberation 与能力规则，并与账本/outbox/report 深度完全一致。
+- [ ] role policy 在 `task_card_commit` 可读；selector snapshot 恰好十字段，满足 tier、deliberation 与能力规则，并与账本/outbox/report 深度完全一致。
 - [ ] 每个活动或 report-backed terminal dispatch 的 first-state commit 同时新增唯一匹配的 `TASK_DISPATCHED` event 与 `task.dispatch` outbox；outbox 外键、四元组和 raw-byte SHA-256 匹配，工作树证据未偏离 Git blob。
 - [ ] `require_pm_approval` 降级有全仓唯一且位于 `granted_approval_ids` 的 ID、同 commit 或更早的范围/tier 匹配批准；approval epoch 不大于 dispatch epoch，每个 approval 最多一个严格后代 revocation，且撤销时间/epoch 不早于批准。
 - [ ] 状态迁移来自允许边，写入者持有有效 PM epoch。
@@ -429,7 +429,7 @@ Lite 仍不得共享 checkout、覆盖旧 report 或把 QA 当最终验收人。
 - [ ] 派发前 `validate_runtime.py --project <repo> --role-id <role-id>` 通过；活动任务 `--check-active` 通过。
 - [ ] 最终 `validate_project.py --project <repo> --require-runtime` 通过；repo strict 与 runtime strict 均通过。
 
-bundled validator 会对账 event/outbox 的结构、Git 原子性、摘要、九字段 parity 和 approval linkage；它仍不证明真实 task/thread、精确标题、provider execution receipt、消息实际送达、callback receipt、全部 guards 的语义完整性、`CHECKS.yaml` 命令是否安全，或真实实现 diff 是否遵守路径/契约。上述完整 checklist 与 runtime adapter 检查仍需 PM 执行；缺 dispatcher 时只能说明仓库控制面有效，不能说明自动闭环成立。
+bundled validator 会对账 event/outbox 的结构、Git 原子性、摘要、十字段 parity 和 approval linkage；它仍不证明真实 task/thread、精确标题、provider execution receipt、消息实际送达、callback receipt、全部 guards 的语义完整性、`CHECKS.yaml` 命令是否安全，或真实实现 diff 是否遵守路径/契约。上述完整 checklist 与 runtime adapter 检查仍需 PM 执行；缺 dispatcher 时只能说明仓库控制面有效，不能说明自动闭环成立。
 
 ## 16. 反模式
 

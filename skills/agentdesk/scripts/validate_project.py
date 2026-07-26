@@ -31,7 +31,7 @@ RUNTIME_PRIVATE_FILES = (
 )
 SCHEMA_VERSION = "agentdesk.tasks/v2"
 ROLE_POLICY_SCHEMA_VERSION = "agentdesk.role-policies/v1"
-MODEL_BINDINGS_SCHEMA_VERSION = "agentdesk.model-bindings/v1"
+MODEL_BINDINGS_SCHEMA_VERSION = "agentdesk.model-bindings/v2"
 STATES = (
     "draft",
     "ready",
@@ -182,6 +182,7 @@ MODEL_SELECTION_FIELDS = (
     "selected_model_id",
     "selected_model_tier",
     "selected_deliberation_tier",
+    "selected_context_window_tokens",
     "selected_model_capabilities",
     "model_degradation_approval_id",
 )
@@ -579,6 +580,7 @@ def _validate_model_bindings_object(
                 "model_id",
                 "tier",
                 "deliberation_tier",
+                "context_window_tokens",
                 "capabilities",
                 "enabled",
             ),
@@ -613,6 +615,25 @@ def _validate_model_bindings_object(
             )
         if not isinstance(enabled, bool):
             reporter.error(f"{binding_context}.enabled must be boolean")
+        context_window_tokens = raw_binding.get("context_window_tokens")
+        context_window_tokens_ok = (
+            isinstance(context_window_tokens, int)
+            and not isinstance(context_window_tokens, bool)
+            and context_window_tokens >= 1
+        )
+        if not context_window_tokens_ok:
+            if (
+                isinstance(context_window_tokens, bool)
+                or not isinstance(context_window_tokens, int)
+            ):
+                reporter.error(
+                    f"{binding_context}.context_window_tokens must be a positive integer"
+                )
+            else:
+                reporter.error(
+                    f"{binding_context}.context_window_tokens must be >= 1, "
+                    f"got {context_window_tokens!r}"
+                )
         capabilities = _capability_list(
             raw_binding.get("capabilities"),
             f"{binding_context}.capabilities",
@@ -626,6 +647,7 @@ def _validate_model_bindings_object(
             and tier in MODEL_TIER_INDEX
             and deliberation_tier in DELIBERATION_TIER_INDEX
             and isinstance(enabled, bool)
+            and context_window_tokens_ok
             and capabilities is not None
         ):
             normalized[binding_id] = {
@@ -633,6 +655,7 @@ def _validate_model_bindings_object(
                 "model_id": model_id,
                 "tier": tier,
                 "deliberation_tier": deliberation_tier,
+                "context_window_tokens": context_window_tokens,
                 "capabilities": sorted(capabilities),
                 "enabled": enabled,
             }
@@ -1318,7 +1341,7 @@ def _verify_selector_snapshot(
         if extra:
             details.append("extra=" + ",".join(extra))
         reporter.error(
-            f"{context} deterministic selector must return exactly nine fields "
+            f"{context} deterministic selector must return exactly ten fields "
             f"({'; '.join(details)})"
         )
         return
@@ -1888,7 +1911,7 @@ def _validate_task_dispatch_outbox(
         if set(outbox_selection) != set(MODEL_SELECTION_FIELDS):
             reporter.error(
                 f"{context} {document['path']} model_selection must contain exactly "
-                "the nine selector fields"
+                "the ten selector fields"
             )
         for key in MODEL_SELECTION_FIELDS:
             if outbox_selection.get(key) != selection.get(key):
@@ -2540,6 +2563,21 @@ def _validate_dispatch_model_snapshot(
         f"{selection_context}.selected_model",
         reporter,
     )
+    context_window = selection.get("selected_context_window_tokens")
+    if context_window is None:
+        reporter.error(
+            f"{selection_context}.selected_context_window_tokens "
+            "is missing from model selection"
+        )
+    elif (
+        not isinstance(context_window, int)
+        or isinstance(context_window, bool)
+        or context_window < 1
+    ):
+        reporter.error(
+            f"{selection_context}.selected_context_window_tokens "
+            f"must be a positive integer, got {context_window!r}"
+        )
     selected_tier = selection.get("selected_model_tier")
     if (
         snapshot_required_tier in MODEL_TIER_INDEX
@@ -2601,6 +2639,12 @@ def _validate_dispatch_model_snapshot(
                 runtime_binding_issue(
                     f"{selection_context}.selected_model_capabilities must match "
                     f"local binding {binding_id!r}"
+                )
+            if selection.get("selected_context_window_tokens") != binding.get("context_window_tokens"):
+                runtime_binding_issue(
+                    f"{selection_context}.selected_context_window_tokens must equal "
+                    f"local binding {binding_id!r} context_window_tokens "
+                    f"({binding.get('context_window_tokens')!r})"
                 )
 
     approval_id = selection.get("model_degradation_approval_id")

@@ -22,6 +22,7 @@ executor_model:
   selected_model_id: "<stable-model-revision>"
   selected_model_tier: "<basic|standard|advanced|expert>"
   selected_deliberation_tier: "<efficient|balanced|deep>"
+  selected_context_window_tokens: <positive-int>
   selected_model_capabilities: []
   model_degradation_approval_id: null
 blocked_reason: null

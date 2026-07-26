@@ -136,6 +136,7 @@ tasks:
         selected_model_id: "<stable-model-revision>"
         selected_model_tier: advanced
         selected_deliberation_tier: balanced
+        selected_context_window_tokens: 200000
         selected_model_capabilities: [coding, testing]
         model_degradation_approval_id: APR-TC031-R2-A1-0001
     report_path: docs/pm/reports/TC-031-r2-a1.md
@@ -166,9 +167,9 @@ tasks:
       updated_at: "2026-07-12T06:30:00Z"
 ```
 
-账本不重复保存目标、验收标准、依赖、路径边界、风险和检查目录；这些只存在于被 `task_card_commit` 固定的任务卡中。`current_dispatch` 仅保存当前 attempt 的逻辑路由、冻结基线与九字段模型快照，并且必须与任务卡及 outbox 一致。这样“当前状态”和“工作规格”各有唯一权威，不会形成两份可独立修改的真相。
+账本不重复保存目标、验收标准、依赖、路径边界、风险和检查目录；这些只存在于被 `task_card_commit` 固定的任务卡中。`current_dispatch` 仅保存当前 attempt 的逻辑路由、冻结基线与十字段模型快照，并且必须与任务卡及 outbox 一致。这样”当前状态”和”工作规格”各有唯一权威，不会形成两份可独立修改的真相。
 
-每个 `current_dispatch` 都必须追溯到它首次出现在 `tasks.yaml` 的 commit；该 commit 同时新增匹配 task/revision/attempt/dispatch 的 `TASK_DISPATCHED` event 与 `task.dispatch` outbox。strict 校验要求两份证据的工作树副本仍存在、与各自 Git blob 完全相同，并且 outbox 的九字段 `model_selection` 与上例账本逐字段相等。
+每个 `current_dispatch` 都必须追溯到它首次出现在 `tasks.yaml` 的 commit；该 commit 同时新增匹配 task/revision/attempt/dispatch 的 `TASK_DISPATCHED` event 与 `task.dispatch` outbox。strict 校验要求两份证据的工作树副本仍存在、与各自 Git blob 完全相同，并且 outbox 的十字段 `model_selection` 与上例账本逐字段相等。
 
 `returned`、`accepted`、`integrated`，以及已有 report 的 `cancelled` / `superseded` 虽然清空 `current_dispatch`，仍由 report frontmatter 的 `dispatch_id` 和 `executor_model` 追溯并核对原 dispatch event/outbox；终态不能只靠账本或 report 自述。
 
@@ -248,7 +249,7 @@ checks:
 
 每个 Active role 都必须存在于 `roles`；`minimum_tier` 不得高于 `default_tier`。有效硬下限是岗位 minimum、任务非 inherit 值和风险 floor 的最大值；首选等级是岗位 default 与硬下限的最大值。能力要求是岗位与任务数组的并集，推理要求是岗位 `deliberation_tier` 的硬下限；运行时适配器负责把它映射为 provider 专属设置。`degradation_policy` 只可决定是否从首选等级降到仍满足全部硬要求的等级。
 
-本机 `.agentdesk/runtime/model-bindings.yaml` 使用 `agentdesk.model-bindings/v1`，初始 `bindings` 为空对象；键就是稳定的 `binding_id`。每个值必须含 `provider`、`model_id`、`tier`、`deliberation_tier`、`capabilities`、`enabled`。该文件可随环境变化且禁止提交；凭据不得进入该文件或仓库。派发前必须运行 `scripts/select_model.py`，把其 JSON 输出原样复制到 `current_dispatch.model_selection` 和 outbox 顶层 `model_selection`；不得手算或静默编辑。实际选中项的同一非秘密快照进入 report `executor_model`，成为不可变证据。
+本机 `.agentdesk/runtime/model-bindings.yaml` 使用 `agentdesk.model-bindings/v2`，初始 `bindings` 为空对象；键就是稳定的 `binding_id`。每个值必须含 `provider`、`model_id`、`tier`、`deliberation_tier`、`context_window_tokens`、`capabilities`、`enabled`。该文件可随环境变化且禁止提交；凭据不得进入该文件或仓库。派发前必须运行 `scripts/select_model.py`，把其 JSON 输出原样复制到 `current_dispatch.model_selection` 和 outbox 顶层 `model_selection`；不得手算或静默编辑。实际选中项的同一非秘密快照进入 report `executor_model`，成为不可变证据。
 
 ```bash
 python3 <skill-dir>/scripts/select_model.py --project <repo> --task-card-commit <40-char-sha> --role-id DEV --risk L2 --task-min-tier inherit [--required-capability long_context ...] [--degradation-approval-id APR-...]
@@ -256,7 +257,7 @@ python3 <skill-dir>/scripts/select_model.py --project <repo> --task-card-commit 
 
 真实派发必须提供完整 `--task-card-commit`，selector 会从该 commit 读取冻结策略；仅在任务卡尚未提交的配置预检中才可省略并读取当前工作树策略。
 
-selector 固定输出且只允许下列九字段；整个对象就是不可改写的 selection snapshot：
+selector 固定输出且只允许下列十字段；整个对象就是不可改写的 selection snapshot：
 
 ```json
 {
@@ -267,12 +268,13 @@ selector 固定输出且只允许下列九字段；整个对象就是不可改�
   "selected_model_id": "<stable-model-revision>",
   "selected_model_tier": "advanced",
   "selected_deliberation_tier": "balanced",
+  "selected_context_window_tokens": 200000,
   "selected_model_capabilities": ["coding", "testing"],
   "model_degradation_approval_id": null
 }
 ```
 
-账本 `current_dispatch.model_selection`、对应 `task.dispatch` outbox 的顶层 `model_selection` 和 report 的 `executor_model` 必须按这九个键和值完全相等，不接受缺键、额外键、重命名或“等价”改写。`require_pm_approval` 且实际低于 preferred tier 时，非空 approval ID 必须全仓唯一、同时存在于 task 的 `granted_approval_ids`，并指向同 dispatch commit 或其祖先中的有效结构化批准 event；批准原记录不可改写，每个 approval 最多由一个严格后代的独立 `MODEL_DEGRADATION_REVOKED` 撤销。完整 YAML、时间与 lease epoch 规则见 [事件、Outbox 与校验](events-outbox-and-validation.md)。
+账本 `current_dispatch.model_selection`、对应 `task.dispatch` outbox 的顶层 `model_selection` 和 report 的 `executor_model` 必须按这十个键和值完全相等，不接受缺键、额外键、重命名或”等价”改写。`require_pm_approval` 且实际低于 preferred tier 时，非空 approval ID 必须全仓唯一、同时存在于 task 的 `granted_approval_ids`，并指向同 dispatch commit 或其祖先中的有效结构化批准 event；批准原记录不可改写，每个 approval 最多由一个严格后代的独立 `MODEL_DEGRADATION_REVOKED` 撤销。完整 YAML、时间与 lease epoch 规则见 [事件、Outbox 与校验](events-outbox-and-validation.md)。
 
 `--allow-legacy-model-evidence` 只把部分旧终态缺失证据降为迁移审计 warning；这种运行不是 strict pass，也不得触发自动验收。要恢复 strict，必须建立可验证的新 attempt/dispatch 证据，而不是伪造历史字段。
 
@@ -387,6 +389,7 @@ executor_model:
   selected_model_id: "<stable-model-revision>"
   selected_model_tier: advanced
   selected_deliberation_tier: balanced
+  selected_context_window_tokens: 200000
   selected_model_capabilities: [coding, testing]
   model_degradation_approval_id: null
 blocked_reason: null
@@ -420,7 +423,7 @@ created_at: "<RFC3339 UTC>"
 
 报告中出现 `callback_id` 只声明 Worker 准备发送哪一条回调，不证明真实发送或 PM 已收到。Standard / Automated 只有在 `.agentdesk/runtime/transport-receipts.yaml` 存在以该 `callback_id` 为键、`status: received` 且 source/destination 与 verified Worker/PM route 一致的 receipt 时，才可声称主动回调闭环完成。receipt 是本机运行事实，不写回 report 或 Git。
 
-`executor_model` 必须逐字段复制 dispatch 的 `model_selection`，是实际执行者的不可变非秘密快照；binding ID、provider、稳定 model revision（provider 支持时）、tier、deliberation tier、capabilities 和降级批准 ID 均不得省略或用“更强模型”代替核对。即使任务进入清空 `current_dispatch` 的终态，它仍是追溯原始 dispatch event/outbox 的键和值证据。token、凭据、session/thread ID 不得写入 report。
+`executor_model` 必须逐字段复制 dispatch 的 `model_selection`，是实际执行者的不可变非秘密快照；binding ID、provider、稳定 model revision（provider 支持时）、tier、deliberation tier、context_window_tokens、capabilities 和降级批准 ID 均不得省略或用”更强模型”代替核对。即使任务进入清空 `current_dispatch` 的终态，它仍是追溯原始 dispatch event/outbox 的键和值证据。token、凭据、session/thread ID 不得写入 report。
 
 `completed` 或包含代码变化的 `partial` 必须有 `implementation_commit`。若角色在产生实现前即受阻，可以把它设为 `null`，并让 `report_commit` 直接基于 `base_commit`；这种报告只能触发 Blocked，不满足 ReviewReady 的双提交条件。
 

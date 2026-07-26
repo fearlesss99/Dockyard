@@ -19,7 +19,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 6 | `MAD_HOME` environment variable | **Current** | N/A (MVP) | Override data directory; read by `app_home()` |
 | 7 | `MAD_PARTICIPANT` recursion guard | **Current** | N/A (MVP) | Set to `"1"` in subprocess env to prevent re-entry |
 | 8 | Claude CliAdapter (read-only) | **Current** | N/A (MVP) | `--permission-mode plan`, tools limited to Read/Glob/Grep/WebSearch/WebFetch |
-| 9 | AgentDesk `model-bindings/v1` | **Current** | N/A (existing) | Per-binding: `provider`, `model_id`, `tier`, `deliberation_tier`, `capabilities`, `enabled` |
+| 9 | AgentDesk `model-bindings/v2` | **Current** | TC-13.3 | Per-binding: `provider`, `model_id`, `tier`, `deliberation_tier`, `context_window_tokens`, `capabilities`, `enabled` |
 | 10 | AgentDesk PM lease | **Current** | N/A (existing) | `agentdesk.pm-lease/v1` in `.agentdesk/runtime/` |
 | 11 | AgentDesk event / outbox | **Current** | N/A (existing) | `agentdesk.state-event/v2`, `agentdesk.outbox-message/v2` |
 | 12 | AgentDesk double-commit protocol | **Current** | N/A (existing) | `implementation_commit` → `report_commit` |
@@ -103,8 +103,8 @@ MAD does **not**:
 
 ### 1.2 AgentDesk Current Capabilities
 
-- **`model-bindings/v1`** maps `binding_id` → `{provider, model_id, tier,
-  deliberation_tier, capabilities, enabled}`.  It is gitignored runtime config.
+- **`model-bindings/v2`** maps `binding_id` → `{provider, model_id, tier,
+  deliberation_tier, context_window_tokens, capabilities, enabled}`.  It is gitignored runtime config.
 - **PM lease** (`agentdesk.pm-lease/v1`) records `lease_id`, `holder_id`,
   `holder_instance_id`, `lease_epoch`, `last_snapshot_commit`, `acquired_at`,
   `heartbeat_at`, `expires_at` in `.agentdesk/runtime/`.
@@ -115,9 +115,9 @@ MAD does **not**:
   then `report_commit` referencing it.  PM's acceptance freezes
   `accepted_commit`.  Integration records `integrated_commit` separately.
 - **`select_model.py`** deterministically maps role policy + task requirements
-  + risk floor to a nine-field `model_selection` snapshot.
+  + risk floor to a ten-field `model_selection` snapshot.
 - **`validate_project.py`** (strict) proves dispatch first-state commit
-  atomicity, event/outbox digest parity, and nine-field model snapshot
+  atomicity, event/outbox digest parity, and ten-field model snapshot
   consistency.
 - **`validate_runtime.py`** verifies real Codex tasks, exact titles, worktree
   paths, and transport receipts.

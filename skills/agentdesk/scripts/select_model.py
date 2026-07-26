@@ -24,7 +24,7 @@ from typing import Any, Optional, Sequence
 ROLE_POLICY_FILE = Path("docs/pm/ROLE-POLICIES.yaml")
 MODEL_BINDINGS_FILE = Path(".agentdesk/runtime/model-bindings.yaml")
 ROLE_POLICY_SCHEMA_VERSION = "agentdesk.role-policies/v1"
-MODEL_BINDINGS_SCHEMA_VERSION = "agentdesk.model-bindings/v1"
+MODEL_BINDINGS_SCHEMA_VERSION = "agentdesk.model-bindings/v2"
 
 MODEL_TIERS = ("basic", "standard", "advanced", "expert")
 MODEL_TIER_INDEX = {tier: index for index, tier in enumerate(MODEL_TIERS)}
@@ -428,6 +428,16 @@ def _validated_bindings(
         if not isinstance(enabled, bool):
             raise SelectionError(f"{context}.enabled must be true or false")
 
+        context_window_tokens = raw.get("context_window_tokens")
+        if not isinstance(context_window_tokens, int) or isinstance(context_window_tokens, bool):
+            raise SelectionError(
+                f"{context}.context_window_tokens must be a positive integer"
+            )
+        if context_window_tokens < 1:
+            raise SelectionError(
+                f"{context}.context_window_tokens must be >= 1, got {context_window_tokens!r}"
+            )
+
         bindings.append(
             {
                 "binding_id": binding_id.strip(),
@@ -435,6 +445,7 @@ def _validated_bindings(
                 "model_id": model_id,
                 "tier": tier,
                 "deliberation_tier": deliberation_tier,
+                "context_window_tokens": context_window_tokens,
                 "capabilities": capabilities,
                 "enabled": enabled,
             }
@@ -573,6 +584,7 @@ def select_binding(
         "selected_model_id": selected["model_id"],
         "selected_model_tier": selected["tier"],
         "selected_deliberation_tier": selected["deliberation_tier"],
+        "selected_context_window_tokens": selected["context_window_tokens"],
         "selected_model_capabilities": sorted(selected["capabilities"]),
         "model_degradation_approval_id": approval_snapshot,
     }

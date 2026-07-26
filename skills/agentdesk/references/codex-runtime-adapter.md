@@ -230,7 +230,7 @@ PM callback source_thread_id：<runtime-only-pm-thread-id>
 base_commit：<base_commit>
 branch/worktree：<branch> / <runtime-worktree>
 report：<report_path>
-model_selection：<exact-nine-field-snapshot>
+model_selection：<exact-ten-field-snapshot>
 
 请先核对当前真实任务标题、worktree HEAD、四元组和模型快照；不一致立即回报。
 完成时先发布 implementation/report 两个提交，再主动向上述 source_thread_id 发送【回报】；仅在本任务输出最终答复不算回调。
@@ -247,7 +247,7 @@ callback_id：<callback_id>
 implementation_commit：<sha-or-null>
 report_commit：<sha>
 report：<report_path>
-executor_model：<exact-nine-field-snapshot>
+executor_model：<exact-ten-field-snapshot>
 blocked_reason：<none-or-reason>
 需要 PM：验收 | 澄清 | 决策
 ```

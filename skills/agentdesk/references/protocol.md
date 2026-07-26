@@ -123,7 +123,7 @@ required_model_capabilities = union(role.required_capabilities,
 
 任务卡及当时的 `ROLE-POLICIES.yaml` 必须同时存在于 `task_card_commit`；该 commit 中的策略对该 revision 冻结。后续修改岗位策略只影响新提交的 revision，不得静默改变在途派发。
 
-`.agentdesk/runtime/model-bindings.yaml` 将本机 `binding_id` 映射到 provider、model ID、tier、deliberation tier、capabilities 和 enabled 状态；它是 gitignored 的环境配置。派发前用完整 `task_card_commit` 运行确定性 `scripts/select_model.py`，确保读取该 commit 的冻结策略，再把其 JSON 原样复制到 `current_dispatch.model_selection` 和不可变 outbox；角色把同一快照写入 report 的 `executor_model`。精确 provider/model 是非秘密审计证据；移动 alias 在 provider 支持时须解析为稳定 revision，凭据、token、session/thread ID 仍只允许留在 runtime。
+`.agentdesk/runtime/model-bindings.yaml` 将本机 `binding_id` 映射到 provider、model ID、tier、deliberation tier、context_window_tokens、capabilities 和 enabled 状态；它是 gitignored 的环境配置。派发前用完整 `task_card_commit` 运行确定性 `scripts/select_model.py`，确保读取该 commit 的冻结策略，再把其 JSON 原样复制到 `current_dispatch.model_selection` 和不可变 outbox；角色把同一快照写入 report 的 `executor_model`。精确 provider/model 是非秘密审计证据；移动 alias 在 provider 支持时须解析为稳定 revision，凭据、token、session/thread ID 仍只允许留在 runtime。
 
 runtime binding 中的 tier/capability 是受信运行环境的能力声明，不是模型名称天然携带的事实。若本机 binding 维护者不在 Leader 的信任边界内，必须由 Leader 在版本化决策或受控模型 registry 中校准后才能宣称强制执行；否则只能作为 audit-only 映射。
 
@@ -361,7 +361,7 @@ lease 的本机锁可放 `.agentdesk/runtime/`，但 epoch 的审计事实必须
 
 1. PM 生成全局唯一 `dispatch_id`。
 2. 在任何状态迁移前，验证真实 PM route、真实且独立的岗位 route、规范标题、host/worktree、single-flight 和 callback 目标；若须创建 Codex 可见任务，先取得显式用户授权并按适配器完成创建/改名/读取核验。
-3. 完成不可变 `task.dispatch` outbox；其九字段 `model_selection` 与账本逐字段相同。
+3. 完成不可变 `task.dispatch` outbox；其十字段 `model_selection` 与账本逐字段相同。
 4. 计算 outbox 文件仓库中 UTF-8/LF 原始字节的 SHA-256，写入匹配 `TASK_DISPATCHED.payload_digest`。
 5. 在首次加入该 `current_dispatch` 的同一状态 commit 中迁移到 `Dispatched`，并新增 event、outbox、快照与视图。
 6. strict validator 证明原子提交后，由 runtime adapter 向 verified `thread_id` 发送；保存 `dispatch_receipt`。收到角色 ack 后，以新事件迁移状态。
@@ -479,7 +479,7 @@ implementation_commit
 8. 状态迁移 event 的前态等于上一快照状态，后态等于新快照状态。
 9. 同一状态 commit 中 event、snapshot 与生成视图一致。
 10. 所有写入使用当前有效的 `lease_epoch`。
-11. 每个活动或已有 report 的历史派发都有首次状态 commit 中的匹配 event/outbox；其九字段 model snapshot 与账本或 report 完全一致，event/outbox ID 分别唯一，outbox 原始字节摘要匹配。
+11. 每个活动或已有 report 的历史派发都有首次状态 commit 中的匹配 event/outbox；其十字段 model snapshot 与账本或 report 完全一致，event/outbox ID 分别唯一，outbox 原始字节摘要匹配。
 12. `require_pm_approval` 的降级派发有同 commit 或更早、未过期且派发前/时未撤销的结构化批准 event；approval ID 本身不构成证据。
 13. 每个 Active role 都有唯一 `role_no + role_id + role_name`，规范标题可确定且无冲突。
 14. Standard / Automated 的每个活动 dispatch 都绑定 distinct、真实、`verified` 的 PM/Worker route；actual/expected title 严格匹配，host/worktree 可达且 worktree 没有复用。
