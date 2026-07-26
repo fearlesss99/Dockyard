@@ -26,6 +26,18 @@ MODEL_BINDINGS_FILE = Path(".agentdesk/runtime/model-bindings.yaml")
 ROLE_POLICY_SCHEMA_VERSION = "agentdesk.role-policies/v1"
 MODEL_BINDINGS_SCHEMA_VERSION = "agentdesk.model-bindings/v2"
 
+BINDING_REQUIRED_KEYS = frozenset(
+    {
+        "provider",
+        "model_id",
+        "tier",
+        "deliberation_tier",
+        "context_window_tokens",
+        "capabilities",
+        "enabled",
+    }
+)
+
 MODEL_TIERS = ("basic", "standard", "advanced", "expert")
 MODEL_TIER_INDEX = {tier: index for index, tier in enumerate(MODEL_TIERS)}
 DELIBERATION_TIERS = ("efficient", "balanced", "deep")
@@ -222,6 +234,12 @@ def _require_schema(
 ) -> None:
     actual = value.get("schema_version")
     if actual != expected:
+        if actual == "agentdesk.model-bindings/v1" and expected == "agentdesk.model-bindings/v2":
+            raise SelectionError(
+                f"{label}.schema_version must be {expected!r}, got {actual!r}. "
+                "Each binding now requires 'context_window_tokens' as a "
+                "positive integer."
+            )
         raise SelectionError(
             f"{label}.schema_version must be {expected!r}, got {actual!r}"
         )
@@ -429,13 +447,29 @@ def _validated_bindings(
             raise SelectionError(f"{context}.enabled must be true or false")
 
         context_window_tokens = raw.get("context_window_tokens")
-        if not isinstance(context_window_tokens, int) or isinstance(context_window_tokens, bool):
+        if context_window_tokens is not None:
+            if not isinstance(context_window_tokens, int) or isinstance(context_window_tokens, bool):
+                raise SelectionError(
+                    f"{context}.context_window_tokens must be a positive integer"
+                )
+            if context_window_tokens < 1:
+                raise SelectionError(
+                    f"{context}.context_window_tokens must be >= 1, got {context_window_tokens!r}"
+                )
+
+        # Reject extra keys
+        actual_keys = set(raw)
+        if actual_keys != BINDING_REQUIRED_KEYS:
+            missing = sorted(BINDING_REQUIRED_KEYS - actual_keys)
+            extra = sorted(actual_keys - BINDING_REQUIRED_KEYS)
+            parts: list[str] = []
+            if missing:
+                parts.append("missing: " + ", ".join(missing))
+            if extra:
+                parts.append("extra: " + ", ".join(extra))
             raise SelectionError(
-                f"{context}.context_window_tokens must be a positive integer"
-            )
-        if context_window_tokens < 1:
-            raise SelectionError(
-                f"{context}.context_window_tokens must be >= 1, got {context_window_tokens!r}"
+                f"{context} must contain exactly the 7 binding fields; "
+                + "; ".join(parts)
             )
 
         bindings.append(

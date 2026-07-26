@@ -241,6 +241,50 @@ def _require_keys(
     return True
 
 
+def _require_exact_keys(
+    value: dict[str, Any], keys: set[str] | tuple[str, ...], context: str, reporter: Reporter
+) -> bool:
+    """Require exactly *keys* — report both missing and extra."""
+    key_set = set(keys) if not isinstance(keys, set) else keys
+    actual = set(value)
+    missing = sorted(key_set - actual)
+    extra = sorted(actual - key_set)
+    if not missing and not extra:
+        return True
+    if missing:
+        reporter.error(f"{context} is missing required key(s): {', '.join(missing)}")
+    if extra:
+        reporter.error(f"{context} has unexpected key(s): {', '.join(extra)}")
+    return False
+
+
+def _validate_context_window_tokens(
+    value: Any, context: str, reporter: Reporter, legacy_ok: bool = False
+) -> bool:
+    """Validate *value* as a positive int non-bool context window tokens.
+
+    Returns True when the value is valid.  When *legacy_ok* is True, a
+    genuinely missing value (None) is downgraded to a warning so legacy
+    terminal records are not unconditionally rejected.
+    """
+    if value is None:
+        if legacy_ok:
+            reporter.warn(
+                f"legacy history: {context} is null; must be a positive integer "
+                "per model-bindings/v2"
+            )
+            return False
+        reporter.error(f"{context} must be a positive integer, got null")
+        return False
+    if isinstance(value, bool) or not isinstance(value, int):
+        reporter.error(f"{context} must be a positive integer, got {value!r}")
+        return False
+    if value < 1:
+        reporter.error(f"{context} must be >= 1, got {value!r}")
+        return False
+    return True
+
+
 def _parse_rfc3339_utc(value: Any) -> Optional[datetime]:
     if not isinstance(value, str) or "T" not in value:
         return None
@@ -616,24 +660,14 @@ def _validate_model_bindings_object(
         if not isinstance(enabled, bool):
             reporter.error(f"{binding_context}.enabled must be boolean")
         context_window_tokens = raw_binding.get("context_window_tokens")
+        _validate_context_window_tokens(
+            context_window_tokens, binding_context, reporter
+        )
         context_window_tokens_ok = (
             isinstance(context_window_tokens, int)
             and not isinstance(context_window_tokens, bool)
             and context_window_tokens >= 1
         )
-        if not context_window_tokens_ok:
-            if (
-                isinstance(context_window_tokens, bool)
-                or not isinstance(context_window_tokens, int)
-            ):
-                reporter.error(
-                    f"{binding_context}.context_window_tokens must be a positive integer"
-                )
-            else:
-                reporter.error(
-                    f"{binding_context}.context_window_tokens must be >= 1, "
-                    f"got {context_window_tokens!r}"
-                )
         capabilities = _capability_list(
             raw_binding.get("capabilities"),
             f"{binding_context}.capabilities",
@@ -650,6 +684,14 @@ def _validate_model_bindings_object(
             and context_window_tokens_ok
             and capabilities is not None
         ):
+            # Reject extra keys on the raw binding
+            _require_exact_keys(
+                raw_binding,
+                {"provider", "model_id", "tier", "deliberation_tier",
+                 "context_window_tokens", "capabilities", "enabled"},
+                binding_context,
+                reporter,
+            )
             normalized[binding_id] = {
                 "provider": provider,
                 "model_id": model_id,
@@ -2564,20 +2606,11 @@ def _validate_dispatch_model_snapshot(
         reporter,
     )
     context_window = selection.get("selected_context_window_tokens")
-    if context_window is None:
-        reporter.error(
-            f"{selection_context}.selected_context_window_tokens "
-            "is missing from model selection"
-        )
-    elif (
-        not isinstance(context_window, int)
-        or isinstance(context_window, bool)
-        or context_window < 1
-    ):
-        reporter.error(
-            f"{selection_context}.selected_context_window_tokens "
-            f"must be a positive integer, got {context_window!r}"
-        )
+    _validate_context_window_tokens(
+        context_window,
+        f"{selection_context}.selected_context_window_tokens",
+        reporter,
+    )
     selected_tier = selection.get("selected_model_tier")
     if (
         snapshot_required_tier in MODEL_TIER_INDEX
@@ -3352,6 +3385,14 @@ def _validate_delivery_report(
             else:
                 reporter.warn(f"legacy history: {message}")
         else:
+            if model_evidence_required:
+                # Require exactly the ten selector fields — no missing, no extra.
+                _require_exact_keys(
+                    executor_model,
+                    set(MODEL_SELECTION_FIELDS),
+                    f"{context} frontmatter executor_model",
+                    reporter,
+                )
             requirement = (
                 task_card.get("_model_requirement")
                 if isinstance(task_card, dict)
@@ -3398,6 +3439,12 @@ def _validate_delivery_report(
                 reporter.error(
                     f"{context} executor_model.model_binding_id must be non-empty"
                 )
+            _validate_context_window_tokens(
+                executor_model.get("selected_context_window_tokens"),
+                f"{context} executor_model.selected_context_window_tokens",
+                reporter,
+                legacy_ok=not model_evidence_required,
+            )
             if selected_capabilities is not None and required_capabilities is not None:
                 missing_capabilities = sorted(
                     set(required_capabilities) - set(selected_capabilities)
