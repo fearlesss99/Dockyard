@@ -41,6 +41,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 28 | AgentDesk ContextBudgetPolicy | **Current** | TC-13.5.1 | Per-tier budget: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; min(floor %, cap); six-field BudgetResult; retains ≥35% reserved; depends on TC-13.4 |
 | 29 | AgentDesk DispatcherAgentGateway | **Current** | TC-13.7 | Frozen contract (§2.10); execution-only single-shot agent CLI boundary; depends on TC-13.4, TC-13.6 |
 | 30 | Claude Code CLI contract | **Current** | TC-13.8 | Public CLI interface contract for `claude` invocation; depends on TC-13.4 |
+| 31 | AgentDesk Codex CLI Provider | **Target** | TC-13.8.3 | Frozen contract for `codex` CLI invocation; depends on TC-13.4, TC-13.7 |
 
 ---
 
@@ -1805,6 +1806,744 @@ All of the above remain **Target** for their respective task cards.
   (`claude_code_provider.py`) and complete test suite
   (`test_claude_code_provider.py`) are committed.
 
+### 2.12 Codex CLI Provider — Frozen Contract (Target — TC-13.8.3)
+
+TC-13.8.3 freezes the **Codex CLI Provider** contract — a concrete
+`AgentCliProvider` adapter for the `codex` CLI.  This section records the
+frozen public interface.  The production provider module
+(`codex_cli_provider.py`) is **not** yet implemented; it belongs to
+TC-13.8.4.
+
+---
+
+#### 2.12.1 Relationship to TC-13.7
+
+Codex CLI Provider is a concrete implementation of the TC-13.7
+`AgentCliProvider` Protocol.  It translates a `DispatchRequest` into
+an `AgentCliInvocation`:
+
+```
+DispatchRequest
+    ↓
+AgentCliInvocation(
+    executable,
+    argv,
+    stdin,
+    env_overrides,
+)
+```
+
+Codex CLI Provider is responsible **only** for constructing this
+invocation value.  It does **not**:
+
+* launch subprocesses — TC-13.7 `DispatcherAgentGateway` owns this;
+* set `cwd` — `request.workspace` is passed as `cwd=str(request.workspace)`
+  by the Gateway, never by the provider;
+* implement timeout or cancellation — Gateway responsibility;
+* terminate process trees — Gateway responsibility;
+* compute stdout/stderr SHA-256 — Gateway responsibility;
+* parse `DispatchResult.stdout` — stdout is opaque bytes (TC-13.7);
+* write files or persist state — Gateway is a pure execution boundary;
+* implement retry, lease, slot, or escalation — deferred to TC-13.9 / TC-13.10 / TC-13.11;
+* manage authentication or secrets.
+
+The provider must **not** have a `cwd` field, must not call `os.chdir()`,
+and must not use `-C`/`--cd` or `--add-dir`.
+
+---
+
+#### 2.12.2 Provider ID — Single Identifier
+
+Only one provider identifier is permitted:
+
+```text
+codex
+```
+
+**Frozen rules:**
+
+1. `provider_id` must be exactly `"codex"` — no other values are permitted.
+2. The instance's `provider_id` **must** equal its key in the providers
+   `Mapping[str, AgentCliProvider]` passed to `run_dispatch`.
+3. `ModelSelectionSnapshot.selected_model_provider` must **not** be
+   modified by the provider.
+4. There is **no** module-level mutable provider registry — no
+   `register_provider()`, no `unregister_provider()`.
+
+**Explicitly prohibited provider_id values:**
+
+```text
+openai        — may represent OpenAI API provider, not Codex CLI
+openai-codex  — not a CLI provider identifier
+codexcli      — not a CLI provider identifier
+Codex         — case variant
+CODEX         — case variant
+claude        — Claude Code domain
+""            — empty
+None          — non-str
+True / 1      — non-str
+```
+
+No alias normalization is permitted.  `"openai"` is semantically
+ambiguous (it could mean the OpenAI API rather than the Codex CLI) and
+must **not** be accepted as a provider_id for the Codex CLI.
+
+---
+
+#### 2.12.3 Prompt Transmission — Stdin-Only
+
+`DispatchRequest.prompt` is the sole source of task content.
+
+The complete task prompt must be transmitted **exclusively via stdin**:
+
+```python
+stdin = request.prompt.encode("utf-8")
+```
+
+**Frozen rules:**
+
+* UTF-8 strict encoding — no `errors="ignore"` or `errors="replace"`.
+* No BOM (byte-order mark).
+* The prompt must not be modified, trimmed, normalized, or concatenated
+  with any other content.
+* `request.prompt` must **not** appear in `argv`.
+* The prompt must **not** be placed in any environment variable.
+* The prompt must **not** be written to a temporary file.
+
+**No fixed control prompt:** Unlike the Claude Code Provider, Codex reads
+instructions directly from stdin via the `-` positional marker.  The
+`codex exec --help` output confirms:
+
+> If not provided as an argument (or if `-` is used), instructions are
+> read from stdin.
+
+No compile-time control string is required or permitted in `argv`.
+
+| Channel | Content |
+|---------|---------|
+| **stdin** | Complete task prompt |
+| **argv `-` marker** | Signals stdin mode |
+| **argv** | Must NOT contain task content |
+| **environment** | Must NOT contain task content |
+| **temporary files** | Must NOT be used for task content |
+
+---
+
+#### 2.12.4 CLI Invocation Pattern
+
+Frozen as **non-interactive, single-shot** execution:
+
+```text
+codex --ask-for-approval never exec --ephemeral --json --color never
+      --model <model_id> --sandbox <sandbox_mode>
+      -c model_reasoning_effort="<effort>" -
+```
+
+Required flags:
+
+| Flag | Value / Source |
+|------|---------------|
+| `--ask-for-approval` | `never` (hard-coded, must precede `exec`) |
+| `exec` | Non-interactive sub-command |
+| `--ephemeral` | (flag, no argument) |
+| `--json` | (flag, no argument) |
+| `--color` | `never` |
+| `--model` | `request.model_selection.selected_model_id` |
+| `--sandbox` | Configured safe mode (see §2.12.7) |
+| `-c` | `model_reasoning_effort="<mapped_effort>"` (see §2.12.6) |
+| `-` | Stdin positional marker (must be last) |
+
+`executable` and `argv` are strictly separated:
+
+```python
+def build_invocation(
+    self,
+    request: DispatchRequest,
+) -> AgentCliInvocation:
+
+    mapped_effort = _EFFORT_MAP[request.model_selection.selected_deliberation_tier]
+    model_id = request.model_selection.selected_model_id
+
+    # Validate model_id against strict character allowlist
+    _validate_model_id(model_id)
+
+    argv = (
+        "--ask-for-approval",
+        "never",
+        "exec",
+        "--ephemeral",
+        "--json",
+        "--color",
+        "never",
+        "--model",
+        model_id,
+        "--sandbox",
+        self.sandbox_mode,
+        "-c",
+        f'model_reasoning_effort="{mapped_effort}"',
+        "-",
+    )
+
+    return AgentCliInvocation(
+        executable=self.executable,
+        argv=argv,
+        stdin=request.prompt.encode("utf-8"),
+        env_overrides=(),
+    )
+```
+
+**argv ordering rules (frozen):**
+
+1. `--ask-for-approval never` must appear **before** `exec`.
+   Placing it after `exec` causes a parameter error.
+2. `exec` sub-command.
+3. `exec` options: `--ephemeral`, `--json`, `--color never`.
+4. `--model <model_id>`, `--sandbox <sandbox_mode>`.
+5. `-c model_reasoning_effort="<effort>"` — the entire key=value is one
+   argv element.
+6. `-` — stdin marker, must be last.
+7. `executable` does NOT appear in `argv`.
+8. The result is always `tuple(argv)`.
+
+**Model ID character allowlist:** When the resolved executable is a
+`.cmd`/`.bat` shim on Windows, dynamic argv values must use a strict
+character allowlist to prevent command-processor character injection.
+The model_id value must consist only of:
+
+```text
+ASCII letters (A-Z, a-z)
+digits (0-9)
+- _ . : /
+```
+
+Forbidden characters in model_id: spaces, `&`, `|`, `;`, `<`, `>`,
+`` ` ``, `$`, `"`, `'`, `(`, `)`, CR, LF, NUL.
+
+This is a fail-closed defense: any forbidden character causes
+`build_invocation` to raise `ValueError`.
+
+**Windows `.cmd` shim caveat:** The npm-installed `codex.cmd` is a
+Windows batch-file shim, not a PE binary.  While this has been verified
+to work with `asyncio.create_subprocess_exec` on the author's machine,
+the contract does **not** claim that all Windows environments exhibit
+identical shim behaviour, nor that the command processor is fully
+bypassed.  The strict model_id allowlist provides an additional layer
+of defence against command-processor character interpretation.
+
+---
+
+#### 2.12.5 Model Mapping
+
+The CLI model argument is taken **exactly** from the frozen snapshot:
+
+```text
+request.model_selection.selected_model_id
+```
+
+generates:
+
+```text
+--model <selected_model_id>
+```
+
+**Must not:**
+
+* use `required_model_tier` in place of a model ID;
+* override with a hard-coded default model;
+* rewrite the model ID based on `provider_id` alias;
+* read a different model from an environment variable;
+* silently fall back to another model;
+* add `--oss` or `--local-provider`.
+
+An empty string or otherwise invalid model ID must **fail closed**
+(see §2.12.12).
+
+---
+
+#### 2.12.6 Deliberation Tier → Codex Reasoning Effort Mapping
+
+Codex CLI has no standalone `--effort` flag.  Reasoning effort is
+configured via the `model_reasoning_effort` config key passed through
+`-c`:
+
+```text
+-c model_reasoning_effort="<value>"
+```
+
+The entire `key=value` string is a single argv element.
+
+Frozen mapping:
+
+| AgentDesk `deliberation_tier` | Codex `model_reasoning_effort` |
+|-------------------------------|-------------------------------|
+| `efficient` | `low` |
+| `balanced` | `medium` |
+| `deep` | `high` |
+
+Input source: `request.model_selection.selected_deliberation_tier`.
+
+**Important caveats:**
+
+* This is a **provider-specific** mapping from AgentDesk terminology
+  to Codex CLI configuration.
+* It does **not** imply the two tier systems are semantically identical.
+* An unknown deliberation tier must **fail closed** — no silent default
+  to `medium`.
+* `MadDeliberationDepth.fast` is a **MAD** concept distinct from
+  AgentDesk `efficient`; they are not the same enum and must not be
+  treated as interchangeable.
+* `minimal` is **not** mapped — AgentDesk has no corresponding tier.
+* `xhigh` is **not** mapped — AgentDesk has no corresponding tier.
+* Whether a specific model supports a given reasoning effort value is
+  outside the provider's scope; if the CLI or model rejects the value,
+  the Gateway's non-zero-exit semantics handle it.
+* No other `-c` override is permitted — the caller cannot supply
+  arbitrary config values.
+
+---
+
+#### 2.12.7 Sandbox Mode — Safe Set
+
+Allowed sandbox modes:
+
+```text
+read-only
+workspace-write
+```
+
+Explicitly **forbidden**:
+
+```text
+danger-full-access
+```
+
+These values are the published sandbox modes from `codex --help`:
+
+> `-s, --sandbox <SANDBOX_MODE>` — `[possible values: read-only,
+> workspace-write, danger-full-access]`
+
+Reasons:
+* `danger-full-access` grants full filesystem access — violates the
+  least-privilege boundary for a single Worker invocation.
+
+An unknown sandbox mode must **fail closed** — no silent fallback
+to `workspace-write`.
+
+The provider does **not** make additional promises about OS-level
+sandbox implementation details beyond what the CLI help describes.
+Gateway and deployment environment may still form an outer security
+boundary.
+
+---
+
+#### 2.12.8 Approval Policy — Fixed `never`
+
+Approval policy is hard-coded as `never` — it is **not** a provider
+field:
+
+```text
+--ask-for-approval never
+```
+
+Frozen rules:
+
+* The value is always `"never"` — callers cannot override it.
+* The flag must appear **before** `exec`.
+* `"never"` means: do not prompt for interactive approval; execution
+  failures are immediately returned to the model.
+* `"never"` does **not** bypass the sandbox — `--sandbox` remains in
+  effect.
+* `"untrusted"` is **forbidden** — it may still request interactive
+  approval for non-trusted commands.
+* `"on-request"` is **forbidden** — the model may request interactive
+  approval, which is unavailable in a non-interactive subprocess.
+
+AgentDesk's own `ApprovalGate` (TC-13.12) remains the control-plane
+component for external approval.  The Codex subprocess must never wait
+for unavailable interactive approval.
+
+---
+
+#### 2.12.9 Session & Persistence
+
+The `--ephemeral` flag is mandatory:
+
+```text
+--ephemeral
+```
+
+The contract promises:
+
+> Codex session files are not persisted to disk.
+
+It does **not** promise zero file I/O — the Codex CLI may still access
+authentication storage, configuration, caches, or platform runtime data.
+
+Explicitly **forbidden**:
+
+```text
+exec resume       — session resumption
+resume            — top-level session resumption
+fork              — session forking
+session ID flags  — session identity
+```
+
+---
+
+#### 2.12.10 User Config & Rules — Not Overridden
+
+The provider does **not** supply:
+
+```text
+--ignore-user-config
+--ignore-rules
+--profile
+--enable
+--disable
+--strict-config
+```
+
+and does **not** accept arbitrary `-c` overrides from callers.
+
+Rationale:
+
+* `--ignore-user-config` — the effect on managed/enterprise policy is
+  not yet verified; turning it on could drop enterprise security
+  controls.
+* `--ignore-rules` — disables execpolicy `.rules` files; clear security
+  risk.
+* `--profile`, `--enable`, `--disable` — introduce non-deterministic
+  configuration.
+* Arbitrary `-c` — could override sandbox, approval, or model settings.
+* `--strict-config` — could cause unrelated config version mismatches
+  to block Worker dispatch.
+
+The **only** `-c` override the provider generates is the fixed
+reasoning-effort key (§2.12.6).  Future changes to this policy require
+a separate contract revision.
+
+---
+
+#### 2.12.11 CodexCliProvider — Frozen Public API
+
+`CodexCliProvider` **is** the configuration.  There is no separate
+`CodexCliProviderConfig` class.
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from dispatcher_gateway import (
+    AgentCliInvocation,
+    AgentCliProvider,
+    DispatchRequest,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CodexCliProvider:
+    """Codex CLI adapter — TC-13.8.3 frozen contract."""
+
+    provider_id: str
+    executable: str
+    sandbox_mode: str
+
+    def __post_init__(self) -> None:
+        # Reject at construction — ValueError on any illegal input.
+        ...
+
+    def build_invocation(
+        self,
+        request: DispatchRequest,
+    ) -> AgentCliInvocation:
+        ...
+
+
+__all__ = ["CodexCliProvider"]
+```
+
+**Exactly three fields — no more, no less:**
+
+| # | Field | Type | Constraint |
+|---|-------|------|------------|
+| 1 | `provider_id` | `str` | `"codex"` only; satisfies `AgentCliProvider.provider_id` |
+| 2 | `executable` | `str` | See executable rules below |
+| 3 | `sandbox_mode` | `str` | `"read-only"` or `"workspace-write"` |
+
+`approval_policy` is **not** a field — it is hard-coded as `"never"`
+(§2.12.8).
+
+**Forbidden fields** — these must **never** appear on
+`CodexCliProvider`:
+
+```text
+cwd
+workspace
+prompt
+timeout
+model
+model_id
+reasoning_effort
+approval_policy
+env
+env_overrides
+api_key
+token
+profile
+config_overrides
+session_id
+retry
+slot
+lease
+```
+
+`env_overrides=()` is a fixed value on the generated `AgentCliInvocation`,
+not a provider field.
+
+**Executable rules:**
+
+* Must be `str`, non-empty, not pure whitespace.
+* Must not contain leading or trailing whitespace.
+* Must not contain NUL (`\x00`), CR (`\r`), LF (`\n`), TAB (`\t`),
+  VT (`\v`), or FF (`\f`).
+* Must not contain embedded arguments — no shell-command-as-string.
+* Must not contain shell metacharacters (`&`, `|`, `;`, `` ` ``,
+  `$`, `<`, `>`, `(`, `)`, `"`, `'`).
+* A path containing ordinary spaces (e.g.
+  `C:\Program Files\OpenAI\codex.exe`) **is** legal and must not be
+  rejected as "embedded arguments".
+* The provider does **not** call `shlex.split()`, `shutil.which()`,
+  `os.fspath`, or any other path-resolution function — executable
+  resolution remains the Gateway's responsibility (§2.10.9).
+
+**Allowed executable values:**
+
+```text
+codex
+codex.exe
+codex.cmd
+<absolute native codex.exe path>
+```
+
+**Construction rejection — `ValueError`:** `CodexCliProvider.__init__`
+and `__post_init__` raise `ValueError` for:
+
+* `provider_id` not `"codex"`;
+* `executable` empty, pure whitespace, contains NUL/CR/LF/TAB/VT/FF,
+  or contains embedded arguments or shell metacharacters;
+* `sandbox_mode` not in the safe set (§2.12.7).
+
+**`build_invocation` rejection — `ValueError`:** raises `ValueError`
+for:
+
+* unknown `selected_deliberation_tier` (see §2.12.6);
+* `selected_model_id` empty, with leading/trailing whitespace, or
+  containing characters outside the strict allowlist (§2.12.4);
+* any other request field that cannot be mapped per this contract.
+
+**Gateway wrapping:** `run_dispatch()` (TC-13.7) wraps provider
+exceptions into `DispatchInvocationError`.  TC-13.8.3 does **not**
+introduce a parallel public exception hierarchy.
+
+**Module public surface** — the future production module
+`skills/agentdesk/scripts/codex_cli_provider.py` will export
+exactly one public symbol:
+
+```python
+__all__ = ["CodexCliProvider"]
+```
+
+No module-level registry, no `register_provider()`, no
+`unregister_provider()`.
+
+---
+
+#### 2.12.12 Environment Variable & Authentication Boundary
+
+Frozen:
+
+```python
+env_overrides == ()
+```
+
+The Codex CLI Provider:
+
+* does **not** read, set, or forward any API key.
+* does **not** copy or inspect the full parent process environment.
+* does **not** set any authentication environment variable.
+* does **not** set `CODEX_HOME`.
+* does **not** set `OPENAI_API_KEY`.
+* does **not** set `MAD_HOME` or `MAD_PARTICIPANT`.
+* does **not** log or return secrets in any form.
+* does **not** run `codex login` or `codex logout`.
+
+Authentication is the responsibility of the installation environment
+and the Codex CLI itself.  The provider trusts that the local Codex
+CLI environment is already authenticated before `run_dispatch` is
+called.
+
+---
+
+#### 2.12.13 Output Boundary
+
+The provider requests JSONL output:
+
+```text
+--json
+--color never
+```
+
+but its responsibility ends at constructing the invocation.  It must
+**not**:
+
+* parse stdout JSONL;
+* convert stdout to text;
+* extract report data from output;
+* determine business success/failure;
+* modify the Gateway's opaque-bytes contract;
+* freeze third-party-inferred event type names;
+* invent a `codex.*` schema version.
+
+TC-13.7 continues to treat `DispatchResult.stdout` and
+`DispatchResult.stderr` as opaque `bytes`.  Output interpretation and
+Worker delivery transformation belong to **TC-13.9**.
+
+The `--color never` flag ensures stdout is free of ANSI escape
+sequences, keeping the opaque bytes contract clean.
+
+---
+
+#### 2.12.14 File Output Parameters — Permanently Forbidden
+
+The following must **never** appear in `argv`:
+
+```text
+--output-schema <FILE>
+--output-last-message <FILE>
+-o <FILE>
+```
+
+Reasons:
+
+* Both require file paths — introducing file lifecycle management
+  beyond the pure `AgentCliInvocation` construction boundary.
+* `--output-schema` requires a JSON Schema file to be created and
+  managed externally.
+* `--output-last-message` writes to the filesystem, violating the
+  provider's zero-file-write contract.
+
+The initial version consumes only stdout JSONL bytes.
+
+---
+
+#### 2.12.15 Explicitly Forbidden CLI Behavior
+
+The following must **never** appear in `argv`:
+
+| Forbidden Flag / Pattern | Reason |
+|--------------------------|--------|
+| `--dangerously-bypass-approvals-and-sandbox` | Security bypass |
+| `--dangerously-bypass-hook-trust` | Hook trust bypass |
+| `--sandbox danger-full-access` | Full filesystem access |
+| `--search` | Live web search — non-deterministic |
+| `--oss` | Provider switch — bypasses model binding |
+| `--local-provider` | Provider switch — bypasses model binding |
+| `--remote` | Remote execution — not in scope |
+| `--remote-auth-token-env` | Remote auth — not in scope |
+| `--enable` / `--disable` | Feature flag — non-deterministic |
+| `--add-dir` | Additional writable directories |
+| `--skip-git-repo-check` | Bypasses Git requirement |
+| `-C` / `--cd` | Working directory override — cwd is Gateway's |
+| `-p` / `--profile` | Config profile — non-deterministic |
+| `-i` / `--image` | Image attachment — not in dispatch scope |
+| `--ignore-rules` | Disables execpolicy |
+| `--ignore-user-config` | Unverified enterprise policy impact |
+| `--strict-config` | Unrelated config version mismatch risk |
+| `--output-schema` | Requires file management |
+| `--output-last-message` / `-o` | Requires file writes |
+| `exec resume` | Session resumption |
+| `exec review` | Code review — not dispatch |
+| Shell wrapper (`cmd /c`, `powershell -Command`, `bash -c`) | Process integrity |
+| Task prompt in argv | Stdin-only contract |
+| Secrets / API keys / tokens in argv | Security boundary |
+
+Top-level commands also **never** invoked:
+
+```text
+resume
+fork
+cloud
+remote-control
+app-server
+exec-server
+```
+
+---
+
+#### 2.12.16 Fail-Closed Rules
+
+The provider must **reject** (fail closed, no silent recovery) for:
+
+| Condition | Exception |
+|-----------|-----------|
+| `provider_id` not `"codex"` | `ValueError` at construction |
+| `executable` empty, pure whitespace, or `None` | `ValueError` at construction |
+| `executable` contains NUL, CR, LF, TAB, VT, or FF | `ValueError` at construction |
+| `executable` contains embedded arguments or shell metacharacters | `ValueError` at construction |
+| `sandbox_mode` not in `{"read-only", "workspace-write"}` | `ValueError` at construction |
+| Unknown `selected_deliberation_tier` | `ValueError` in `build_invocation` |
+| `selected_model_id` empty, whitespace, or with forbidden characters | `ValueError` in `build_invocation` |
+| `provider_id` ≠ mapping key | `DispatchInputError` by Gateway (TC-13.7) |
+| Prompt cannot be transmitted per UTF-8 contract | `ValueError` — no replacement or trimming |
+
+No silent correction, trimming, fallback, or alias normalization is
+permitted.
+
+---
+
+#### 2.12.17 Explicitly Out of Scope
+
+TC-13.8.3 does **not** implement:
+
+* Codex CLI Provider production module (`codex_cli_provider.py` — TC-13.8.4)
+* `WorkerAdapter` (TC-13.9)
+* `WorkerKind` → provider selection (TC-13.9)
+* `ContextBudgetPolicy` invocation (TC-13.5.1 / TC-13.9)
+* Context budget → CLI argument translation (TC-13.9)
+* Dispatch scheduling (TC-13.18)
+* Worker slot allocation (TC-13.10)
+* Lease management (TC-13.10)
+* Retry logic (TC-13.9)
+* Escalation (TC-13.13)
+* Rate limiting (TC-13.14)
+* State / event / outbox / report writes (TC-13.11)
+* Stdout JSONL parsing (TC-13.9)
+* Output schema extraction
+* Additional directories or MCP configuration
+* Network search
+* Codex session resumption
+* Remote Codex sessions
+* Real Codex CLI invocation
+* Model bindings modification
+* `CODEX_HOME` management
+
+All of the above remain **Target** for their respective task cards.
+
+---
+
+#### 2.12.18 Status
+
+* ADR Interface Status row #31 "AgentDesk Codex CLI Provider"
+  is **Target** (TC-13.8.3).
+* This section (§2.12) is the Frozen Contract for TC-13.8.3 — it governs
+  future implementation (TC-13.8.4) and test work.
+* The production provider module (`codex_cli_provider.py`) does **not**
+  yet exist — it belongs to TC-13.8.4.
+* §2.10 (DispatcherAgentGateway), §2.11 (Claude Code CLI Provider),
+  and all prior Current interfaces remain **Current**.
+* TC-13.9 (WorkerAdapter) remains **Target**.
+
 ---
 
 ## 3. Ownership Boundaries
@@ -1854,7 +2593,9 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.6 | AgentDesk MAD Decision Gateway + `agentdesk.mad-refs/v1` | TC-13.2, TC-13.4 |
 | TC-13.7 | AgentDesk DispatcherAgentGateway (frozen contract §2.10; execution-only single-shot agent CLI boundary) | TC-13.4, TC-13.6 |
 | TC-13.8 | Claude Code CLI contract (public CLI interface for `claude` invocation) | TC-13.4 |
-| TC-13.9 | WorkerAdapter + four-tier Worker slots | TC-13.5.1, TC-13.7, TC-13.8 |
+| TC-13.8.3 | Codex CLI Provider frozen contract | This ADR |
+| TC-13.8.4 | Codex CLI Provider implementation | TC-13.8.3 |
+| TC-13.9 | WorkerAdapter + four-tier Worker slots | TC-13.5.1, TC-13.7, TC-13.8, TC-13.8.4 |
 | TC-13.10 | WorkerSlotLease implementation | TC-13.9 |
 | TC-13.11 | ControlPlaneTransitionService | TC-13.2 |
 | TC-13.12 | ApprovalGate (TASK_APPROVAL structured scope) | TC-13.11 |

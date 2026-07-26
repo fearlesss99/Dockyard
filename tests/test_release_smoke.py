@@ -3981,6 +3981,511 @@ class ReleaseSmokeTests(unittest.TestCase):
             "claude_code_provider.py must exist — TC-13.8 is Current",
         )
 
+    # ── Item 17: TC-13.8.3 Codex CLI Provider frozen contract ──────────────
+
+    def test_tc1383_interface_status_row_31_exists_and_is_target(self) -> None:
+        """ADR Interface Status must contain row #31 for Codex CLI Provider
+        with Target status."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        row_31 = None
+        for row in rows:
+            number_cell = self._resolve_col(row, "#")
+            if number_cell == "31":
+                row_31 = row
+                break
+        self.assertIsNotNone(
+            row_31,
+            "ADR Interface Status must contain row #31 for Codex CLI Provider",
+        )
+        status = self._resolve_col(row_31, "Status")
+        self.assertIn(
+            "Target",
+            status,
+            f"#31 Codex CLI Provider must be Target, got: {status}",
+        )
+        impl = self._resolve_col(row_31, "Implemented by", "Impl", "Notes")
+        self.assertIn(
+            "TC-13.8.3",
+            impl,
+            f"#31 must reference TC-13.8.3, got: {impl}",
+        )
+
+    def test_tc1383_section_212_exists_and_is_target(self) -> None:
+        """ADR must contain §2.12 Codex CLI Provider — Frozen Contract
+        marked Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.12")
+        self.assertIsNotNone(
+            section,
+            "ADR must contain ### 2.12 Codex CLI Provider frozen contract",
+        )
+        heading_m = re.search(
+            r"^### 2\.12\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m, "ADR must have a §2.12 heading")
+        heading = heading_m.group(0)
+        self.assertIn(
+            "Target",
+            heading,
+            f"§2.12 heading must say Target, got: {heading.strip()!r}",
+        )
+        self.assertIn(
+            "TC-13.8.3",
+            heading,
+            f"§2.12 heading must reference TC-13.8.3, got: {heading.strip()!r}",
+        )
+
+    def test_tc1383_type_name_is_codex_cli_provider(self) -> None:
+        """§2.12.11 must freeze type name as CodexCliProvider."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.11")
+        self.assertIsNotNone(section, "ADR must contain §2.12.11")
+        self.assertIn("CodexCliProvider", section)
+        self.assertNotIn("CodexCodeProvider", section)
+
+    def test_tc1383_exact_three_fields(self) -> None:
+        """§2.12.11 must freeze exactly three fields:
+        provider_id, executable, sandbox_mode."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.11")
+        self.assertIsNotNone(section)
+        self.assertIn("exactly three", section.lower())
+        for field in ("provider_id", "executable", "sandbox_mode"):
+            self.assertIn(
+                f"`{field}`",
+                section,
+                f"§2.12.11 must contain field {field!r}",
+            )
+
+    def test_tc1383_all_exact_one_symbol(self) -> None:
+        """§2.12.11 must freeze __all__ = ['CodexCliProvider']."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.11")
+        self.assertIsNotNone(section)
+        self.assertIn(
+            '__all__ = ["CodexCliProvider"]',
+            section,
+            "§2.12.11 must freeze __all__ with only CodexCliProvider",
+        )
+
+    def test_tc1383_provider_id_only_codex(self) -> None:
+        """§2.12.2 must state provider_id is 'codex' only; all other
+        values are rejected."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.2")
+        self.assertIsNotNone(section, "ADR must contain §2.12.2")
+        self.assertIn('"codex"', section)
+        for forbidden in (
+            "openai",
+            "openai-codex",
+            "codexcli",
+            "Codex",
+            "CODEX",
+            "claude",
+        ):
+            self.assertIn(
+                forbidden,
+                section,
+                f"§2.12.2 must explicitly forbid provider_id {forbidden!r}",
+            )
+
+    def test_tc1383_no_universal_cli_provider(self) -> None:
+        """§2.12 must not define UniversalCliProvider; architecture is
+        ClaudeCodeProvider + CodexCliProvider in parallel."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        self.assertNotIn(
+            "UniversalCliProvider",
+            adr_text,
+            "ADR must not define UniversalCliProvider",
+        )
+
+    def test_tc1383_prompt_stdin_only_utf8(self) -> None:
+        """§2.12.3 must state prompt is transmitted exclusively via
+        stdin with UTF-8 strict encoding, no BOM."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.3")
+        self.assertIsNotNone(section, "ADR must contain §2.12.3")
+        self.assertIn('request.prompt.encode("utf-8")', section)
+        self.assertIn("UTF-8", section)
+        self.assertIn("BOM", section)
+
+    def test_tc1383_no_fixed_control_prompt(self) -> None:
+        """§2.12.3 must state no fixed control prompt is used — unlike
+        Claude Provider."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.3")
+        self.assertIsNotNone(section)
+        # Must state that no control prompt is required.
+        target = section.lower()
+        self.assertTrue(
+            "no fixed control prompt" in target
+            or "no control prompt" in target
+            or "no compile-time control string" in target,
+            "§2.12.3 must explicitly state no fixed control prompt is used",
+        )
+
+    def test_tc1383_workspace_is_gateway_cwd_only(self) -> None:
+        """§2.12.1 must state cwd is Gateway responsibility; Provider has
+        no cwd field."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.1")
+        self.assertIsNotNone(section, "ADR must contain §2.12.1")
+        target = section.lower()
+        self.assertTrue(
+            "not have a `cwd` field" in target
+            or "no ``cwd`` field" in target
+            or "must not have a cwd field" in target
+            or "must not have a `cwd` field" in target
+            or "does **not**:\n\n* launch subprocesses" in section,
+            "§2.12.1 must state Provider has no cwd field",
+        )
+        # Must forbid -C / --cd
+        self.assertIn("-C", section)
+        self.assertIn("--cd", section.lower())
+
+    def test_tc1383_sandbox_safe_set_exact(self) -> None:
+        """§2.12.7 must allow only read-only and workspace-write;
+        danger-full-access must be forbidden."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.7")
+        self.assertIsNotNone(section, "ADR must contain §2.12.7")
+        self.assertIn("read-only", section)
+        self.assertIn("workspace-write", section)
+        self.assertIn("danger-full-access", section)
+
+    def test_tc1383_danger_full_access_forbidden(self) -> None:
+        """§2.12.7 must explicitly forbid danger-full-access."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.7")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "forbidden" in target or "must not" in target
+            or "never" in target,
+            "§2.12.7 must forbid danger-full-access",
+        )
+
+    def test_tc1383_approval_fixed_never(self) -> None:
+        """§2.12.8 must hard-code approval policy as 'never';
+        it must not be a provider field."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.8")
+        self.assertIsNotNone(section, "ADR must contain §2.12.8")
+        self.assertIn("never", section)
+        self.assertIn("hard-coded", section)
+
+    def test_tc1383_approval_before_exec(self) -> None:
+        """§2.12.4 must state --ask-for-approval never must appear
+        before exec."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.4")
+        self.assertIsNotNone(section, "ADR must contain §2.12.4")
+        target = section.lower()
+        self.assertTrue(
+            "before `exec`" in target
+            or "before exec" in target
+            or "must appear **before**" in section,
+            "§2.12.4 must state --ask-for-approval never precedes exec",
+        )
+
+    def test_tc1383_ephemeral_present(self) -> None:
+        """§2.12.4 argv must include --ephemeral."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.4")
+        self.assertIsNotNone(section)
+        self.assertIn("--ephemeral", section)
+
+    def test_tc1383_no_zero_file_io_claim(self) -> None:
+        """§2.12.9 must NOT claim zero file I/O; only 'session files
+        are not persisted'."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.9")
+        self.assertIsNotNone(section, "ADR must contain §2.12.9")
+        target = section.lower()
+        # Must explicitly state it does NOT promise zero file I/O.
+        self.assertIn(
+            "does **not** promise zero file i/o",
+            target,
+            "§2.12.9 must explicitly state it does NOT promise zero file I/O",
+        )
+        # Must mention auth/cache/runtime caveat.
+        target = section.lower()
+        self.assertTrue(
+            "authentication" in target
+            or "cache" in target
+            or "runtime data" in target,
+            "§2.12.9 must mention auth/cache/runtime data caveat",
+        )
+
+    def test_tc1383_no_ignore_rules(self) -> None:
+        """§2.12.10 must state --ignore-rules is NOT provided."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.10")
+        self.assertIsNotNone(section, "ADR must contain §2.12.10")
+        self.assertIn("--ignore-rules", section)
+
+    def test_tc1383_no_arbitrary_config_or_profile(self) -> None:
+        """§2.12.10 must forbid arbitrary -c, --profile, --enable,
+        --disable overrides from callers."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.10")
+        self.assertIsNotNone(section)
+        self.assertIn("-c", section)
+        self.assertIn("--profile", section)
+
+    def test_tc1383_model_from_selected_model_id(self) -> None:
+        """§2.12.5 must state --model value is from
+        selected_model_id."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.5")
+        self.assertIsNotNone(section, "ADR must contain §2.12.5")
+        self.assertIn("selected_model_id", section)
+
+    def test_tc1383_model_id_character_allowlist(self) -> None:
+        """§2.12.4 must define strict character allowlist for model_id
+        when .cmd shim is in use."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.4")
+        self.assertIsNotNone(section)
+        self.assertIn("allowlist", section.lower())
+
+    def test_tc1383_effort_mapping_exact_three(self) -> None:
+        """§2.12.6 must define exact mapping: efficient→low,
+        balanced→medium, deep→high."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.6")
+        self.assertIsNotNone(section, "ADR must contain §2.12.6")
+        for src, dst in (("efficient", "low"), ("balanced", "medium"), ("deep", "high")):
+            self.assertIn(
+                f"`{src}`",
+                section,
+                f"§2.12.6 must map {src} → {dst}",
+            )
+            self.assertIn(
+                f"`{dst}`",
+                section,
+                f"§2.12.6 must map {src} → {dst}",
+            )
+
+    def test_tc1383_xhigh_and_minimal_not_mapped(self) -> None:
+        """§2.12.6 must state xhigh and minimal are NOT mapped."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.6")
+        self.assertIsNotNone(section)
+        self.assertIn("xhigh", section)
+        self.assertIn("minimal", section)
+
+    def test_tc1383_json_and_color_never_present(self) -> None:
+        """§2.12.4 argv must include --json and --color never."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.4")
+        self.assertIsNotNone(section)
+        self.assertIn("--json", section)
+        self.assertIn("--color", section)
+
+    def test_tc1383_stdout_opaque_bytes(self) -> None:
+        """§2.12.13 must state stdout/stderr remain opaque bytes;
+        JSONL parsing is TC-13.9."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.13")
+        self.assertIsNotNone(section, "ADR must contain §2.12.13")
+        self.assertIn("opaque", section.lower())
+
+    def test_tc1383_no_third_party_event_types_frozen(self) -> None:
+        """§2.12.13 must state no third-party-inferred event type names
+        are frozen."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.13")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "not freeze" in target
+            or "third-party" in target
+            or "not invent" in target
+            or "schema version" in target,
+            "§2.12.13 must forbid freezing third-party event types",
+        )
+
+    def test_tc1383_no_output_schema_or_last_message(self) -> None:
+        """§2.12.14 must permanently forbid --output-schema,
+        --output-last-message, -o."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.14")
+        self.assertIsNotNone(section, "ADR must contain §2.12.14")
+        for flag in ("--output-schema", "--output-last-message", "-o"):
+            self.assertIn(flag, section)
+
+    def test_tc1383_env_overrides_empty(self) -> None:
+        """§2.12.12 must freeze env_overrides == ()."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.12")
+        self.assertIsNotNone(section, "ADR must contain §2.12.12")
+        self.assertIn("env_overrides == ()", section)
+
+    def test_tc1383_dangerous_flags_forbidden(self) -> None:
+        """§2.12.15 must forbid the complete set of dangerous flags."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.15")
+        self.assertIsNotNone(section, "ADR must contain §2.12.15")
+        required_flags = (
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--dangerously-bypass-hook-trust",
+            "--sandbox danger-full-access",
+            "--search",
+            "--oss",
+            "--local-provider",
+            "--remote",
+            "--add-dir",
+            "--skip-git-repo-check",
+            "-C",
+            "--ignore-rules",
+        )
+        for flag in required_flags:
+            self.assertIn(
+                flag,
+                section,
+                f"§2.12.15 must forbid {flag}",
+            )
+
+    def test_tc1383_exact_argv_order(self) -> None:
+        """§2.12.4 must freeze the exact argv tuple order."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.4")
+        self.assertIsNotNone(section)
+        # Check key ordering elements appear in the code block.
+        code_m = re.search(r"```python\n(.*?)```", section, re.DOTALL)
+        self.assertIsNotNone(code_m, "§2.12.4 must contain a Python code block")
+        code = code_m.group(1)
+        self.assertIn("--ask-for-approval", code)
+        self.assertIn('"exec"', code)
+        self.assertIn("--ephemeral", code)
+        self.assertIn("--json", code)
+        self.assertIn('"never"', code)
+        self.assertIn("--model", code)
+        self.assertIn("--sandbox", code)
+        self.assertIn("-c", code)
+        self.assertIn('"-"', code)
+
+    def test_tc1383_stdin_marker_last(self) -> None:
+        """§2.12.4 must place the stdin marker '-' as the last argv
+        element."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.4")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "must be last" in target or "last" in target,
+            "§2.12.4 must state stdin marker '-' is last",
+        )
+
+    def test_tc1383_executable_separate_from_argv(self) -> None:
+        """§2.12.4 must state executable is NOT in argv."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.4")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "does not appear in `argv`" in target
+            or "executable does not" in target,
+            "§2.12.4 must state executable is not in argv",
+        )
+
+    def test_tc1383_cmd_shim_described_as_batch_not_pe(self) -> None:
+        """§2.12.4 must describe .cmd as a batch-file shim, not a PE
+        binary."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.4")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "batch" in target or "shim" in target,
+            "§2.12.4 must describe .cmd as batch-file shim",
+        )
+
+    def test_tc1383_no_claim_no_command_processor(self) -> None:
+        """§2.12.4 must NOT claim the command processor is fully
+        bypassed on Windows."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.12.4")
+        self.assertIsNotNone(section)
+        target = section.lower()
+        self.assertTrue(
+            "does not claim" in target
+            or "not claim" in target
+            or "the contract does **not** claim" in section,
+            "§2.12.4 must caveat Windows command-processor behaviour",
+        )
+
+    def test_tc1383_codex_production_file_not_exist(self) -> None:
+        """codex_cli_provider.py must NOT yet exist — TC-13.8.3 is
+        contract-only."""
+        codex_path = (
+            SKILL_ROOT / "scripts" / "codex_cli_provider.py"
+        )
+        self.assertFalse(
+            codex_path.exists(),
+            "codex_cli_provider.py must NOT exist — TC-13.8.3 is contract-only",
+        )
+
+    def test_tc1383_claude_provider_still_current(self) -> None:
+        """§2.11 and Interface Status #30 must still be Current."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        heading_m = re.search(
+            r"^### 2\.11\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m)
+        self.assertIn("Current", heading_m.group(0))
+
+    def test_tc1383_tc139_still_target(self) -> None:
+        """TC-13.9 must still be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        tc139_row = None
+        for row in rows:
+            impl = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            if "TC-13.9" in re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl):
+                tc139_row = row
+                break
+        self.assertIsNotNone(tc139_row, "ADR must contain TC-13.9 row")
+        status = self._resolve_col(tc139_row, "Status")
+        self.assertIn("Target", status)
+        self.assertNotIn("Current", status)
+
+    def test_tc1383_future_task_cards_has_1383_and_1384(self) -> None:
+        """ADR §5 Future Task Cards must include TC-13.8.3 and
+        TC-13.8.4."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        task_ids_seen = {
+            self._resolve_col(row, "Task Card", "Task", "#")
+            for row in rows
+        }
+        for tid in ("TC-13.8.3", "TC-13.8.4"):
+            self.assertIn(
+                tid,
+                task_ids_seen,
+                f"ADR §5 Future Task Cards must contain {tid}",
+            )
+
+    def test_tc1383_tc139_depends_on_1384(self) -> None:
+        """ADR §5: TC-13.9 depends on must include TC-13.8.4."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        by_id = {
+            self._resolve_col(row, "Task Card", "Task", "#"): row
+            for row in rows
+        }
+        tc139 = by_id.get("TC-13.9")
+        self.assertIsNotNone(tc139, "TC-13.9 must exist in Future Task Cards")
+        tc139_dep = self._resolve_col(tc139, "Depends on", "Dep")
+        self.assertIn(
+            "TC-13.8.4",
+            tc139_dep,
+            "TC-13.9 must depend on TC-13.8.4",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
