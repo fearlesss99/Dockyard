@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -67,6 +68,62 @@ def _extract_markdown_section(text: str, heading: str) -> str | None:
     if stop_m:
         return remaining[: stop_m.start()].rstrip()
     return remaining.rstrip()
+
+
+def _strip_md_fmt(cell: str) -> str:
+    """Strip common markdown inline formatting from a table cell.
+
+    Removes backticks, bold/italic markers, and collapses whitespace.
+    """
+    result = cell.replace("`", "")
+    result = result.replace("**", "")
+    result = result.replace("*", "")
+    result = result.replace("_", "")
+    return " ".join(result.split())
+
+
+def _find_exit_code_table_row(section_text: str, target_code: str) -> str | None:
+    """Parse a markdown exit-code table and return the condition cell for
+    *target_code* (e.g. ``"0"``).
+
+    Recognises code cells like ``| `0` |`` and ``| 0 |`` equally — the
+    comparison is done after stripping backticks and whitespace from the
+    first cell.
+    """
+    # Find the first markdown table that looks like an exit-code table.
+    in_table = False
+    header: list[str] = []
+    for raw in section_text.splitlines():
+        stripped = raw.strip()
+        if not in_table:
+            # Heuristic: a table whose header includes "Exit" and "Condition"
+            # or "Exit" and "Meaning".
+            if (
+                stripped.startswith("|")
+                and ("Exit" in stripped)
+                and ("Condition" in stripped or "Meaning" in stripped)
+            ):
+                in_table = True
+                header = [c.strip() for c in stripped.strip("|").split("|")]
+                continue
+            continue
+        # End of table.
+        if stripped == "" or stripped.startswith("#"):
+            break
+        # Separator line.
+        if re.match(r"^\|[\s\-:|]+\|", stripped):
+            continue
+        if not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        code_cell = _strip_md_fmt(cells[0])
+        # Compare after stripping to normalise `0` vs `` `0` ``.
+        if code_cell == target_code:
+            # Return the condition/meaning cell (second column).
+            return cells[1].strip()
+    return None
 
 
 class ReleaseSmokeTests(unittest.TestCase):
@@ -218,9 +275,9 @@ class ReleaseSmokeTests(unittest.TestCase):
             """Extract rows from the first Interface-Status-like markdown table.
 
             Returns a list of dicts keyed by normalised header column names.
-            Rows whose first cell is a bare row-number (digits only) are treated
-            as data rows, as are rows whose first cell backtick-quotes an
-            interface name.  Separator lines are skipped.
+            All non-separator, non-empty rows are parsed — no first-column
+            shape gate.  Rows that start with ``|`` and are not a separator
+            line or header are treated as data.
             """
             rows: list[dict[str, str]] = []
             header: list[str] = []
@@ -238,17 +295,13 @@ class ReleaseSmokeTests(unittest.TestCase):
                 if stripped == "" or stripped.startswith("#"):
                     break
                 # Separator line: skip.
-                if stripped.startswith("|---") or stripped.startswith("| --") or stripped.startswith("|--"):
+                if re.match(r"^\|[\s\-:|]+\|", stripped):
                     continue
                 if not stripped.startswith("|"):
                     continue
                 cells = [c.strip() for c in stripped.strip("|").split("|")]
-                # Accept rows whose first cell is a row number OR
-                # backtick-quotes an interface name (CLI contract style).
-                first = cells[0] if cells else ""
-                is_row_number = bool(re.match(r"^\d+$", first))
-                is_interface_cell = bool(re.match(r"^`[^`]+`$", first))
-                if not is_row_number and not is_interface_cell:
+                # Accept any non-empty row whose cell count matches the header.
+                if len(cells) < 2:
                     continue
                 row = {header[i]: cells[i] for i in range(min(len(header), len(cells)))}
                 rows.append(row)
@@ -357,38 +410,54 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_run_result_v1_maintains_backward_compat(self) -> None:
         """Verify run-result/v1 section keeps participants=list[str] and
-        Chinese-status semantics — scoped strictly to the 3.2 subsection."""
+        Chinese-status semantics — scoped strictly to the 3.2 subsection.
+
+        Uses JSON parsing on the embedded code-fence example so that
+        object-array participants are caught regardless of field names.
+        """
         contract_text = self._cli_contract_path().read_text(encoding="utf-8")
 
-        # Extract only the run-result/v1 subsection (3.2), bounded by the
-        # next sibling Markdown heading.
         section_32 = _extract_markdown_section(contract_text, "### 3.2")
         self.assertIsNotNone(
             section_32,
             "CLI contract must have run-result/v1 section 3.2",
         )
-        text = section_32  # type: ignore[assignment]
+        text: str = section_32  # type: ignore[assignment]
 
-        # (A) participants must be list[str] — look for the explicit type
-        #     declaration OR a participants array with string entries.
-        has_list_str = "list[str]" in text
-        has_string_array = '"participants": ["' in text
-        has_object_array = re.search(
-            r'"participants":\s*\[.*?"agent_id".*?\]', text, re.DOTALL
+        # ── (A) participants must be list[str] — JSON-parse the example ──
+        # Extract the first JSON code block inside the section.
+        json_m = re.search(r"```json\n(.*?)```", text, re.DOTALL)
+        self.assertIsNotNone(
+            json_m,
+            "run-result/v1 section: must contain a JSON code block",
         )
-        self.assertTrue(
-            has_list_str or has_string_array,
-            "run-result/v1 section: participants must be documented as "
-            "list[str] or shown as a JSON string array",
-        )
-        self.assertIsNone(
-            has_object_array,
-            "run-result/v1 section: participants must not be an object array",
-        )
+        try:
+            example = json.loads(json_m.group(1))
+        except json.JSONDecodeError as exc:
+            self.fail(
+                f"run-result/v1 section: JSON example is not valid JSON: {exc}"
+            )
 
-        # (B) status must keep Chinese string semantics — the run-result/v1
-        #     section must contain the current MAD Chinese status strings
-        #     (完成 / 带警告完成 or a placeholder referencing them).
+        participants = example.get("participants")
+        self.assertIsInstance(
+            participants,
+            list,
+            "run-result/v1 section: 'participants' must be a list",
+        )
+        self.assertGreater(
+            len(participants),
+            0,
+            "run-result/v1 section: 'participants' must be a non-empty list",
+        )
+        for i, p in enumerate(participants):
+            self.assertIsInstance(
+                p,
+                str,
+                f"run-result/v1 section: participants[{i}] must be str, "
+                f"got {type(p).__name__}: {p!r}",
+            )
+
+        # (B) status must keep Chinese string semantics.
         chinese_ok = ("完成" in text) or ("<MAD status" in text)
         self.assertTrue(
             chinese_ok,
@@ -519,57 +588,55 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_audit_exit_zero_includes_verdict_fail_and_blocked(self) -> None:
         """Exit code 0 for 'mad audit' must cover pass, fail, and blocked
-        business verdicts — scoped strictly to the 3.3 subsection."""
+        business verdicts — scoped strictly to the 3.3 subsection.
+
+        Parses the exit-code Markdown table by extracting its cells,
+        normalises the code cell (strips backticks and whitespace), then
+        asserts the matching condition cell contains all three verdict
+        tokens.  Also verifies the prose concretely links exit 0 to
+        fail/blocked.
+        """
         contract_text = self._cli_contract_path().read_text(encoding="utf-8")
 
-        # Extract the audit subsection only.
         section_33 = _extract_markdown_section(contract_text, "### 3.3")
         self.assertIsNotNone(
             section_33,
             "CLI contract must have mad audit section 3.3",
         )
-        text = section_33  # type: ignore[assignment]
+        text: str = section_33  # type: ignore[assignment]
 
-        # Also grab the exit-codes table that follows the audit semantics.
-        # It may be under a sub-heading (####) or inline.
-        # We search for the exit-code table specifically.
-        # Strategy: look for any table row that pairs "`0`" with mention
-        # of all three verdicts, or check the prose around exit 0.
-        exit_table = re.search(
-            r"\| `0` \| ([^|\n]+)",
-            text,
-        )
+        # ── Parse the exit-code table ──
+        exit_row = _find_exit_code_table_row(text, "0")
         self.assertIsNotNone(
-            exit_table,
-            "audit section 3.3: must have an exit-code table row for code 0",
+            exit_row,
+            "audit section 3.3: must have an exit-code table with a row "
+            "for code 0",
         )
-        exit_zero_desc = exit_table.group(1)
+        condition_cell: str = exit_row  # type: ignore[assignment]
 
-        # The exit-0 description must reference the three business verdicts.
-        # We normalise backtick-quoting: strip backticks before comparing.
-        normalised = exit_zero_desc.replace("`", "")
+        # The condition cell must mention all three business verdicts.
+        normalised = _strip_md_fmt(condition_cell)
         for verdict in ("pass", "fail", "blocked"):
             self.assertIn(
                 verdict,
                 normalised,
-                f"audit section 3.3: exit-code-0 row must mention "
-                f"verdict '{verdict}'; got: {exit_zero_desc.strip()!r}",
+                f"audit section 3.3: exit-code-0 condition must mention "
+                f"verdict '{verdict}'; got: {condition_cell.strip()!r}",
             )
 
-        # In addition, prose in the audit section must explicitly state that
-        # exit code is 0 when verdict is fail or blocked but the process
-        # completed normally.  We search for "exit code … 0" near mentions
-        # of fail/blocked verdicts (allowing for markdown backticks).
-        zero_mentions = re.findall(
-            r"exit code.*?0",
+        # ── Prose: find a sentence that explicitly links exit 0 to
+        #    verdict=fail or verdict=blocked (not just any "exit code … 0"
+        #    mention). ──
+        linked = re.findall(
+            r"(?:exit code.*?0|exit\s+0).*?(?:fail|blocked)",
             text,
-            re.IGNORECASE,
+            re.IGNORECASE | re.DOTALL,
         )
         self.assertGreater(
-            len(zero_mentions),
+            len(linked),
             0,
-            "audit section 3.3: must contain prose stating exit code is 0 "
-            "for verdict=fail/blocked scenarios",
+            "audit section 3.3: prose must explicitly state that exit code 0 "
+            "covers verdict=fail/blocked scenarios",
         )
 
     # -- Item 7: ADR does not reference non-existent TC-12.3.1 dependency ---
