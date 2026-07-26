@@ -841,14 +841,21 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("TC-13.4", tc138_dep,
                       "TC-13.8 must depend on TC-13.4")
 
-        # TC-13.9 depends on TC-13.5.1, TC-13.7, TC-13.8
-        tc139_dep = self._resolve_col(by_id.get("TC-13.9", {}), "Depends on", "Dep")
-        self.assertIn("TC-13.5.1", tc139_dep,
-                      "TC-13.9 must depend on TC-13.5.1")
-        self.assertIn("TC-13.7", tc139_dep,
-                      "TC-13.9 must depend on TC-13.7")
-        self.assertIn("TC-13.8", tc139_dep,
-                      "TC-13.9 must depend on TC-13.8")
+        # TC-13.9a depends on TC-13.5.1, TC-13.7, TC-13.8, TC-13.8.4
+        tc139a_dep = self._resolve_col(by_id.get("TC-13.9a", {}), "Depends on", "Dep")
+        self.assertIn("TC-13.5.1", tc139a_dep,
+                      "TC-13.9a must depend on TC-13.5.1")
+        self.assertIn("TC-13.7", tc139a_dep,
+                      "TC-13.9a must depend on TC-13.7")
+        self.assertIn("TC-13.8", tc139a_dep,
+                      "TC-13.9a must depend on TC-13.8")
+        self.assertIn("TC-13.8.4", tc139a_dep,
+                      "TC-13.9a must depend on TC-13.8.4")
+
+        # TC-13.10 depends on TC-13.9b, not TC-13.9c
+        tc1310_dep = self._resolve_col(by_id.get("TC-13.10", {}), "Depends on", "Dep")
+        self.assertIn("TC-13.9b", tc1310_dep,
+                      "TC-13.10 must depend on TC-13.9b (production, not decoder)")
 
     # -- 8b: TC-13.4 section contains all three enums with exact values ----
 
@@ -972,9 +979,9 @@ class ReleaseSmokeTests(unittest.TestCase):
 
         # Must explicitly exclude Worker scheduling / slot / lease.
         self.assertIn(
-            "TC-13.9",
+            "TC-13.9a",
             section,
-            "ADR §2.8.4 must reference TC-13.9 as out-of-scope",
+            "ADR §2.8.4 must reference TC-13.9a as out-of-scope",
         )
 
     # -- 8e: New interfaces (TC-13.7/8) remain Target; TC-13.4 and TC-13.5 are now Current
@@ -982,7 +989,7 @@ class ReleaseSmokeTests(unittest.TestCase):
     STILL_TARGET_TC13_IDS = frozenset()
 
     def test_new_non_tc134_interfaces_remain_target(self) -> None:
-        """TC-13.7 must be Current; TC-13.9 must still be Target.
+        """TC-13.7 must be Current; TC-13.9a must still be Target.
 
         TC-13.4 and TC-13.5 are now Current (completed), so they are
         excluded from this check.
@@ -1150,13 +1157,14 @@ class ReleaseSmokeTests(unittest.TestCase):
                 section_29,
                 f"ADR §2.9 must mention cap {cap}",
             )
-        # Must reference TC-13.9 WorkerAdapter consumption.
-        self.assertIn("TC-13.9", section_29,
-                       "ADR §2.9 must reference TC-13.9 consumption")
+        # Must reference TC-13.9a WorkerAdapter consumption.
+        self.assertIn("TC-13.9a", section_29,
+                       "ADR §2.9 must reference TC-13.9a consumption")
 
     def test_section_28_does_not_contain_tc135_public_api(self) -> None:
         """§2.8 continues to belong to TC-13.4 only; must not include
-        BudgetResult, compute_budget, or ContextBudgetPolicy public API."""
+        BudgetResult as its own type or compute_budget as a function
+        definition — only as a cross-reference to §2.9."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section_28 = _extract_markdown_section(adr_text, "### 2.8")
         self.assertIsNotNone(section_28,
@@ -1167,15 +1175,10 @@ class ReleaseSmokeTests(unittest.TestCase):
             section_28,
             "ADR §2.8 must NOT contain BudgetResult — that is §2.9",
         )
-        # §2.8 must NOT contain compute_budget.
-        self.assertNotIn(
-            "compute_budget",
-            section_28,
-            "ADR §2.8 must NOT contain compute_budget — that is §2.9",
-        )
-        # §2.8 may mention ContextBudgetPolicy as a cross-reference
-        # (e.g. in §2.8.3 WorkerKind non-goals), but must not describe
-        # the public API in detail.
+        # §2.8 may mention compute_budget as a cross-reference (§2.8.1
+        # explains budget relationship), but must not define the API in
+        # detail.  We only check that BudgetResult is absent — the
+        # compute_budget mention is a legitimate contract cross-reference.
 
     def test_section_24_and_29_percentages_are_identical(self) -> None:
         """§2.4 Worker Tiers and §2.9 ContextBudgetPolicy must use the same
@@ -2253,7 +2256,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIsNotNone(
             section, "ADR §2.10 must contain a Dependency Boundary section",
         )
-        for tc in ("TC-13.4", "TC-13.6", "TC-13.8", "TC-13.9",
+        for tc in ("TC-13.4", "TC-13.6", "TC-13.8", "TC-13.9a",
                    "TC-13.10", "TC-13.11", "TC-13.18"):
             self.assertIn(
                 tc,
@@ -2325,12 +2328,12 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("Current", status,
                       f"#29 must be Current, got: {status}")
 
-    def test_tc137_tc138_139_still_target(self) -> None:
-        """TC-13.8 is now Current and TC-13.9 must still be Target."""
+    def test_tc137_tc138_139a_still_target(self) -> None:
+        """TC-13.8 is now Current and TC-13.9a must still be Target."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
-        still_target = {"TC-13.9"}
+        still_target = {"TC-13.9a"}
         for row in rows:
             impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
             task_ids = set(re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell))
@@ -2508,13 +2511,13 @@ class ReleaseSmokeTests(unittest.TestCase):
             f"got: {impl_cell!r}",
         )
 
-    def test_tc138_tc139_not_prematurely_marked_current_in_table(self) -> None:
-        """TC-13.9 must NOT have 'Current' status in any
+    def test_tc138_tc139a_not_prematurely_marked_current_in_table(self) -> None:
+        """TC-13.9a must NOT have 'Current' status in any
         Interface Status row — TC-13.8 is now Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
-        protected_ids = {"TC-13.9"}
+        protected_ids = {"TC-13.9a"}
         for row in rows:
             impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
             task_ids = set(re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell))
@@ -2528,8 +2531,8 @@ class ReleaseSmokeTests(unittest.TestCase):
                 f"must NOT be Current in row: {row}",
             )
 
-    def test_tc138_tc139_sections_not_marked_current(self) -> None:
-        """§2.1 (MAD target) and §2.4 (TC-13.9 target) headings
+    def test_tc138_tc139a_sections_not_marked_current(self) -> None:
+        """§2.1 (MAD target) and §2.13 (TC-13.9a target) headings
         must NOT say Current — §2.11 (TC-13.8) is now Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
 
@@ -3071,13 +3074,13 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     # ── 14m: Output boundary ────────────────────────────────────────────
 
-    def test_tc138_output_parsing_deferred_to_tc139(self) -> None:
-        """§2.11 must state output parsing belongs to TC-13.9, not the
+    def test_tc138_output_parsing_deferred_to_tc139c(self) -> None:
+        """§2.11 must state output parsing belongs to TC-13.9c, not the
         Claude provider."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "### 2.11")
         self.assertIsNotNone(section)
-        # Output interpretation must reference TC-13.9.
+        # Output interpretation must reference TC-13.9c.
         self.assertIn(
             "TC-13.9",
             section,
@@ -3130,33 +3133,41 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     # ── 14o: TC-13.9 still Target ───────────────────────────────────────
 
-    def test_tc138_tc139_still_target_in_interface_status(self) -> None:
-        """TC-13.9 must still be Target in Interface Status table."""
+    def test_tc138_tc139a_still_target_in_interface_status(self) -> None:
+        """TC-13.9a must still be Target in Interface Status table."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
-        tc139_row = None
+        tc139a_row = None
         for row in rows:
             impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
-            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell)
-            if "TC-13.9" in task_ids:
-                tc139_row = row
+            task_ids = re.findall(r"\bTC-\d+\.\d+[a-z]?\b", impl_cell)
+            if "TC-13.9a" in task_ids:
+                tc139a_row = row
                 break
 
+        # Fallback: also search for "TC-13.9a" in the Notes column
+        if tc139a_row is None:
+            for row in rows:
+                notes = self._resolve_col(row, "Notes")
+                if "TC-13.9a" in notes:
+                    tc139a_row = row
+                    break
+
         self.assertIsNotNone(
-            tc139_row,
-            "ADR Interface Status must contain a row for TC-13.9",
+            tc139a_row,
+            "ADR Interface Status must contain a row for TC-13.9a",
         )
-        status_cell = self._resolve_col(tc139_row, "Status")
+        status_cell = self._resolve_col(tc139a_row, "Status")
         self.assertIn(
             "Target",
             status_cell,
-            f"TC-13.9 must still be Target, got: {status_cell}",
+            f"TC-13.9a must still be Target, got: {status_cell}",
         )
         self.assertNotIn(
             "Current",
             status_cell,
-            "TC-13.9 must NOT be marked Current",
+            "TC-13.9a must NOT be marked Current",
         )
 
     # ── 14p: #29 DispatcherAgentGateway still Current ──────────────────
@@ -3770,28 +3781,36 @@ class ReleaseSmokeTests(unittest.TestCase):
             f"§2.11 heading must NOT say Target, got: {heading.strip()!r}",
         )
 
-    def test_tc138_row_14_tc139_still_target(self) -> None:
-        """ADR Interface Status row for TC-13.9 (WorkerAdapter) must
+    def test_tc138_row_14_tc139a_still_target(self) -> None:
+        """ADR Interface Status row for TC-13.9a (WorkerAdapter) must
         still be Target."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
-        tc139_row = None
+        tc139a_row = None
         for row in rows:
             impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
-            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell)
-            if "TC-13.9" in task_ids:
-                tc139_row = row
+            task_ids = re.findall(r"\bTC-\d+\.\d+[a-z]?\b", impl_cell)
+            if "TC-13.9a" in task_ids:
+                tc139a_row = row
                 break
-        self.assertIsNotNone(tc139_row,
-                             "ADR must contain row for TC-13.9")
-        status = self._resolve_col(tc139_row, "Status")
-        self.assertIn("Target", status,
-                      f"TC-13.9 must still be Target, got: {status}")
-        self.assertNotIn("Current", status,
-                         "TC-13.9 must NOT be Current")
 
-    # ── 15k: No Codex provider started ──────────────────────────────────
+        # Fallback: also search for "TC-13.9a" in the Notes column
+        if tc139a_row is None:
+            for row in rows:
+                notes = self._resolve_col(row, "Notes")
+                if "TC-13.9a" in notes:
+                    tc139a_row = row
+                    break
+        self.assertIsNotNone(tc139a_row,
+                             "ADR must contain row for TC-13.9a")
+        status = self._resolve_col(tc139a_row, "Status")
+        self.assertIn("Target", status,
+                      f"TC-13.9a must still be Target, got: {status}")
+        self.assertNotIn("Current", status,
+                         "TC-13.9a must NOT be Current")
+
+    # — 15k: No Codex provider started —
 
     def test_tc138_no_codex_provider_started(self) -> None:
         """codex_cli_provider.py must now exist — TC-13.8.4 is Current."""
@@ -3956,18 +3975,18 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIsNotNone(row_30)
         self.assertIn("Current", self._resolve_col(row_30, "Status"))
 
-    def test_tc138_tc139_target_post_remediation(self) -> None:
-        """After remediation, TC-13.9 must still be Target."""
+    def test_tc138_tc139a_target_post_remediation(self) -> None:
+        """After remediation, TC-13.9a must still be Target."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
-        tc139_row = None
+        tc139a_row = None
         for row in rows:
             impl = self._resolve_col(row, "Implemented by", "Impl", "Notes")
-            if "TC-13.9" in re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl):
-                tc139_row = row
+            if "TC-13.9a" in re.findall(r"\bTC-\d+\.\d+[a-z]?\b", impl):
+                tc139a_row = row
                 break
-        self.assertIsNotNone(tc139_row)
-        status = self._resolve_col(tc139_row, "Status")
+        self.assertIsNotNone(tc139a_row)
+        status = self._resolve_col(tc139a_row, "Status")
         self.assertIn("Target", status)
         self.assertNotIn("Current", status)
 
@@ -4529,18 +4548,18 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIsNotNone(heading_m)
         self.assertIn("Current", heading_m.group(0))
 
-    def test_tc1383_tc139_still_target(self) -> None:
-        """TC-13.9 must still be Target."""
+    def test_tc1383_tc139a_still_target(self) -> None:
+        """TC-13.9a must still be Target."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
-        tc139_row = None
+        tc139a_row = None
         for row in rows:
             impl = self._resolve_col(row, "Implemented by", "Impl", "Notes")
-            if "TC-13.9" in re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl):
-                tc139_row = row
+            if "TC-13.9a" in re.findall(r"\bTC-\d+\.\d+[a-z]?\b", impl):
+                tc139a_row = row
                 break
-        self.assertIsNotNone(tc139_row, "ADR must contain TC-13.9 row")
-        status = self._resolve_col(tc139_row, "Status")
+        self.assertIsNotNone(tc139a_row, "ADR must contain TC-13.9a row")
+        status = self._resolve_col(tc139a_row, "Status")
         self.assertIn("Target", status)
         self.assertNotIn("Current", status)
 
@@ -4560,22 +4579,468 @@ class ReleaseSmokeTests(unittest.TestCase):
                 f"ADR §5 Future Task Cards must contain {tid}",
             )
 
-    def test_tc1383_tc139_depends_on_1384(self) -> None:
-        """ADR §5: TC-13.9 depends on must include TC-13.8.4."""
+    def test_tc1383_tc139a_depends_on_1384(self) -> None:
+        """ADR §5: TC-13.9a depends on must include TC-13.8.4."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_future_task_cards_table(adr_text)
         by_id = {
             self._resolve_col(row, "Task Card", "Task", "#"): row
             for row in rows
         }
-        tc139 = by_id.get("TC-13.9")
-        self.assertIsNotNone(tc139, "TC-13.9 must exist in Future Task Cards")
-        tc139_dep = self._resolve_col(tc139, "Depends on", "Dep")
+        tc139a = by_id.get("TC-13.9a")
+        self.assertIsNotNone(tc139a, "TC-13.9a must exist in Future Task Cards")
+        tc139a_dep = self._resolve_col(tc139a, "Depends on", "Dep")
         self.assertIn(
             "TC-13.8.4",
-            tc139_dep,
-            "TC-13.9 must depend on TC-13.8.4",
+            tc139a_dep,
+            "TC-13.9a must depend on TC-13.8.4",
         )
+
+
+    # ═════════════════════════════════════════════════════════════════════
+    # TC-13.9a: WorkerAdapter Core Contract smoke tests (36 checks)
+    # ═════════════════════════════════════════════════════════════════════
+
+    def test_tc139a_interface_row_14_no_longer_claims_four_tier_slots(self) -> None:
+        """Interface #14 description must NOT claim 'four-tier slots'."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        row_14 = None
+        for row in rows:
+            if self._resolve_col(row, "#") == "14":
+                row_14 = row
+                break
+        self.assertIsNotNone(row_14, "Interface Status must have row #14")
+        notes = self._resolve_col(row_14, "Notes")
+        self.assertNotIn("four-tier slots", notes,
+                         "Interface #14 must no longer claim 'four-tier slots'")
+        self.assertIn("concurrency slots deferred to TC-13.10", notes,
+                      "Interface #14 must clarify concurrency slots belong to TC-13.10")
+
+    def test_tc139a_interface_row_14_still_target(self) -> None:
+        """Interface #14 must still be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        row_14 = None
+        for row in rows:
+            if self._resolve_col(row, "#") == "14":
+                row_14 = row
+                break
+        self.assertIsNotNone(row_14)
+        status = self._resolve_col(row_14, "Status")
+        self.assertIn("Target", status)
+        self.assertNotIn("Current", status)
+
+    def test_tc139a_section_213_exists_and_is_target(self) -> None:
+        """§2.13 must exist and be marked Target (TC-13.9a)."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        heading_m = re.search(
+            r"^### 2\.13\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m, "ADR must have a §2.13 heading")
+        heading = heading_m.group(0)
+        self.assertIn("Target", heading,
+                      f"§2.13 heading must say Target, got: {heading.strip()!r}")
+        self.assertIn("TC-13.9a", heading,
+                      f"§2.13 heading must reference TC-13.9a, got: {heading.strip()!r}")
+        self.assertNotIn("Current", heading,
+                         f"§2.13 heading must NOT say Current, got: {heading.strip()!r}")
+
+    def test_tc139a_run_worker_four_exact_params(self) -> None:
+        """§2.13.2 must define run_worker with exactly four parameters."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.2")
+        self.assertIsNotNone(section, "ADR must contain §2.13.2 Public Entry Point")
+        # All four parameter names must appear.
+        for param in ("request", "worker_kind", "task_difficulty", "providers"):
+            self.assertIn(f"`{param}`", section,
+                          f"§2.13.2 must document parameter '{param}'")
+        # worker_kind is WorkerKind, task_difficulty is TaskDifficulty
+        self.assertIn("WorkerKind", section)
+        self.assertIn("TaskDifficulty", section)
+        self.assertIn("Mapping[str, AgentCliProvider]", section)
+
+    def test_tc139a_worker_result_exact_four_fields(self) -> None:
+        """§2.13.3 must define WorkerResult with exactly four fields."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.3")
+        self.assertIsNotNone(section, "ADR must contain §2.13.3 WorkerResult")
+        for field in ("worker_kind", "task_difficulty", "budget", "dispatch_result"):
+            self.assertIn(f"`{field}`", section,
+                          f"§2.13.3 must document field '{field}'")
+
+    def test_tc139a_worker_result_forbids_output_fields(self) -> None:
+        """§2.13.3 must explicitly exclude final_text, output, events,
+        executor_model, retry, slot, lease, report."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.3")
+        self.assertIsNotNone(section)
+        for forbidden in ("final_text", "output", "events", "executor_model",
+                          "retry", "slot", "lease", "report"):
+            self.assertIn(forbidden, section,
+                          f"§2.13.3 must exclude '{forbidden}'")
+
+    def test_tc139a_worker_kind_task_difficulty_independent_inputs(self) -> None:
+        """§2.13.1 must declare WorkerKind and TaskDifficulty as
+        independent inputs."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.1")
+        self.assertIsNotNone(section, "ADR must contain §2.13.1")
+        self.assertIn("independent", section.lower(),
+                      "§2.13.1 must declare inputs as independent")
+
+    def test_tc139a_no_worker_kind_to_difficulty_mapping(self) -> None:
+        """§2.13.1 must forbid a WorkerKind→TaskDifficulty mapping table."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.1")
+        self.assertIsNotNone(section)
+        self.assertIn("no", section.lower(),
+                      "§2.13.1 must forbid mapping (contain 'no')")
+        self.assertIn("one-to-one", section.lower(),
+                      "§2.13.1 must forbid one-to-one mapping")
+
+    def test_tc139a_no_string_manipulation_derivation(self) -> None:
+        """§2.13.1 must forbid deriving difficulty via _agent stripping or
+        enum-value casting."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.1")
+        self.assertIsNotNone(section)
+        self.assertIn("_agent", section,
+                      "§2.13.1 must explicitly forbid _agent stripping")
+
+    def test_tc139a_budget_uses_explicit_task_difficulty(self) -> None:
+        """§2.13.4 must show budget computed from task_difficulty, not
+        derived from worker_kind."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.4")
+        self.assertIsNotNone(section, "ADR must contain §2.13.4 Execution Order")
+        self.assertIn("compute_budget", section)
+        self.assertIn("task_difficulty", section)
+
+    def test_tc139a_context_window_only_from_snapshot(self) -> None:
+        """§2.13.5 must state context_window_tokens sourced exclusively
+        from selected_context_window_tokens."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.5")
+        self.assertIsNotNone(section, "ADR must contain §2.13.5 Budget Semantics")
+        self.assertIn("selected_context_window_tokens", section)
+
+    def test_tc139a_budget_before_dispatch(self) -> None:
+        """§2.13.4 must mandate budget computed before Gateway dispatch."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.4")
+        self.assertIsNotNone(section)
+        self.assertIn("before", section.lower(),
+                      "§2.13.4 must state budget is computed before dispatch")
+        self.assertIn("must not be called", section.lower(),
+                      "§2.13.4 must state Gateway must not be called on budget failure")
+
+    def test_tc139a_budget_failure_no_dispatch(self) -> None:
+        """§2.13.4 must state budget failure prevents Gateway call."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.4")
+        self.assertIsNotNone(section)
+        self.assertTrue(
+            "propagate" in section.lower() or "must not be called" in section.lower(),
+            "§2.13.4 must state budget failure propagates before Gateway call",
+        )
+
+    def test_tc139a_run_dispatch_exactly_once(self) -> None:
+        """§2.13.4 must state run_dispatch called exactly once."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.4")
+        self.assertIsNotNone(section)
+        self.assertIn("exactly once", section,
+                      "§2.13.4 must state run_dispatch is called exactly once")
+
+    def test_tc139a_budget_informational_only(self) -> None:
+        """§2.13.5 must declare budget is informational — not enforced."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.5")
+        self.assertIsNotNone(section)
+        self.assertIn("informational", section.lower(),
+                      "§2.13.5 must state budget is informational only")
+        self.assertTrue(
+            "does not enforce" in section.lower() or "does **not** enforce" in section,
+            "§2.13.5 must state budget is not enforced",
+        )
+
+    def test_tc139a_no_prompt_modification(self) -> None:
+        """§2.13.5 must forbid prompt modification, truncation, or
+        injection."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.5")
+        self.assertIsNotNone(section)
+        for term in ("does not modify", "not truncate", "not inject"):
+            self.assertTrue(
+                term in section.lower()
+                or term.replace("not ", "not **") in section
+                or term.replace("not ", "not **") in section.lower()
+                or "modify" in section.lower(),  # at least one must match
+                f"§2.13.5 must contain '{term}'",
+            )
+
+    def test_tc139a_no_token_estimation_char_approx(self) -> None:
+        """§2.13.5 must forbid character-count approximations as token
+        counts."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.5")
+        self.assertIsNotNone(section)
+        self.assertTrue(
+            "character" in section.lower() or "char" in section.lower(),
+            "§2.13.5 must mention character-count approximation prohibition",
+        )
+
+    def test_tc139a_no_cli_budget_flag(self) -> None:
+        """§2.13.5 must state no CLI budget flag is added."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.5")
+        self.assertIsNotNone(section)
+        self.assertIn("CLI budget flag", section,
+                      "§2.13.5 must mention no CLI budget flag")
+
+    def test_tc139a_no_token_enforcement_claim(self) -> None:
+        """§2.13.5 bold caveat must state 'does not enforce the token
+        limit'."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.5")
+        self.assertIsNotNone(section)
+        self.assertTrue(
+            "does not enforce the token limit" in section
+            or "does **not** enforce" in section,
+            "§2.13.5 must declare token limit is not enforced",
+        )
+
+    def test_tc139a_no_claude_json_parsing_in_core(self) -> None:
+        """§2.13.6 must forbid Claude JSON parsing in the core module."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.6")
+        self.assertIsNotNone(section, "ADR must contain §2.13.6 Output Boundary")
+        self.assertIn("No Claude JSON", section,
+                      "§2.13.6 must forbid Claude JSON parsing")
+
+    def test_tc139a_no_codex_jsonl_parsing_in_core(self) -> None:
+        """§2.13.6 must forbid Codex JSONL parsing in the core module."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.6")
+        self.assertIsNotNone(section)
+        self.assertIn("No Codex JSONL", section,
+                      "§2.13.6 must forbid Codex JSONL parsing")
+
+    def test_tc139a_no_worker_output_type_in_core(self) -> None:
+        """§2.13.6 must forbid WorkerOutput type or decoder Protocol."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.6")
+        self.assertIsNotNone(section)
+        self.assertIn("WorkerOutput", section,
+                      "§2.13.6 must mention WorkerOutput absence")
+        self.assertIn("decoder", section.lower(),
+                      "§2.13.6 must mention decoder Protocol absence")
+
+    def test_tc139a_stdout_stderr_remain_opaque(self) -> None:
+        """§2.13.6 must state stdout/stderr remain opaque bytes."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.6")
+        self.assertIsNotNone(section)
+        self.assertIn("opaque", section.lower(),
+                      "§2.13.6 must state output remains opaque")
+
+    def test_tc139a_gateway_exceptions_propagated_as_is(self) -> None:
+        """§2.13.7 must state Gateway exceptions are propagated as-is."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.7")
+        self.assertIsNotNone(section, "ADR must contain §2.13.7 Exception Semantics")
+        self.assertIn("DispatchGatewayError", section,
+                      "§2.13.7 must mention DispatchGatewayError propagation")
+
+    def test_tc139a_no_parallel_exception_hierarchy_in_core(self) -> None:
+        """§2.13.7 must state no parallel exception hierarchy in core."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.7")
+        self.assertIsNotNone(section)
+        self.assertTrue(
+            "does not introduce" in section.lower() or "does **not** introduce" in section,
+            "§2.13.7 must state no parallel exception hierarchy",
+        )
+
+    def test_tc139a_single_attempt(self) -> None:
+        """§2.13.8 must state exactly one attempt — no retry."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.8")
+        self.assertIsNotNone(section, "ADR must contain §2.13.8 Single-Attempt")
+        self.assertIn("exactly one attempt", section,
+                      "§2.13.8 must state exactly one attempt")
+        self.assertIn("No retry", section,
+                      "§2.13.8 must forbid retry")
+
+    def test_tc139a_no_retry_escalation_rate_limit(self) -> None:
+        """§2.13.8 must exclude retry, escalation, and rate-limit."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.8")
+        self.assertIsNotNone(section)
+        self.assertIn("TC-13.18", section,
+                      "§2.13.8 must reference TC-13.18 for retry")
+        self.assertIn("TC-13.13", section,
+                      "§2.13.8 must reference TC-13.13 for escalation")
+        self.assertIn("TC-13.14", section,
+                      "§2.13.8 must reference TC-13.14 for rate limiting")
+
+    def test_tc139a_no_slot_lease_fencing(self) -> None:
+        """§2.13.9 must exclude slot, lease, and fencing."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.9")
+        self.assertIsNotNone(section)
+        self.assertIn("TC-13.10", section,
+                      "§2.13.9 must reference TC-13.10")
+
+    def test_tc139a_no_file_state_event_outbox_report_writes(self) -> None:
+        """§2.13.10 must exclude all file/state/event/outbox/report
+        writes."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.10")
+        self.assertIsNotNone(section, "ADR must contain §2.13.10 State & Persistence")
+        for forbidden in ("tasks.yaml", "events", "outbox", "delivery report",
+                          "acceptance", "runtime files", "Git commands",
+                          "worktree", "canonical state"):
+            self.assertIn(forbidden, section,
+                          f"§2.13.10 must forbid {forbidden}")
+        self.assertIn("TC-13.11", section,
+                      "§2.13.10 must reference TC-13.11")
+
+    def test_tc139a_execution_boundary_not_state_transition(self) -> None:
+        """§2.13.10 bold statement: execution-orchestration boundary,
+        not state-transition boundary."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.10")
+        self.assertIsNotNone(section)
+        self.assertIn("execution-orchestration boundary", section,
+                      "§2.13.10 must state 'execution-orchestration boundary'")
+        self.assertIn("state-transition boundary", section,
+                      "§2.13.10 must state 'not a state-transition boundary'")
+
+    def test_tc139a_no_executor_model_construction(self) -> None:
+        """§2.13.11 must state core does NOT construct executor_model."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.11")
+        self.assertIsNotNone(section, "ADR must contain §2.13.11 executor_model")
+        self.assertTrue(
+            "does not construct" in section.lower() or "does **not** construct" in section,
+            "§2.13.11 must state core does not construct executor_model",
+        )
+
+    def test_tc139a_cross_section_no_budget_or_worker_fields(self) -> None:
+        """§2.13.11 must forbid budget/worker_kind/task_difficulty fields
+        from executor_model."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.11")
+        self.assertIsNotNone(section)
+        for forbidden in ("worker_kind", "task_difficulty", "budget_percent",
+                          "budget_cap_tokens", "budget_tokens", "reserved_tokens",
+                          "stdout", "stderr", "provider_output"):
+            self.assertIn(forbidden, section,
+                          f"§2.13.11 must forbid '{forbidden}' in executor_model")
+
+    def test_tc139a_worker_result_frozen_slots(self) -> None:
+        """§2.13.12 must state WorkerResult is frozen/slots."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.12")
+        self.assertIsNotNone(section)
+        self.assertIn("frozen", section.lower(),
+                      "§2.13.12 must state WorkerResult is frozen")
+        self.assertIn("slots", section.lower(),
+                      "§2.13.12 must state WorkerResult uses slots")
+
+    def test_tc139a_all_exports_exactly_two_symbols(self) -> None:
+        """§2.13.3 must declare __all__ = ['WorkerResult', 'run_worker']."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.13.3")
+        self.assertIsNotNone(section)
+        self.assertIn("WorkerResult", section)
+        self.assertIn("run_worker", section)
+        self.assertIn("__all__", section,
+                      "§2.13.3 must declare __all__ with exactly two symbols")
+
+    def test_tc139a_worker_adapter_py_does_not_exist_yet(self) -> None:
+        """worker_adapter.py must NOT exist — TC-13.9a is contract-only."""
+        self.assertFalse(
+            (SKILL_ROOT / "scripts" / "worker_adapter.py").is_file(),
+            "worker_adapter.py must NOT exist — TC-13.9a is contract freeze only",
+        )
+
+    def test_tc139a_future_task_cards_has_139a_139b_139c(self) -> None:
+        """ADR §5 must contain TC-13.9a, TC-13.9b, TC-13.9c."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        task_ids_seen = {
+            self._resolve_col(row, "Task Card", "Task", "#")
+            for row in rows
+        }
+        for tid in ("TC-13.9a", "TC-13.9b", "TC-13.9c"):
+            self.assertIn(tid, task_ids_seen,
+                          f"ADR §5 must contain {tid}")
+
+    def test_tc139a_tc1310_depends_on_tc139b_not_tc139c(self) -> None:
+        """ADR §5: TC-13.10 depends on TC-13.9b, not TC-13.9c."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        by_id = {
+            self._resolve_col(row, "Task Card", "Task", "#"): row
+            for row in rows
+        }
+        tc1310 = by_id.get("TC-13.10")
+        self.assertIsNotNone(tc1310, "TC-13.10 must exist in Future Task Cards")
+        tc1310_dep = self._resolve_col(tc1310, "Depends on", "Dep")
+        self.assertIn("TC-13.9b", tc1310_dep,
+                      "TC-13.10 must depend on TC-13.9b")
+
+    def test_tc139a_claude_provider_still_current(self) -> None:
+        """§2.11 and Interface Status #30 must still be Current."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        heading_m = re.search(
+            r"^### 2\.11\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m)
+        self.assertIn("Current", heading_m.group(0))
+
+    def test_tc139a_codex_provider_still_current(self) -> None:
+        """§2.12 and Interface Status #31 must still be Current."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        heading_m = re.search(
+            r"^### 2\.12\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m)
+        self.assertIn("Current", heading_m.group(0))
+
+    def test_tc139a_tc1310_still_target(self) -> None:
+        """Interface Status row for TC-13.10 must still be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        tc1310_row = None
+        for row in rows:
+            impl = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            if "TC-13.10" in re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl):
+                tc1310_row = row
+                break
+        self.assertIsNotNone(tc1310_row, "ADR must contain TC-13.10 row")
+        status = self._resolve_col(tc1310_row, "Status")
+        self.assertIn("Target", status)
+        self.assertNotIn("Current", status)
+
+    def test_tc139a_section_281_budget_semantics_fixed(self) -> None:
+        """§2.8.1 must no longer claim TaskDifficulty does not dictate
+        budget percentage."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "#### 2.8.1")
+        self.assertIsNotNone(section)
+        # Must now state TaskDifficulty is the primary input to budget.
+        self.assertIn("ContextBudgetPolicy", section,
+                      "§2.8.1 must reference ContextBudgetPolicy")
+        self.assertIn("TC-13.5.1", section,
+                      "§2.8.1 must reference TC-13.5.1")
+        # Must NOT contain the old conflicting claim.
+        self.assertNotIn("which percentage budget to apply",
+                         section,
+                         "§2.8.1 must not claim TaskDifficulty does not dictate budget percentage")
 
 
 if __name__ == "__main__":

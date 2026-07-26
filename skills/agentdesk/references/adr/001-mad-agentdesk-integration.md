@@ -24,7 +24,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 11 | AgentDesk event / outbox | **Current** | N/A (existing) | `agentdesk.state-event/v2`, `agentdesk.outbox-message/v2` |
 | 12 | AgentDesk double-commit protocol | **Current** | N/A (existing) | `implementation_commit` → `report_commit` |
 | 13 | AgentDesk MAD Decision Gateway | **Current** | TC-13.6 | Config-driven subprocess invocation of `mad` for planning/deliberation |
-| 14 | AgentDesk WorkerAdapter + four-tier slots | **Target** | TC-13.9 | Basic/Standard/Advanced/Expert; provider/model from bindings only |
+| 14 | AgentDesk WorkerAdapter — four-tier Worker execution orchestration | **Target** | TC-13.9a | Basic/Standard/Advanced/Expert; WorkerKind + TaskDifficulty as independent inputs; provider/model from bindings only; budget computed, not enforced; concurrency slots deferred to TC-13.10 |
 | 15 | AgentDesk WorkerSlotLease | **Target** | TC-13.10 | `agentdesk.worker-slot-lease/v1` |
 | 16 | AgentDesk ControlPlaneTransitionService | **Target** | TC-13.11 | CAS-write tasks, immutable events, replayable outbox |
 | 17 | AgentDesk ApprovalGate | **Target** | TC-13.12 | TASK_APPROVAL with structured scope (dispatch/accept/integrate) |
@@ -42,6 +42,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 29 | AgentDesk DispatcherAgentGateway | **Current** | TC-13.7 | Frozen contract (§2.10); execution-only single-shot agent CLI boundary; depends on TC-13.4, TC-13.6 |
 | 30 | Claude Code CLI contract | **Current** | TC-13.8 | Public CLI interface contract for `claude` invocation; depends on TC-13.4 |
 | 31 | AgentDesk Codex CLI Provider | **Current** | TC-13.8.4 | Frozen contract §2.12 established by TC-13.8.3; production module implemented by TC-13.8.4 |
+| 32 | AgentDesk WorkerAdapter Core — Frozen Contract | **Target** | TC-13.9a | §2.13; run_worker(request, worker_kind, task_difficulty, providers) → WorkerResult; budget informational only; output remains opaque bytes; no retry/slot/lease/state writes |
 
 ---
 
@@ -418,7 +419,7 @@ Rules:
 - Git-tracked events may record the SHA-256 digests as references, but must
   not include `archive_path`.
 
-### 2.4 Worker Tiers (Target — TC-13.9)
+### 2.4 Worker Tiers (Target — TC-13.9a/9b)
 
 | Tier | Context Budget (% of model window) | Max Active | Escalation Behaviour |
 |------|-----------------------------------|------------|---------------------|
@@ -432,7 +433,7 @@ definitions, and overhead.  The per-worktree writer limit of 1 means no two
 Workers may write to the same ordinary worktree concurrently.
 
 The budget percentages and the ≥35 % reserved rule are computed by
-`ContextBudgetPolicy` (TC-13.5.1 — Current).  WorkerAdapter (TC-13.9)
+`ContextBudgetPolicy` (TC-13.5.1 — Current).  WorkerAdapter (TC-13.9a/9b)
 consumes the policy's `BudgetResult`; this section describes the
 *Worker-tier behaviours* that use that budget, not the arithmetic itself.
 
@@ -509,7 +510,17 @@ Rules:
   specification may diverge the two sets; consumers must not couple
   them structurally.
 - `TaskDifficulty` does **not** dictate which model to select, which
-  percentage budget to apply, or which Worker slot to allocate.
+  provider to use, which model tier to bind, or which WorkerKind to
+  allocate.  These remain the responsibility of the selector
+  (`select_model.py`) and WorkerAdapter (TC-13.9a/9b).
+- `TaskDifficulty` **is** the primary input to `ContextBudgetPolicy`
+  (TC-13.5.1).  Each difficulty value selects a frozen percentage (20 /
+  35 / 50 / 65) and hard cap (64 000 / 128 000 / 256 000 / 512 000).
+  This relationship is an arithmetic contract of `compute_budget`, not a
+  property of the enum itself.
+- `TaskDifficulty` values must not be treated as model-tier labels even
+  though the four strings coincide today — budget percentages are not
+  model tiers.
 - Adding a new difficulty value requires a new revision of this type
   contract.
 
@@ -557,12 +568,18 @@ Rules:
 - `WorkerKind` is a **logical slot label**, not a concrete runtime
   binding.  Mapping a `WorkerKind` to a specific provider, model
   revision, or worktree is the responsibility of the WorkerAdapter
-  (TC-13.9) and WorkerSlotLease (TC-13.10).
+  (TC-13.9a/9b) and WorkerSlotLease (TC-13.10).
 - `WorkerKind` does **not** encode concurrency limits (2 global / 1 per
   worktree), budget percentages, or escalation behaviour — those
-  belong to ContextBudgetPolicy (TC-13.5.1) and WorkerAdapter (TC-13.9).
+  belong to ContextBudgetPolicy (TC-13.5.1) and WorkerAdapter (TC-13.9a/9b).
 - A `WorkerKind` value must not be used as a model tier, and a model
   tier must not be used as a `WorkerKind`.
+- `WorkerKind` and `TaskDifficulty` are **independent** inputs.
+  There is no fixed one-to-one mapping between them — an Advanced task
+  may be executed by an Expert Worker after escalation, or a Basic task
+  may be routed to a Standard Worker during capacity overflow.
+  Consumers must not derive a `TaskDifficulty` from a `WorkerKind` via
+  string manipulation, enum-value casting, or a mapping table.
 
 ---
 
@@ -575,7 +592,7 @@ TC-13.4 explicitly does **not** include:
 - Model selection, provider binding, or `select_model.py` logic
 - Any subprocess invocation, CLI call, or filesystem write
 - Worker scheduling, slot allocation, lease acquisition, or
-  concurrency fencing (→ TC-13.9, TC-13.10)
+  concurrency fencing (→ TC-13.9a/9b, TC-13.10)
 - Retry, escalation, or rate-limit logic (→ TC-13.13, TC-13.14)
 - Task-card, outbox, or event schema changes
 - A runtime data file; these enums are compile-time / specification
@@ -667,12 +684,12 @@ difficulty), `compute_budget()` raises `ValueError`.
 - The module does **not** map `TaskDifficulty` to `WorkerKind`,
   `MadDeliberationDepth`, or any other enum.
 
-**Consumption by WorkerAdapter (TC-13.9)**:  WorkerAdapter calls
+**Consumption by WorkerAdapter (TC-13.9a/9b)**:  WorkerAdapter calls
 `compute_budget()` as a pure function and uses `budget_tokens` to
 constrain the Worker's effective context window.  WorkerAdapter is
 responsible for sourcing `context_window_tokens` from the selected
 model binding's `selected_context_window_tokens` field.  WorkerAdapter
-is a Target (TC-13.9) — ContextBudgetPolicy is Current and available
+is a Target (TC-13.9a/9b) — ContextBudgetPolicy is Current and available
 today.
 
 ---
@@ -704,7 +721,7 @@ TC-13.7 freezes:
     canonical‑state, event, outbox, or report writes;
 9.  **timeout & cancellation** — full process‑tree termination;
 10. **dependency boundary** — what TC-13.7 consumes vs what is deferred
-    to TC-13.8, TC-13.9, TC-13.10, TC-13.11, and TC-13.18.
+    to TC-13.8, TC-13.9a/9b, TC-13.10, TC-13.11, and TC-13.18.
 
 ---
 
@@ -793,7 +810,7 @@ Rules:
   it is a passthrough audit field.
 * ``selected_context_window_tokens`` is stored but not consumed by
   TC-13.7; budget arithmetic belongs to ContextBudgetPolicy
-  (TC-13.5.1) and WorkerAdapter (TC-13.9).
+  (TC-13.5.1) and WorkerAdapter (TC-13.9a/9b).
 * ``required_model_capabilities`` and ``selected_model_capabilities``
   are **deeply immutable** ``tuple[str, ...]``:
   * The external selector JSON produces arrays; the snapshot
@@ -911,7 +928,7 @@ Rules:
 * The Gateway does **not** mutate the mapping.
 * There is **no** ``register_provider()``, ``unregister_provider()``,
   or clear‑registry function.
-* TC-13.8 / TC-13.9 callers construct the mapping before invoking
+* TC-13.8 / TC-13.9a callers construct the mapping before invoking
   ``run_dispatch``.
 * Tests construct a local ``{"fake": FakeAgentCliProvider()}``
   mapping per call — ``FakeAgentCliProvider`` remains only in the
@@ -1000,7 +1017,7 @@ Fields **explicitly excluded**:
   concepts.
 * ``executor_model`` extension fields — the Gateway does not decide
   what enters the terminal executor_model; that is the caller's
-  responsibility (TC-13.9 / TC-13.11).
+  responsibility (TC-13.9a/9b / TC-13.11).
 
 Rules:
 
@@ -1049,7 +1066,7 @@ is **never** returned for a non‑zero exit, timeout, or cancellation.
 
 There is no ``DispatchOutputDecodeError`` — the Gateway treats
 stdout/stderr as opaque bytes and does not attempt UTF‑8 decoding.
-Provider‑specific decoding belongs to TC-13.8 / TC-13.9.
+Provider‑specific decoding belongs to TC-13.8 / TC-13.9c.
 
 Output size limits are **not** frozen as a TC-13.7 public
 configuration knob.  Naïve post‑``communicate()`` length checks do not
@@ -1093,7 +1110,7 @@ TC-13.7 is a **pure execution boundary** with **zero file writes**:
   the snapshot.
 * It does **not** decide which result fields are copied into a
   delivery report or event — that is the caller's responsibility
-  (TC-13.9 / TC-13.11).
+  (TC-13.9a/9b / TC-13.11).
 
 The caller receives the ``DispatchResult`` in memory and may use its
 fields according to later TC contracts.  This ADR does **not** pre‑
@@ -1134,7 +1151,7 @@ cancellation.  The Gateway does **not** retry.
 | **TC-13.4** | Consumed — ``core_types`` enums are the only allowed import from the shared type layer |
 | **TC-13.6** | Depends on — the Gateway pattern (subprocess lifecycle, executable resolution, process‑tree termination) is validated by TC-13.6; TC-13.7 must implement its own without importing ``mad_gateway`` |
 | **TC-13.8** | Separate — defines the Claude‑specific ``AgentCliProvider`` implementation and CLI contract; TC-13.7 must not reference Claude |
-| **TC-13.9** | Consumer — WorkerAdapter calls the Gateway, maps ``WorkerKind``, applies budget, and manages delivery lifecycle |
+| **TC-13.9a/9b** | Consumer — WorkerAdapter calls the Gateway, maps ``WorkerKind`` + ``TaskDifficulty`` as independent inputs, applies budget, and returns ``WorkerResult``; single-attempt, no retry/slot/lease |
 | **TC-13.10** | Separate — slot lease and fencing are independent of a single subprocess execution |
 | **TC-13.11** | Consumer — ControlPlaneTransitionService invokes the Gateway and writes canonical state / events / outbox from the result |
 | **TC-13.18** | Consumer — WorkflowOrchestrator coordinates Gateway calls |
@@ -1189,7 +1206,7 @@ invocation value.  It does **not**:
 * compute stdout/stderr SHA-256 — Gateway responsibility;
 * parse `DispatchResult.stdout` — stdout is opaque bytes (TC-13.7);
 * write files or persist state — Gateway is a pure execution boundary;
-* implement retry, lease, slot, or escalation — deferred to TC-13.9 / TC-13.10 / TC-13.11.
+* implement retry, lease, slot, or escalation — deferred to TC-13.9a/9b / TC-13.10 / TC-13.11.
 
 The provider must **not** have a `cwd` field, must not call `os.chdir()`,
 and must not use `--add-dir` to simulate the primary workspace directory.
@@ -1767,7 +1784,7 @@ but its responsibility ends at constructing the invocation.  It must
 
 TC-13.7 continues to treat `DispatchResult.stdout` and
 `DispatchResult.stderr` as opaque `bytes`.  Output interpretation and
-Worker delivery transformation belong to **TC-13.9**.
+Worker delivery transformation belong to **TC-13.9c**.
 
 ---
 
@@ -1775,18 +1792,18 @@ Worker delivery transformation belong to **TC-13.9**.
 
 TC-13.8 does **not** implement:
 
-* `WorkerAdapter` (TC-13.9)
-* `WorkerKind` → provider selection (TC-13.9)
-* `ContextBudgetPolicy` invocation (TC-13.5.1 / TC-13.9)
-* Context budget → CLI argument translation (TC-13.9)
+* `WorkerAdapter` (TC-13.9a/9b)
+* `WorkerKind` → provider selection (TC-13.9a/9b)
+* `ContextBudgetPolicy` invocation (TC-13.5.1 / TC-13.9a/9b)
+* Context budget → CLI argument translation (TC-13.9a/9b)
 * Dispatch scheduling (TC-13.18)
 * Worker slot allocation (TC-13.10)
 * Lease management (TC-13.10)
-* Retry logic (TC-13.9)
+* Retry logic (TC-13.9a/9b)
 * Escalation (TC-13.13)
 * Rate limiting (TC-13.14)
 * State / event / outbox / report writes (TC-13.11)
-* Stdout business parsing (TC-13.9)
+* Stdout business parsing (TC-13.9c)
 * Claude session resumption
 * Remote Claude sessions
 * Real Claude CLI invocation
@@ -1844,7 +1861,7 @@ invocation value.  It does **not**:
 * compute stdout/stderr SHA-256 — Gateway responsibility;
 * parse `DispatchResult.stdout` — stdout is opaque bytes (TC-13.7);
 * write files or persist state — Gateway is a pure execution boundary;
-* implement retry, lease, slot, or escalation — deferred to TC-13.9 / TC-13.10 / TC-13.11;
+* implement retry, lease, slot, or escalation — deferred to TC-13.9a/9b / TC-13.10 / TC-13.11;
 * manage authentication or secrets.
 
 The provider must **not** have a `cwd` field, must not call `os.chdir()`,
@@ -2407,7 +2424,7 @@ but its responsibility ends at constructing the invocation.  It must
 
 TC-13.7 continues to treat `DispatchResult.stdout` and
 `DispatchResult.stderr` as opaque `bytes`.  Output interpretation and
-Worker delivery transformation belong to **TC-13.9**.
+Worker delivery transformation belong to **TC-13.9c**.
 
 The `--color never` flag ensures stdout is free of ANSI escape
 sequences, keeping the opaque bytes contract clean.
@@ -2507,18 +2524,18 @@ permitted.
 TC-13.8.3 does **not** implement:
 
 * Codex CLI Provider production module (`codex_cli_provider.py` — TC-13.8.4)
-* `WorkerAdapter` (TC-13.9)
-* `WorkerKind` → provider selection (TC-13.9)
-* `ContextBudgetPolicy` invocation (TC-13.5.1 / TC-13.9)
-* Context budget → CLI argument translation (TC-13.9)
+* `WorkerAdapter` (TC-13.9a/9b)
+* `WorkerKind` → provider selection (TC-13.9a/9b)
+* `ContextBudgetPolicy` invocation (TC-13.5.1 / TC-13.9a/9b)
+* Context budget → CLI argument translation (TC-13.9a/9b)
 * Dispatch scheduling (TC-13.18)
 * Worker slot allocation (TC-13.10)
 * Lease management (TC-13.10)
-* Retry logic (TC-13.9)
+* Retry logic (TC-13.9a/9b)
 * Escalation (TC-13.13)
 * Rate limiting (TC-13.14)
 * State / event / outbox / report writes (TC-13.11)
-* Stdout JSONL parsing (TC-13.9)
+* Stdout JSONL parsing (TC-13.9c)
 * Output schema extraction
 * Additional directories or MCP configuration
 * Network search
@@ -2544,7 +2561,373 @@ All of the above remain **Target** for their respective task cards.
   test suite (`test_codex_cli_provider.py`) are committed.
 * §2.10 (DispatcherAgentGateway), §2.11 (Claude Code CLI Provider),
   and all prior Current interfaces remain **Current**.
-* TC-13.9 (WorkerAdapter) remains **Target**.
+* TC-13.9a (WorkerAdapter Core contract) is **Target** — this section
+  (§2.13) is the Frozen Contract.  TC-13.9b (production implementation)
+  and TC-13.9c (output decoding) remain Target.
+
+---
+
+### 2.13 WorkerAdapter Core — Frozen Contract (Target — TC-13.9a)
+
+TC-13.9a freezes the **core execution orchestration** contract for
+`worker_adapter.py`.  It covers WorkerKind / TaskDifficulty separation,
+budget computation, Gateway dispatch, and the `WorkerResult` return
+type.  It explicitly does **not** cover provider output decoding,
+concurrency slots, retry, escalation, or state persistence.
+
+---
+
+#### 2.13.1 WorkerKind and TaskDifficulty — Independent Inputs
+
+`WorkerKind` and `TaskDifficulty` are **independent** inputs to
+`run_worker`.  Neither is derived from the other.
+
+**Frozen rules:**
+
+1. `WorkerKind` describes the logical Worker tier for this execution
+   (`basic_agent` / `standard_agent` / `advanced_agent` / `expert_agent`).
+2. `TaskDifficulty` describes the task's intrinsic complexity
+   (`basic` / `standard` / `advanced` / `expert`).
+3. The two values may differ — an Advanced task may be executed by an
+   Expert Worker after escalation, or a Basic task may be routed to a
+   Standard Worker during capacity overflow.
+4. There is **no** one-to-one mapping between `WorkerKind` and
+   `TaskDifficulty`.  No `_WORKER_KIND_TO_DIFFICULTY` dictionary, no
+   string manipulation (`_agent` stripping), no enum-value casting, and
+   no reverse mapping is permitted in production code.
+5. Both inputs must be enum members — bare strings, cross-enum values,
+   and non-enum types are rejected (fail-closed).
+6. Neither input has a default value in the `run_worker` signature.
+
+Rationale: `TaskDifficulty` selects budget percentages (TC-13.5.1);
+`WorkerKind` is a dispatch label that may diverge after escalation
+(TC-13.13) or capacity routing.  Conflating them would make budget
+semantics unstable across retries.
+
+---
+
+#### 2.13.2 Public Entry Point
+
+```python
+async def run_worker(
+    request: DispatchRequest,
+    worker_kind: WorkerKind,
+    task_difficulty: TaskDifficulty,
+    providers: Mapping[str, AgentCliProvider],
+) -> WorkerResult:
+    ...
+```
+
+**Frozen parameter order (exact, positional):**
+
+| # | Parameter | Type | Rule |
+|---|-----------|------|------|
+| 1 | `request` | `DispatchRequest` | Validated frozen dispatch input |
+| 2 | `worker_kind` | `WorkerKind` | Enum member, no default |
+| 3 | `task_difficulty` | `TaskDifficulty` | Enum member, no default |
+| 4 | `providers` | `Mapping[str, AgentCliProvider]` | Call-level explicit dependency; must not be empty |
+
+**Frozen rules:**
+
+* `providers` is a call-level explicit dependency — no module-level
+  registry, no `register_provider()`, no `unregister_provider()`.
+* Provider lookup follows the TC-13.7 pattern: the Gateway resolves the
+  adapter from `request.model_selection.selected_model_provider`.
+* WorkerAdapter does **not** create Provider instances, does **not**
+  modify the mapping, and does **not** require all three Provider IDs
+  to be present — only the one referenced by the snapshot is needed.
+* WorkerAdapter does **not** call `select_model.py`, does **not**
+  re-select the model, and does **not** apply fallback provider/model.
+* `request.model_selection` is consumed as-is — its ten-field snapshot
+  is the single source of truth for provider and model routing.
+
+---
+
+#### 2.13.3 WorkerResult — Exact Four Fields
+
+```python
+@dataclass(frozen=True, slots=True)
+class WorkerResult:
+    worker_kind: WorkerKind
+    task_difficulty: TaskDifficulty
+    budget: BudgetResult
+    dispatch_result: DispatchResult
+```
+
+**Exactly four fields — no more, no less:**
+
+| # | Field | Type | Rule |
+|---|-------|------|------|
+| 1 | `worker_kind` | `WorkerKind` | Echoed from input |
+| 2 | `task_difficulty` | `TaskDifficulty` | Echoed from input |
+| 3 | `budget` | `BudgetResult` | From `compute_budget()` |
+| 4 | `dispatch_result` | `DispatchResult` | Raw Gateway result (exit 0 only) |
+
+Fields **explicitly excluded**:
+
+```text
+identity        — present in dispatch_result.identity
+request         — caller retains the original DispatchRequest
+snapshot        — present in request.model_selection
+provider        — present in dispatch_result.provider
+model_id        — present in dispatch_result.model_id
+final_text      — output decoding deferred to TC-13.9c
+output          — output decoding deferred to TC-13.9c
+events          — output decoding deferred to TC-13.9c
+executor_model  — ten-field copy belongs to report layer (TC-13.11)
+retry           — single-attempt only
+slot            — belongs to TC-13.10
+lease           — belongs to TC-13.10
+report          — file writes belong to TC-13.11
+```
+
+`__all__` exports exactly two symbols:
+
+```python
+__all__ = ["WorkerResult", "run_worker"]
+```
+
+No internal helper functions, mapping tables, or decoder protocols are
+exposed.
+
+---
+
+#### 2.13.4 Execution Order — Single Frozen Sequence
+
+```text
+1. Validate request / worker_kind / task_difficulty
+2. budget = compute_budget(
+       request.model_selection.selected_context_window_tokens,
+       task_difficulty,
+   )
+3. dispatch_result = await run_dispatch(request, providers)
+4. return WorkerResult(
+       worker_kind=worker_kind,
+       task_difficulty=task_difficulty,
+       budget=budget,
+       dispatch_result=dispatch_result,
+   )
+```
+
+**Frozen rules:**
+
+1. Budget **must** be computed before Gateway dispatch.  Budget failure
+   (TypeError / ValueError from `compute_budget`) must propagate
+   immediately — the Gateway must not be called.
+2. `run_dispatch` is called exactly once per `run_worker` invocation.
+3. `run_worker` does **not** call any `AgentCliProvider` method directly —
+   all subprocess execution goes through `run_dispatch`.
+4. `DispatchRequest`, `ModelSelectionSnapshot`, and `providers` are not
+   modified.
+5. `WorkerResult` is only returned when both steps succeed.  Every
+   failure path uses exceptions — no error-result flag.
+
+---
+
+#### 2.13.5 Budget Semantics — Informational Only
+
+WorkerAdapter computes the budget and returns it as an informational
+result.  It does **not** enforce a token limit.
+
+**Frozen rules:**
+
+* `context_window_tokens` is sourced exclusively from
+  `request.model_selection.selected_context_window_tokens`.
+* The `task_difficulty` parameter drives percentage and cap selection
+  inside `compute_budget()`.
+* The full six-field `BudgetResult` is included in `WorkerResult.budget`.
+* WorkerAdapter does **not** modify, truncate, or compress the prompt (no prompt modification).
+* WorkerAdapter does **not** estimate token counts — character-count
+  approximations must not be used as token-count substitutes.
+* WorkerAdapter does **not** inject budget instructions into the prompt.
+* WorkerAdapter does **not** add any CLI budget flag — neither the
+  Claude Code Provider nor the Codex CLI Provider accepts one.
+* WorkerAdapter does **not** write `BudgetResult` or any of its fields
+  to a file, the existing ten-field snapshot, `executor_model`, an event,
+  an outbox entry, or a delivery report.
+
+> **TC-13.9a only computes and returns the budget.  It does not enforce
+> the token limit.**  Actual token enforcement requires a future task
+> card with a reliable tokenizer or native Provider support.
+
+---
+
+#### 2.13.6 Output Boundary — Opaque Bytes
+
+WorkerAdapter core does **not** parse provider output.
+
+`WorkerResult.dispatch_result.stdout` and
+`WorkerResult.dispatch_result.stderr` remain opaque `bytes` — the exact
+same contract as `DispatchResult` (TC-13.7 §2.10.7).
+
+**Frozen rules:**
+
+* No Claude JSON parsing in the core module.
+* No Codex JSONL parsing in the core module.
+* No final-assistant-message extraction.
+* No third-party event-type recognition or freezing.
+* No `WorkerOutput` type.
+* No decoder Protocol.
+* No `final_text` field on `WorkerResult`.
+
+Provider output decoding is deferred to **TC-13.9c**, which may only
+proceed after reliable Claude and Codex output-schema evidence is
+available.
+
+---
+
+#### 2.13.7 Exception Semantics
+
+WorkerAdapter core does **not** introduce a parallel exception hierarchy.
+
+**Frozen rules:**
+
+* Wrong `request` type → `TypeError`.
+* Wrong `worker_kind` type → `TypeError`.
+* Wrong `task_difficulty` type → `TypeError`.
+* `compute_budget()` `TypeError` / `ValueError` → propagated as-is.
+* All `DispatchGatewayError` subclasses → propagated as-is.
+* `asyncio.CancelledError` / `DispatchCancelledError` → not wrapped.
+* `WorkerResult` is only returned on complete success — no error-result
+  variant.
+* Exception messages must not contain the task prompt, full stdout, or
+  full stderr bytes.
+* No `WorkerBudgetError`, no `WorkerOutputDecodeError` in the core —
+  these are deferred to future decoder work.
+
+---
+
+#### 2.13.8 Single-Attempt, No Retry
+
+`run_worker` executes exactly one attempt.
+
+**Frozen exclusions:**
+
+* No retry loop.
+* No attempt counter increment.
+* No new `dispatch_id` generation.
+* No fallback model selection.
+* No difficulty escalation.
+* No WorkerKind switching.
+* No rate-limit handling.
+* No re-queue.
+
+Retry and orchestration → TC-13.18.  Escalation → TC-13.13.
+Rate limiting → TC-13.14.
+
+---
+
+#### 2.13.9 Slot / Lease / Concurrency Boundary
+
+WorkerAdapter core has **zero** slot or lease behaviour.
+
+* No concurrency-slot data type.
+* No slot allocation or release.
+* No lease acquisition or release.
+* No lease-expiry check.
+* No global per-tier or per-worktree concurrency limit enforcement.
+* No fencing.
+
+All slot/lease/concurrency semantics belong to **TC-13.10**
+(`WorkerSlotLease`).
+
+---
+
+#### 2.13.10 State & Persistence Boundary
+
+WorkerAdapter core is a **pure execution orchestration** boundary with
+**zero file writes**.
+
+It does **not**:
+
+* Write `tasks.yaml`.
+* Write events (`docs/pm/events/`).
+* Write outbox entries (`docs/pm/outbox/`).
+* Write delivery reports (`docs/pm/reports/`).
+* Write acceptance records (`docs/pm/acceptances/`).
+* Write runtime files (`.agentdesk/runtime/`).
+* Execute Git commands.
+* Create or remove worktrees.
+* Commit.
+* Modify canonical state.
+* Persist budget results or provider output.
+
+> **WorkerAdapter is an execution-orchestration boundary, not a
+> state-transition boundary.**  All state transitions belong to
+> TC-13.11 (`ControlPlaneTransitionService`).
+
+---
+
+#### 2.13.11 executor_model Boundary
+
+WorkerAdapter core does **not** construct or write `executor_model`
+(the full ten-field selector snapshot).  Callers may copy it from
+`request.model_selection` later (TC-13.11), but that is not a
+WorkerAdapter core behaviour.
+
+The following fields are **permanently forbidden** from the ten-field
+`executor_model` / cross-field snapshot:
+
+```text
+worker_kind
+task_difficulty
+budget_percent
+budget_cap_tokens
+budget_tokens
+reserved_tokens
+stdout
+stderr
+provider_output
+```
+
+---
+
+#### 2.13.12 Deep Immutability
+
+* `WorkerResult` is a frozen/slots dataclass — fields cannot be
+  reassigned after construction.
+* `WorkerKind` and `TaskDifficulty` are enum members — hashable,
+  identity-stable.
+* `BudgetResult` is a `NamedTuple` — already immutable.
+* `DispatchResult` is a frozen/slots dataclass — already immutable.
+* `Mapping[str, AgentCliProvider]` is read-only — WorkerAdapter does
+  not convert it into a mutable registry.
+* No `list`, `dict`, or `set` is introduced in `WorkerResult`.
+* No input object is mutated.
+
+---
+
+#### 2.13.13 Task-Card Split
+
+The main Future Task Cards table (§5) records the three-card split
+(TC-13.9a / TC-13.9b / TC-13.9c) and the updated TC-13.10 dependency.
+This section defines the per-card scope:
+
+* **TC-13.9a** — WorkerAdapter core contract freeze (this section).
+  Depends on TC-13.5.1, TC-13.7, TC-13.8, TC-13.8.4.
+* **TC-13.9b** — WorkerAdapter core production implementation
+  (`worker_adapter.py`).  Depends on TC-13.9a.
+* **TC-13.9c** — Provider output decoding investigation and contract
+  (Claude JSON + Codex JSONL).  Depends on TC-13.9b + reliable
+  Claude/Codex output-schema evidence.
+
+TC-13.10 (`WorkerSlotLease`) depends on TC-13.9b, not on TC-13.9c —
+concurrency fencing must not be blocked by output-decoding work.
+
+---
+
+#### 2.13.14 Status
+
+* ADR Interface Status row #32 "AgentDesk WorkerAdapter Core — Frozen
+  Contract" is **Target** (TC-13.9a).
+* This section (§2.13) is the Frozen Contract for TC-13.9a — it governs
+  future implementation (`worker_adapter.py`) and test work.
+* No production module exists yet — `worker_adapter.py` and
+  `test_worker_adapter.py` must not be created by TC-13.9a.
+* TC-13.9b (production implementation) and TC-13.9c (output decoding)
+  remain **Target**.
+* TC-13.10, TC-13.11, TC-13.13, TC-13.14, and TC-13.18 remain **Target**.
+* All Current interfaces remain **Current**.
 
 ---
 
@@ -2597,8 +2980,10 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.8 | Claude Code CLI contract (public CLI interface for `claude` invocation) | TC-13.4 |
 | TC-13.8.3 | Codex CLI Provider frozen contract | This ADR |
 | TC-13.8.4 | Codex CLI Provider implementation | TC-13.8.3 |
-| TC-13.9 | WorkerAdapter + four-tier Worker slots | TC-13.5.1, TC-13.7, TC-13.8, TC-13.8.4 |
-| TC-13.10 | WorkerSlotLease implementation | TC-13.9 |
+| TC-13.9a | WorkerAdapter core contract freeze (§2.13) | TC-13.5.1, TC-13.7, TC-13.8, TC-13.8.4 |
+| TC-13.9b | WorkerAdapter core production implementation (`worker_adapter.py`) | TC-13.9a |
+| TC-13.9c | Provider output decoding investigation and contract (Claude JSON + Codex JSONL) | TC-13.9b + reliable Claude/Codex output-schema evidence |
+| TC-13.10 | WorkerSlotLease implementation | TC-13.9b |
 | TC-13.11 | ControlPlaneTransitionService | TC-13.2 |
 | TC-13.12 | ApprovalGate (TASK_APPROVAL structured scope) | TC-13.11 |
 | TC-13.13 | EscalationService | TC-13.11 |
