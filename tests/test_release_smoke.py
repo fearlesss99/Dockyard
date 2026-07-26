@@ -139,6 +139,123 @@ class ReleaseSmokeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, f"{name}:\n{result.stdout}")
             self.assertIn("usage:", result.stdout.lower())
 
+    def _adr_path(self) -> Path:
+        return SKILL_ROOT / "references" / "adr" / "001-mad-agentdesk-integration.md"
+
+    def _cli_contract_path(self) -> Path:
+        return (
+            SKILL_ROOT
+            / "references"
+            / "public-interfaces"
+            / "mad-cli-contract.md"
+        )
+
+    # -- MAD × AgentDesk integration contract tests -----------------------
+
+    def test_mad_agentdesk_integration_documents_are_inside_skill_tree(self) -> None:
+        """ADR and CLI contract must live under skills/agentdesk/references/."""
+        adr = self._adr_path()
+        self.assertTrue(adr.is_file(), f"Missing ADR: {adr}")
+        contract = self._cli_contract_path()
+        self.assertTrue(contract.is_file(), f"Missing CLI contract: {contract}")
+
+        # Neither document may use a top-level docs/ path.
+        top_level_adr = REPO_ROOT / "docs" / "adr" / "001-mad-agentdesk-integration.md"
+        self.assertFalse(top_level_adr.exists(),
+                         f"ADR must not be at top-level docs/: {top_level_adr}")
+        top_level_contract = (
+            REPO_ROOT / "docs" / "public-interfaces" / "mad-cli-contract.md"
+        )
+        self.assertFalse(top_level_contract.exists(),
+                         f"CLI contract must not be at top-level docs/: {top_level_contract}")
+
+    def test_adr_distinguishes_current_target_and_implemented_by(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        self.assertIn("Current", adr_text,
+                      "ADR must contain 'Current' status marker")
+        self.assertIn("Target", adr_text,
+                      "ADR must contain 'Target' status marker")
+        self.assertIn("Implemented by", adr_text,
+                      "ADR must contain 'Implemented by' column")
+
+    def test_adr_does_not_claim_target_interfaces_as_current(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        # Neither 'mad audit' nor 'mad agents --format json' may be
+        # listed as Current anywhere in the ADR interface status table.
+        import re
+
+        # Find the interface status table section (between "## Interface Status"
+        # and the next "## " heading).
+        table_match = re.search(
+            r"## Interface Status\s*\n(.*?)(?=\n## |\Z)",
+            adr_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(table_match,
+                             "ADR must have an '## Interface Status' section")
+        table_text = table_match.group(1)
+
+        # For each row containing 'mad audit' or 'mad agents --format json',
+        # the Status column must NOT be 'Current'.
+        for line in table_text.splitlines():
+            if "mad audit" in line and "Target" not in line and "Current" not in line:
+                continue  # not a status row
+            if "mad agents --format json" in line:
+                self.assertNotIn("Current", line,
+                                 f"'mad agents --format json' must not be Current: {line.strip()}")
+            if "mad audit" in line and "mad audit" not in line.split("|")[0].strip():
+                # Row mentions 'mad audit' in the description, not the interface name
+                pass
+            elif "| mad audit " in line or line.strip().startswith("| `mad audit"):
+                self.assertNotIn("Current", line,
+                                 f"'mad audit' must not be Current: {line.strip()}")
+
+        # Also check the CLI contract
+        contract_text = self._cli_contract_path().read_text(encoding="utf-8")
+        self.assertIn("Target", contract_text,
+                      "CLI contract must mark Target interfaces")
+        # The contract must not have 'mad audit' under a 'Current' heading
+        # in its status table.
+        status_section = re.search(
+            r"## 1\. Interface Status Summary\s*\n(.*?)(?=\n## |\Z)",
+            contract_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(status_section,
+                             "CLI contract must have 'Interface Status Summary'")
+        for line in status_section.group(1).splitlines():
+            if "mad audit" in line:
+                self.assertNotIn(
+                    "Current",
+                    line,
+                    f"CLI contract: 'mad audit' must not be Current: {line.strip()}",
+                )
+            if "mad agents --format json" in line:
+                self.assertNotIn(
+                    "Current",
+                    line,
+                    f"CLI contract: 'mad agents --format json' must not be Current: {line.strip()}",
+                )
+
+    def test_adr_and_cli_contract_use_skill_internal_paths(self) -> None:
+        for path in (self._adr_path(), self._cli_contract_path()):
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("docs/adr/001-mad-agentdesk-integration.md", text,
+                             f"{path.name}: must not reference top-level docs/ path")
+            self.assertNotIn("docs/public-interfaces/mad-cli-contract.md", text,
+                             f"{path.name}: must not reference top-level docs/ path")
+
+    def test_skill_md_loads_integration_references_progressively(self) -> None:
+        skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("references/adr/001-mad-agentdesk-integration.md", skill_text,
+                      "SKILL.md must reference the MAD integration ADR")
+        self.assertIn("references/public-interfaces/mad-cli-contract.md", skill_text,
+                      "SKILL.md must reference the MAD CLI contract")
+        self.assertIn("MAD integration", skill_text,
+                      "SKILL.md must mention MAD integration in the routing description")
+        self.assertIn("MAD Gateway", skill_text,
+                      "SKILL.md must mention MAD Gateway trigger words")
+
     def test_initializer_renderer_and_validator_smoke_flow(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentdesk-release-smoke-") as temp:
             project = Path(temp) / "demo"

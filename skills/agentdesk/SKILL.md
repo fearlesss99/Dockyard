@@ -52,6 +52,8 @@ Read only what the active mode requires:
 - Read [references/events-outbox-and-validation.md](references/events-outbox-and-validation.md) before creating or editing an event, outbox message, runtime route, callback, or validator rule.
 - Read [references/runbooks-and-recovery.md](references/runbooks-and-recovery.md) for PM/worker/QA/integration procedures, risk approvals, heartbeat, migration, or any failure recovery.
 - Read [references/codex-runtime-adapter.md](references/codex-runtime-adapter.md) before creating, renaming, verifying, dispatching to, or calling back a Codex task. Follow its low-freedom tool order and receipt rules exactly.
+- Read [references/adr/001-mad-agentdesk-integration.md](references/adr/001-mad-agentdesk-integration.md) when the user asks about MAD integration, MAD Gateway, structured audit, Worker orchestration with MAD, or the division of responsibility between AgentDesk and MAD.  This ADR distinguishes Current (callable today) from Target (specified, not yet implemented) and must not be used to claim a Target interface is already available.
+- Read [references/public-interfaces/mad-cli-contract.md](references/public-interfaces/mad-cli-contract.md) before invoking `mad` as a subprocess, parsing MAD stdout, or designing Gateway configuration.  This contract defines exit codes, JSON schemas, the `schema_version` namespace split (`mad.*` vs `agentdesk.*`), and fail-closed rules.
 
 Do not load all references by default. The repository and current task card remain the primary task-local context.
 
