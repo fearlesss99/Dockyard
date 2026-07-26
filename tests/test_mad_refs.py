@@ -833,19 +833,38 @@ class AppendMadRefSuccessTests(unittest.TestCase):
         data = json.loads(raw)  # type: ignore[arg-type]
         self.assertIsInstance(data, dict)
 
-    def test_idempotent_replay_same_dispatch_purpose(self) -> None:
-        e1 = _make_entry(dispatch_id="DSP-001", purpose="planning")
-        result1 = mad_refs.append_mad_ref(self.project, e1)
-        self.assertEqual(len(result1["refs"]), 1)
-
-        # Same dispatch_id + purpose — idempotent.
-        e2 = _make_entry(
-            dispatch_id="DSP-001",
-            purpose="planning",
-            deliberation_id="different-id",
+    def test_true_idempotent_replay_all_10_fields_match(self) -> None:
+        """All 10 fields equal, same (dispatch_id, purpose): no error,
+        no write, file bytes unchanged, updated_at unchanged."""
+        e1 = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            task_id="TC-031", deliberation_id="id-001", depth="deep",
+            stdout_sha256="a" * 64, report_sha256="b" * 64,
+            status="完成", archive_path=_ABS_ARCHIVE,
+            created_at="2026-07-26T12:00:00Z",
         )
-        result2 = mad_refs.append_mad_ref(self.project, e2)
-        self.assertEqual(len(result2["refs"]), 1)  # Not appended
+        r1 = mad_refs.append_mad_ref(self.project, e1)
+        self.assertEqual(len(r1["refs"]), 1)
+
+        original_bytes = self._read_raw()
+        original_updated = r1["updated_at"]
+
+        # Replay exact same entry — all 10 fields identical.
+        e2 = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            task_id="TC-031", deliberation_id="id-001", depth="deep",
+            stdout_sha256="a" * 64, report_sha256="b" * 64,
+            status="完成", archive_path=_ABS_ARCHIVE,
+            created_at="2026-07-26T12:00:00Z",
+        )
+        r2 = mad_refs.append_mad_ref(self.project, e2)
+        self.assertEqual(len(r2["refs"]), 1, "must not append duplicate")
+
+        # File bytes must be byte-identical.
+        self.assertEqual(self._read_raw(), original_bytes,
+                         "file bytes must be unchanged on idempotent replay")
+        self.assertEqual(r2["updated_at"], original_updated,
+                         "updated_at must not change on idempotent replay")
 
     def test_duplicate_deliberation_id_warns(self) -> None:
         e1 = _make_entry(
@@ -930,6 +949,19 @@ class AppendMadRefLockContentionTests(unittest.TestCase):
             "lock must be released even after failure",
         )
 
+    def test_lock_released_after_ref_integrity_error(self) -> None:
+        """Lock is released after RefIntegrityError."""
+        e1 = _make_entry(dispatch_id="DSP-001", purpose="planning",
+                         task_id="TC-A", deliberation_id="id-A")
+        mad_refs.append_mad_ref(self.project, e1)
+        # Same logical key but different task_id → RefIntegrityError.
+        e2 = _make_entry(dispatch_id="DSP-001", purpose="planning",
+                         task_id="TC-B")
+        with self.assertRaises(RefIntegrityError):
+            mad_refs.append_mad_ref(self.project, e2)
+        self.assertFalse(self.lock.exists(),
+                         "lock must be released after RefIntegrityError")
+
     def test_original_file_unchanged_on_lock_contention(self) -> None:
         """When lock exists, original file bytes are totally unchanged."""
         self.runtime.mkdir(parents=True, exist_ok=True)
@@ -984,27 +1016,6 @@ class AppendMadRefPreservationTests(unittest.TestCase):
             mad_refs.append_mad_ref(self.project, bad)
         self.assertEqual(self.refs_path.read_text(encoding="utf-8"), original)
 
-    def test_original_file_unchanged_on_idempotent_replay(self) -> None:
-        original = self._create_valid_file()
-        # Same dispatch_id + purpose already exists → idempotent guard.
-        # File must be unchanged, no exception raised.
-        result = mad_refs.append_mad_ref(
-            self.project,
-            _make_entry(
-                dispatch_id="DSP-ORIG",
-                purpose="planning",
-                task_id="TC-ORIG",
-                deliberation_id="id-orig",
-                stdout_sha256="a" * 64,
-                report_sha256="b" * 64,
-                status="original",
-                archive_path=_ABS_ORIG,
-                created_at="2026-07-26T12:00:00Z",
-            ),
-        )
-        self.assertEqual(len(result["refs"]), 1)
-        self.assertEqual(self.refs_path.read_text(encoding="utf-8"), original)
-
     def test_file_unchanged_when_corrupt_existing(self) -> None:
         self.refs_path.parent.mkdir(parents=True, exist_ok=True)
         corrupt = "this is not json {{{"
@@ -1012,6 +1023,191 @@ class AppendMadRefPreservationTests(unittest.TestCase):
         with self.assertRaises(MadRefsValidationError):
             mad_refs.append_mad_ref(self.project, _make_entry())
         self.assertEqual(self.refs_path.read_text(encoding="utf-8"), corrupt)
+
+
+# =========================================================================
+# 13 — append_mad_ref: idempotent replay vs field‑level conflict
+# =========================================================================
+
+# Fields to mutate one‑by‑one, keeping (dispatch_id, purpose) identical.
+# Each sub‑test verifies: RefIntegrityError raised, field named in message,
+# file bytes unchanged, updated_at unchanged, lock released, no temp files.
+
+_CONFLICT_FIELDS = {
+    "task_id":           "TC-CONFLICT",
+    "deliberation_id":   "conflict-delib-id",
+    "depth":             "fast",
+    "stdout_sha256":     "c" * 64,
+    "report_sha256":     "d" * 64,
+    "status":            "conflict-status",
+    "archive_path":      _ABS_ROOT / "conflict" / "archive",
+    "created_at":        "2025-01-01T00:00:00Z",
+}
+
+
+class AppendMadRefIdempotentReplayTests(unittest.TestCase):
+    """Field‑level conflict detection for same (dispatch_id, purpose)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = Path(self.tmp.name)
+        self.runtime = self.project / ".agentdesk" / "runtime"
+        self.refs_path = self.runtime / "mad-refs.yaml"
+        self.lock_path = mad_refs._lock_path(self.runtime)
+
+        # Seed with one valid ref.
+        self.base = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            task_id="TC-BASE", deliberation_id="id-base", depth="deep",
+            stdout_sha256="a" * 64, report_sha256="b" * 64,
+            status="完成", archive_path=_ABS_ARCHIVE,
+            created_at="2026-07-26T12:00:00Z",
+        )
+        self.orig_result = mad_refs.append_mad_ref(self.project, self.base)
+        self.orig_bytes = self.refs_path.read_text(encoding="utf-8")
+        self.orig_updated = self.orig_result["updated_at"]
+
+    def _assert_conflict(self, field_name: str, bad_entry: MadRefEntry) -> None:
+        """Assert RefIntegrityError, field named, file untouched,
+        updated_at unchanged, lock released, no temp files."""
+        with self.assertRaises(RefIntegrityError) as ctx:
+            mad_refs.append_mad_ref(self.project, bad_entry)
+        msg = str(ctx.exception)
+        self.assertIn(field_name, msg,
+                      f"error must name the differing field '{field_name}': {msg}")
+        self.assertIn(bad_entry.dispatch_id, msg)
+        self.assertIn(bad_entry.purpose, msg)
+        # File bytes unchanged.
+        self.assertEqual(self.refs_path.read_text(encoding="utf-8"),
+                         self.orig_bytes)
+        # updated_at unchanged (re-read the file to double‑check).
+        data = mad_refs.read_mad_refs(self.project)
+        self.assertEqual(data["updated_at"], self.orig_updated)
+        # Lock released.
+        self.assertFalse(self.lock_path.exists(),
+                         "lock must be released after conflict")
+        # No temp files left behind.
+        temp_files = sorted(
+            p for p in self.runtime.iterdir()
+            if p.name.startswith(".mad-refs.yaml.")
+        )
+        self.assertEqual(temp_files, [], "no temp files after conflict")
+
+    def test_conflict_task_id(self) -> None:
+        e = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            task_id="TC-CONFLICT",
+        )
+        self._assert_conflict("task_id", e)
+
+    def test_conflict_deliberation_id(self) -> None:
+        e = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            deliberation_id="conflict-delib-id",
+        )
+        self._assert_conflict("deliberation_id", e)
+
+    def test_conflict_depth(self) -> None:
+        e = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            depth="fast",
+        )
+        self._assert_conflict("depth", e)
+
+    def test_conflict_stdout_sha256(self) -> None:
+        e = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            stdout_sha256="c" * 64,
+        )
+        self._assert_conflict("stdout_sha256", e)
+
+    def test_conflict_report_sha256(self) -> None:
+        e = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            report_sha256="d" * 64,
+        )
+        self._assert_conflict("report_sha256", e)
+
+    def test_conflict_status(self) -> None:
+        e = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            status="conflict-status",
+        )
+        self._assert_conflict("status", e)
+
+    def test_conflict_archive_path(self) -> None:
+        e = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            archive_path=str(_ABS_ROOT / "conflict" / "archive"),
+        )
+        self._assert_conflict("archive_path", e)
+
+    def test_conflict_created_at(self) -> None:
+        e = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            created_at="2025-01-01T00:00:00Z",
+        )
+        self._assert_conflict("created_at", e)
+
+    def test_all_ten_fields_match_is_idempotent(self) -> None:
+        """Exact same 10 fields → no error, no write."""
+        e = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            task_id="TC-BASE", deliberation_id="id-base", depth="deep",
+            stdout_sha256="a" * 64, report_sha256="b" * 64,
+            status="完成", archive_path=_ABS_ARCHIVE,
+            created_at="2026-07-26T12:00:00Z",
+        )
+        result = mad_refs.append_mad_ref(self.project, e)
+        self.assertEqual(len(result["refs"]), 1)
+        self.assertEqual(self.refs_path.read_text(encoding="utf-8"),
+                         self.orig_bytes)
+        self.assertEqual(result["updated_at"], self.orig_updated)
+        self.assertFalse(self.lock_path.exists())
+
+
+# =========================================================================
+# 14 — append_mad_ref: validation ordering (validate before compare)
+# =========================================================================
+
+
+class AppendMadRefValidationOrderingTests(unittest.TestCase):
+    """New entry validation happens BEFORE any conflict or idempotency
+    comparison — an invalid entry always fails with
+    MadRefsValidationError, never RefIntegrityError."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = Path(self.tmp.name)
+        self.refs_path = self.project / ".agentdesk" / "runtime" / "mad-refs.yaml"
+
+        # Seed with one valid ref.
+        self.base = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            task_id="TC-E", deliberation_id="id-E", depth="deep",
+            stdout_sha256="e" * 64, report_sha256="f" * 64,
+            status="done", archive_path=_ABS_ARCHIVE,
+            created_at="2026-07-26T12:00:00Z",
+        )
+        mad_refs.append_mad_ref(self.project, self.base)
+        self.orig_bytes = self.refs_path.read_text(encoding="utf-8")
+
+    def test_same_key_but_invalid_entry_raises_validation_error(self) -> None:
+        """Same (dispatch_id, purpose) but new entry has an invalid depth
+        → MadRefsValidationError (not RefIntegrityError), proving
+        validation runs first."""
+        bad = _make_entry(
+            dispatch_id="DSP-001", purpose="planning",
+            depth="not-a-valid-depth",
+        )
+        with self.assertRaises(MadRefsValidationError) as ctx:
+            mad_refs.append_mad_ref(self.project, bad)
+        self.assertIn("depth", str(ctx.exception).lower())
+        # File untouched.
+        self.assertEqual(self.refs_path.read_text(encoding="utf-8"),
+                         self.orig_bytes)
 
 
 # =========================================================================
@@ -1060,34 +1256,7 @@ class AppendMadRefTempCleanupTests(unittest.TestCase):
 
 
 # =========================================================================
-# 14 — append_mad_ref: identical ref rejection
-# =========================================================================
-
-
-class AppendMadRefExactDuplicateTests(unittest.TestCase):
-    """Exact duplicate refs cause RefIntegrityError."""
-
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.project = Path(self.tmp.name)
-
-    def test_same_fields_idempotent_replay(self) -> None:
-        """When all 10 fields (including dispatch_id+purpose) match an
-        existing ref, the idempotent guard fires — no duplicate, no error."""
-        e1 = _make_entry(dispatch_id="DSP-001", deliberation_id="id-001")
-        mad_refs.append_mad_ref(self.project, e1)
-        # Same dispatch_id + purpose → idempotent guard returns early.
-        result = mad_refs.append_mad_ref(
-            self.project,
-            _make_entry(dispatch_id="DSP-001", deliberation_id="id-001"),
-        )
-        self.assertEqual(len(result["refs"]), 1)
-
-
-# =========================================================================
-# 15 — Concurrent append from threads (no actual concurrency within lock
-#      — but verifies the lock prevents interleaving)
+# 15 — Concurrent append from threads
 # =========================================================================
 
 
@@ -1168,12 +1337,12 @@ class SerializationFormatTests(unittest.TestCase):
         self.assertIn('\n      "task_id"', raw)
 
     def test_trailing_newline_present(self) -> None:
-        for _ in range(3):
+        for i in range(3):
             mad_refs.append_mad_ref(
                 self.project,
                 _make_entry(
-                    dispatch_id=f"DSP-{_make_entry().stdout_sha256[:8]}",
-                    deliberation_id=f"id-{_}",
+                    dispatch_id=f"DSP-trail-{i:03d}",
+                    deliberation_id=f"id-{i}",
                 ),
             )
         raw = self.refs_path.read_text(encoding="utf-8")

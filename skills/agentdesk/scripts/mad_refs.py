@@ -86,10 +86,6 @@ _RFC3339_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
 
-# Sentinel used during fresh-file creation so the caller can distinguish
-# "created new" from "appended to existing".
-_NEW_FILE_SENTINEL = "__mad_refs_new_file__"
-
 
 # ── data types ────────────────────────────────────────────────────────────
 
@@ -488,10 +484,14 @@ def append_mad_ref(
     1. Acquire exclusive lock.
     2. Read existing document (or create fresh).
     3. Validate existing document.
-    4. Check for idempotent replay (same ``dispatch_id`` + ``purpose``).
-    5. Check for duplicate ``deliberation_id``.
-    6. Validate the new entry in isolation.
-    7. Re‑validate the combined document.
+    4. Validate the new entry in isolation (must pass before any compare).
+    5. Check for existing record with same (dispatch_id, purpose):
+       → all 10 fields match: true idempotent replay — return unchanged.
+       → any field differs: ``RefIntegrityError`` listing the fields
+         that differ.
+    6. Check for duplicate ``deliberation_id`` across different dispatches
+       (UserWarning, not an error).
+    7. Append & re‑validate the combined document.
     8. Atomically write.
     9. Release lock.
 
@@ -505,12 +505,10 @@ def append_mad_ref(
     lock_path = _acquire_lock(runtime_dir)
     try:
         # ── 1. Read existing (or create fresh) ───────────────────────
-        created_new = False
         try:
             raw = refs_path.read_text(encoding="utf-8")
         except FileNotFoundError:
             data = _fresh_document()
-            created_new = True
         else:
             try:
                 data = json.loads(raw)
@@ -527,15 +525,47 @@ def append_mad_ref(
                 + "\n".join(f"  - {e}" for e in existing_errors)
             )
 
-        # ── 3. Idempotent replay check ───────────────────────────────
         refs: list[dict[str, Any]] = data.setdefault("refs", [])
-        existing = find_existing_ref(data, entry.dispatch_id, entry.purpose)
-        if existing is not None:
-            # Idempotent — the exact same logical invocation is already
-            # recorded.  Return existing data unchanged.
-            return data
 
-        # ── 4. Duplicate deliberation_id check ───────────────────────
+        # ── 3. Validate new entry FIRST — before any compare ─────────
+        new_dict = _ref_to_dict(entry)
+        single_errors = _validate_ref_keys(new_dict, 0)
+        single_errors.extend(_validate_ref_values(new_dict, 0))
+        if single_errors:
+            raise MadRefsValidationError(
+                "new ref entry is invalid:\n"
+                + "\n".join(f"  - {e}" for e in single_errors)
+            )
+
+        # ── 4. Field‑level conflict check on matching logical key ────
+        #
+        #    (dispatch_id, purpose) is the logical idempotency key.
+        #    When a match exists we compare every field:
+        #      * all 10 equal → genuine idempotent replay — return now,
+        #        do not write, do not touch updated_at.
+        #      * any field differs → RefIntegrityError naming the
+        #        fields that differ.
+        for ref in refs:
+            if (
+                isinstance(ref, dict)
+                and ref.get("dispatch_id") == entry.dispatch_id
+                and ref.get("purpose") == entry.purpose
+            ):
+                differing = [
+                    k for k in _REF_FIELD_NAMES
+                    if ref.get(k) != new_dict.get(k)
+                ]
+                if not differing:
+                    # True idempotent replay — all 10 fields equal.
+                    return data
+                raise RefIntegrityError(
+                    f"conflicting replay for "
+                    f"dispatch_id={entry.dispatch_id!r}, "
+                    f"purpose={entry.purpose!r}: "
+                    f"field(s) differ: {', '.join(differing)}"
+                )
+
+        # ── 5. Duplicate deliberation_id check (warning, not error) ───
         for ref in refs:
             if (
                 isinstance(ref, dict)
@@ -549,43 +579,19 @@ def append_mad_ref(
                     UserWarning,
                 )
 
-        # ── 5. Validate new entry in isolation ───────────────────────
-        new_dict = _ref_to_dict(entry)
-        single_errors = _validate_ref_keys(new_dict, 0)
-        single_errors.extend(_validate_ref_values(new_dict, 0))
-        if single_errors:
-            raise MadRefsValidationError(
-                "new ref entry is invalid:\n"
-                + "\n".join(f"  - {e}" for e in single_errors)
-            )
-
-        # ── 6. Check for exact duplicate (all 10 fields equal) ───────
-        for ref in refs:
-            if all(
-                isinstance(ref, dict) and ref.get(k) == v
-                for k, v in new_dict.items()
-            ):
-                raise RefIntegrityError(
-                    f"identical ref already exists for "
-                    f"dispatch_id={entry.dispatch_id!r}, "
-                    f"purpose={entry.purpose!r}"
-                )
-
-        # ── 7. Append & re‑validate combined document ─────────────────
+        # ── 6. Append & re‑validate combined document ─────────────────
         refs.append(new_dict)
         data["updated_at"] = _utc_now()
 
         combined_errors = validate_mad_refs(data)
         if combined_errors:
-            # Roll back the in‑memory append before raising.
             refs.pop()
-            # Restore old updated_at.
             raise MadRefsValidationError(
                 "combined document would be invalid after append:\n"
                 + "\n".join(f"  - {e}" for e in combined_errors)
             )
 
-        # ── 8. Atomically write ──────────────────────────────────────
+        # ── 7. Atomically write ──────────────────────────────────────
         content = _serialize(data)
         _atomic_write(refs_path, content)
 
