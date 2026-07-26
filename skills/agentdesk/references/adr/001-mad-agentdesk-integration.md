@@ -459,6 +459,13 @@ a Worker slot does not reset the provider rate-limit window.
   should be sent (replayable intent).  They use separate ID namespaces and
   must not be conflated.
 
+### 2.7 Skill and Dashboard Data Sharing
+
+The Skill (PM/Worker runbooks) and the HTML Dashboard both consume data
+through a **read-only StateProvider** (TC-13.17).  Neither writes to canonical
+state directly — all writes go through `ControlPlaneTransitionService`
+(TC-13.11).
+
 ### 2.8 Shared Core Data Types (Target — TC-13.4)
 
 TC-13.4 freezes three shared enumerations used across the MAD–AgentDesk

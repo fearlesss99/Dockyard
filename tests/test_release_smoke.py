@@ -1107,6 +1107,68 @@ class ReleaseSmokeTests(unittest.TestCase):
             "TC-13.5 description must mention ≥35% reserved",
         )
 
+    # -- Item 9: §2.7 Skill and Dashboard Data Sharing restored -----------
+
+    def test_adr_section_27_data_sharing_contract(self) -> None:
+        """ADR §2.7 must define the read-only data-sharing contract.
+
+        Extracts only the §2.7 subsection and verifies:
+        - Skill and HTML Dashboard consume data through StateProvider.
+        - Neither writes to canonical state directly.
+        - All writes go through ControlPlaneTransitionService.
+
+        Deliberately scoped to §2.7; does not search the whole ADR.
+        """
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "### 2.7")
+        self.assertIsNotNone(section,
+                             "ADR must contain §2.7 Skill and Dashboard Data Sharing")
+        self.assertIn(
+            "StateProvider",
+            section,
+            "ADR §2.7 must reference StateProvider",
+        )
+        self.assertIn(
+            "TC-13.17",
+            section,
+            "ADR §2.7 must reference TC-13.17 (StateProvider)",
+        )
+        self.assertIn(
+            "ControlPlaneTransitionService",
+            section,
+            "ADR §2.7 must reference ControlPlaneTransitionService",
+        )
+        self.assertIn(
+            "TC-13.11",
+            section,
+            "ADR §2.7 must reference TC-13.11 (ControlPlaneTransitionService)",
+        )
+        # Must state that neither writes to canonical state directly.
+        target = section.lower()
+        self.assertTrue(
+            "neither writes" in target
+            or "do not write" in target
+            or "does not write" in target,
+            "ADR §2.7 must state neither writes to canonical state directly",
+        )
+        # All writes go through ControlPlaneTransitionService.
+        self.assertIn(
+            "all writes",
+            target,
+            "ADR §2.7 must route all writes through ControlPlaneTransitionService",
+        )
+        # Must mention both Skill and HTML Dashboard.
+        self.assertIn("Skill", section)
+        self.assertIn("HTML Dashboard", section)
+
+    # -- Item 7 (restored): non-existent TC-12.3.1 guard -------------------
+
+    def test_adr_does_not_reference_nonexistent_tc12_3_1_dependency(self) -> None:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        # No task card should depend on TC-12.3.1.
+        self.assertNotIn("TC-12.3.1", adr_text,
+                         "ADR: must not reference non-existent TC-12.3.1")
+
     # -- Preserved original tests ------------------------------------------
 
     def test_adr_does_not_claim_target_interfaces_as_current(self) -> None:
