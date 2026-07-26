@@ -39,7 +39,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 26 | `agentdesk.mad-refs/v1` runtime schema | **Current** | TC-13.6 | Gitignored runtime record of MAD invocations |
 | 27 | AgentDesk shared core data types | **Current** | TC-13.4 | `TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind` enums; no budget calculation or WorkerAdapter implementation |
 | 28 | AgentDesk ContextBudgetPolicy | **Current** | TC-13.5.1 | Per-tier budget: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; min(floor %, cap); six-field BudgetResult; retains ≥35% reserved; depends on TC-13.4 |
-| 29 | AgentDesk DispatcherAgentGateway | **Target** | TC-13.7 | Frozen contract (§2.10); execution-only single-shot agent CLI boundary; depends on TC-13.4, TC-13.6 |
+| 29 | AgentDesk DispatcherAgentGateway | **Current** | TC-13.7 | Frozen contract (§2.10); execution-only single-shot agent CLI boundary; depends on TC-13.4, TC-13.6 |
 | 30 | Claude Code CLI contract | **Target** | TC-13.8 | Public CLI interface contract for `claude` invocation; depends on TC-13.4 |
 
 ---
@@ -676,7 +676,7 @@ today.
 
 ---
 
-### 2.10 DispatcherAgentGateway — Frozen Contract (Target — TC-13.7)
+### 2.10 DispatcherAgentGateway — Frozen Contract (Current — TC-13.7)
 
 TC-13.7 defines an **execution-only** boundary for a single agent CLI
 subprocess dispatch.  This section is the Frozen Contract — the freeze
@@ -1130,14 +1130,13 @@ cancellation.  The Gateway does **not** retry.
 
 #### 2.10.13 Status
 
-This section (§2.10) is a **contract freeze**, not an implementation
-completion marker.
+This section (§2.10) is now an implemented contract.
 
 * ADR Interface Status row #29 “AgentDesk DispatcherAgentGateway”
-  remains **Target**.
+  is **Current**.
 * TC-13.8 and all subsequent Target interfaces remain **Target**.
-* TC-13.7 will be marked **Current** only when
-  ``dispatcher_gateway.py`` and matching tests are committed.
+* TC-13.7 is marked **Current** — ``dispatcher_gateway.py`` and matching
+  tests are committed.
 
 ---
 

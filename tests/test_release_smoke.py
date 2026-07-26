@@ -979,7 +979,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     # -- 8e: New interfaces (TC-13.7/8) remain Target; TC-13.4 and TC-13.5 are now Current
 
-    STILL_TARGET_TC13_IDS = frozenset({"TC-13.7", "TC-13.8"})
+    STILL_TARGET_TC13_IDS = frozenset({"TC-13.8"})
 
     def test_new_non_tc134_interfaces_remain_target(self) -> None:
         """TC-13.7, TC-13.8 must still be Target.
@@ -1470,16 +1470,12 @@ class ReleaseSmokeTests(unittest.TestCase):
             )
             self.assertEqual(ignored.returncode, 0, ignored.stdout)
 
-    # ── Item 10: TC-13.7 DispatcherAgentGateway frozen contract ──────────
+    # ── Item 10: TC-13.7 DispatcherAgentGateway ────────────────────────────
 
-    # These tests verify the contract freeze (§2.10), not the
-    # implementation.  dispatcher_gateway.py does NOT exist yet — this
-    # is pure ADR‑structural validation at the contract level.
+    # -- 10a: §2.10 heading must exist and now be Current ----------------
 
-    # -- 10a: §2.10 heading must exist and remain Target ----------------
-
-    def test_tc137_section_210_heading_exists_and_is_target(self) -> None:
-        """ADR §2.10 must exist as an independent heading, marked Target."""
+    def test_tc137_section_210_heading_exists_and_is_current(self) -> None:
+        """ADR §2.10 must exist as an independent heading, now marked Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "### 2.10")
         self.assertIsNotNone(
@@ -1492,9 +1488,14 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIsNotNone(heading_m, "ADR must have a §2.10 heading")
         heading = heading_m.group(0)
         self.assertIn(
+            "Current",
+            heading,
+            f"§2.10 heading must say Current, got: {heading.strip()!r}",
+        )
+        self.assertNotIn(
             "Target",
             heading,
-            f"§2.10 heading must say Target, got: {heading.strip()!r}",
+            f"§2.10 heading must NOT say Target, got: {heading.strip()!r}",
         )
         self.assertIn(
             "TC-13.7",
@@ -1514,10 +1515,10 @@ class ReleaseSmokeTests(unittest.TestCase):
             "ADR §2.10 must mention 'Frozen Contract'",
         )
 
-    # -- 10b: Interface Status #29 remains Target -----------------------
+    # -- 10b: Interface Status #29 now Current ------------------------------
 
-    def test_tc137_interface_status_row_29_is_target(self) -> None:
-        """ADR Interface Status row #29 (TC-13.7) must remain Target."""
+    def test_tc137_interface_status_row_29_is_current(self) -> None:
+        """ADR Interface Status row #29 (TC-13.7) must now be Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
@@ -1535,15 +1536,15 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
         status_cell = self._resolve_col(tc137_row, "Status")
         self.assertIn(
-            "Target",
+            "Current",
             status_cell,
-            f"ADR Interface Status #29 (TC-13.7) must be Target, "
+            f"ADR Interface Status #29 (TC-13.7) must be Current, "
             f"got status={status_cell!r}",
         )
         self.assertNotIn(
-            "Current",
+            "Target",
             status_cell,
-            "ADR Interface Status #29 (TC-13.7) must NOT be marked Current",
+            "ADR Interface Status #29 (TC-13.7) must NOT be marked Target",
         )
 
     # -- 10c: DispatchIdentity — exactly four fields, includes revision -
@@ -2187,6 +2188,119 @@ class ReleaseSmokeTests(unittest.TestCase):
                 section,
                 f"ADR §2.10.12 must reference {tc} in dependency boundary",
             )
+
+    # -- Item 11: TC-13.7 Implementation Status (Current) ------------------
+
+    @staticmethod
+    def _dispatcher_gateway_path() -> Path:
+        return SKILL_ROOT / "scripts" / "dispatcher_gateway.py"
+
+    def test_tc137_dispatcher_gateway_file_exists(self) -> None:
+        """dispatcher_gateway.py must exist as a regular file."""
+        dg_path = self._dispatcher_gateway_path()
+        self.assertTrue(dg_path.is_file(),
+                        f"dispatcher_gateway.py must exist at {dg_path}")
+
+    def test_tc137_public_api_exists(self) -> None:
+        """All frozen public API symbols must be importable."""
+        import sys
+        sys.path.insert(0, str(SKILL_ROOT / "scripts"))
+        try:
+            import dispatcher_gateway as dg  # type: ignore[import-untyped]
+            symbols = (
+                "DispatchIdentity",
+                "ModelSelectionSnapshot",
+                "DispatchRequest",
+                "AgentCliInvocation",
+                "DispatchResult",
+                "AgentCliProvider",
+                "run_dispatch",
+                "DispatchGatewayError",
+                "DispatchInputError",
+                "DispatchSnapshotError",
+                "ProviderNotSupportedError",
+                "ExecutableNotFoundError",
+                "DispatchInvocationError",
+                "DispatchLaunchError",
+                "DispatchTimeoutError",
+                "DispatchCancelledError",
+                "DispatchNonZeroExitError",
+            )
+            for sym in symbols:
+                self.assertTrue(hasattr(dg, sym), f"Missing public API: {sym}")
+        finally:
+            sys.path.pop(0)
+            for m in list(sys.modules):
+                if m.startswith("dispatcher_gateway"):
+                    del sys.modules[m]
+
+    def test_tc137_fake_provider_not_in_production(self) -> None:
+        """FakeAgentCliProvider must NOT exist in production module."""
+        src = self._dispatcher_gateway_path().read_text(encoding="utf-8")
+        self.assertNotIn("FakeAgentCliProvider", src,
+                         "FakeAgentCliProvider must not be in dispatcher_gateway.py")
+
+    def test_tc137_adr_29_is_current_tc137(self) -> None:
+        """ADR Interface Status row #29 must be Current with TC-13.7."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        tc137_row = None
+        for row in rows:
+            impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell)
+            if "TC-13.7" in task_ids:
+                tc137_row = row
+                break
+        self.assertIsNotNone(tc137_row)
+        status = self._resolve_col(tc137_row, "Status")
+        self.assertIn("Current", status,
+                      f"#29 must be Current, got: {status}")
+
+    def test_tc137_tc138_139_still_target(self) -> None:
+        """TC-13.8 and TC-13.9 must still be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+
+        still_target = {"TC-13.8", "TC-13.9"}
+        for row in rows:
+            impl_cell = self._resolve_col(row, "Implemented by", "Impl", "Notes")
+            task_ids = set(re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl_cell))
+            matching = task_ids & still_target
+            if not matching:
+                continue
+            status = self._resolve_col(row, "Status")
+            self.assertIn("Target", status,
+                          f"{', '.join(sorted(matching))} must be Target, got: {status}")
+            self.assertNotIn("Current", status,
+                             f"{', '.join(sorted(matching))} must NOT be Current")
+
+    def test_tc137_no_claude_specific_params_in_production(self) -> None:
+        """Production module must not reference Claude-specific parameters."""
+        src = self._dispatcher_gateway_path().read_text(encoding="utf-8")
+        # Remove docstring/comment lines
+        in_docstring = False
+        lines: list[str] = []
+        for line in src.splitlines():
+            stripped = line.strip()
+            if '"""' in stripped:
+                in_docstring = not in_docstring
+                continue
+            if in_docstring:
+                continue
+            if stripped.startswith("#"):
+                continue
+            lines.append(line)
+        code = "\n".join(lines)
+        self.assertNotIn("MAD_HOME", code)
+        self.assertNotIn("MAD_PARTICIPANT", code)
+        self.assertNotIn("--permission-mode", code)
+        self.assertNotIn("claude", code.lower())
+
+    def test_tc137_no_mad_gateway_or_mad_refs_import(self) -> None:
+        """Production module must not import mad_gateway or mad_refs."""
+        src = self._dispatcher_gateway_path().read_text(encoding="utf-8")
+        self.assertNotIn("mad_gateway", src)
+        self.assertNotIn("mad_refs", src)
 
 
 if __name__ == "__main__":
