@@ -41,7 +41,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 28 | AgentDesk ContextBudgetPolicy | **Current** | TC-13.5.1 | Per-tier budget: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; min(floor %, cap); six-field BudgetResult; retains ≥35% reserved; depends on TC-13.4 |
 | 29 | AgentDesk DispatcherAgentGateway | **Current** | TC-13.7 | Frozen contract (§2.10); execution-only single-shot agent CLI boundary; depends on TC-13.4, TC-13.6 |
 | 30 | Claude Code CLI contract | **Current** | TC-13.8 | Public CLI interface contract for `claude` invocation; depends on TC-13.4 |
-| 31 | AgentDesk Codex CLI Provider | **Target** | TC-13.8.3 | Frozen contract for `codex` CLI invocation; depends on TC-13.4, TC-13.7 |
+| 31 | AgentDesk Codex CLI Provider | **Current** | TC-13.8.4 | Frozen contract §2.12 established by TC-13.8.3; production module implemented by TC-13.8.4 |
 
 ---
 
@@ -1806,13 +1806,13 @@ All of the above remain **Target** for their respective task cards.
   (`claude_code_provider.py`) and complete test suite
   (`test_claude_code_provider.py`) are committed.
 
-### 2.12 Codex CLI Provider — Frozen Contract (Target — TC-13.8.3)
+### 2.12 Codex CLI Provider — Frozen Contract (Current — TC-13.8.4)
 
-TC-13.8.3 freezes the **Codex CLI Provider** contract — a concrete
-`AgentCliProvider` adapter for the `codex` CLI.  This section records the
-frozen public interface.  The production provider module
-(`codex_cli_provider.py`) is **not** yet implemented; it belongs to
-TC-13.8.4.
+TC-13.8.3 froze the **Codex CLI Provider** contract — the frozen public
+interface recorded in this section.  TC-13.8.4 implemented the production
+provider module (`codex_cli_provider.py`) and the complete test suite
+(`test_codex_cli_provider.py`).  Both are now committed and this
+interface is **Current**.
 
 ---
 
@@ -2535,11 +2535,13 @@ All of the above remain **Target** for their respective task cards.
 #### 2.12.18 Status
 
 * ADR Interface Status row #31 "AgentDesk Codex CLI Provider"
-  is **Target** (TC-13.8.3).
-* This section (§2.12) is the Frozen Contract for TC-13.8.3 — it governs
-  future implementation (TC-13.8.4) and test work.
-* The production provider module (`codex_cli_provider.py`) does **not**
-  yet exist — it belongs to TC-13.8.4.
+  is **Current** (TC-13.8.4).
+* TC-13.8.3 froze the contract; TC-13.8.4 implemented the production
+  module and test suite.
+* This section (§2.12) remains the Frozen Contract — it governs the
+  implemented `CodexCliProvider`.
+* The production provider module (`codex_cli_provider.py`) and complete
+  test suite (`test_codex_cli_provider.py`) are committed.
 * §2.10 (DispatcherAgentGateway), §2.11 (Claude Code CLI Provider),
   and all prior Current interfaces remain **Current**.
 * TC-13.9 (WorkerAdapter) remains **Target**.

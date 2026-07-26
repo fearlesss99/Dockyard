@@ -3797,13 +3797,13 @@ class ReleaseSmokeTests(unittest.TestCase):
     # ── 15k: No Codex provider started ──────────────────────────────────
 
     def test_tc138_no_codex_provider_started(self) -> None:
-        """codex_code_provider.py must NOT exist — Codex is not started."""
+        """codex_cli_provider.py must now exist — TC-13.8.4 is Current."""
         codex_path = (
-            SKILL_ROOT / "scripts" / "codex_code_provider.py"
+            SKILL_ROOT / "scripts" / "codex_cli_provider.py"
         )
-        self.assertFalse(
+        self.assertTrue(
             codex_path.exists(),
-            "codex_code_provider.py must NOT exist",
+            "codex_cli_provider.py must exist — TC-13.8.4 is Current",
         )
 
     # -- Item 16: TC-13.8 contract code example executability ------------
@@ -3983,9 +3983,9 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     # ── Item 17: TC-13.8.3 Codex CLI Provider frozen contract ──────────────
 
-    def test_tc1383_interface_status_row_31_exists_and_is_target(self) -> None:
+    def test_tc1383_interface_status_row_31_exists_and_is_current(self) -> None:
         """ADR Interface Status must contain row #31 for Codex CLI Provider
-        with Target status."""
+        with Current status."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
@@ -4001,20 +4001,20 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
         status = self._resolve_col(row_31, "Status")
         self.assertIn(
-            "Target",
+            "Current",
             status,
-            f"#31 Codex CLI Provider must be Target, got: {status}",
+            f"#31 Codex CLI Provider must be Current, got: {status}",
         )
         impl = self._resolve_col(row_31, "Implemented by", "Impl", "Notes")
         self.assertIn(
-            "TC-13.8.3",
+            "TC-13.8.4",
             impl,
-            f"#31 must reference TC-13.8.3, got: {impl}",
+            f"#31 must reference TC-13.8.4, got: {impl}",
         )
 
-    def test_tc1383_section_212_exists_and_is_target(self) -> None:
+    def test_tc1383_section_212_exists_and_is_current(self) -> None:
         """ADR must contain §2.12 Codex CLI Provider — Frozen Contract
-        marked Target."""
+        marked Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "### 2.12")
         self.assertIsNotNone(
@@ -4027,14 +4027,14 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIsNotNone(heading_m, "ADR must have a §2.12 heading")
         heading = heading_m.group(0)
         self.assertIn(
-            "Target",
+            "Current",
             heading,
-            f"§2.12 heading must say Target, got: {heading.strip()!r}",
+            f"§2.12 heading must say Current, got: {heading.strip()!r}",
         )
         self.assertIn(
-            "TC-13.8.3",
+            "TC-13.8.4",
             heading,
-            f"§2.12 heading must reference TC-13.8.3, got: {heading.strip()!r}",
+            f"§2.12 heading must reference TC-13.8.4, got: {heading.strip()!r}",
         )
 
     def test_tc1383_type_name_is_codex_cli_provider(self) -> None:
@@ -4418,16 +4418,114 @@ class ReleaseSmokeTests(unittest.TestCase):
             "§2.12.4 must caveat Windows command-processor behaviour",
         )
 
-    def test_tc1383_codex_production_file_not_exist(self) -> None:
-        """codex_cli_provider.py must NOT yet exist — TC-13.8.3 is
-        contract-only."""
-        codex_path = (
-            SKILL_ROOT / "scripts" / "codex_cli_provider.py"
+    def test_tc1383_codex_production_file_now_exists(self) -> None:
+        """codex_cli_provider.py must now exist — TC-13.8.4 is Current."""
+        self.assertTrue(
+            (SKILL_ROOT / "scripts" / "codex_cli_provider.py").is_file(),
+            "codex_cli_provider.py must exist — TC-13.8.4 is Current",
         )
-        self.assertFalse(
-            codex_path.exists(),
-            "codex_cli_provider.py must NOT exist — TC-13.8.3 is contract-only",
+
+    def test_tc1383_codex_test_file_exists(self) -> None:
+        """test_codex_cli_provider.py must now exist."""
+        self.assertTrue(
+            (REPO_ROOT / "tests" / "test_codex_cli_provider.py").is_file(),
+            "test_codex_cli_provider.py must exist",
         )
+
+    def test_tc1383_module_importable(self) -> None:
+        """codex_cli_provider module must be importable."""
+        import sys as _sys
+        _sys.path.insert(0, str(SKILL_ROOT / "scripts"))
+        try:
+            import codex_cli_provider as _ccp2  # noqa: F811
+            self.assertIsNotNone(_ccp2)
+            self.assertTrue(hasattr(_ccp2, "CodexCliProvider"))
+        finally:
+            _sys.path.pop(0)
+
+    def test_tc1383_codex_cli_provider_exact_three_fields_runtime(self) -> None:
+        """Runtime CodexCliProvider must have exactly three fields."""
+        from dataclasses import fields as _fields
+        import sys as _sys
+        _sys.path.insert(0, str(SKILL_ROOT / "scripts"))
+        try:
+            import codex_cli_provider as _ccp2
+            field_names = {f.name for f in _fields(_ccp2.CodexCliProvider)}
+            self.assertSetEqual(
+                field_names,
+                {"provider_id", "executable", "sandbox_mode"},
+            )
+        finally:
+            _sys.path.pop(0)
+
+    def test_tc1383_approval_not_a_field_runtime(self) -> None:
+        """approval_policy must NOT be a dataclass field on
+        CodexCliProvider."""
+        from dataclasses import fields as _fields
+        import sys as _sys
+        _sys.path.insert(0, str(SKILL_ROOT / "scripts"))
+        try:
+            import codex_cli_provider as _ccp2
+            field_names = {f.name for f in _fields(_ccp2.CodexCliProvider)}
+            self.assertNotIn("approval_policy", field_names)
+        finally:
+            _sys.path.pop(0)
+
+    def test_tc1383_exact_argv_at_runtime(self) -> None:
+        """Runtime argv must match the frozen contract exactly."""
+        import sys as _sys
+        _sys.path.insert(0, str(SKILL_ROOT / "scripts"))
+        try:
+            # Ensure clean module state to avoid identity mismatch.
+            for m in list(_sys.modules):
+                if m.startswith("dispatcher_gateway") or m.startswith("codex_cli_provider"):
+                    del _sys.modules[m]
+            import dispatcher_gateway as _dg
+            import codex_cli_provider as _ccp2
+
+            snap = _dg.ModelSelectionSnapshot.from_mapping({
+                "required_model_tier": "standard",
+                "required_model_capabilities": ["read", "write"],
+                "model_binding_id": "bind-1",
+                "selected_model_provider": "codex",
+                "selected_model_id": "gpt-5",
+                "selected_model_tier": "standard",
+                "selected_deliberation_tier": "balanced",
+                "selected_context_window_tokens": 200000,
+                "selected_model_capabilities": ["read", "write"],
+                "model_degradation_approval_id": None,
+            })
+            req = _dg.DispatchRequest(
+                identity=_dg.DispatchIdentity(
+                    task_id="TC-001", revision=1, attempt=1,
+                    dispatch_id="DSP-001",
+                ),
+                workspace=Path(tempfile.gettempdir()),
+                prompt="test prompt",
+                model_selection=snap,
+                timeout_seconds=30,
+            )
+            p = _ccp2.CodexCliProvider(
+                provider_id="codex",
+                executable="codex",
+                sandbox_mode="workspace-write",
+            )
+            inv = p.build_invocation(req)
+            expected = (
+                "--ask-for-approval", "never",
+                "exec",
+                "--ephemeral",
+                "--json",
+                "--color", "never",
+                "--model", "gpt-5",
+                "--sandbox", "workspace-write",
+                "-c", 'model_reasoning_effort="medium"',
+                "-",
+            )
+            self.assertEqual(inv.argv, expected)
+            self.assertEqual(inv.env_overrides, ())
+        finally:
+            _sys.path.pop(0)
 
     def test_tc1383_claude_provider_still_current(self) -> None:
         """§2.11 and Interface Status #30 must still be Current."""
