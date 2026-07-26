@@ -164,11 +164,17 @@ tests/fixtures/provider-output/
 No codex/ directory exists.  No placeholder `.jsonl` files exist.
 No `_tc139c_note` artifacts exist anywhere under fixtures/.
 
+## Related Documents
+
+- [Claude Code 2.1.214 Observed Output Shape](claude-output-observations-2.1.214.md) — detailed field-by-field analysis
+- [ADR 001 — MAD × AgentDesk Integration](adr/001-mad-agentdesk-integration.md) — TC statuses
+
 ## Status
 
 | Item | Status |
 |---|---|
 | Claude evidence collected | ✅ 3/3 real CLI captures |
+| Claude output analysis | ✅ See [claude-output-observations-2.1.214.md](claude-output-observations-2.1.214.md) |
 | Codex evidence collected | ❌ 3/3 Gateway failures (documented above, no fixture) |
 | Codex fixture files | ❌ None — deleted during remediation |
 | Decoder implemented | ❌ Not implemented (task card §13) |
