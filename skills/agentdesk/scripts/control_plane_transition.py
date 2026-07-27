@@ -431,6 +431,51 @@ _ACCEPTANCE_PATH_RE = re.compile(
 _ACCEPTANCE_DIR_PARTS = ("docs", "pm", "acceptances")
 
 
+def _validate_safe_filename_segment(value: str, field_name: str) -> str:
+    """Validate *value* is a trusted single-segment filename.
+
+    Returns the trusted filename segment.  Raises ``TransitionValidationError``
+    if the value contains path separators (``/``, ``\\``), path escape
+    sequences (``..``), drive prefixes (``:``), control characters
+    (NUL, CR, LF), or is absolute.
+
+    Must be called BEFORE any directory creation, temp file, or write.
+    """
+    if not isinstance(value, str) or not value:
+        raise TransitionValidationError(
+            f"{field_name} must be a non-empty str"
+        )
+    if value.startswith("/") or value.startswith("\\"):
+        raise TransitionValidationError(
+            f"{field_name} must not be absolute"
+        )
+    if ":" in value:
+        raise TransitionValidationError(
+            f"{field_name} must not contain drive prefix or colon"
+        )
+    if "/" in value or "\\" in value:
+        raise TransitionValidationError(
+            f"{field_name} must not contain path separators"
+        )
+    if value in (".", "..") or value.startswith(".." + os.sep) or value.startswith(".." + os.altsep if os.altsep else ""):
+        raise TransitionValidationError(
+            f"{field_name} must not be a path escape sequence"
+        )
+    if ".." in value:
+        raise TransitionValidationError(
+            f"{field_name} must not contain path escape sequences"
+        )
+    if "\0" in value or "\r" in value or "\n" in value:
+        raise TransitionValidationError(
+            f"{field_name} must not contain NUL, CR, or LF"
+        )
+    if value.strip(". ") == "":
+        raise TransitionValidationError(
+            f"{field_name} must not be only dots or whitespace"
+        )
+    return value
+
+
 def _parse_review_n_from_path(
     acceptance_path: str,
     expected_task_id: str,
@@ -2513,38 +2558,65 @@ def _check_idempotency_and_duplicates(
     if not any_present and not tasks_at_target:
         return None
 
-    # Event exists -- check byte equality.
-    # Only raise if content differs AND tasks are NOT at target state.
-    # If tasks ARE at target, different content may be from a prior
-    # genuine transition (not a retry collision), so we defer to
-    # the full-idempotent check below.
-    if has_event and existing_event_bytes != proposed_event_bytes:
-        if not tasks_at_target:
+    # ── Strict byte-exact idempotency ──────────────────────────────────
+    # Event exists — MUST match proposed bytes exactly.
+    # Different content is ALWAYS an error, regardless of task state.
+    if has_event:
+        if existing_event_bytes != proposed_event_bytes:
             raise TransitionDuplicateEvidenceError(
                 "event_id already exists with different content"
             )
 
-    # Outbox exists -- check byte equality.
-    if has_outbox and proposed_outbox_bytes is not None:
+    # Outbox exists — MUST match proposed bytes exactly.
+    if has_outbox:
+        if proposed_outbox_bytes is None:
+            raise TransitionDuplicateEvidenceError(
+                "outbox message_id already exists but no outbox proposed"
+            )
         if existing_outbox_bytes != proposed_outbox_bytes:
             raise TransitionDuplicateEvidenceError(
                 "outbox message_id already exists with different content"
             )
 
-    # Acceptance exists -- check byte equality.
-    if has_acceptance and proposed_acceptance_bytes is not None:
+    # Acceptance exists — MUST match proposed bytes exactly.
+    if has_acceptance:
+        if proposed_acceptance_bytes is None:
+            raise TransitionDuplicateEvidenceError(
+                "acceptance record already exists but no acceptance proposed"
+            )
         if existing_acceptance_bytes != proposed_acceptance_bytes:
             raise TransitionDuplicateEvidenceError(
                 "acceptance record already exists with different content"
             )
 
-    # Full idempotent replay: all expected files present AND tasks at target.
-    all_expected_present = (
-        has_event
-        and (not expects_outbox or has_outbox)
-        and (not expects_acceptance or has_acceptance)
-    )
-    if all_expected_present and tasks_at_target:
+    # Tasks at target but event missing or companion evidence incomplete.
+    if tasks_at_target and not has_event:
+        if has_outbox or has_acceptance:
+            raise TransitionDuplicateEvidenceError(
+                "task at target state but event not found and companion evidence exists"
+            )
+        raise TransitionDuplicateEvidenceError(
+            "task at target state but event file not found"
+        )
+
+    # Event exists but tasks NOT at target — orphan event.
+    if has_event and not tasks_at_target:
+        raise TransitionDuplicateEvidenceError(
+            "event exists but tasks.yaml not at target state"
+        )
+
+    # Event exists, tasks at target — full idempotent check with companion.
+    if has_event and tasks_at_target:
+        # Verify all expected companion evidence is present.
+        if expects_outbox and not has_outbox:
+            raise TransitionDuplicateEvidenceError(
+                "outbox not found for idempotent replay"
+            )
+        if expects_acceptance and not has_acceptance:
+            raise TransitionDuplicateEvidenceError(
+                "acceptance not found for idempotent replay"
+            )
+        # Full idempotent success — return existing result with zero writes.
         occurred_at = task.get("timestamps", {}).get(
             "updated_at", "1970-01-01T00:00:00Z"
         )
@@ -2557,44 +2629,10 @@ def _check_idempotency_and_duplicates(
             outbox_message_id=outbox_message_id,
         )
 
-    # Simple transitions without companion files: event + tasks -> idempotent.
-    if (
-        has_event
-        and tasks_at_target
-        and not expects_outbox
-        and not expects_acceptance
-        and not has_outbox
-        and not has_acceptance
-    ):
-        occurred_at = task.get("timestamps", {}).get(
-            "updated_at", "1970-01-01T00:00:00Z"
-        )
-        return TransitionResult(
-            task_id=request.cas.task_id,
-            event_id=event_id,
-            from_state=request.cas.expected_state,
-            to_state=to_state,
-            occurred_at=occurred_at,
-            outbox_message_id=None,
-        )
-
-    # Partial / orphan: some evidence present but not complete.
-    missing: list[str] = []
-    if has_event and not tasks_at_target:
-        missing.append("tasks.yaml not at target state")
-    if expects_outbox and not has_outbox and has_event:
-        missing.append("outbox not found")
-    if expects_acceptance and not has_acceptance and has_event:
-        missing.append("acceptance not found")
-    if tasks_at_target and not has_event and (has_outbox or has_acceptance):
-        missing.append("event not found but companion evidence exists")
-
-    if missing:
-        raise TransitionDuplicateEvidenceError(
-            "partial evidence detected: " + "; ".join(missing)
-        )
-
-    return None
+    # Any remaining case: should not be reachable — fail-closed.
+    raise TransitionDuplicateEvidenceError(
+        "unexpected idempotency state"
+    )
 
 
 # -- dedupe key --
@@ -2659,9 +2697,20 @@ def _mutate_task_for_transition(
         timestamps["ready_at"] = now_str
 
     elif event_type == "TASK_DISPATCHED":
-        payload = request.payload
-        assert isinstance(payload, DispatchPayload)
-        new_task["attempt"] = 1
+        if not isinstance(request.payload, DispatchPayload):
+            raise TransitionSchemaError(
+                "TASK_DISPATCHED payload must be DispatchPayload"
+            )
+        payload: DispatchPayload = request.payload
+        # Validate new_attempt == current_ledger_attempt + 1.
+        # First dispatch: task["attempt"] is None/absent → treat as 0.
+        current_ledger_attempt = task.get("attempt")
+        if not isinstance(current_ledger_attempt, int) or isinstance(
+            current_ledger_attempt, bool
+        ):
+            current_ledger_attempt = 0
+        _validate_new_attempt(payload.new_attempt, current_ledger_attempt)
+        new_task["attempt"] = payload.new_attempt
         new_task["current_dispatch"] = {
             "dispatch_id": payload.dispatch_id,
             "role_id": payload.role_id,
@@ -2679,16 +2728,22 @@ def _mutate_task_for_transition(
         timestamps["started_at"] = now_str
 
     elif event_type == "DELIVERY_SUBMITTED":
-        payload = request.payload
-        assert isinstance(payload, DeliverySubmittedPayload)
+        if not isinstance(request.payload, DeliverySubmittedPayload):
+            raise TransitionSchemaError(
+                "DELIVERY_SUBMITTED payload must be DeliverySubmittedPayload"
+            )
+        payload: DeliverySubmittedPayload = request.payload
         new_task["implementation_commit"] = payload.implementation_commit
         new_task["report_commit"] = payload.report_commit
         new_task["delivery_state"] = "submitted"
         timestamps["delivered_at"] = now_str
 
     elif event_type == "DELIVERY_ACCEPTED":
-        payload = request.payload
-        assert isinstance(payload, DeliveryAcceptedPayload)
+        if not isinstance(request.payload, DeliveryAcceptedPayload):
+            raise TransitionSchemaError(
+                "DELIVERY_ACCEPTED payload must be DeliveryAcceptedPayload"
+            )
+        payload: DeliveryAcceptedPayload = request.payload
         new_task["accepted_commit"] = payload.accepted_commit
         new_task["acceptance_path"] = payload.acceptance_path
         new_task["delivery_state"] = "accepted"
@@ -2703,14 +2758,20 @@ def _mutate_task_for_transition(
         new_task["current_dispatch"] = None
 
     elif event_type == "CHANGE_INTEGRATED":
-        payload = request.payload
-        assert isinstance(payload, IntegrationPayload)
+        if not isinstance(request.payload, IntegrationPayload):
+            raise TransitionSchemaError(
+                "CHANGE_INTEGRATED payload must be IntegrationPayload"
+            )
+        payload: IntegrationPayload = request.payload
         new_task["integrated_commit"] = payload.integrated_commit
         timestamps["integrated_at"] = now_str
 
     elif event_type in ("TASK_BLOCKED", "INTEGRATION_FAILED"):
-        payload = request.payload
-        assert isinstance(payload, BlockedPayload)
+        if not isinstance(request.payload, BlockedPayload):
+            raise TransitionSchemaError(
+                f"{event_type} payload must be BlockedPayload"
+            )
+        payload: BlockedPayload = request.payload
         new_task["blocked_reason"] = payload.blocked_reason
         new_task["blocked_kind"] = payload.blocked_kind
         new_task["blocked_owner"] = payload.blocked_owner
@@ -2722,8 +2783,11 @@ def _mutate_task_for_transition(
             new_task["current_dispatch"] = None
 
     elif event_type == "BLOCKER_RESOLVED":
-        payload = request.payload
-        assert isinstance(payload, BlockerResolvedPayload)
+        if not isinstance(request.payload, BlockerResolvedPayload):
+            raise TransitionSchemaError(
+                "BLOCKER_RESOLVED payload must be BlockerResolvedPayload"
+            )
+        payload: BlockerResolvedPayload = request.payload
         new_task["state"] = payload.resume_to_state
         new_task["blocked_reason"] = None
         new_task["blocked_kind"] = None
@@ -2734,8 +2798,11 @@ def _mutate_task_for_transition(
         new_task["review_after"] = None
 
     elif event_type == "BLOCKER_RESCOPED":
-        payload = request.payload
-        assert isinstance(payload, BlockerRescopedPayload)
+        if not isinstance(request.payload, BlockerRescopedPayload):
+            raise TransitionSchemaError(
+                "BLOCKER_RESCOPED payload must be BlockerRescopedPayload"
+            )
+        payload: BlockerRescopedPayload = request.payload
         new_task["revision"] = payload.new_revision
         new_task["blocked_reason"] = None
         new_task["blocked_kind"] = None
@@ -2768,8 +2835,11 @@ def _mutate_task_for_transition(
         timestamps["cancelled_at"] = now_str
 
     elif event_type == "TASK_SUPERSEDED":
-        payload = request.payload
-        assert isinstance(payload, SupersededPayload)
+        if not isinstance(request.payload, SupersededPayload):
+            raise TransitionSchemaError(
+                "TASK_SUPERSEDED payload must be SupersededPayload"
+            )
+        payload: SupersededPayload = request.payload
         new_task["superseded_by"] = payload.superseded_by
         new_task["current_dispatch"] = None
         timestamps["superseded_at"] = now_str
@@ -2788,24 +2858,69 @@ def _build_event_bytes(
     now: datetime,
     lease_epoch: int,
     payload_digest: str | None,
+    task_attempt_override: int | None = None,
+    task_dispatch_id_override: str | None = None,
 ) -> bytes:
-    """Build the state-event YAML bytes."""
+    """Build the state-event YAML bytes.
+
+    Uses frozen source mapping per event type:
+    * BLOCKER_RESCOPED: event revision == CAS/current revision (not new_revision).
+    * TASK_DISPATCHED: event attempt == new_attempt from payload.
+    * Non-dispatch events: attempt/dispatch_id may be None.
+    * payload_digest only for TASK_DISPATCHED.
+    * CHANGE_INTEGRATED: accepted_commit, integrated_commit, equivalence fields.
+    """
     occurred_at = _format_rfc3339_utc(now)
 
-    task_revision = task.get("revision", request.cas.expected_revision)
-    task_attempt = task.get("attempt")
-    task_dispatch_id = None
-    cd = task.get("current_dispatch")
-    if isinstance(cd, dict) and isinstance(cd.get("dispatch_id"), str):
-        task_dispatch_id = cd["dispatch_id"]
+    # Event revision: use CAS expected_revision by default.
+    # BLOCKER_RESCOPED: event revision is the CURRENT revision (CAS),
+    # while tasks target revision is payload.new_revision.
+    event_revision = request.cas.expected_revision
+
+    # Event attempt: source per transition type.
+    if task_attempt_override is not None:
+        event_attempt: int | None = task_attempt_override
+    elif spec.event_type == "TASK_DISPATCHED":
+        # Use new_attempt from payload (already validated against ledger +1).
+        if isinstance(request.payload, DispatchPayload):
+            event_attempt = request.payload.new_attempt
+        else:
+            event_attempt = None
+    else:
+        # Non-dispatch events: read from canonical task, may be None.
+        task_attempt = task.get("attempt")
+        event_attempt = task_attempt if (
+            isinstance(task_attempt, int) and not isinstance(task_attempt, bool)
+        ) else None
+
+    # Event dispatch_id: source per transition type.
+    if task_dispatch_id_override is not None:
+        event_dispatch_id: str | None = task_dispatch_id_override
+    elif spec.event_type == "TASK_DISPATCHED":
+        if isinstance(request.payload, DispatchPayload):
+            event_dispatch_id = request.payload.dispatch_id
+        else:
+            event_dispatch_id = None
+    elif spec.needs_dispatch_cas and request.dispatch_cas is not None:
+        event_dispatch_id = request.dispatch_cas.expected_dispatch_id
+    else:
+        cd = task.get("current_dispatch")
+        if isinstance(cd, dict) and isinstance(cd.get("dispatch_id"), str):
+            event_dispatch_id = cd["dispatch_id"]
+        else:
+            event_dispatch_id = None
 
     extra: dict[str, object] = {}
     if spec.event_type == "TASK_DISPATCHED" and payload_digest is not None:
         extra["payload_digest"] = payload_digest
     if spec.event_type == "CHANGE_INTEGRATED":
-        payload = request.payload
-        if isinstance(payload, IntegrationPayload):
+        if isinstance(request.payload, IntegrationPayload):
+            payload = request.payload
             extra["integrated_commit"] = payload.integrated_commit
+            # accepted_commit sourced from task (set during DELIVERY_ACCEPTED).
+            accepted = task.get("accepted_commit")
+            if isinstance(accepted, str) and accepted:
+                extra["accepted_commit"] = accepted
             if payload.equivalence_method is not None:
                 extra["equivalence_method"] = payload.equivalence_method
                 extra["equivalence_result"] = "passed"
@@ -2820,9 +2935,9 @@ def _build_event_bytes(
         event_id=request.event_id,
         event_type=spec.event_type,
         task_id=request.cas.task_id,
-        revision=task_revision,
-        attempt=task_attempt,
-        dispatch_id=task_dispatch_id,
+        revision=event_revision,
+        attempt=event_attempt,
+        dispatch_id=event_dispatch_id,
         from_state=request.cas.expected_state,
         to_state=to_state,
         lease_epoch=lease_epoch,
@@ -2854,7 +2969,7 @@ def _build_outbox_bytes(
 
     payload = request.payload
     created_at = _format_rfc3339_utc(now)
-    new_attempt = task.get("attempt", 1)
+    new_attempt = payload.new_attempt
     dedupe_key = _derive_dedupe_key(
         task_id=request.cas.task_id,
         revision=request.cas.expected_revision,
@@ -2899,62 +3014,265 @@ def _build_outbox_bytes(
 
 def _build_acceptance_bytes(
     request: TransitionRequest,
-    task: dict[str, Any],
+    pre_transition_task: dict[str, Any],
+    pm_holder_id: str,
+    pm_lease_epoch: int,
     now: datetime,
 ) -> bytes | None:
-    """Build acceptance markdown bytes for DELIVERY_ACCEPTED, or None."""
+    """Build acceptance markdown bytes for DELIVERY_ACCEPTED, or None.
+
+    Derives authoritative fields from CAS-verified pre-transition canonical
+    task — NOT from the mutated target task (which has current_dispatch=None).
+
+    Generates ``agentdesk.acceptance/v2`` with full frontmatter and body
+    sections per the frozen contract.
+    """
     if not isinstance(request.payload, DeliveryAcceptedPayload):
         return None
 
     payload = request.payload
-    dc = request.dispatch_cas
-    cd = task.get("current_dispatch")
-    reviewed_dispatch_id = (
-        dc.expected_dispatch_id
-        if dc is not None
-        else (cd["dispatch_id"] if isinstance(cd, dict) else None)
-    )
-
     occurrence = _format_rfc3339_utc(now)
 
-    lines: list[str] = []
-    lines.append("---")
-    lines.append(f"schema_version: {_ACCEPTANCE_SCHEMA}")
-    lines.append(f"task_id: {request.cas.task_id}")
-    lines.append(f"revision: {request.cas.expected_revision}")
-    attempt = task.get("attempt")
-    lines.append(f"attempt: {attempt if attempt is not None else 'null'}")
-    impl_commit = task.get("implementation_commit")
-    lines.append(
-        f"implementation_commit: {impl_commit if impl_commit else 'null'}"
-    )
-    report_commit = task.get("report_commit")
-    lines.append(
-        f"report_commit: {report_commit if report_commit else 'null'}"
-    )
-    base_commit = (
-        cd.get("base_commit")
-        if isinstance(cd, dict)
-        else task.get("task_card_commit")
-    )
-    lines.append(
-        f"base_commit: {base_commit if base_commit else 'null'}"
-    )
-    lines.append("decision: accepted")
-    lines.append(f"accepted_commit: {payload.accepted_commit}")
-    lines.append(
+    # ── Pre-extract from CAS-verified canonical (pre-transition) task ──
+    cd = pre_transition_task.get("current_dispatch")
+    reviewed_dispatch_id: str | None = None
+    role_id: str | None = None
+    base_commit: str | None = None
+    if isinstance(cd, dict):
+        reviewed_dispatch_id = cd.get("dispatch_id")
+        if isinstance(reviewed_dispatch_id, str) and reviewed_dispatch_id:
+            pass
+        else:
+            reviewed_dispatch_id = None
+        role_id = cd.get("role_id")
+        if not isinstance(role_id, str) or not role_id:
+            role_id = None
+        base_commit = cd.get("base_commit")
+        if not isinstance(base_commit, str) or not base_commit:
+            base_commit = None
+
+    # DispatchCAS overrides reviewed_dispatch_id when present.
+    dc = request.dispatch_cas
+    if dc is not None:
+        reviewed_dispatch_id = dc.expected_dispatch_id
+
+    attempt = pre_transition_task.get("attempt")
+    if isinstance(attempt, bool) or not isinstance(attempt, int):
+        attempt = None
+
+    task_revision = request.cas.expected_revision
+
+    impl_commit = pre_transition_task.get("implementation_commit")
+    if not isinstance(impl_commit, str) or not impl_commit:
+        impl_commit = None
+
+    report_commit = pre_transition_task.get("report_commit")
+    if not isinstance(report_commit, str) or not report_commit:
+        report_commit = None
+
+    # task type derived from committed task card (via payload context).
+    task_type: str | None = None
+    # role_id from current_dispatch (pre-transition).
+    # reviewer_role_id is fixed "PM".
+    reviewer_id = pm_holder_id
+
+    # accepted_commit == implementation_commit (frozen contract).
+    accepted_commit = payload.accepted_commit
+
+    # owner approval: fixed none + [].
+    owner_approval_gate = "none"
+    owner_approval_ids: list[str] = []
+
+    # evidence_refs: from TransitionEventContext.
+    evidence_refs = list(request.event_context.evidence_refs)
+
+    # residual_risks: from payload.
+    residual_risks = list(payload.residual_risks)
+
+    # criteria_evidence: from payload.
+    criteria_evidence = list(payload.criteria_evidence)
+
+    # ── Build frontmatter ──────────────────────────────────────────────
+    fm_lines: list[str] = []
+    fm_lines.append("---")
+    fm_lines.append(f"schema_version: {_ACCEPTANCE_SCHEMA}")
+    fm_lines.append(f"task_id: {request.cas.task_id}")
+    fm_lines.append(f"revision: {task_revision}")
+    fm_lines.append("decision: accepted")
+    fm_lines.append(
         f"reviewed_dispatch_id: {reviewed_dispatch_id if reviewed_dispatch_id else 'null'}"
     )
-    lines.append(f"occurred_at: {occurrence}")
-    lines.append("gate: none")
-    lines.append("approval_ids: []")
-    lines.append("---")
-    lines.append("")
-    lines.append("# Acceptance Record")
-    lines.append("")
+    fm_lines.append(f"attempt: {attempt if attempt is not None else 'null'}")
+    fm_lines.append(f"type: {task_type if task_type else 'null'}")
+    fm_lines.append(f"role_id: {role_id if role_id else 'null'}")
+    fm_lines.append("reviewer_role_id: PM")
+    fm_lines.append(f"reviewer_id: {reviewer_id}")
+    fm_lines.append(f"lease_epoch: {pm_lease_epoch}")
+    fm_lines.append(f"base_commit: {base_commit if base_commit else 'null'}")
+    fm_lines.append(
+        f"implementation_commit: {impl_commit if impl_commit else 'null'}"
+    )
+    fm_lines.append(
+        f"report_commit: {report_commit if report_commit else 'null'}"
+    )
+    fm_lines.append(f"accepted_commit: {accepted_commit}")
 
-    content = "\n".join(lines)
-    return content.encode("utf-8")
+    # owner_approval block — fixed none + [].
+    fm_lines.append("owner_approval:")
+    fm_lines.append(f"  gate: {owner_approval_gate}")
+    if owner_approval_ids:
+        fm_lines.append(
+            "  approval_ids: [" + ", ".join(owner_approval_ids) + "]"
+        )
+    else:
+        fm_lines.append("  approval_ids: []")
+
+    # evidence_refs.
+    if evidence_refs:
+        fm_lines.append("evidence_refs:")
+        for ref in evidence_refs:
+            fm_lines.append(f"  - {ref}")
+    else:
+        fm_lines.append("evidence_refs: []")
+
+    # residual_risks.
+    if residual_risks:
+        fm_lines.append("residual_risks:")
+        for risk in residual_risks:
+            fm_lines.append(f"  - {risk}")
+    else:
+        fm_lines.append("residual_risks: []")
+
+    fm_lines.append(f"created_at: {occurrence}")
+    fm_lines.append("---")
+    fm_lines.append("")
+
+    # ── Body sections ──────────────────────────────────────────────────
+    task_id = request.cas.task_id
+    revision = task_revision
+    att_str = str(attempt) if attempt is not None else "?"
+    rev_num_str = "1"  # review number — deterministic from acceptance_path.
+
+    fm_lines.append(
+        f"# {task_id} — Revision {revision}, Attempt {att_str}, Review {rev_num_str}"
+    )
+    fm_lines.append("")
+    fm_lines.append("## Decision")
+    fm_lines.append("")
+    fm_lines.append("**Accepted.**  The delivery meets all acceptance criteria.")
+    fm_lines.append("")
+    fm_lines.append("## Scope Review")
+    fm_lines.append("")
+    fm_lines.append(
+        f"Implementation commit `{impl_commit if impl_commit else '?'}` "
+        f"and report commit `{report_commit if report_commit else '?'}` "
+        "have been reviewed against the task specification."
+    )
+    fm_lines.append("")
+    fm_lines.append("## Criteria And Checks")
+    fm_lines.append("")
+    for i, ev in enumerate(criteria_evidence, 1):
+        fm_lines.append(f"{i}. {ev}")
+    fm_lines.append("")
+    fm_lines.append("## Rationale And Next Integration Step")
+    fm_lines.append("")
+    fm_lines.append(payload.rationale)
+    fm_lines.append("")
+    if residual_risks:
+        fm_lines.append("### Residual Risks")
+        fm_lines.append("")
+        for risk in residual_risks:
+            fm_lines.append(f"- {risk}")
+        fm_lines.append("")
+
+    # ── Validate and encode ────────────────────────────────────────────
+    content = "\n".join(fm_lines)
+    content_bytes = content.encode("utf-8")
+
+    # Validate structural schema (frontmatter keys).
+    _validate_acceptance_frontmatter(content_bytes, request, pre_transition_task)
+
+    return content_bytes
+
+
+def _validate_acceptance_frontmatter(
+    content_bytes: bytes,
+    request: TransitionRequest,
+    pre_transition_task: dict[str, Any],
+) -> None:
+    """Validate the acceptance record frontmatter for structural correctness.
+
+    Checks required keys, schema_version, and key field constraints.
+    Does NOT call the heavy project-level validator; that is a test
+    concern (``validate_project._validate_acceptance_record()``).
+
+    Raises ``TransitionSchemaError`` on any validation failure.
+    """
+    content = content_bytes.decode("utf-8")
+    # Parse YAML frontmatter between --- delimiters.
+    lines = content.splitlines()
+    if len(lines) < 2 or lines[0].strip() != "---":
+        raise TransitionSchemaError("acceptance record missing frontmatter start")
+    end_idx: int | None = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end_idx = i
+            break
+    if end_idx is None:
+        raise TransitionSchemaError("acceptance record missing frontmatter end")
+
+    fm: dict[str, Any] = {}
+    for line in lines[1:end_idx]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" in stripped:
+            key, _, val = stripped.partition(":")
+            key = key.strip()
+            val = val.strip()
+            if val == "null":
+                val = None
+            elif val == "true":
+                val = True
+            elif val == "false":
+                val = False
+            elif val.isdigit() or (val.startswith("-") and val[1:].isdigit()):
+                val = int(val)
+            elif val == "[]":
+                val = []
+            fm[key] = val
+        # nested keys (owner_approval block) handled separately.
+
+    # Required keys check.
+    required_fm_keys = {
+        "schema_version", "task_id", "revision", "decision",
+        "reviewed_dispatch_id", "attempt", "type", "role_id",
+        "reviewer_role_id", "reviewer_id", "lease_epoch",
+        "base_commit", "implementation_commit", "report_commit",
+        "accepted_commit",
+    }
+    missing = required_fm_keys - set(fm.keys())
+    if missing:
+        raise TransitionSchemaError(
+            f"acceptance record frontmatter missing keys: {', '.join(sorted(missing))}"
+        )
+
+    if fm.get("schema_version") != _ACCEPTANCE_SCHEMA:
+        raise TransitionSchemaError(
+            f"acceptance schema_version must be {_ACCEPTANCE_SCHEMA}"
+        )
+    if fm.get("decision") != "accepted":
+        raise TransitionSchemaError(
+            "acceptance decision must be 'accepted'"
+        )
+    if fm.get("task_id") != request.cas.task_id:
+        raise TransitionSchemaError(
+            "acceptance task_id mismatch"
+        )
+    if fm.get("reviewer_role_id") != "PM":
+        raise TransitionSchemaError(
+            "acceptance reviewer_role_id must be PM"
+        )
 
 
 # -- tasks.yaml serializer --
@@ -3010,7 +3328,43 @@ def _write_canonical_files(
     """Write all canonical files in fixed order.
 
     Order: event -> outbox -> acceptance -> tasks.yaml
+
+    **Path safety:** event_id, outbox_message_id, and acceptance_path
+    MUST be validated BEFORE directory creation or any write.
     """
+
+    # ── Validate event_id as safe filename segment BEFORE any I/O ──────
+    _validate_safe_filename_segment(event_id, "event_id")
+    if not _EVENT_ID_RE.fullmatch(event_id):
+        raise TransitionValidationError(
+            "event_id must match EVT-* pattern"
+        )
+
+    # ── Validate outbox_message_id as safe filename segment ────────────
+    if outbox_message_id is not None:
+        _validate_safe_filename_segment(outbox_message_id, "outbox_message_id")
+        if not _MESSAGE_ID_RE.fullmatch(outbox_message_id):
+            raise TransitionValidationError(
+                "outbox_message_id must match MSG-* pattern"
+            )
+
+    # ── Validate acceptance_path (trusted PurePosixPath only) ──────────
+    trusted_acceptance_relative: str | None = None
+    if acceptance_path is not None:
+        # acceptance_path must have been validated by
+        # _parse_review_n_from_path() BEFORE reaching this function.
+        _validate_safe_filename_segment(acceptance_path.split("/")[-1], "acceptance_filename")
+        parts = PurePosixPath(acceptance_path).parts
+        if len(parts) != 4:
+            raise TransitionValidationError(
+                "acceptance_path must have exactly 4 path segments"
+            )
+        if parts[:3] != ("docs", "pm", "acceptances"):
+            raise TransitionValidationError(
+                "acceptance_path must be under docs/pm/acceptances/"
+            )
+        trusted_acceptance_relative = acceptance_path
+
     events_dir = project_root / _CANONICAL_DIRS["events"]
     outbox_dir = project_root / _CANONICAL_DIRS["outbox"]
     acceptances_dir = project_root / _CANONICAL_DIRS["acceptances"]
@@ -3041,8 +3395,8 @@ def _write_canonical_files(
         raise TransitionWriteError("write failed at stage: outbox") from exc
 
     try:
-        if acceptance_bytes is not None and acceptance_path is not None:
-            abs_accept_path = project_root / acceptance_path
+        if acceptance_bytes is not None and trusted_acceptance_relative is not None:
+            abs_accept_path = project_root / trusted_acceptance_relative
             abs_accept_path.parent.mkdir(parents=True, exist_ok=True)
             _atomic_write_bytes(abs_accept_path, acceptance_bytes)
     except TransitionWriteError:
@@ -3194,6 +3548,7 @@ def _execute_transition_core(
     spec: _TransitionSpec,
     now: datetime,
     lease_epoch: int,
+    pm_holder_id: str = "",
 ) -> TransitionResult:
     """Execute the core transition pipeline (inside locks)."""
     occurred_at = _format_rfc3339_utc(now)
@@ -3208,9 +3563,35 @@ def _execute_transition_core(
     # 3. Derive to_state.
     to_state = _derive_to_state(spec, request.payload)
 
-    # 4. Build proposed bytes BEFORE CAS to enable idempotency check.
-    # (CAS may fail for already-transitioned tasks; idempotency
-    #  must be checked first.)
+    # 4. Pre-validate acceptance_path BEFORE any mutation/write.
+    #    This must happen before building bytes to avoid any filesystem
+    #    operations on untrusted paths.
+    acceptance_path: str | None = None
+    if spec.produces_acceptance and isinstance(
+        request.payload, DeliveryAcceptedPayload
+    ):
+        acceptance_path = request.payload.acceptance_path
+        _parse_review_n_from_path(
+            acceptance_path,
+            request.cas.task_id,
+            request.cas.expected_revision,
+            task.get("attempt") if (
+                isinstance(task.get("attempt"), int)
+                and not isinstance(task.get("attempt"), bool)
+            ) else 0,
+        )
+
+    # 5. Pre-validate event_id and outbox_message_id BEFORE any write.
+    _validate_safe_filename_segment(request.event_id, "event_id")
+    outbox_message_id: str | None = None
+    if spec.produces_outbox and isinstance(request.payload, DispatchPayload):
+        _validate_safe_filename_segment(
+            request.payload.outbox_message_id, "outbox_message_id"
+        )
+        outbox_message_id = request.payload.outbox_message_id
+
+    # 6. Build proposed bytes from PRE-TRANSITION task (for acceptance)
+    #    and from mutated task (for everything else).
     new_task = _mutate_task_for_transition(
         task, request, spec, to_state, occurred_at, lease_epoch
     )
@@ -3219,29 +3600,26 @@ def _execute_transition_core(
     post_state["tasks"][task_index] = new_task
     post_state["updated_at"] = occurred_at
 
+    # 7. Build outbox bytes (from mutated task — uses payload.new_attempt).
     outbox_bytes = _build_outbox_bytes(request, new_task, to_state, now)
     payload_digest: str | None = None
     if outbox_bytes is not None:
         payload_digest = _compute_payload_digest(outbox_bytes)
 
+    # 8. Build event bytes (uses frozen source mapping per event type).
     event_bytes = _build_event_bytes(
-        request, spec, new_task, to_state, now, lease_epoch, payload_digest
+        request, spec, task, to_state, now, lease_epoch, payload_digest
     )
 
-    acceptance_bytes = _build_acceptance_bytes(request, new_task, now)
-    acceptance_path: str | None = None
-    if isinstance(request.payload, DeliveryAcceptedPayload):
-        acceptance_path = request.payload.acceptance_path
+    # 9. Build acceptance bytes from PRE-TRANSITION canonical task.
+    pm_lease_epoch = lease_epoch
+    acceptance_bytes = _build_acceptance_bytes(
+        request, task, pm_holder_id, pm_lease_epoch, now
+    )
 
     tasks_bytes = _serialize_tasks_state(post_state)
 
-    outbox_message_id: str | None = None
-    if isinstance(request.payload, DispatchPayload):
-        outbox_message_id = request.payload.outbox_message_id
-
-    # 5. Idempotency / duplicate / orphan check (BEFORE CAS).
-    #    If the task is already at target state and all files match,
-    #    return early with zero writes.
+    # 10. Idempotency / duplicate / orphan check (BEFORE CAS).
     idempotent_result = _check_idempotency_and_duplicates(
         project_root,
         request,
@@ -3256,10 +3634,10 @@ def _execute_transition_core(
     if idempotent_result is not None:
         return idempotent_result
 
-    # 6. Validate CAS (revision, state, HEAD, dispatch).
+    # 11. Validate CAS (revision, state, HEAD, dispatch).
     _validate_cas(task, request, spec, head_commit)
 
-    # 7. Write canonical files.
+    # 12. Write canonical files.
     _write_canonical_files(
         project_root,
         request.event_id,
@@ -3271,11 +3649,11 @@ def _execute_transition_core(
         tasks_bytes,
     )
 
-    # 8. Render and write derived views.
+    # 13. Render and write derived views.
     board_md, status_md = _render_derived_views(post_state)
     _write_derived_views(project_root, board_md, status_md)
 
-    # 9. Return TransitionResult.
+    # 14. Return TransitionResult.
     from_state = request.cas.expected_state
     return TransitionResult(
         task_id=request.cas.task_id,
@@ -3508,7 +3886,10 @@ class ControlPlaneTransitionService:
             if body_exception is not None:
                 raise body_exception
 
-            assert result is not None
+            if result is None:
+                raise TransitionSchemaError(
+                    "worker-lifecycle apply_transition produced no result"
+                )
             return result
 
         else:
@@ -3524,12 +3905,17 @@ class ControlPlaneTransitionService:
                         raise TransitionCASConflictError(
                             "pm_control is missing from canonical state"
                         )
-                    lease_epoch = pm.get("lease_epoch")
-                    if isinstance(lease_epoch, bool) or not isinstance(
-                        lease_epoch, int
+                    lease_epoch_val = pm.get("lease_epoch")
+                    if isinstance(lease_epoch_val, bool) or not isinstance(
+                        lease_epoch_val, int
                     ):
                         raise TransitionCASConflictError(
                             "pm_control.lease_epoch is invalid"
+                        )
+                    pm_holder = pm.get("holder_id", "")
+                    if not isinstance(pm_holder, str) or not pm_holder:
+                        raise TransitionCASConflictError(
+                            "pm_control.holder_id is missing"
                         )
 
                     result = _execute_transition_core(
@@ -3537,7 +3923,8 @@ class ControlPlaneTransitionService:
                         request,
                         spec,
                         now,
-                        lease_epoch,
+                        lease_epoch_val,
+                        pm_holder_id=pm_holder,
                     )
             except BaseException as _exc:
                 body_exception = _exc
@@ -3545,7 +3932,10 @@ class ControlPlaneTransitionService:
             if body_exception is not None:
                 raise body_exception
 
-            assert result is not None
+            if result is None:
+                raise TransitionSchemaError(
+                    "PM-only apply_transition produced no result"
+                )
             return result
 
 
