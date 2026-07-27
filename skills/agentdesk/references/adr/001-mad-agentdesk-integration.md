@@ -3596,11 +3596,49 @@ enters the state lock while already holding the worker-slot lock is
 valid; the reverse order is an immediate ``TransitionLockOrderError``
 (fail-closed, zero writes).
 
-The control-plane state lock follows the same ``os.open(O_CREAT |
-O_EXCL | O_WRONLY)`` ownership-token pattern defined for the
-worker-slot lease lock (ADR §2.5.10).  Contention raises
-``TransitionLockContentionError`` immediately — no sleeping, waiting,
-or retry.
+The control-plane state lock uses a **stable lock file** at
+``.agentdesk/runtime/.state-transition.lock`` with a **non-blocking
+OS advisory lock**:
+
+* **Windows**: ``msvcrt.locking(fd, LK_NBLCK, 1)`` — non-blocking
+  lock mode.  Contention raises ``IOError`` which is translated to
+  ``TransitionLockContentionError``.
+* **POSIX** (Linux / macOS): ``fcntl.flock(fd, LOCK_EX | LOCK_NB)``
+  — non-blocking exclusive lock.  Contention returns ``EAGAIN`` /
+  ``EACCES`` which is translated to
+  ``TransitionLockContentionError``.
+* **Unsupported platforms**: fail-closed with
+  ``TransitionLockContentionError``.
+
+The lock file is **never deleted** — its existence does not indicate
+that the lock is held.  Only the OS advisory lock decides ownership.
+Process-termination releases the OS advisory lock automatically;
+there is no stale-token recovery, no force-unlock, no mtime-based
+cleanup, and no retry.  Contention raises
+``TransitionLockContentionError`` immediately — no sleeping,
+waiting, polling, or retry.
+
+**Lock file descriptor lifecycle**:
+
+```text
+open stable lock file (os.O_CREAT | os.O_RDWR)
+acquire non-blocking OS lock
+yield
+release OS lock
+close file descriptor
+```
+
+* Acquire failure: fd is closed, then ``TransitionLockContentionError``
+  is raised.
+* Body raises: body exception is always propagated (takes priority).
+* Body OK, release fails: ``TransitionLockContentionError`` raised.
+* Body OK, close fails: ``TransitionLockContentionError`` raised
+  (close failure does NOT leak path, token, or content).
+
+This replaces the previous ``os.open(O_CREAT | O_EXCL | O_WRONLY)``
+ownership-token + ``unlink`` protocol, which had a TOCTOU window
+between token comparison and ``unlink``.  The ownership token and
+its generation/validation logic are fully removed.
 
 **Granularity**: the control-plane state lock is a single project-level
 lock.  Concurrent transitions for different tasks are serialised at
@@ -3780,14 +3818,22 @@ All state names are taken from the frozen ``STATES`` tuple in
 service never increments it.  The service validates that the
 caller-supplied ``expected_revision`` matches the current value
 and that ``new_revision`` (in ``BlockerRescopedPayload``) equals
-``expected_revision + 1``.
+``expected_revision + 1``.  Any value other than exactly
+``expected_revision + 1`` raises ``TransitionCASConflictError``.
 
 **Attempt increment**: ``attempt`` is set by the caller for each new
 dispatch — the service never increments it.  The service validates that
 the dispatch CAS ``expected_attempt`` matches the current value and
-that ``new_attempt`` (in ``DispatchPayload``) provides the target
-attempt number.  The service never derives ``new_attempt`` from
-``expected_attempt + 1`` in place of explicit caller input.
+that ``new_attempt`` (in ``DispatchPayload``) equals exactly
+``current_attempt + 1``.  ``current_attempt`` starts at ``0`` before
+the first dispatch.  For the initial dispatch, ``new_attempt`` must be
+exactly ``1``.  For subsequent dispatches (after ``returned → ready``),
+``new_attempt`` must be exactly the previous attempt + 1.  Any value
+other than exactly ``current_attempt + 1`` raises
+``TransitionCASConflictError``.  The service never derives
+``new_attempt`` from ``expected_attempt + 1`` in place of explicit
+caller input — the caller provides the value; the service validates
+the exact relationship.
 
 ---
 #### 2.14.9 Event File Rules — Frozen
@@ -3950,7 +3996,7 @@ class DispatchPayload:
     branch: str
     report_path: str
     outbox_message_id: str               # MSG-*
-    new_attempt: int                     # target attempt number (>= 1)
+    new_attempt: int                     # target attempt number (== current_attempt + 1, >= 1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3968,10 +4014,21 @@ class DeliverySubmittedPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class AcceptanceOwnerApproval:
+    """Immutable owner-approval data for an acceptance record."""
+    gate: str                           # "none" | "pm_approval" | "model_approval" | "external_approval"
+    approval_ids: tuple[str, ...]        # non-empty APR-* strings; no duplicates
+
+
+@dataclass(frozen=True, slots=True)
 class DeliveryAcceptedPayload:
     """Payload for review_ready → accepted (DELIVERY_ACCEPTED)."""
     accepted_commit: str                 # 40-char SHA
     acceptance_path: str                 # project-relative
+    owner_approval: AcceptanceOwnerApproval  # frozen gate + approval_ids
+    residual_risks: tuple[str, ...]       # may be empty
+    criteria_evidence: tuple[str, ...]    # may be empty
+    rationale: str                        # non-empty, not only whitespace
 
 
 @dataclass(frozen=True, slots=True)
@@ -4016,7 +4073,7 @@ class BlockerResolvedPayload:
 @dataclass(frozen=True, slots=True)
 class BlockerRescopedPayload:
     """Payload for blocked → draft (BLOCKER_RESCOPED)."""
-    new_revision: int                    # target revision (>= expected_revision + 1)
+    new_revision: int                    # target revision (== expected_revision + 1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -4360,7 +4417,7 @@ the following sources — no field is synthesised without an input channel.
 | ``reviewed_dispatch_id`` | ``DispatchCAS.expected_dispatch_id`` | CAS-verified; the dispatch being accepted |
 | ``attempt`` | ``DispatchCAS.expected_attempt`` | CAS-verified current attempt from ``tasks.yaml`` |
 | ``type`` | Derived from task ledger | ``task_type`` field from ``tasks.yaml`` |
-| ``role_id`` | Service constant or derived | The role that executed the accepted dispatch |
+| ``role_id`` | ``DispatchPayload.role_id`` | The role that executed the accepted dispatch, from the dispatch payload |
 | ``reviewer_role_id`` | Service constant | ``"PM"`` for control-plane acceptances |
 | ``reviewer_id`` | ``pm_control.holder_id`` | Current PM holder from ``tasks.yaml`` |
 | ``lease_epoch`` | ``pm_control.lease_epoch`` (PM-only) or ``WorkerSlotLease.lease_epoch`` | From the CAS epoch source |
@@ -4368,34 +4425,37 @@ the following sources — no field is synthesised without an input channel.
 | ``implementation_commit`` | ``DeliveryAcceptedPayload.accepted_commit`` | Caller-provided; must also equal ``implementation_commit`` |
 | ``report_commit`` | ``tasks.yaml`` dispatch ``report_commit`` | From the current dispatch ledger |
 | ``accepted_commit`` | ``DeliveryAcceptedPayload.accepted_commit`` | Caller-provided; frozen as ``accepted_commit`` in ``tasks.yaml`` |
-| ``owner_approval`` | ``TransitionEventContext`` | Passed through from caller context; includes ``gate`` and ``approval_ids`` |
+| ``owner_approval`` | ``DeliveryAcceptedPayload.owner_approval`` | Frozen ``AcceptanceOwnerApproval`` dataclass with ``gate`` (``"none"`` / ``"pm_approval"`` / ``"model_approval"`` / ``"external_approval"``) and ``approval_ids`` (tuple of ``APR-*`` strings) |
 | ``evidence_refs`` | ``TransitionEventContext.evidence_refs`` | Serialised as YAML list |
-| ``residual_risks`` | ``TransitionEventContext`` or ``DeliveryAcceptedPayload`` | Caller-supplied list of residual risk strings |
+| ``residual_risks`` | ``DeliveryAcceptedPayload.residual_risks`` | Caller-supplied tuple of non-empty risk strings; may be empty |
 | ``created_at`` | ``apply_transition(... now=...)`` | Service-formatted RFC 3339 UTC |
-| Body title | Service template | ``# {task_id} · Acceptance · Attempt {attempt} · Review {review_n}`` |
+| Body title | Service template | ``# {task_id} · Acceptance · Attempt {attempt} · Review {review_n}`` — ``review_n`` is derived from the number of prior acceptance records for the same task/revision/attempt, determined by scanning the acceptance directory |
 | Body decision text | Service constant | ``accepted`` |
 | Body scope review checklist | Service template | Fixed checklist from acceptance template |
-| Body criteria and checks | ``DeliveryAcceptedPayload`` or call-site context | PM-supplied per-criterion evidence |
-| Body rationale | ``DeliveryAcceptedPayload`` or call-site context | PM-supplied justification text |
+| Body criteria and checks | ``DeliveryAcceptedPayload.criteria_evidence`` | PM-supplied per-criterion evidence; tuple of non-empty strings |
+| Body rationale | ``DeliveryAcceptedPayload.rationale`` | PM-supplied justification text; non-empty |
 
 **Required ``DeliveryAcceptedPayload`` fields for acceptance record
 construction**:
 
-All fields in the current ``DeliveryAcceptedPayload`` are already
-present (``accepted_commit``, ``acceptance_path``).  Two additional
-fields are required to fully populate the acceptance record without
-deriving values from the CAS alone:
+All fields in the current ``DeliveryAcceptedPayload`` are present
+(``accepted_commit``, ``acceptance_path``, ``owner_approval``,
+``residual_risks``, ``criteria_evidence``, ``rationale``).  Every
+field has a typed, documented input channel:
 
 | Field | Type | Rule |
 |-------|------|------|
+| ``accepted_commit`` | ``str`` | 40-char lowercase hex SHA |
+| ``acceptance_path`` | ``str`` | Project-relative path to the acceptance record |
+| ``owner_approval`` | ``AcceptanceOwnerApproval`` | Frozen dataclass with ``gate`` (``"none"`` / ``"pm_approval"`` / ``"model_approval"`` / ``"external_approval"``) and ``approval_ids`` (tuple of non-empty ``APR-*`` strings) |
 | ``residual_risks`` | ``tuple[str, ...]`` | May be empty; each entry non-empty, no leading/trailing whitespace |
 | ``criteria_evidence`` | ``tuple[str, ...]`` | May be empty; each entry is a PM-supplied statement |
 | ``rationale`` | ``str`` | Non-empty; the PM's justification for acceptance |
 
-These fields must be added to ``DeliveryAcceptedPayload`` in a future
-task card (TC-13.11c or a prerequisite TC-13.11b.2) to finalise the
-acceptance contract.  The acceptance record **cannot** be written until
-all fields have a documented, typed input channel.
+All fields are frozen/slots, deeply immutable.  Source list mutation
+does not affect the payload after construction.  The acceptance
+record **can** be written once all fields have a documented, typed
+input channel — which is satisfied as of TC-13.11b.2.
 
 ---
 #### 2.14.16 Acceptance Boundary

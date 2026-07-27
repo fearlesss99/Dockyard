@@ -31,13 +31,15 @@ import errno
 import hashlib
 import os
 import re
-import secrets
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, fields as dc_fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator, Optional, Union
+
+if os.name != "nt":
+    import fcntl
 
 # ── constants (frozen from validate_project.py) ────────────────────────────
 
@@ -327,6 +329,57 @@ def _validate_non_bool_int(value: object, field_name: str, min_val: int = 1) -> 
     return value
 
 
+def _validate_new_revision(
+    new_revision: int,
+    expected_revision: int,
+) -> None:
+    """Validate that *new_revision* equals ``expected_revision + 1``.
+
+    Raises ``TransitionCASConflictError`` if not exactly ``+1``.
+    This helper must be called by ``apply_transition()`` during
+    ``BLOCKER_RESCOPED`` cross-object comparison — it exists as a
+    public validation helper so tests can verify the rule before
+    ``apply_transition()`` is implemented.
+
+    *new_revision* must already have been validated as a non-bool int
+    >= 1 by ``BlockerRescopedPayload.__post_init__``.
+    """
+    target = expected_revision + 1
+    if new_revision != target:
+        raise TransitionCASConflictError(
+            f"new_revision must equal expected_revision + 1 "
+            f"({expected_revision} + 1 = {target}), "
+            f"got {new_revision}"
+        )
+
+
+def _validate_new_attempt(
+    new_attempt: int,
+    current_attempt: int,
+) -> None:
+    """Validate that *new_attempt* equals ``current_attempt + 1``.
+
+    Raises ``TransitionCASConflictError`` if not exactly ``+1``.
+    This helper must be called by ``apply_transition()`` during
+    ``TASK_DISPATCHED`` cross-object comparison — it exists as a
+    public validation helper so tests can verify the rule before
+    ``apply_transition()`` is implemented.
+
+    *new_attempt* must already have been validated as a non-bool int
+    >= 1 by ``DispatchPayload.__post_init__``.
+    *current_attempt* is the attempt from the CAS-verified ledger,
+    which is ``0`` before the first dispatch and increments by ``1``
+    on each dispatch.
+    """
+    target = current_attempt + 1
+    if new_attempt != target:
+        raise TransitionCASConflictError(
+            f"new_attempt must equal current_attempt + 1 "
+            f"({current_attempt} + 1 = {target}), "
+            f"got {new_attempt}"
+        )
+
+
 def _validate_sha(value: object, field_name: str) -> str:
     """Validate *value* is a 40-char lowercase hex SHA."""
     if not isinstance(value, str) or not value:
@@ -433,7 +486,12 @@ class DispatchCAS:
 
     def __post_init__(self) -> None:
         _validate_safe_str(self.expected_dispatch_id, "expected_dispatch_id")
-        _validate_non_bool_int(self.expected_attempt, "expected_attempt", min_val=1)
+        # min_val=0: before first dispatch, the ledger attempt is 0.
+        # The CAS validates that expected_attempt matches the current
+        # ledger value, which starts at 0 for a task with no prior
+        # dispatch.  new_attempt (in DispatchPayload) must equal
+        # current_attempt + 1.
+        _validate_non_bool_int(self.expected_attempt, "expected_attempt", min_val=0)
 
 
 # ── Payload dataclasses (14 frozen variants) ───────────────────────────────
@@ -509,15 +567,148 @@ class DeliverySubmittedPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class AcceptanceOwnerApproval:
+    """Immutable owner-approval data for an acceptance record.
+
+    Values are frozen at the points of generation — neither the
+    service nor the caller mutates them after construction.
+
+    ``gate`` values are constrained to the set recognised by the
+    acceptance template / validator contract:
+
+        ``"none"``, ``"pm_approval"``, ``"model_approval"``,
+        ``"external_approval"``
+
+    ``approval_ids`` is a tuple of non-empty approval ID strings
+    (``APR-*``).  Duplicates and empty/blank strings are rejected.
+    From an external list it is defensively copied to a tuple.
+    """
+
+    gate: str
+    approval_ids: tuple[str, ...]
+
+    _ALLOWED_GATES: tuple[str, ...] = (
+        "none",
+        "pm_approval",
+        "model_approval",
+        "external_approval",
+    )
+    _ALLOWED_GATES_SET: frozenset[str] = frozenset(_ALLOWED_GATES)
+
+    def __post_init__(self) -> None:
+        _validate_safe_str(self.gate, "gate")
+        if self.gate not in self._ALLOWED_GATES_SET:
+            raise ValueError(
+                f"gate must be one of {sorted(self._ALLOWED_GATES_SET)}, "
+                f"got {_safe_type_name(self.gate)}"
+            )
+
+        # Deep-immutable: defensively copy to tuple from any iterable.
+        if not isinstance(self.approval_ids, tuple):
+            object.__setattr__(
+                self,
+                "approval_ids",
+                tuple(self.approval_ids),
+            )
+
+        seen: set[str] = set()
+        for i, aid in enumerate(self.approval_ids):
+            if not isinstance(aid, str) or not aid:
+                raise TypeError(
+                    f"approval_ids[{i}] must be a non-empty str"
+                )
+            if aid.strip() != aid:
+                raise ValueError(
+                    f"approval_ids[{i}] must not have leading or trailing whitespace"
+                )
+            if "\0" in aid or "\r" in aid or "\n" in aid:
+                raise ValueError(
+                    f"approval_ids[{i}] must not contain NUL, CR, or LF"
+                )
+            if aid in seen:
+                raise ValueError(
+                    f"approval_ids must not contain duplicates: "
+                    f"{_safe_type_name(aid)}"
+                )
+            seen.add(aid)
+
+
+@dataclass(frozen=True, slots=True)
 class DeliveryAcceptedPayload:
     """Payload for review_ready → accepted (DELIVERY_ACCEPTED)."""
 
     accepted_commit: str
     acceptance_path: str
+    owner_approval: "AcceptanceOwnerApproval"
+    residual_risks: tuple[str, ...]
+    criteria_evidence: tuple[str, ...]
+    rationale: str
 
     def __post_init__(self) -> None:
         _validate_sha(self.accepted_commit, "accepted_commit")
         _validate_safe_str(self.acceptance_path, "acceptance_path")
+
+        # owner_approval
+        if not isinstance(self.owner_approval, AcceptanceOwnerApproval):
+            raise TypeError(
+                f"owner_approval must be AcceptanceOwnerApproval, "
+                f"got {_safe_type_name(self.owner_approval)}"
+            )
+
+        # residual_risks
+        if not isinstance(self.residual_risks, tuple):
+            raise TypeError(
+                f"residual_risks must be a tuple, "
+                f"got {_safe_type_name(self.residual_risks)}"
+            )
+        for i, item in enumerate(self.residual_risks):
+            if not isinstance(item, str) or not item:
+                raise TypeError(
+                    f"residual_risks[{i}] must be a non-empty str"
+                )
+            if item.strip() != item:
+                raise ValueError(
+                    f"residual_risks[{i}] must not have leading or trailing whitespace"
+                )
+            if "\0" in item or "\r" in item:
+                raise ValueError(
+                    f"residual_risks[{i}] must not contain NUL or CR"
+                )
+
+        # criteria_evidence
+        if not isinstance(self.criteria_evidence, tuple):
+            raise TypeError(
+                f"criteria_evidence must be a tuple, "
+                f"got {_safe_type_name(self.criteria_evidence)}"
+            )
+        for i, item in enumerate(self.criteria_evidence):
+            if not isinstance(item, str) or not item:
+                raise TypeError(
+                    f"criteria_evidence[{i}] must be a non-empty str"
+                )
+            if item.strip() != item:
+                raise ValueError(
+                    f"criteria_evidence[{i}] must not have leading or trailing whitespace"
+                )
+            if "\0" in item or "\r" in item:
+                raise ValueError(
+                    f"criteria_evidence[{i}] must not contain NUL or CR"
+                )
+
+        # rationale
+        if not isinstance(self.rationale, str) or not self.rationale:
+            raise TypeError(
+                f"rationale must be a non-empty str, "
+                f"got {_safe_type_name(self.rationale)}"
+            )
+        if self.rationale.strip() == "":
+            raise ValueError(
+                "rationale must not be only whitespace"
+            )
+        if "\0" in self.rationale or "\r" in self.rationale:
+            raise ValueError(
+                "rationale must not contain NUL or CR"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1003,71 +1194,74 @@ class TransitionWriteError(ControlPlaneTransitionError):
 # ── state lock infrastructure ──────────────────────────────────────────────
 
 
-def _verify_lock_ownership_and_unlink(
-    lock_path: Path,
-    token: str,
-) -> str | None:
-    """Verify *lock_path* contains *token* and remove it.
+def _acquire_os_lock(fd: int) -> None:
+    """Acquire a non-blocking OS advisory lock on *fd*.
 
-    Returns ``None`` on success, or a safe error string describing the
-    failure.  The lock file is **only** deleted when the stored bytes
-    exactly match *token* encoded as ASCII — no ``.strip()``, no
-    whitespace normalisation, no fallback to mtime.
+    * Windows: uses ``msvcrt.locking()`` in non-blocking mode
+      (``LK_NBLCK``).  An ``IOError`` on contention is translated to
+      ``TransitionLockContentionError``.
+    * POSIX: uses ``fcntl.flock(fd, LOCK_EX | LOCK_NB)``.  An ``IOError``
+      with errno ``EAGAIN`` / ``EACCES`` / ``EWOULDBLOCK`` is translated
+      to ``TransitionLockContentionError``.
+    * Unsupported platforms: fail-closed with
+      ``TransitionLockContentionError``.
 
-    Rules:
-    * File missing → error.
-    * File unreadable → error.
-    * Content not valid ASCII → error.
-    * Content != token → error (lock is NOT deleted).
-    * ``unlink()`` succeeds → ``None``.
-    * ``unlink()`` ``FileNotFoundError`` → error (someone else removed it).
-    * ``unlink()`` other ``OSError`` → error.
+    Raises ``TransitionLockContentionError`` on any lock-acquisition
+    failure so callers only need to catch one exception type.
     """
+    if os.name == "nt":
+        try:
+            import msvcrt
+        except ImportError:
+            raise TransitionLockContentionError(
+                "cannot acquire OS advisory lock: msvcrt not available"
+            ) from None
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            raise TransitionLockContentionError(
+                "control-plane state lock is currently held"
+            ) from exc
+        return
+
+    # POSIX: fcntl.flock
     try:
-        stored_bytes = lock_path.read_bytes()
-    except FileNotFoundError:
-        return "control-plane state lock file disappeared while held"
-    except OSError:
-        return "control-plane state lock file is unreadable while held"
-
-    try:
-        stored = stored_bytes.decode("ascii")
-    except (ValueError, UnicodeDecodeError):
-        return "control-plane state lock file token is corrupted"
-
-    if stored != token:
-        # Token mismatch — do NOT delete.
-        return "control-plane state lock file token mismatch"
-
-    try:
-        lock_path.unlink()
-    except FileNotFoundError:
-        return "control-plane state lock file disappeared during release"
-    except OSError:
-        return "control-plane state lock file could not be removed"
-
-    return None
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        err = exc.errno
+        if err in (
+            errno.EACCES,
+            errno.EAGAIN,
+            errno.EWOULDBLOCK,
+        ):
+            raise TransitionLockContentionError(
+                "control-plane state lock is currently held"
+            ) from exc
+        raise TransitionLockContentionError(
+            "cannot acquire control-plane state lock"
+        ) from exc
+    except AttributeError:
+        raise TransitionLockContentionError(
+            "OS advisory lock not available on this platform"
+        ) from None
 
 
-def _safe_unlink_if_owned(lock_path: Path, token: str) -> None:
-    """Best-effort cleanup: remove *lock_path* only if it still contains
-    *token*.  Silently ignores all errors — used only during acquisition
-    failure cleanup where we must not obscure the original exception.
+def _release_os_lock(fd: int) -> None:
+    """Release an OS advisory lock held on *fd*.
+
+    * Windows: ``msvcrt.locking(fd, LK_UNLCK, 1)``.
+    * POSIX: ``fcntl.flock(fd, LOCK_UN)``.
+
+    Lock-release failures are *not* silently ignored — if release fails,
+    a ``TransitionLockContentionError`` is raised because the lock state
+    is indeterminate.
     """
-    try:
-        stored_bytes = lock_path.read_bytes()
-    except (FileNotFoundError, OSError):
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
         return
-    try:
-        stored = stored_bytes.decode("ascii")
-    except (ValueError, UnicodeDecodeError):
-        return
-    if stored != token:
-        return
-    try:
-        lock_path.unlink()
-    except OSError:
-        pass
+
+    fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 @contextmanager
@@ -1076,65 +1270,84 @@ def _exclusive_state_lock(
 ) -> Iterator[None]:
     """Acquire the project-level control-plane state lock.
 
-    Uses ``os.open(O_CREAT | O_EXCL | O_WRONLY)`` with an ownership
-    token.  Contention raises ``TransitionLockContentionError``
-    immediately — no sleeping, waiting, polling, or retry.
+    Uses a **stable lock file** at
+    ``.agentdesk/runtime/.state-transition.lock`` with a **non-blocking
+    OS advisory lock** (``fcntl.flock(LOCK_EX | LOCK_NB)`` on POSIX,
+    ``msvcrt.locking(LK_NBLCK)`` on Windows).
 
-    The lock file is ``.agentdesk/runtime/.state-transition.lock``.
+    The lock file is **never deleted** — its existence does not indicate
+    that the lock is held; only the OS advisory lock decides ownership.
+    Contention raises ``TransitionLockContentionError`` immediately —
+    no sleeping, waiting, polling, or retry.
+
+    Frozen fd lifecycle::
+
+        open stable lock file
+        acquire non-blocking OS lock
+        yield
+        release OS lock
+        close file descriptor
+
+    * Acquire failure: fd is closed, then
+      ``TransitionLockContentionError`` is raised.
+    * Body raises: body exception is always propagated (takes priority).
+    * Body OK, release fails: ``TransitionLockContentionError`` raised.
+    * Body OK, close fails: ``TransitionLockContentionError`` raised
+      (close failure does NOT leak path, token, or content).
     """
     runtime_dir = project_root / _RUNTIME_RELATIVE
+    runtime_dir.mkdir(parents=True, exist_ok=True)
     lock_path = runtime_dir / _STATE_LOCK_NAME
 
-    token = secrets.token_hex(16)  # 32 lowercase hex chars
-
-    # ── acquire ────────────────────────────────────────────────────────
+    # ── open stable lock file (create if missing, never truncate) ─────────
+    fd: int | None = None
     try:
-        fd = os.open(
-            str(lock_path),
-            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-        )
-    except FileExistsError:
-        raise TransitionLockContentionError(
-            "control-plane state lock is currently held"
-        ) from None
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
     except OSError as exc:
         raise TransitionLockContentionError(
             "cannot acquire control-plane state lock"
         ) from exc
 
-    # Write ownership token with proper cleanup on failure.
+    # ── acquire non-blocking OS lock ──────────────────────────────────────
     try:
-        os.write(fd, token.encode("ascii"))
-        os.fsync(fd)
-    except BaseException:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        # Only remove if we still own the path — never delete a
-        # replacement lock that may have been created by another
-        # process between our open and the write failure.
-        _safe_unlink_if_owned(lock_path, token)
-        raise TransitionLockContentionError(
-            "failed to write control-plane state lock token"
-        ) from None
+        _acquire_os_lock(fd)
+    except TransitionLockContentionError:
+        # Acquire failed — must close fd.
+        os.close(fd)
+        raise
 
-    os.close(fd)
-
-    # ── yield to caller ────────────────────────────────────────────────
+    # ── yield to caller ───────────────────────────────────────────────────
     body_exception: BaseException | None = None
     try:
         yield
     except BaseException as _exc:
         body_exception = _exc
     finally:
-        # ── release (with token verification) ─────────────────────────
-        release_error = _verify_lock_ownership_and_unlink(lock_path, token)
+        # ── release OS lock ──────────────────────────────────────────────
+        release_error: BaseException | None = None
+        try:
+            _release_os_lock(fd)
+        except BaseException as _exc:
+            release_error = _exc
 
+        # ── close file descriptor ──────────────────────────────────────
+        close_error: BaseException | None = None
+        try:
+            os.close(fd)
+        except BaseException as _exc:
+            close_error = _exc
+
+        # ── exception priority: body > release > close ────────────────
         if body_exception is not None:
             raise body_exception
         if release_error is not None:
-            raise TransitionLockContentionError(release_error)
+            raise TransitionLockContentionError(
+                "failed to release control-plane state lock"
+            ) from release_error
+        if close_error is not None:
+            raise TransitionLockContentionError(
+                "failed to close control-plane state lock file"
+            ) from close_error
 
 
 # ── lock-order tracking ────────────────────────────────────────────────────
@@ -1792,7 +2005,7 @@ class ControlPlaneTransitionService:
         )
 
 
-# ── __all__ — exactly 31 frozen public symbols ────────────────────────────
+# ── __all__ — exactly 32 frozen public symbols ────────────────────────────
 
 __all__ = [
     "ControlPlaneTransitionService",
@@ -1804,6 +2017,7 @@ __all__ = [
     "TransitionEventContext",
     "GuardResult",
     "GuardInput",
+    "AcceptanceOwnerApproval",
     "SpecifyPayload",
     "DispatchPayload",
     "AcknowledgePayload",

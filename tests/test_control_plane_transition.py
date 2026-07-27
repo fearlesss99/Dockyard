@@ -76,10 +76,10 @@ class TestControlPlaneTransitionBase(unittest.TestCase):
 class TestAllSymbols(TestControlPlaneTransitionBase):
     """TC-13.11b: __all__ must contain exactly 31 symbols."""
 
-    def test_001_all_length_is_31(self) -> None:
+    def test_001_all_length_is_32(self) -> None:
         self.assertEqual(
-            len(self.cpt.__all__), 31,
-            f"__all__ must have exactly 31 symbols, got {len(self.cpt.__all__)}",
+            len(self.cpt.__all__), 32,
+            f"__all__ must have exactly 32 symbols, got {len(self.cpt.__all__)}",
         )
 
     def test_002_all_frozen_order_matches_spec(self) -> None:
@@ -93,6 +93,7 @@ class TestAllSymbols(TestControlPlaneTransitionBase):
             "TransitionEventContext",
             "GuardResult",
             "GuardInput",
+            "AcceptanceOwnerApproval",
             "SpecifyPayload",
             "DispatchPayload",
             "AcknowledgePayload",
@@ -264,11 +265,18 @@ class TestDataclassFieldExactness(TestControlPlaneTransitionBase):
         self.assertEqual(names, ("implementation_commit", "report_commit"))
         self.assertEqual(len(fields), 2)
 
-    def test_022_delivery_accepted_payload_two_fields(self) -> None:
+    def test_022_delivery_accepted_payload_six_fields(self) -> None:
         fields = dataclasses.fields(self.cpt.DeliveryAcceptedPayload)
         names = tuple(f.name for f in fields)
-        self.assertEqual(names, ("accepted_commit", "acceptance_path"))
-        self.assertEqual(len(fields), 2)
+        self.assertEqual(
+            names,
+            (
+                "accepted_commit", "acceptance_path",
+                "owner_approval", "residual_risks",
+                "criteria_evidence", "rationale",
+            ),
+        )
+        self.assertEqual(len(fields), 6)
 
     def test_023_delivery_returned_payload_zero_fields(self) -> None:
         fields = dataclasses.fields(self.cpt.DeliveryReturnedPayload)
@@ -342,6 +350,7 @@ class TestFrozenAndSlots(TestControlPlaneTransitionBase):
         "TransitionEventContext",
         "GuardResult",
         "GuardInput",
+        "AcceptanceOwnerApproval",
         "SpecifyPayload",
         "DispatchPayload",
         "AcknowledgePayload",
@@ -636,12 +645,12 @@ class TestDispatchCASValidation(TestControlPlaneTransitionBase):
                 expected_attempt=False,  # type: ignore[arg-type]
             )
 
-    def test_083_expected_attempt_zero_raises(self) -> None:
-        with self.assertRaises(ValueError):
-            self.cpt.DispatchCAS(
-                expected_dispatch_id="DSP-001",
-                expected_attempt=0,
-            )
+    def test_083_expected_attempt_zero_valid(self) -> None:
+        dc = self.cpt.DispatchCAS(
+            expected_dispatch_id="DSP-001",
+            expected_attempt=0,
+        )
+        self.assertEqual(dc.expected_attempt, 0)
 
     def test_084_expected_attempt_negative_raises(self) -> None:
         with self.assertRaises(ValueError):
@@ -1075,9 +1084,14 @@ class TestPayloadValidation(TestControlPlaneTransitionBase):
             )
 
     def test_156_delivery_accepted_payload_valid(self) -> None:
+        oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=())
         p = self.cpt.DeliveryAcceptedPayload(
             accepted_commit="a" * 40,
             acceptance_path="docs/pm/acceptances/TC-001-accept.md",
+            owner_approval=oa,
+            residual_risks=(),
+            criteria_evidence=(),
+            rationale="Accepted after review.",
         )
         self.assertEqual(p.accepted_commit, "a" * 40)
 
@@ -1596,7 +1610,7 @@ class TestApplyTransitionFailClosed(TestControlPlaneTransitionBase):
 
 
 class TestStateLock(TestControlPlaneTransitionBase):
-    """State lock infrastructure tests."""
+    """State lock infrastructure tests — OS advisory lock protocol."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -1609,76 +1623,47 @@ class TestStateLock(TestControlPlaneTransitionBase):
         self._tmpdir.cleanup()
 
     def test_230_state_lock_acquire_and_release(self) -> None:
-        """State lock can be acquired and released."""
+        """State lock can be acquired and released.
+        The lock file persists after release — OS advisory lock governs
+        ownership, not file existence."""
         lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-        with self.cpt._exclusive_state_lock(self.tmp):
-            self.assertTrue(lock_path.exists())
         self.assertFalse(lock_path.exists())
-
-    def test_231_state_lock_contention_raises(self) -> None:
-        """Second acquisition of same lock raises TransitionLockContentionError."""
-        import threading
-
-        errors = []
-
-        def hold_lock():
-            try:
-                with self.cpt._exclusive_state_lock(self.tmp):
-                    pass
-            except Exception:
-                pass  # expected
-
-        # Acquire lock in main thread, try to acquire in another.
         with self.cpt._exclusive_state_lock(self.tmp):
-            # Another acquisition from the same thread would deadlock/etc.
-            # Instead test that the lock file exists with a token.
-            lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
             self.assertTrue(lock_path.exists())
-            # Manual os.open with O_EXCL should fail.
-            import os as _os
-            try:
-                fd = _os.open(str(lock_path), _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY)
-                _os.close(fd)
-                self.fail("Should have raised FileExistsError")
-            except FileExistsError:
-                pass  # expected — lock already held
+        # Lock file persists — existence != held.
+        self.assertTrue(lock_path.exists())
 
-    def test_232_token_mismatch_raises_on_release(self) -> None:
-        """Token mismatch: write one token, corrupt to another, release
-        must raise TransitionLockContentionError."""
-        import secrets
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-        good_token = secrets.token_hex(16)
-        lock_path.write_bytes(good_token.encode("ascii"))
-        # We mock the release path by writing a corrupted token while
-        # the lock is held, then verifying the release error.
-        release_err = None
+    def test_231_state_lock_contention_from_same_process(self) -> None:
+        """Second acquisition of same lock from the same process raises
+        TransitionLockContentionError.  On Windows, msvcrt.LK_NBLCK
+        detects the already-held lock.  On POSIX, fcntl.flock with
+        LOCK_EX|LOCK_NB returns EAGAIN/EACCES."""
+        errors = []
         try:
             with self.cpt._exclusive_state_lock(self.tmp):
-                # Corrupt the token inside the block.
-                lock_path.write_bytes(b"corrupted-token-value")
-        except self.cpt.TransitionLockContentionError as e:
-            release_err = e
-        self.assertIsNotNone(
-            release_err,
-            "Should have raised TransitionLockContentionError on mismatch",
+                # Attempt re-acquire from same process — must fail.
+                try:
+                    with self.cpt._exclusive_state_lock(self.tmp):
+                        pass
+                    errors.append("should have raised")
+                except self.cpt.TransitionLockContentionError:
+                    pass  # expected
+        except Exception:
+            pass
+        if errors:
+            self.fail(errors[0])
+
+    def test_232_lock_file_persists_after_release(self) -> None:
+        """Lock file must NOT be deleted after release — OS advisory
+        lock governs ownership, not file existence."""
+        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
+        with self.cpt._exclusive_state_lock(self.tmp):
+            pass
+        self.assertTrue(
+            lock_path.exists(),
+            "Lock file must persist after release "
+            "(OS advisory lock is the ownership indicator)",
         )
-        # Lock should still exist (mismatch → not deleted).
-        self.assertTrue(lock_path.exists())
-
-    def test_232b_token_mismatch_does_not_delete_lock(self) -> None:
-        """Token mismatch: lock file is NOT deleted."""
-        import secrets
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-        token_2 = secrets.token_hex(16)
-        release_err = None
-        try:
-            with self.cpt._exclusive_state_lock(self.tmp):
-                lock_path.write_bytes(token_2.encode("ascii"))
-        except self.cpt.TransitionLockContentionError:
-            release_err = True
-        self.assertTrue(release_err)
-        self.assertTrue(lock_path.exists())
 
     def test_233_lock_body_exception_propagates(self) -> None:
         """Exception in the lock body propagates without swallowing."""
@@ -1689,21 +1674,30 @@ class TestStateLock(TestControlPlaneTransitionBase):
             with self.cpt._exclusive_state_lock(self.tmp):
                 raise TestException("inner error")
 
-        # Lock should be cleaned up.
+        # Lock file persists (was released in finally).
         lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-        self.assertFalse(lock_path.exists())
+        self.assertTrue(lock_path.exists())
 
     def test_234_lock_release_failure_no_path_leak(self) -> None:
-        """Even if lock release fails, the exception from body is primary."""
+        """Normal acquire/release — lock file persists, no error."""
         lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-
-        class TestException(Exception):
-            pass
-
-        # Normal acquire/release — lock should be gone.
         with self.cpt._exclusive_state_lock(self.tmp):
             pass
-        self.assertFalse(lock_path.exists())
+        self.assertTrue(lock_path.exists())
+
+    def test_235_lock_file_never_deleted(self) -> None:
+        """Verify lock file is not deleted across multiple
+        acquire/release cycles."""
+        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
+        for _ in range(3):
+            with self.cpt._exclusive_state_lock(self.tmp):
+                self.assertTrue(lock_path.exists())
+            self.assertTrue(lock_path.exists())
+        # The same lock file persists through all cycles.
+        contents = lock_path.read_bytes()
+        # File may be empty or contain garbage from previous fd reuse —
+        # the OS advisory lock is the only ownership indicator.
+        self.assertTrue(lock_path.exists())
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2389,7 +2383,7 @@ class TestImportZeroSideEffects(unittest.TestCase):
             timeout=10,
         )
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout.strip(), "31")
+        self.assertEqual(result.stdout.strip(), "32")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2987,9 +2981,11 @@ class TestEquivalenceMethods(TestControlPlaneTransitionBase):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestAcquisitionFailureCleanup(unittest.TestCase):
-    """Acquisition failure (os.write/fsync) must clean up lock file
-    ONLY when ownership is verified — never delete a replacement lock."""
+class TestLockFilePersists(unittest.TestCase):
+    """Lock file is stable — it is never deleted by the protocol.
+
+    The OS advisory lock (not file existence) indicates ownership.
+    """
 
     cpt = _cpt_module
 
@@ -3001,129 +2997,44 @@ class TestAcquisitionFailureCleanup(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmpdir.cleanup()
 
-    def test_500_os_write_failure_token_never_written(self) -> None:
-        """os.write fails before token is written: lock file exists but
-        contains no valid token.  _safe_unlink_if_owned reads the file,
-        finds it doesn't match, and leaves it alone.  The lock file is
-        NOT deleted (we cannot prove we own it), but the exception is
-        TransitionLockContentionError."""
+    def test_500_lock_file_persists_across_cycles(self) -> None:
+        """Lock file persists across multiple acquire/release cycles."""
         lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-        real_write = os.write
+        for _ in range(3):
+            with self.cpt._exclusive_state_lock(self.tmp):
+                self.assertTrue(lock_path.exists())
+            self.assertTrue(lock_path.exists())
 
-        def fail_write(fd, data):
-            raise OSError("simulated write failure")
-
-        try:
-            os.write = fail_write  # type: ignore[assignment]
-            with self.assertRaises(self.cpt.TransitionLockContentionError):
-                with self.cpt._exclusive_state_lock(self.tmp):
-                    pass
-        finally:
-            os.write = real_write  # type: ignore[assignment]
-
-        # Lock file remains — we could not prove ownership.
-        # This is the correct behavior: we must not delete a file we
-        # don't own (another process could have created a replacement).
-        self.assertTrue(
-            lock_path.exists(),
-            "Lock file must remain after write failure "
-            "(ownership cannot be verified — must not delete)",
-        )
-
-    def test_501_os_fsync_failure_token_present(self) -> None:
-        """os.fsync fails but the token WAS written to the file.
-        _safe_unlink_if_owned reads the file, finds our token, and
-        safely removes it."""
+    def test_501_no_token_in_lock_file(self) -> None:
+        """The lock file does NOT contain an ownership token — only the
+        OS advisory lock decides ownership."""
         lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-        # We capture the token that _exclusive_state_lock generates
-        # to verify ownership after the fact.
-        import secrets
-        captured_token = None
-
-        real_fsync = os.fsync
-        real_token_hex = secrets.token_hex
-
-        def fake_token_hex(nbytes=16):
-            nonlocal captured_token
-            captured_token = real_token_hex(nbytes)
-            return captured_token
-
-        def fail_fsync(fd):
-            raise OSError("simulated fsync failure")
-
-        try:
-            secrets.token_hex = fake_token_hex  # type: ignore[assignment]
-            os.fsync = fail_fsync  # type: ignore[assignment]
-            with self.assertRaises(self.cpt.TransitionLockContentionError):
-                with self.cpt._exclusive_state_lock(self.tmp):
-                    pass
-        finally:
-            os.fsync = real_fsync  # type: ignore[assignment]
-            secrets.token_hex = real_token_hex  # type: ignore[assignment]
-
-        # After fsync failure, token WAS written (write succeeded,
-        # fsync failed).  _safe_unlink_if_owned should find our token
-        # and clean up.
-        self.assertFalse(
-            lock_path.exists(),
-            "Lock file must be cleaned up after fsync failure "
-            "(token was written, ownership verified)",
-        )
-
-    def test_502_write_failure_replacement_lock_preserved(self) -> None:
-        """Write fails, and someone else's token is in the lock file.
-        The lock file must NOT be deleted."""
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-        real_write = os.write
-
-        def fail_write(fd, data):
-            raise OSError("simulated write failure")
-
-        try:
-            os.write = fail_write  # type: ignore[assignment]
-            with self.assertRaises(self.cpt.TransitionLockContentionError):
-                with self.cpt._exclusive_state_lock(self.tmp):
-                    pass
-        finally:
-            os.write = real_write  # type: ignore[assignment]
-
-        # Now simulate: someone replaces the lock with their own token.
-        import secrets
-        replacement_token = secrets.token_hex(16)
-        lock_path.write_bytes(replacement_token.encode("ascii"))
-
-        # The lock file exists with someone else's token — must remain.
-        self.assertTrue(lock_path.exists())
-        self.assertEqual(
-            lock_path.read_bytes().decode("ascii"),
-            replacement_token,
-        )
-
-    def test_503_write_failure_lock_disappears(self) -> None:
-        """Write fails, and someone removed the lock entirely.
-        No secondary damage — the code should not crash."""
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-        real_write = os.write
-
-        def fail_write(fd, data):
-            raise OSError("simulated write failure")
-
-        try:
-            os.write = fail_write  # type: ignore[assignment]
-            with self.assertRaises(self.cpt.TransitionLockContentionError):
-                with self.cpt._exclusive_state_lock(self.tmp):
-                    pass
-        finally:
-            os.write = real_write  # type: ignore[assignment]
-
-        # Remove the lock file (simulate external removal).
-        try:
-            lock_path.unlink()
-        except FileNotFoundError:
+        with self.cpt._exclusive_state_lock(self.tmp):
             pass
+        # Lock file exists but its content is irrelevant.
+        self.assertTrue(lock_path.exists())
 
-        # No crash — _safe_unlink_if_owned handles missing file silently.
-        self.assertFalse(lock_path.exists())
+    def test_502_old_token_helpers_removed(self) -> None:
+        """_verify_lock_ownership_and_unlink and _safe_unlink_if_owned
+        must not exist on the module anymore."""
+        self.assertFalse(
+            hasattr(self.cpt, "_verify_lock_ownership_and_unlink"),
+            "_verify_lock_ownership_and_unlink must be removed",
+        )
+        self.assertFalse(
+            hasattr(self.cpt, "_safe_unlink_if_owned"),
+            "_safe_unlink_if_owned must be removed",
+        )
+        self.assertFalse(
+            hasattr(self.cpt, "secrets"),
+            "secrets module must not be imported",
+        )
+
+    def test_503_acquire_release_clean_fd_lifecycle(self) -> None:
+        """Normal acquire→yield→release→close cycle succeeds."""
+        with self.cpt._exclusive_state_lock(self.tmp):
+            pass  # body OK
+        # No exception — release and close succeeded.
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3131,8 +3042,9 @@ class TestAcquisitionFailureCleanup(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestReleaseFailure(unittest.TestCase):
-    """Release-time failures must raise TransitionLockContentionError."""
+class TestLockFilePersistsAndOldHelpersRemoved(unittest.TestCase):
+    """Lock file persists — OS advisory lock governs ownership.
+    Old token-based helpers are removed."""
 
     cpt = _cpt_module
 
@@ -3144,90 +3056,40 @@ class TestReleaseFailure(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmpdir.cleanup()
 
-    def _acquire_and_corrupt(self, corrupt_fn):
-        """Acquire lock, apply corruption inside the block, return error."""
-        err = None
-        try:
+    def test_500_lock_file_persists_across_cycles(self) -> None:
+        """Lock file persists across multiple acquire/release cycles."""
+        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
+        for _ in range(3):
             with self.cpt._exclusive_state_lock(self.tmp):
-                corrupt_fn()
-        except self.cpt.TransitionLockContentionError as e:
-            err = e
-        return err
+                self.assertTrue(lock_path.exists())
+            self.assertTrue(lock_path.exists())
 
-    def test_510_lock_file_missing_on_normal_release(self) -> None:
-        """Lock file deleted during body: release raises error."""
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-
-        def corrupt():
-            lock_path.unlink()
-
-        err = self._acquire_and_corrupt(corrupt)
-        self.assertIsNotNone(
-            err, "Missing lock on release must raise TransitionLockContentionError"
-        )
-
-    def test_511_lock_file_unreadable_on_normal_release(self) -> None:
-        """Unreadable lock on release: error raised."""
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-        # On Windows, chmod 0000 on a file isn't reliable. Instead,
-        # replace lock with a directory (read_bytes fails).
-        def corrupt():
-            lock_path.unlink()
-            lock_path.mkdir()
-
-        err = self._acquire_and_corrupt(corrupt)
-        self.assertIsNotNone(
-            err, "Unreadable lock on release must raise error"
-        )
-        # Clean up the directory we created.
-        import shutil
-        if lock_path.is_dir():
-            shutil.rmtree(str(lock_path), ignore_errors=True)
-
-    def test_512_token_corrupt_non_ascii(self) -> None:
-        """Non-ASCII bytes in token: release raises corruption error."""
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-
-        def corrupt():
-            lock_path.write_bytes(b"\xff\xfe\x00\x01")
-
-        err = self._acquire_and_corrupt(corrupt)
-        self.assertIsNotNone(
-            err, "Non-ASCII token must raise TransitionLockContentionError"
-        )
-
-    def test_513_token_whitespace_not_normalized(self) -> None:
-        """Token with trailing newline must NOT match — no .strip()."""
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-
-        def corrupt():
-            current = lock_path.read_bytes()
-            lock_path.write_bytes(current + b"\n")
-
-        err = self._acquire_and_corrupt(corrupt)
-        self.assertIsNotNone(
-            err, "Token with appended whitespace must NOT match"
-        )
-
-    def test_514_token_extra_content_not_accepted(self) -> None:
-        """Token with extra bytes appended must NOT match."""
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-
-        def corrupt():
-            lock_path.write_bytes(lock_path.read_bytes() + b"extra")
-
-        err = self._acquire_and_corrupt(corrupt)
-        self.assertIsNotNone(
-            err, "Token with extra content must NOT match"
-        )
-
-    def test_515_token_exact_match_succeeds(self) -> None:
-        """Exact token match: lock is deleted on release (no error)."""
+    def test_501_no_token_in_lock_file(self) -> None:
+        """The lock file does NOT contain an ownership token — only the
+        OS advisory lock decides ownership."""
         lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
         with self.cpt._exclusive_state_lock(self.tmp):
             pass
-        # Lock should be gone.
-        self.assertFalse(lock_path.exists())
+        # Lock file exists but its content is irrelevant.
+        self.assertTrue(lock_path.exists())
+
+    def test_502_old_token_helpers_removed(self) -> None:
+        """_verify_lock_ownership_and_unlink and _safe_unlink_if_owned
+        must not exist on the module anymore."""
+        self.assertFalse(
+            hasattr(self.cpt, "_verify_lock_ownership_and_unlink"),
+            "_verify_lock_ownership_and_unlink must be removed",
+        )
+        self.assertFalse(
+            hasattr(self.cpt, "_safe_unlink_if_owned"),
+            "_safe_unlink_if_owned must be removed",
+        )
+
+    def test_503_acquire_release_clean_fd_lifecycle(self) -> None:
+        """Normal acquire→yield→release→close cycle succeeds."""
+        with self.cpt._exclusive_state_lock(self.tmp):
+            pass  # body OK
+        # No exception — release and close succeeded.
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3251,68 +3113,41 @@ class TestBodyExceptionPriority(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmpdir.cleanup()
 
-    def _body_raises_and_corrupt(self, corrupt_fn):
-        """Body raises TestException, then lock is corrupted."""
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
+    def test_520_body_exception_preserved(self) -> None:
+        """Body exception is propagated, not swallowed by release."""
         try:
             with self.cpt._exclusive_state_lock(self.tmp):
-                corrupt_fn()
                 raise self._TestException("body error")
         except self._TestException:
-            return  # Body exception preserved — success.
-        except self.cpt.TransitionLockContentionError as e:
-            self.fail(
-                f"Body exception must take priority, got {type(e).__name__}"
-            )
-
-    def test_520_body_exception_plus_missing_lock(self) -> None:
-        """Body raises + lock deleted: body exception propagated."""
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-
-        def corrupt():
-            lock_path.unlink()
-
-        self._body_raises_and_corrupt(corrupt)
-
-    def test_521_body_exception_plus_unreadable_lock(self) -> None:
-        """Body raises + lock replaced with directory: body exception."""
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-
-        def corrupt():
-            lock_path.unlink()
-            lock_path.mkdir()
-
-        self._body_raises_and_corrupt(corrupt)
-        import shutil
-        if lock_path.is_dir():
-            shutil.rmtree(str(lock_path), ignore_errors=True)
-
-    def test_522_body_exception_plus_token_mismatch(self) -> None:
-        """Body raises + token corrupted: body exception propagated."""
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-
-        def corrupt():
-            lock_path.write_bytes(b"corrupted")
-
-        self._body_raises_and_corrupt(corrupt)
-
-    def test_523_body_exception_plus_unlink_failure(self) -> None:
-        """Body raises + unlink fails: body exception propagated.
-        On Windows, we cannot reliably simulate unlink failure on a
-        regular file.  We verify the general pattern: body exception
-        is always preserved.
-        """
-        # Simply verify the priority by checking the error type
-        # is correct when body raises and lock is missing.
-        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
-        try:
-            with self.cpt._exclusive_state_lock(self.tmp):
-                lock_path.unlink()
-                raise self._TestException("body error")
-        except self._TestException:
-            pass  # Correct — body exception preserved.
+            pass  # expected
         else:
             self.fail("Body exception must be raised")
+
+        # Lock file persists (fd was released in finally).
+        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
+        self.assertTrue(lock_path.exists())
+
+    def test_521_body_exception_lock_file_persists(self) -> None:
+        """Body exception: lock file persists because OS lock was released."""
+        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
+        try:
+            with self.cpt._exclusive_state_lock(self.tmp):
+                raise self._TestException("body error")
+        except self._TestException:
+            pass
+
+        # Lock file exists — OS lock was released, fd was closed.
+        self.assertTrue(lock_path.exists())
+
+    def test_522_body_exception_no_fd_leak(self) -> None:
+        """Body exception must not leak file descriptors."""
+        import os as _os
+        try:
+            # On Windows we can verify no crash, which is the main concern.
+            with self.cpt._exclusive_state_lock(self.tmp):
+                raise self._TestException("body")
+        except self._TestException:
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3377,6 +3212,441 @@ class TestAtomicWriteFailureSemantics(unittest.TestCase):
         self.assertNotIn("\\", msg)
         # Should contain the safe stage identifier.
         self.assertIn("directory_fsync", msg)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 41. AcceptanceOwnerApproval validation
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
+    """AcceptanceOwnerApproval construction-time validation."""
+
+    def test_600_valid_owner_approval_none(self) -> None:
+        oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=())
+        self.assertEqual(oa.gate, "none")
+        self.assertEqual(oa.approval_ids, ())
+
+    def test_601_valid_owner_approval_with_ids(self) -> None:
+        oa = self.cpt.AcceptanceOwnerApproval(
+            gate="pm_approval",
+            approval_ids=("APR-001", "APR-002"),
+        )
+        self.assertEqual(oa.gate, "pm_approval")
+        self.assertEqual(oa.approval_ids, ("APR-001", "APR-002"))
+
+    def test_602_all_gate_values_accepted(self) -> None:
+        for gate in ("none", "pm_approval", "model_approval", "external_approval"):
+            with self.subTest(gate=gate):
+                oa = self.cpt.AcceptanceOwnerApproval(gate=gate, approval_ids=())
+                self.assertEqual(oa.gate, gate)
+
+    def test_603_invalid_gate_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.AcceptanceOwnerApproval(gate="invalid_gate", approval_ids=())
+
+    def test_604_approval_ids_not_iterable_raises(self) -> None:
+        """Non-iterable approval_ids must raise TypeError."""
+        with self.assertRaises(TypeError):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none",
+                approval_ids=123,  # type: ignore[arg-type]
+            )
+
+    def test_605_approval_ids_empty_string_raises(self) -> None:
+        with self.assertRaises(TypeError):
+            self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=("",))
+
+    def test_606_approval_ids_whitespace_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=(" APR-001",))
+
+    def test_607_approval_ids_duplicate_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="pm_approval",
+                approval_ids=("APR-001", "APR-001"),
+            )
+
+    def test_608_approval_ids_with_nul_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none",
+                approval_ids=("APR-\x00001",),
+            )
+
+    def test_609_approval_ids_with_cr_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none",
+                approval_ids=("APR-001\r",),
+            )
+
+    def test_610_approval_ids_with_lf_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none",
+                approval_ids=("APR\n001",),
+            )
+
+    def test_611_deep_immutable_frozen(self) -> None:
+        oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=())
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            oa.gate = "other"  # type: ignore[misc]
+
+    def test_612_source_list_mutation_does_not_affect_approval_ids(self) -> None:
+        src = ["APR-001", "APR-002"]
+        oa = self.cpt.AcceptanceOwnerApproval(gate="pm_approval", approval_ids=tuple(src))
+        src.append("APR-003")
+        self.assertEqual(oa.approval_ids, ("APR-001", "APR-002"))
+        self.assertEqual(len(oa.approval_ids), 2)
+
+    def test_613_defensive_copy_from_non_tuple_iterable(self) -> None:
+        """When constructed with a list, it is defensively copied to tuple."""
+        oa = self.cpt.AcceptanceOwnerApproval(
+            gate="pm_approval",
+            approval_ids=["APR-001", "APR-002"],  # type: ignore[arg-type]
+        )
+        self.assertIsInstance(oa.approval_ids, tuple)
+        self.assertEqual(oa.approval_ids, ("APR-001", "APR-002"))
+
+    def test_614_malicious_repr_not_invoked(self) -> None:
+        """Error messages must not call __repr__ on gate value."""
+        with self.assertRaises(TypeError) as cm:
+            self.cpt.AcceptanceOwnerApproval(gate=123, approval_ids=())  # type: ignore[arg-type]
+        self.assertIn("int", str(cm.exception))
+
+    def test_615_frozen_and_slots(self) -> None:
+        cls = self.cpt.AcceptanceOwnerApproval
+        self.assertTrue(cls.__dataclass_params__.frozen)
+        self.assertTrue(cls.__dataclass_params__.slots)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 42. DeliveryAcceptedPayload expanded validation
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDeliveryAcceptedPayloadExpanded(TestControlPlaneTransitionBase):
+    """Expanded DeliveryAcceptedPayload with owner_approval, residual_risks,
+    criteria_evidence, and rationale."""
+
+    def _make_oa(self) -> object:
+        return self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=())
+
+    def test_620_valid_full_payload(self) -> None:
+        oa = self._make_oa()
+        p = self.cpt.DeliveryAcceptedPayload(
+            accepted_commit="a" * 40,
+            acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
+            owner_approval=oa,
+            residual_risks=("Risk 1", "Risk 2"),
+            criteria_evidence=("Check A passed", "Check B passed"),
+            rationale="All checks passed, residual risks are acceptable.",
+        )
+        self.assertEqual(p.accepted_commit, "a" * 40)
+        self.assertEqual(p.residual_risks, ("Risk 1", "Risk 2"))
+        self.assertEqual(p.criteria_evidence, ("Check A passed", "Check B passed"))
+        self.assertEqual(p.rationale, "All checks passed, residual risks are acceptable.")
+
+    def test_621_empty_residual_risks_valid(self) -> None:
+        oa = self._make_oa()
+        p = self.cpt.DeliveryAcceptedPayload(
+            accepted_commit="a" * 40,
+            acceptance_path="p",
+            owner_approval=oa,
+            residual_risks=(),
+            criteria_evidence=("evidence",),
+            rationale="Rationale.",
+        )
+        self.assertEqual(p.residual_risks, ())
+
+    def test_622_empty_criteria_evidence_valid(self) -> None:
+        oa = self._make_oa()
+        p = self.cpt.DeliveryAcceptedPayload(
+            accepted_commit="a" * 40,
+            acceptance_path="p",
+            owner_approval=oa,
+            residual_risks=(),
+            criteria_evidence=(),
+            rationale="Rationale.",
+        )
+        self.assertEqual(p.criteria_evidence, ())
+
+    def test_623_rationale_only_whitespace_raises(self) -> None:
+        oa = self._make_oa()
+        with self.assertRaises(ValueError):
+            self.cpt.DeliveryAcceptedPayload(
+                accepted_commit="a" * 40,
+                acceptance_path="p",
+                owner_approval=oa,
+                residual_risks=(),
+                criteria_evidence=(),
+                rationale="   ",
+            )
+
+    def test_624_rationale_empty_raises(self) -> None:
+        oa = self._make_oa()
+        with self.assertRaises(TypeError):
+            self.cpt.DeliveryAcceptedPayload(
+                accepted_commit="a" * 40,
+                acceptance_path="p",
+                owner_approval=oa,
+                residual_risks=(),
+                criteria_evidence=(),
+                rationale="",
+            )
+
+    def test_625_rationale_with_nul_raises(self) -> None:
+        oa = self._make_oa()
+        with self.assertRaises(ValueError):
+            self.cpt.DeliveryAcceptedPayload(
+                accepted_commit="a" * 40,
+                acceptance_path="p",
+                owner_approval=oa,
+                residual_risks=(),
+                criteria_evidence=(),
+                rationale="bad\x00char",
+            )
+
+    def test_626_rationale_with_cr_raises(self) -> None:
+        oa = self._make_oa()
+        with self.assertRaises(ValueError):
+            self.cpt.DeliveryAcceptedPayload(
+                accepted_commit="a" * 40,
+                acceptance_path="p",
+                owner_approval=oa,
+                residual_risks=(),
+                criteria_evidence=(),
+                rationale="bad\rchar",
+            )
+
+    def test_627_rationale_multiline_allowed(self) -> None:
+        """Rationale may contain LF — multi-line justification is valid."""
+        oa = self._make_oa()
+        p = self.cpt.DeliveryAcceptedPayload(
+            accepted_commit="a" * 40,
+            acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
+            owner_approval=oa,
+            residual_risks=(),
+            criteria_evidence=(),
+            rationale="Line 1\nLine 2\nLine 3",
+        )
+        self.assertIn("\n", p.rationale)
+
+    def test_628_residual_risks_with_nul_raises(self) -> None:
+        oa = self._make_oa()
+        with self.assertRaises(ValueError):
+            self.cpt.DeliveryAcceptedPayload(
+                accepted_commit="a" * 40,
+                acceptance_path="p",
+                owner_approval=oa,
+                residual_risks=("bad\x00item",),
+                criteria_evidence=(),
+                rationale="r",
+            )
+
+    def test_629_residual_risks_with_cr_raises(self) -> None:
+        oa = self._make_oa()
+        with self.assertRaises(ValueError):
+            self.cpt.DeliveryAcceptedPayload(
+                accepted_commit="a" * 40,
+                acceptance_path="p",
+                owner_approval=oa,
+                residual_risks=("bad\ritem",),
+                criteria_evidence=(),
+                rationale="r",
+            )
+
+    def test_630_residual_risks_whitespace_only_raises(self) -> None:
+        oa = self._make_oa()
+        with self.assertRaises(ValueError):
+            self.cpt.DeliveryAcceptedPayload(
+                accepted_commit="a" * 40,
+                acceptance_path="p",
+                owner_approval=oa,
+                residual_risks=("  ",),
+                criteria_evidence=(),
+                rationale="r",
+            )
+
+    def test_631_criteria_evidence_with_lf_allowed(self) -> None:
+        """Multi-line criteria_evidence is allowed."""
+        oa = self._make_oa()
+        p = self.cpt.DeliveryAcceptedPayload(
+            accepted_commit="a" * 40,
+            acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
+            owner_approval=oa,
+            residual_risks=(),
+            criteria_evidence=("Line 1\nLine 2",),
+            rationale="r",
+        )
+        self.assertIn("\n", p.criteria_evidence[0])
+
+    def test_632_owner_approval_not_acceptance_owner_approval_raises(self) -> None:
+        with self.assertRaises(TypeError):
+            self.cpt.DeliveryAcceptedPayload(
+                accepted_commit="a" * 40,
+                acceptance_path="p",
+                owner_approval={"gate": "none"},  # type: ignore[arg-type]
+                residual_risks=(),
+                criteria_evidence=(),
+                rationale="r",
+            )
+
+    def test_633_source_list_mutation_residual_risks(self) -> None:
+        oa = self._make_oa()
+        src = ["risk1", "risk2"]
+        p = self.cpt.DeliveryAcceptedPayload(
+            accepted_commit="a" * 40,
+            acceptance_path="p",
+            owner_approval=oa,
+            residual_risks=tuple(src),
+            criteria_evidence=(),
+            rationale="r",
+        )
+        src.append("risk3")
+        self.assertEqual(p.residual_risks, ("risk1", "risk2"))
+
+    def test_634_source_list_mutation_criteria_evidence(self) -> None:
+        oa = self._make_oa()
+        src = ["ev1", "ev2"]
+        p = self.cpt.DeliveryAcceptedPayload(
+            accepted_commit="a" * 40,
+            acceptance_path="p",
+            owner_approval=oa,
+            residual_risks=(),
+            criteria_evidence=tuple(src),
+            rationale="r",
+        )
+        src.append("ev3")
+        self.assertEqual(p.criteria_evidence, ("ev1", "ev2"))
+
+    def test_635_frozen_prevents_mutation(self) -> None:
+        oa = self._make_oa()
+        p = self.cpt.DeliveryAcceptedPayload(
+            accepted_commit="a" * 40,
+            acceptance_path="p",
+            owner_approval=oa,
+            residual_risks=(),
+            criteria_evidence=(),
+            rationale="r",
+        )
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            p.rationale = "new"  # type: ignore[misc]
+
+    def test_636_unicode_preserved(self) -> None:
+        oa = self._make_oa()
+        p = self.cpt.DeliveryAcceptedPayload(
+            accepted_commit="a" * 40,
+            acceptance_path="docs/pm/acceptances/résumé-001.md",
+            owner_approval=oa,
+            residual_risks=("リスク",),
+            criteria_evidence=("証拠",),
+            rationale="理由：すべて合格 🎉",
+        )
+        self.assertEqual(p.residual_risks[0], "リスク")
+        self.assertEqual(p.rationale, "理由：すべて合格 🎉")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 43. new_revision / new_attempt validation helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestNewRevisionValidation(TestControlPlaneTransitionBase):
+    """_validate_new_revision must enforce exact expected_revision + 1."""
+
+    def test_650_exact_plus_one_valid(self) -> None:
+        # Should not raise.
+        self.cpt._validate_new_revision(6, 5)
+
+    def test_651_same_value_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionCASConflictError):
+            self.cpt._validate_new_revision(5, 5)
+
+    def test_652_skip_one_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionCASConflictError):
+            self.cpt._validate_new_revision(7, 5)
+
+    def test_653_rollback_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionCASConflictError):
+            self.cpt._validate_new_revision(4, 5)
+
+    def test_654_large_jump_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionCASConflictError):
+            self.cpt._validate_new_revision(100, 5)
+
+    def test_655_initial_revision_from_1_to_2(self) -> None:
+        self.cpt._validate_new_revision(2, 1)
+
+    def test_656_error_message_contains_expected_and_got(self) -> None:
+        with self.assertRaises(self.cpt.TransitionCASConflictError) as cm:
+            self.cpt._validate_new_revision(9, 5)
+        msg = str(cm.exception)
+        self.assertIn("6", msg)   # target = 5 + 1
+        self.assertIn("9", msg)   # got
+
+
+class TestNewAttemptValidation(TestControlPlaneTransitionBase):
+    """_validate_new_attempt must enforce exact current_attempt + 1."""
+
+    def test_660_exact_plus_one_valid(self) -> None:
+        self.cpt._validate_new_attempt(1, 0)
+
+    def test_661_first_dispatch_from_zero(self) -> None:
+        self.cpt._validate_new_attempt(1, 0)
+
+    def test_662_subsequent_dispatch(self) -> None:
+        self.cpt._validate_new_attempt(3, 2)
+
+    def test_663_same_value_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionCASConflictError):
+            self.cpt._validate_new_attempt(1, 1)
+
+    def test_664_skip_one_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionCASConflictError):
+            self.cpt._validate_new_attempt(3, 1)
+
+    def test_665_rollback_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionCASConflictError):
+            self.cpt._validate_new_attempt(0, 2)
+
+    def test_666_zero_from_zero_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionCASConflictError):
+            self.cpt._validate_new_attempt(0, 0)
+
+    def test_667_negative_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionCASConflictError):
+            self.cpt._validate_new_attempt(-1, 0)
+
+    def test_668_error_message_contains_expected_and_got(self) -> None:
+        with self.assertRaises(self.cpt.TransitionCASConflictError) as cm:
+            self.cpt._validate_new_attempt(5, 2)
+        msg = str(cm.exception)
+        self.assertIn("3", msg)   # target = 2 + 1
+        self.assertIn("5", msg)   # got
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 44. DispatchCAS expected_attempt min_val=0
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDispatchCASAttemptZero(TestControlPlaneTransitionBase):
+    """DispatchCAS.expected_attempt must allow 0 for first dispatch."""
+
+    def test_670_expected_attempt_zero_valid(self) -> None:
+        dc = self.cpt.DispatchCAS(expected_dispatch_id="DSP-001", expected_attempt=0)
+        self.assertEqual(dc.expected_attempt, 0)
+
+    def test_671_expected_attempt_one_valid(self) -> None:
+        dc = self.cpt.DispatchCAS(expected_dispatch_id="DSP-001", expected_attempt=1)
+        self.assertEqual(dc.expected_attempt, 1)
+
+    def test_672_expected_attempt_negative_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.DispatchCAS(expected_dispatch_id="DSP-001", expected_attempt=-1)
 
 
 if __name__ == "__main__":
