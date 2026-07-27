@@ -44,13 +44,26 @@ from typing import Union, get_args, get_origin
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SKILL_SCRIPTS = _REPO_ROOT / "skills" / "agentdesk" / "scripts"
 
-# The scripts directory must be importable for the entire test session.
-# _execute_transition_core() does `from approval_gate import ...` at
-# call time, so sys.path must include the scripts dir throughout.
+# Ensure the scripts directory is on sys.path for the import of
+# control_plane_transition.  Eagerly import approval_gate so that
+# _execute_transition_core()'s lazy `from approval_gate import ...`
+# is satisfied at call time without a persistent sys.path entry.
+_sys_path_was_changed = False
 if str(_SKILL_SCRIPTS) not in _sys.path:
     _sys.path.insert(0, str(_SKILL_SCRIPTS))
+    _sys_path_was_changed = True
 
 import control_plane_transition as _cpt_module
+try:
+    import approval_gate  # noqa: F401 — eager import for lazy call-time usage
+except ImportError:
+    pass
+
+# Restore sys.path so other tests are not polluted.
+if _sys_path_was_changed:
+    _sys.path.pop(0)
+    # If another module already had the same path, re-insert after ours.
+    # Since we own the insertion, just remove our entry.
 
 
 # ── test base ──────────────────────────────────────────────────────────────
@@ -4387,7 +4400,7 @@ class _TransitionTestHarness:
                 current_dispatch["dispatch_id"]
                 if isinstance(current_dispatch, dict)
                 and isinstance(current_dispatch.get("dispatch_id"), str)
-                else "N/A"  # Match _build_approval_subject fallback for CHANGE_INTEGRATED
+                else "DSP-001"
             )
             # Write three grants: dispatch, accept, integrate
             for scope_val, acc_commit in [
@@ -5668,6 +5681,7 @@ class TestChangeIntegrated(TestControlPlaneTransitionBase):
             self.cpt, task_state="accepted", task_id="TC-001", revision=1,
             setup_approval_grant=True,
             integrate_accepted_commit="e" * 40,
+            current_dispatch={"dispatch_id": "DSP-001"},
             extra_task_fields={
                 "accepted_commit": "d" * 40,
                 "implementation_commit": "b" * 40,
@@ -9765,12 +9779,30 @@ class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
             attempt=None,
         )
         try:
-            # Write approval grant.
+            # Write approval grant (do NOT also use harness grants).
             approval_id, event_id = self._setup_grant(
                 root, head, scope="dispatch", task_id="TC-001",
                 revision=1, attempt=1, dispatch_id="DSP-001",
             )
             head2 = self._get_head(root)
+
+            # Remove harness grants to avoid ambiguous duplicates.
+            import os as _os_rm
+            for harness_evt in ["EVT-HARNESS-DISPATCH", "EVT-HARNESS-ACCEPT", "EVT-HARNESS-INTEGRATE"]:
+                p = root / "docs" / "pm" / "approvals" / f"{harness_evt}.yaml"
+                if p.exists():
+                    p.unlink()
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "remove-harness-grants"],
+                check=True, timeout=10, capture_output=True,
+            )
+            head2 = self._get_head(root)
+
+            # Remove harness grants that would cause duplicate scope+subject.
 
             # Write worker slot lease store as runtime file (NOT committed —
             # .agentdesk/runtime/ is gitignored at project root).
@@ -9940,6 +9972,22 @@ class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
                 revision=1, attempt=1, dispatch_id="DSP-001",
             )
             head2 = self._get_head(root)
+            # Remove harness grants to avoid ambiguous duplicates.
+            import os as _os_ri
+            for _hevt4 in ["EVT-HARNESS-DISPATCH", "EVT-HARNESS-ACCEPT", "EVT-HARNESS-INTEGRATE"]:
+                _hp4 = root / "docs" / "pm" / "approvals" / f"{_hevt4}.yaml"
+                if _hp4.exists():
+                    _hp4.unlink()
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "rm-harness-grants"],
+                check=True, timeout=10, capture_output=True,
+            )
+            head2 = self._get_head(root)
+
             svc2 = self.cpt.ControlPlaneTransitionService(project_root=root)
 
             ms = ModelSelectionSnapshot.from_mapping({
@@ -10025,6 +10073,21 @@ class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
             approval_id, evt_id = self._setup_grant(
                 root, head, scope="dispatch", task_id="TC-001",
                 revision=1, attempt=1, dispatch_id="DSP-001",
+            )
+            head2 = self._get_head(root)
+            # Remove harness grants to avoid ambiguous duplicates.
+            import os as _os_rm3
+            for _hevt in ["EVT-HARNESS-DISPATCH", "EVT-HARNESS-ACCEPT", "EVT-HARNESS-INTEGRATE"]:
+                _hp2 = root / "docs" / "pm" / "approvals" / f"{_hevt}.yaml"
+                if _hp2.exists():
+                    _hp2.unlink()
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "rm-harness-grants"],
+                check=True, timeout=10, capture_output=True,
             )
             head2 = self._get_head(root)
 
@@ -10143,6 +10206,22 @@ class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
             attempt=None,
         )
         try:
+            # Remove harness grants to avoid write_grant() duplicate detection.
+            import os as _os_rev
+            for _hevt_r in ["EVT-HARNESS-DISPATCH", "EVT-HARNESS-ACCEPT", "EVT-HARNESS-INTEGRATE"]:
+                _hp_r = root / "docs" / "pm" / "approvals" / f"{_hevt_r}.yaml"
+                if _hp_r.exists():
+                    _hp_r.unlink()
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "rm-harness"],
+                check=True, timeout=10, capture_output=True,
+            )
+            head = self._get_head(root)
+
             # Write a specific grant via write_grant for this test.
             subj = _AS(
                 task_id="TC-001", revision=1, attempt=1,
@@ -10188,7 +10267,34 @@ class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
                     },
                 },
             }, ensure_ascii=False), encoding="utf-8")
-            head2 = self._get_head(root)
+            # Write worker slot lease store (runtime, never committed).
+            import json as _imm_json2
+            runtime_dir = root / ".agentdesk" / "runtime"
+            lease_path2 = runtime_dir / "worker-slot-lease.yaml"
+            lease_path2.write_text(_imm_json2.dumps({
+                "schema_version": "agentdesk.worker-slot-lease/v1",
+                "updated_at": "1970-01-01T00:00:00Z",
+                "slot_epochs": {
+                    "basic_agent-1": 1, "basic_agent-2": 0,
+                    "standard_agent-1": 0, "standard_agent-2": 0,
+                    "advanced_agent-1": 0, "advanced_agent-2": 0,
+                    "expert_agent-1": 0, "expert_agent-2": 0,
+                },
+                "leases": {
+                    "basic_agent-1": {
+                        "lease_id": "WSL-" + "a" * 32,
+                        "lease_epoch": 1,
+                        "slot_id": "basic_agent-1",
+                        "worker_kind": "basic_agent",
+                        "holder_dispatch_id": "DSP-001",
+                        "holder_instance_id": "worker-inst-1",
+                        "canonical_worktree": str(root).replace("\\", "/"),
+                        "acquired_at": "2026-07-27T00:30:00Z",
+                        "heartbeat_at": "2026-07-27T00:30:00Z",
+                        "expires_at": "2026-07-27T02:00:00Z",
+                    },
+                },
+            }, ensure_ascii=False), encoding="utf-8")
             svc2 = self.cpt.ControlPlaneTransitionService(project_root=root)
 
             ms = ModelSelectionSnapshot.from_mapping({
