@@ -3485,12 +3485,25 @@ files:
   ``acceptances/*.yaml`` are canonical authority.
 * ``BOARD.md`` and ``STATUS.md`` are derived views.  They are
   regenerated synchronously on every transition from the post-transition
-  canonical state.  A derived-view render failure **must** roll back all
-  canonical file writes.  Derived views must **never** serve as CAS input.
+  canonical state.  Derived views must **never** serve as CAS input.
 * Event and outbox files are immutable after creation — they are never
   modified or overwritten.  Transport state (sent / acknowledged) is
   recorded in gitignored ``transport-receipts.yaml`` only, never in the
   immutable outbox file.
+
+**Derived view failure semantics**:
+
+* Canonical files are written first.  Derived views are rendered after
+  all canonical ``os.replace`` operations have completed.
+* A derived-view render failure after canonical writes complete leaves
+  the repository in a **canonical-consistent / view-stale** state:
+  ``tasks.yaml``, events, and outbox are correct; ``BOARD.md`` and/or
+  ``STATUS.md`` are out of date.
+* ``render_views.py --check`` detects the drift.
+* The caller must re-render the views to restore consistency.
+* The service does **not** attempt to roll back already-replaced
+  canonical files — cross-file rollback is not possible at the
+  filesystem level and the service makes no claim to provide it.
 
 ---
 #### 2.14.2 CAS Preconditions
@@ -3525,20 +3538,14 @@ since the caller's observation, and the transition must be rejected
 with ``TransitionCASConflictError``.  **Zero canonical files are
 written on CAS failure.**
 
-**Dispatch-specific CAS extensions**.  Transitions that reference an
-active dispatch must additionally supply:
-
-```python
-@dataclass(frozen=True, slots=True)
-class DispatchCAS:
-    expected_dispatch_id: str               # non-empty; matches current_dispatch.dispatch_id
-    expected_attempt: int                   # non-bool, >= 1
-```
-
-These are compared against the task's ``current_dispatch`` and
-``attempt`` fields.  Only transitions whose ``from_state`` is in
-``{"dispatched", "in_progress", "review_ready"}`` (or ``"blocked"``
-with ``blocked_attempt_valid: true``) require a ``DispatchCAS``.
+**Git HEAD and orphan evidence**.  Uncommitted working-tree files (such
+as event/outbox files left by a prior crash before ``tasks.yaml`` was
+written) do **not** change ``git rev-parse HEAD``.  A subsequent call
+with the same ``expected_snapshot_commit`` may therefore pass the Git
+HEAD CAS check even though orphan evidence exists on disk.  The service
+must **detect** orphan/partial evidence before writing (§2.14.6) and
+must not silently replay over it.  The revision/state CAS still rejects
+a transition if ``tasks.yaml`` already reflects the target state.
 
 ---
 #### 2.14.3 Lease Epoch — Single Authority
@@ -3574,14 +3581,16 @@ order is:
 1. acquire  worker-slot lease lock       (.agentdesk/runtime/.worker-slot-lease.lock)
 2. acquire  control-plane state lock     (.agentdesk/runtime/.state-transition.lock)
 3. validate CAS, lease epoch, task identity
-4. prepare and write authoritative files (event, outbox if dispatch,
-   updated tasks.yaml, acceptance if applicable, derived views)
-5. release  control-plane state lock
-6. release  worker-slot lease lock
+4. prepare all serialised bytes for canonical files
+5. write authoritative files (event, outbox if dispatch,
+   updated tasks.yaml, acceptance if applicable)
+6. write derived views (BOARD.md, STATUS.md)
+7. release  control-plane state lock
+8. release  worker-slot lease lock
 ```
 
 **PM-only transitions** acquire only the control-plane state lock
-(steps 2–5).  No component may acquire the control-plane state lock
+(steps 2–7).  No component may acquire the control-plane state lock
 before the worker-slot lock when a Worker lease is held.  A call that
 enters the state lock while already holding the worker-slot lock is
 valid; the reverse order is an immediate ``TransitionLockOrderError``
@@ -3617,25 +3626,58 @@ The ``dedupe_key`` is derived by the service from the outbox fields;
 the caller cannot supply an alternative.
 
 ---
-#### 2.14.6 Duplicate and Replay Semantics — Fail-Closed
+#### 2.14.6 Idempotency, Orphan Detection, and Execution Order
 
-All duplicate detection is fail-closed.  The service must **never**
+Before any file is written, the service must execute these checks in
+fixed order:
+
+```text
+1. Acquire locks
+2. Read existing canonical state (tasks.yaml, events/, outbox/,
+   acceptances/)
+3a. Full idempotent-replay check — if ALL of the following hold:
+      a. event file with event_id already exists AND its serialised
+         bytes match what would be written now;
+      b. if an outbox is expected (dispatch transitions): outbox file
+         with message_id already exists, dedupe_key matches, and
+         serialised bytes match;
+      c. tasks.yaml already reflects {task_id: {state: to_state}}
+         with matching revision, attempt, and identity fields;
+      d. if acceptance is expected: acceptance record exists with
+         matching content;
+      e. no orphan/partial evidence exists (see step 3b);
+   → return idempotent success (TransitionResult, zero file writes).
+3b. Orphan/partial evidence check — if some but not all of the
+    expected files exist (e.g. event exists but tasks.yaml has
+    not transitioned; event+outbox exist but tasks.yaml has not
+    transitioned):
+   → raise TransitionDuplicateEvidenceError with a description of
+     which files are present and which are missing.  Zero writes.
+     The caller must recover the partial transition before retrying.
+3c. If neither 3a nor 3b applies → continue.
+4. Validate CAS (revision, state, snapshot_commit, dispatch identity
+   if applicable, lease epoch).
+5. Serialise all file contents to bytes.
+6. Write authoritative files in fixed order (§2.14.7).
+7. Render and write derived views.
+8. Release locks.
+```
+
+**Fail-closed duplicate detection**.  The service must **never**
 overwrite an existing event, outbox, or acceptance record.
 
-| Scenario | Behaviour |
-|----------|----------|
-| Same ``event_id``, identical content | **Idempotent success** — return the existing result, no file write |
-| Same ``event_id``, different content | ``TransitionDuplicateEvidenceError`` — zero writes |
-| Same ``message_id``, identical content | **Idempotent success** — no file write |
-| Same ``message_id``, different content | ``TransitionDuplicateEvidenceError`` — zero writes |
-| Same ``dedupe_key``, different ``message_id`` | ``TransitionDuplicateEvidenceError`` — zero writes |
-| Same ``dispatch_id``, different ``message_id`` | ``TransitionDuplicateEvidenceError`` — zero writes |
+| Scenario | Detection step | Behaviour |
+|----------|---------------|----------|
+| Same ``event_id``, identical content, ``tasks.yaml`` already at target state, all companion files present, no orphan evidence | 3a | **Idempotent success** — return existing result, zero writes |
+| Same ``event_id``, different content | 3b | ``TransitionDuplicateEvidenceError`` — zero writes |
+| Same ``message_id``, different content | 3b | ``TransitionDuplicateEvidenceError`` — zero writes |
+| Same ``dedupe_key``, different ``message_id`` | 3b | ``TransitionDuplicateEvidenceError`` — zero writes |
+| Event exists but ``tasks.yaml`` not at target state (partial transition) | 3b | ``TransitionDuplicateEvidenceError`` — zero writes |
+| Event+outbox exist but ``tasks.yaml`` not at target state (partial transition) | 3b | ``TransitionDuplicateEvidenceError`` — zero writes |
 
-**On every error path, all managed canonical files must remain
-byte-for-byte unchanged from their pre-transaction state.**
-
-Equality is determined by full structural comparison (deep equality of
-parsed YAML content and exact byte equality of raw file content).
+Equality for byte comparison is determined by exact byte equality of
+the fully-serialised YAML content (same keys, same values, same
+ordering, same trailing newline).
 
 ---
 #### 2.14.7 Multi-File Writes and Crash Recovery
@@ -3657,30 +3699,40 @@ The service writes files in a fixed order:
 6. STATUS.md         (os.replace — derived)
 ```
 
-``tasks.yaml`` is written **last** among the canonical files.  A crash
-before step 4 leaves ``tasks.yaml`` unchanged — the service's own CAS
-guard on the next attempt will observe the pre-transition state and
-reject stale-epoch/stale-state calls, or a validator will detect
-orphaned event/outbox files.
-
-The service does **not** create a Git commit.  The caller must commit
+``tasks.yaml`` is written **last** among the canonical files.  The
+service does **not** create a Git commit.  The caller must commit
 canonical files as a single Git commit after the service returns
-successfully.  The protocol's rule that "event + outbox + tasks.yaml
-+ views must be in the same Git commit" is the caller's responsibility.
+successfully.
+
+**Exception categories and write guarantees**:
+
+* **Pre-write failures** (input validation, schema read errors, CAS
+  conflict, duplicate/integrity conflict, lock contention, lock-order
+  violation, WorkerSlot fencing failure, serialisation failure): **all
+  managed canonical files remain byte-for-byte unchanged.**  No
+  temporary files are left on disk.
+
+* **In-write failures** (``TransitionWriteError`` — an ``os.replace``
+  or ``os.fsync`` failure partway through the write sequence): files
+  that were already ``os.replace``-d **may** have been changed; files
+  not yet replaced are **unchanged**; the temporary file for the
+  failing write is cleaned up on a best-effort basis.  The error
+  message includes a safe stage identifier (e.g. ``"event"``,
+  ``"tasks.yaml"``) — never a full path or payload.
+
+  The service does **not** provide cross-file automatic rollback.
+  ``TransitionWriteError`` after one or more successful ``os.replace``
+  operations may leave partial authoritative state on disk.  The caller
+  must run the validator to detect and recover from partial transitions.
 
 **Crash scenarios**:
 
 | Crash point | Outcome | Recovery |
 |------------|---------|----------|
 | Before any ``os.replace`` | No files written | Retry with same request (idempotent) |
-| After event, before outbox | Event orphaned; ``tasks.yaml`` unchanged | Validator detects orphan; caller removes orphan event and retries, or completes remaining writes |
-| After event+outbox, before ``tasks.yaml`` | Event+outbox exist; ``tasks.yaml`` unchanged | Same CAS as above — ``tasks.yaml`` is the atomic guard |
+| After event, before outbox | Event orphaned; ``tasks.yaml`` unchanged | Idempotency check (§2.14.6 step 3b) detects orphan → ``TransitionDuplicateEvidenceError``; caller completes remaining writes or removes orphan |
+| After event+outbox, before ``tasks.yaml`` | Event+outbox exist; ``tasks.yaml`` unchanged | Step 3b detects partial evidence → ``TransitionDuplicateEvidenceError``; caller completes or cleans up |
 | After ``tasks.yaml``, before views | Canonical state consistent; views stale | ``render_views.py --check`` detects drift; caller re-renders |
-
-The event/outbox digest parity (``payload_digest`` linking event to
-outbox blob) provides **detection** of partial writes, not automatic
-recovery.  The protocol does not claim that the event/outbox pair alone
-constitutes a complete write-ahead log for all transition types.
 
 ---
 #### 2.14.8 Transition Types and Required Payloads
@@ -3741,23 +3793,50 @@ in ``docs/pm/events/``.  Frozen rules:
 1. Filename: ``EVT-YYYYMMDD-NNNN.yaml`` — derived from ``event_id``.
 2. ``event_id`` is a globally unique ``EVT-*`` string supplied by the
    caller.  The service rejects duplicate ``event_id`` values.
-3. Required root keys: ``schema_version``, ``event_id``, ``event_type``,
-   ``task_id``, ``revision``, ``attempt``, ``dispatch_id`` (or ``null``),
-   ``from_state``, ``to_state``, ``lease_epoch``, ``actor_role_id``,
+3. **Common required keys** (present on every state event regardless of
+   ``event_type``):
+   ``schema_version`` (``"agentdesk.state-event/v2"``),
+   ``event_id``,
+   ``event_type``,
+   ``task_id``,
+   ``revision``,
+   ``attempt``,
+   ``dispatch_id`` (nullable — ``null`` when no active dispatch),
+   ``from_state``,
+   ``to_state``,
+   ``lease_epoch``,
+   ``actor_role_id`` (always ``"PM"`` for control-plane events),
    ``occurred_at``.
-4. ``occurred_at`` is generated by the service from the caller-supplied
+4. **Always-present nullable fields** (must exist as keys; value may be
+   ``null``):
+   ``source_message_id`` — the ``callback_id`` when the transition was
+   triggered by a Worker callback; ``null`` otherwise.
+5. **Always-present container fields** (must exist as keys; value may
+   be empty list):
+   ``evidence_refs`` — list of strings referencing evidence documents
+   (e.g. ``["docs/pm/tasks/TC-031-r2-runtime-api.md"]``);
+   ``guard_results`` — list of guard-check objects, each with
+   ``guard``, ``inputs``, ``result``, ``checked_at``, and
+   ``evidence_ref`` fields.
+6. **Event-type‑specific fields**:
+   * ``TASK_DISPATCHED``: ``payload_digest`` (required) — ``"sha256:"``
+     + 64 lowercase hex characters.  Computed by the service as SHA-256
+     of the paired outbox file's raw UTF-8 LF bytes.  The outbox file
+     must be written and its bytes finalised before the event
+     ``payload_digest`` is computed.
+   * ``CHANGE_INTEGRATED`` when ``accepted_commit`` is not an ancestor
+     of ``integrated_commit``: ``accepted_commit``,
+     ``integrated_commit``, ``equivalence_method``, ``equivalence_result``,
+     ``equivalence_evidence_ref`` (all required).
+7. ``occurred_at`` is generated by the service from the caller-supplied
    ``now: datetime`` parameter.
-5. For dispatch events (``event_type: TASK_DISPATCHED``), ``payload_digest``
-   is computed by the service as ``sha256:`` + SHA-256 of the paired
-   outbox file's raw UTF-8 LF bytes.  The outbox file must be written
-   and its bytes finalised before the event ``payload_digest`` is
-   computed.
-6. Events are append-only — never modified after creation.
-7. Extra keys beyond the required set are rejected fail-closed
-   (``TransitionSchemaError``).  Missing required keys are rejected
-   fail-closed.
-8. ``event_id`` is validated against the ``^EVT-.+`` pattern.
-   ``message_id`` (outbox) is validated against the ``^MSG-.+`` pattern.
+8. Events are append-only — never modified after creation.
+9. Unknown extra keys at the event root are rejected fail-closed
+   (``TransitionSchemaError``).  Missing keys from sets 3–5 are
+   rejected fail-closed.  Missing event-type‑specific keys (set 6) are
+   rejected fail-closed for the relevant ``event_type``.
+10. ``event_id`` is validated against the ``^EVT-.+`` pattern.
+    ``message_id`` (outbox) is validated against the ``^MSG-.+`` pattern.
 
 ---
 #### 2.14.10 Outbox File Rules — Frozen
@@ -3791,10 +3870,40 @@ file in ``docs/pm/outbox/``.  Frozen rules:
 ---
 #### 2.14.11 Public API — Frozen Signatures
 
-The production module will export exactly one public class:
+All public types are frozen/slots dataclasses.  Every type the caller
+needs to construct or catch is exported via ``__all__``:
 
 ```python
-__all__ = ["ControlPlaneTransitionService"]
+__all__ = [
+    "ControlPlaneTransitionService",
+    "TransitionCAS",
+    "DispatchCAS",
+    "TransitionRequest",
+    "TransitionPayload",
+    "TransitionResult",
+    "SpecifyPayload",
+    "DispatchPayload",
+    "AcknowledgePayload",
+    "DeliverySubmittedPayload",
+    "DeliveryAcceptedPayload",
+    "DeliveryReturnedPayload",
+    "RequeuePayload",
+    "IntegrationPayload",
+    "BlockedPayload",
+    "BlockerResolvedPayload",
+    "BlockerRescopedPayload",
+    "BlockerCancelledPayload",
+    "CancelledPayload",
+    "SupersededPayload",
+    "ControlPlaneTransitionError",
+    "TransitionValidationError",
+    "TransitionCASConflictError",
+    "TransitionLockContentionError",
+    "TransitionLockOrderError",
+    "TransitionDuplicateEvidenceError",
+    "TransitionSchemaError",
+    "TransitionWriteError",
+]
 ```
 
 ```python
@@ -3815,6 +3924,134 @@ class DispatchCAS:
 
 
 @dataclass(frozen=True, slots=True)
+class SpecifyPayload:
+    """Payload for draft → ready (TASK_SPECIFIED)."""
+    # No extra fields beyond common event context.
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchPayload:
+    """Payload for ready → dispatched (TASK_DISPATCHED)."""
+    dispatch_id: str
+    role_id: str
+    model_selection: ModelSelectionSnapshot
+    task_card_path: str
+    task_card_commit: str
+    base_commit: str
+    branch: str
+    report_path: str
+    outbox_message_id: str               # MSG-*
+
+
+@dataclass(frozen=True, slots=True)
+class AcknowledgePayload:
+    """Payload for dispatched → in_progress (DISPATCH_ACKNOWLEDGED)."""
+    # Requires DispatchCAS; no extra fields beyond common context.
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class DeliverySubmittedPayload:
+    """Payload for in_progress → review_ready (DELIVERY_SUBMITTED)."""
+    implementation_commit: str           # 40-char SHA
+    report_commit: str                   # 40-char SHA
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryAcceptedPayload:
+    """Payload for review_ready → accepted (DELIVERY_ACCEPTED)."""
+    accepted_commit: str                 # 40-char SHA
+    acceptance_path: str                 # project-relative
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryReturnedPayload:
+    """Payload for review_ready → returned (DELIVERY_RETURNED)."""
+    # Requires DispatchCAS; no extra fields beyond common context.
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class RequeuePayload:
+    """Payload for returned → ready (TASK_REQUEUED)."""
+    # No extra fields beyond common event context.
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationPayload:
+    """Payload for accepted → integrated (CHANGE_INTEGRATED)."""
+    integrated_commit: str               # 40-char SHA
+    equivalence_method: str | None       # patch_id | tree | approved_mapping
+    equivalence_evidence_ref: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class BlockedPayload:
+    """Payload for * → blocked (TASK_BLOCKED, INTEGRATION_FAILED)."""
+    blocked_reason: str
+    blocked_kind: str
+    blocked_owner: str
+    unblock_condition: str
+    resume_state: str                    # from frozen STATES tuple
+    blocked_attempt_valid: bool | None
+
+
+@dataclass(frozen=True, slots=True)
+class BlockerResolvedPayload:
+    """Payload for blocked → resume_state (BLOCKER_RESOLVED)."""
+    resume_to_state: str                 # caller-specified target state
+
+
+@dataclass(frozen=True, slots=True)
+class BlockerRescopedPayload:
+    """Payload for blocked → draft (BLOCKER_RESCOPED)."""
+    # No extra fields beyond common event context.
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class BlockerCancelledPayload:
+    """Payload for blocked → cancelled (BLOCKER_CANCELLED)."""
+    # No extra fields beyond common event context.
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class CancelledPayload:
+    """Payload for * → cancelled (TASK_CANCELLED)."""
+    # No extra fields beyond common event context.
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class SupersededPayload:
+    """Payload for * → superseded (TASK_SUPERSEDED)."""
+    superseded_by: str                   # valid task_id of the replacement
+
+
+"""TransitionPayload is a closed union; one variant per event_type."""
+
+type TransitionPayload = (
+    SpecifyPayload
+    | DispatchPayload
+    | AcknowledgePayload
+    | DeliverySubmittedPayload
+    | DeliveryAcceptedPayload
+    | DeliveryReturnedPayload
+    | RequeuePayload
+    | IntegrationPayload
+    | BlockedPayload
+    | BlockerResolvedPayload
+    | BlockerRescopedPayload
+    | BlockerCancelledPayload
+    | CancelledPayload
+    | SupersededPayload
+)
+
+
+@dataclass(frozen=True, slots=True)
 class TransitionRequest:
     """Immutable input for a single state transition.
 
@@ -3827,35 +4064,7 @@ class TransitionRequest:
     dispatch_cas: DispatchCAS | None     # required for dispatch-lifecycle transitions
     event_id: str                        # EVT-*; caller-generated, globally unique
     event_type: str                      # from frozen event-type names
-    to_state: str                        # from frozen STATES tuple
-    # dispatch fields (required for ready→dispatched)
-    dispatch_id: str | None
-    role_id: str | None
-    model_selection: ModelSelectionSnapshot | None
-    task_card_path: str | None
-    task_card_commit: str | None
-    base_commit: str | None
-    branch: str | None
-    report_path: str | None
-    outbox_message_id: str | None        # MSG-*; required for dispatch
-    # delivery fields (required for review_ready transitions)
-    implementation_commit: str | None    # 40-char SHA
-    report_commit: str | None            # 40-char SHA
-    # acceptance fields (required for review_ready→accepted)
-    accepted_commit: str | None          # 40-char SHA
-    acceptance_path: str | None
-    # integration fields (required for accepted→integrated)
-    integrated_commit: str | None        # 40-char SHA
-    equivalence_method: str | None       # patch_id | tree | approved_mapping
-    equivalence_evidence_ref: str | None
-    # blocked fields (required for →blocked)
-    blocked_reason: str | None
-    blocked_kind: str | None
-    blocked_owner: str | None
-    unblock_condition: str | None
-    resume_state: str | None
-    # override fields
-    supreseded_by: str | None            # required for →superseded
+    payload: TransitionPayload
 
 
 @dataclass(frozen=True, slots=True)
@@ -3898,8 +4107,10 @@ class ControlPlaneTransitionService:
 **Frozen API rules**:
 
 1. All public types use ``frozen=True, slots=True`` dataclasses.
-   ``TransitionRequest`` fields are typed — no ``object``, no bare
-   ``dict``, no ``Any`` appears in the public API.
+   No ``object``, no bare ``dict``, no ``Any`` appear as payload types.
+   ``TransitionPayload`` is a closed union of concrete payload
+   dataclasses — the ``event_type`` deterministically selects which
+   variant is valid.
 2. ``project_root`` is an absolute ``Path`` supplied at service
    construction.
 3. ``now`` is an explicit ``datetime`` parameter — the service never
@@ -3911,23 +4122,36 @@ class ControlPlaneTransitionService:
    on untrusted input values.  Only ``type(value).__name__`` is safe for
    error context.  ``task_id``, ``event_id`` and ``dispatch_id`` are
    considered safe identifiers and may appear in error messages.
-6. Error messages must **never** contain: the task prompt, stdout/stderr
+6. Error messages must **never** contain: the task prompt, any payload
+   field values (except safe identifiers from rule 5), stdout/stderr
    content, secrets, full ``holder_instance_id``, full
    ``canonical_worktree``, or environment variable values.
+7. An ``event_type`` / payload variant mismatch is a
+   ``TransitionValidationError`` (fail-closed, zero writes).
 
 ---
 #### 2.14.12 Exception Hierarchy — Frozen
 
 ```text
 ControlPlaneTransitionError                  (Exception)
-├── TransitionValidationError                — input type/value violation
+├── TransitionValidationError                — input type/value violation, event_type/payload mismatch
 ├── TransitionCASConflictError               — CAS precondition failed
 ├── TransitionLockContentionError            — control-plane lock held
 ├── TransitionLockOrderError                 — reverse lock acquisition
-├── TransitionDuplicateEvidenceError         — duplicate event_id / message_id / dedupe_key
-├── TransitionSchemaError                    — corrupt or invalid canonical file on read
-└── TransitionWriteError                     — file write / os.replace failure
+├── TransitionDuplicateEvidenceError         — duplicate/conflicting event_id / message_id / dedupe_key, or orphan evidence
+├── TransitionSchemaError                    — corrupt or invalid canonical file on read, extra/missing keys
+└── TransitionWriteError                     — os.replace / os.fsync failure during the write sequence
 ```
+
+**Pre-write failure guarantees (all exception types except
+``TransitionWriteError``)**: zero authoritative file writes — every
+managed canonical file remains byte-for-byte unchanged from its
+pre-transaction state.  No temporary files are left on disk.
+
+**``TransitionWriteError`` guarantee**: at least one ``os.replace``
+succeeded before the failure.  The error's message includes a safe
+stage identifier.  Cross-file automatic rollback is **not** provided.
+The caller must run the validator and recovery procedures.
 
 **Propagation rules**:
 
@@ -3937,16 +4161,11 @@ ControlPlaneTransitionError                  (Exception)
 * ``TypeError`` is raised for type violations (wrong input types,
   naive datetime, etc.) — matching existing module conventions.
 * ``TransitionDuplicateEvidenceError`` covers all duplicate-ID
-  scenarios including same-ID-different-content and
-  same-dedupe-key-different-message-id.
+  scenarios including same-ID-different-content, same-dedupe-key-
+  different-message-id, and orphan/partial evidence detection.
 * ``TransitionCASConflictError`` covers stale ``expected_revision``,
   stale ``expected_state``, stale ``expected_dispatch_id``, stale
   ``expected_attempt``, and stale ``expected_snapshot_commit``.
-* **Every exception path guarantees zero authoritative file writes.**
-  The only exceptions are filesystem-level failures during the atomic
-  write sequence itself (``TransitionWriteError``), which are
-  crash-boundary cases where a partial temp file may exist but the
-  original file is unmodified.
 * ``ControlPlaneTransitionService`` does **not** catch
   ``WorkerSlotLeaseError``.  Those exceptions propagate through the
   service boundary untouched.
