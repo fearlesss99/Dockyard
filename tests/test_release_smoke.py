@@ -5991,8 +5991,54 @@ class ReleaseSmokeTests(unittest.TestCase):
                 return
         self.fail("Interface Status row #16 not found")
 
-    def test_tc1311a_production_module_does_not_exist(self) -> None:
-        self.assertFalse(self._CONTROL_PLANE_PY.exists())
+    def test_tc1311b_production_module_exists(self) -> None:
+        """TC-13.11b: production module and test file must exist."""
+        self.assertTrue(self._CONTROL_PLANE_PY.exists())
+        test_file = REPO_ROOT / "tests" / "test_control_plane_transition.py"
+        self.assertTrue(test_file.exists())
+
+    def test_tc1311b_apply_transition_not_yet_current(self) -> None:
+        """apply_transition must raise NotImplementedError — TC-13.11c
+        is still Target."""
+        import importlib, sys
+        mod_name = "control_plane_transition"
+        if mod_name in sys.modules:
+            del sys.modules[mod_name]
+        script_dir = str(SKILL_ROOT / "scripts")
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        from control_plane_transition import (
+            ControlPlaneTransitionService,
+            TransitionRequest,
+            TransitionCAS,
+            TransitionEventContext,
+            SpecifyPayload,
+        )
+        import tempfile
+        from datetime import UTC, datetime
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            svc = ControlPlaneTransitionService(project_root=root)
+            cas = TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="0" * 40,
+            )
+            ctx = TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-0001",
+                event_type="TASK_SPECIFIED",
+                payload=SpecifyPayload(),
+                event_context=ctx,
+            )
+            now = datetime(2026, 7, 27, 0, 0, 0, tzinfo=UTC)
+            with self.assertRaises(NotImplementedError) as cm:
+                svc.apply_transition(req, None, now)
+            self.assertIn("TC-13.11c", str(cm.exception))
 
     def test_tc1311a_section_25_still_current(self) -> None:
         adr_text = self._adr_path().read_text(encoding="utf-8")

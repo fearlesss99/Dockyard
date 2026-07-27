@@ -4414,14 +4414,21 @@ intermediate "Current (contract frozen)" sub-status is permitted.
 * ADR Interface Status row #16 "AgentDesk ControlPlaneTransitionService"
   is **Target**.
 * This section (§2.14) is the Frozen Contract for TC-13.11a.
-* No production module (``control_plane_transition.py``) exists;
-  no production test file (``test_control_plane_transition.py``) exists.
+* TC-13.11b (typed models, validation, state lock, serialisation helpers,
+  single-file atomic write infrastructure) is **committed** — the
+  production module (``control_plane_transition.py``) and matching test
+  suite (``test_control_plane_transition.py``) exist with 31 frozen
+  public symbols.  ``apply_transition()`` raises ``NotImplementedError``
+  referencing TC-13.11c.
+* TC-13.11c remains **Target** — ``apply_transition()`` is not yet
+  executable.
+* Interface #16 remains **Target** until TC-13.11c is complete.
 * §2.5 (WorkerSlotLease) is **Current**.
 * TC-13.10a/b/c are all **Current**.
 * TC-13.12, TC-13.13, TC-13.14, TC-13.17, TC-13.18, and all subsequent
   Target interfaces remain **Target**.
-* TC-13.11b and TC-13.11c remain **Target** — this contract freezes the
-  API, not the implementation.
+* TC-13.11c remains **Target** — the production entry point is not yet
+  callable.
 
 ---
 
