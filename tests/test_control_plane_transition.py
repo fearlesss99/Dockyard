@@ -10345,8 +10345,13 @@ class TestNonGatedRegistryCheck(unittest.TestCase):
 
 
 class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
-    """TASK_DISPATCHED, DELIVERY_ACCEPTED, CHANGE_INTEGRATED success paths
-    with real apply_transition — require() called once, guard in event."""
+    """TASK_DISPATCHED and CHANGE_INTEGRATED success paths
+    with real apply_transition — require() called once, guard in event.
+
+    DELIVERY_ACCEPTED: the existing end-to-end transition test
+    (TestDeliveryAcceptedEndToEnd) covers the transition; no new
+    ApprovalGate symmetric assertion is added here.
+    """
 
     def setUp(self):
         super().setUp()
@@ -10578,11 +10583,6 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
 
     def test_TASK_DISPATCHED_success(self) -> None:
         self._run_gated_success("TASK_DISPATCHED", "ready", "dispatch")
-
-    def test_DELIVERY_ACCEPTED_success(self) -> None:
-        """DELIVERY_ACCEPTED needs a committed task card. The harness
-        now writes a task card before the initial commit. Verified."""
-        pass  # This test is inherently structural for the harness task-card path.
 
     def test_CHANGE_INTEGRATED_success(self) -> None:
         self._run_gated_success("CHANGE_INTEGRATED", "accepted", "integrate",
