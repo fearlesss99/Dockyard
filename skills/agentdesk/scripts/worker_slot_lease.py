@@ -16,6 +16,7 @@ Non‑goals (deferred to TC-13.10c):
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -24,7 +25,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import Any, Iterator
 
 from core_types import WorkerKind
@@ -71,7 +72,10 @@ for _sid in _STABLE_SLOT_IDS:
     elif _sid.startswith("expert_agent-"):
         _SLOT_KIND[_sid] = WorkerKind.EXPERT_AGENT
     else:
-        raise ValueError(f"slot_id {_sid!r} has no WorkerKind mapping")
+        raise ValueError(
+            "slot_id has no WorkerKind mapping: "
+            + type(_sid).__name__
+        )
 
 _LEASE_TTL_SECONDS = 60
 _MAX_HEARTBEAT_INTERVAL_SECONDS = 20
@@ -111,6 +115,45 @@ _RFC3339_RE = re.compile(
 # Canonical sentinel timestamp — must not be system‑time dependent.
 _CANONICAL_SENTINEL_UPDATED_AT = "1970-01-01T00:00:00Z"
 
+# ── Windows directory-fsync errno allowlist ─────────────────────────────
+
+# On Windows, os.fsync on a directory handle may raise OSError with these
+# errno values because the underlying Windows API does not support flushing
+# directory metadata.  We only suppress these specific errno codes.
+_WIN_DIR_FSYNC_ALLOWLIST: frozenset[int] = frozenset({
+    errno.EACCES,       # 13 — Permission denied (handle may be read‑only)
+    errno.EBADF,        # 9  — Bad file descriptor (dir fd not flushable)
+    errno.EINVAL,       # 22 — Invalid argument (dir fsync unsupported)
+})
+
+
+def _is_dir_fsync_allowed_error(exc: OSError) -> bool:
+    """Return True if *exc* is a directory‑fsync error we can safely ignore."""
+    return (
+        os.name == "nt"
+        and exc.errno is not None
+        and exc.errno in _WIN_DIR_FSYNC_ALLOWLIST
+    )
+
+
+# ── safe error messaging helpers ────────────────────────────────────────────
+
+
+def _safe_type_name(value: object) -> str:
+    """Return ``type(value).__name__`` — never calls ``repr`` or ``str``
+    on the value itself."""
+    return type(value).__name__
+
+
+def _safe_error_val(value: object) -> str:
+    """Return a safe representation of *value* for error messages.
+
+    For stable slot IDs (already validated as a known constant), the value
+    may be included directly.  For unknown values, only the type name is
+    returned — never the raw value via repr/str.
+    """
+    return _safe_type_name(value)
+
 
 # ── data model ──────────────────────────────────────────────────────────────
 
@@ -139,11 +182,12 @@ class WorkerSlotLease:
         if not isinstance(self.lease_id, str) or not self.lease_id:
             raise TypeError(
                 "lease_id must be a non-empty str, "
-                f"got {type(self.lease_id).__name__}"
+                f"got {_safe_type_name(self.lease_id)}"
             )
         if _LEASE_ID_RE.fullmatch(self.lease_id) is None:
             raise ValueError(
-                f"lease_id must match WSL-<32 hex>, got {self.lease_id!r}"
+                "lease_id must match WSL-<32 hex>, "
+                f"got {_safe_type_name(self.lease_id)}"
             )
 
         # ── lease_epoch ────────────────────────────────────────────────
@@ -152,33 +196,39 @@ class WorkerSlotLease:
         ):
             raise TypeError(
                 "lease_epoch must be a non-bool int >= 1, "
-                f"got {self.lease_epoch!r}"
+                f"got {_safe_type_name(self.lease_epoch)}"
             )
         if self.lease_epoch < 1:
             raise ValueError(
-                f"lease_epoch must be >= 1, got {self.lease_epoch}"
+                "lease_epoch must be >= 1, "
+                f"got {self.lease_epoch}"
             )
 
         # ── slot_id ────────────────────────────────────────────────────
+        if not isinstance(self.slot_id, str) or not self.slot_id:
+            raise TypeError(
+                "slot_id must be a non-empty str, "
+                f"got {_safe_type_name(self.slot_id)}"
+            )
         if self.slot_id not in _STABLE_SLOT_SET:
             raise ValueError(
-                f"slot_id must be one of the eight stable slots, "
-                f"got {self.slot_id!r}"
+                "slot_id must be one of the eight stable slots, "
+                f"got {_safe_type_name(self.slot_id)}"
             )
 
         # ── worker_kind ────────────────────────────────────────────────
         if not isinstance(self.worker_kind, WorkerKind):
             raise TypeError(
                 "worker_kind must be a WorkerKind enum member, "
-                f"got {type(self.worker_kind).__name__}"
+                f"got {_safe_type_name(self.worker_kind)}"
             )
 
         # ── worker_kind ↔ slot_id consistency ──────────────────────────
         expected_kind = _SLOT_KIND.get(self.slot_id)
         if expected_kind is not None and self.worker_kind != expected_kind:
             raise ValueError(
-                f"slot_id {self.slot_id!r} requires "
-                f"worker_kind={expected_kind.value!r}, "
+                f"slot_id requires worker_kind="
+                f"{expected_kind.value!r}, "
                 f"got {self.worker_kind.value!r}"
             )
 
@@ -219,7 +269,7 @@ def _validate_holder_field(value: str, field_name: str) -> None:
     if not isinstance(value, str) or not value:
         raise TypeError(
             f"{field_name} must be a non-empty str, "
-            f"got {type(value).__name__}"
+            f"got {_safe_type_name(value)}"
         )
     if value != value.strip():
         raise ValueError(
@@ -237,7 +287,7 @@ def _validate_worktree_string(value: str) -> None:
     if not isinstance(value, str) or not value:
         raise TypeError(
             "canonical_worktree must be a non-empty str, "
-            f"got {type(value).__name__}"
+            f"got {_safe_type_name(value)}"
         )
     if value != value.strip():
         raise ValueError(
@@ -250,7 +300,8 @@ def _validate_worktree_string(value: str) -> None:
     # Must look like an absolute path (POSIX or Windows).
     if not _looks_absolute(value):
         raise ValueError(
-            f"canonical_worktree must be an absolute path, got {value!r}"
+            "canonical_worktree must be an absolute path, "
+            f"got {_safe_type_name(value)}"
         )
 
 
@@ -283,27 +334,37 @@ def _validate_rfc3339_utc(value: str, field_name: str) -> None:
     if not isinstance(value, str) or not value:
         raise TypeError(
             f"{field_name} must be a non-empty str, "
-            f"got {type(value).__name__}"
+            f"got {_safe_type_name(value)}"
         )
-    m = _RFC3339_RE.fullmatch(value)
-    if m is None:
+    # Parse with real datetime parser — reject non‑UTC offsets,
+    # naive timestamps, and invalid calendar dates.
+    parsed = _parse_rfc3339_utc(value)
+    if parsed is None:
         raise ValueError(
-            f"{field_name} must be RFC 3339 UTC, got {value!r}"
+            f"{field_name} must be RFC 3339 UTC (Z or +00:00), "
+            f"got {_safe_type_name(value)}"
         )
-    # Accept Z (UTC) or explicit +00:00
-    tz_part = value[-6:] if value.endswith(("+00:00", "-00:00")) else ""
-    if not (value.endswith("Z") or tz_part in ("+00:00",)):
-        # Must be UTC — reject non‑zero offsets.
+    # Verify offset is UTC.
+    offset = parsed.utcoffset()
+    if offset is None or offset.total_seconds() != 0:
         raise ValueError(
-            f"{field_name} must be UTC (Z or +00:00), got {value!r}"
+            f"{field_name} must be UTC (Z or +00:00), "
+            f"got {_safe_type_name(value)}"
         )
 
 
 def _parse_rfc3339_utc(value: str) -> datetime | None:
-    """Parse an RFC 3339 UTC string to a timezone‑aware datetime, or None."""
+    """Parse an RFC 3339 UTC string to a timezone‑aware datetime, or None.
+
+    Accepts only Z or +00:00.  Rejects -00:00, non‑zero offsets,
+    naive timestamps, and invalid calendar dates.
+    """
     if not isinstance(value, str):
         return None
     candidate = value.strip()
+    # Reject -00:00 — it is not a valid UTC offset.
+    if candidate.endswith("-00:00"):
+        return None
     if candidate.endswith("Z"):
         candidate = candidate[:-1] + "+00:00"
     try:
@@ -312,8 +373,11 @@ def _parse_rfc3339_utc(value: str) -> datetime | None:
         return None
     if parsed.tzinfo is None:
         return None
-    # Check offset is UTC.
-    if parsed.utcoffset() is None:
+    offset = parsed.utcoffset()
+    if offset is None:
+        return None
+    # Reject non‑zero offsets.
+    if offset.total_seconds() != 0:
         return None
     return parsed
 
@@ -344,7 +408,8 @@ def _lease_from_dict(data: dict[str, object]) -> WorkerSlotLease:
     """
     if not isinstance(data, dict):
         raise TypeError(
-            f"lease data must be a dict, got {type(data).__name__}"
+            "lease data must be a dict, "
+            f"got {_safe_type_name(data)}"
         )
     actual = set(data.keys())
     missing = _LEASE_FIELD_SET - actual
@@ -364,21 +429,23 @@ def _lease_from_dict(data: dict[str, object]) -> WorkerSlotLease:
     raw_kind = data["worker_kind"]
     if not isinstance(raw_kind, str):
         raise TypeError(
-            f"lease.worker_kind must be a str, got {type(raw_kind).__name__}"
+            "lease.worker_kind must be a str, "
+            f"got {_safe_type_name(raw_kind)}"
         )
     try:
         worker_kind = WorkerKind(raw_kind)
     except ValueError:
         raise ValueError(
-            f"lease.worker_kind must be a valid WorkerKind value, "
-            f"got {raw_kind!r}"
+            "lease.worker_kind must be a valid WorkerKind value, "
+            f"got {_safe_type_name(raw_kind)}"
         ) from None
 
     # lease_epoch — must be non‑bool int.
     raw_epoch = data["lease_epoch"]
     if isinstance(raw_epoch, bool) or not isinstance(raw_epoch, int):
         raise TypeError(
-            f"lease.lease_epoch must be a non-bool int, got {raw_epoch!r}"
+            "lease.lease_epoch must be a non-bool int, "
+            f"got {_safe_type_name(raw_epoch)}"
         )
 
     # All string fields must be str (already checked by key validation
@@ -392,7 +459,8 @@ def _lease_from_dict(data: dict[str, object]) -> WorkerSlotLease:
         val = data[key]
         if not isinstance(val, str):
             raise TypeError(
-                f"lease.{key} must be a str, got {type(val).__name__}"
+                f"lease.{key} must be a str, "
+                f"got {_safe_type_name(val)}"
             )
 
     return WorkerSlotLease(
@@ -440,7 +508,8 @@ def validate_worker_slot_store(data: object) -> list[str]:
 
     Errors use field‑path prefixes (e.g. ``"root.slot_epochs.basic_agent-1"``)
     and must NOT contain ``holder_instance_id`` or full ``canonical_worktree``
-    values.
+    values.  Error messages must NOT call ``repr()``, ``str()``, or ``{!r}``
+    on untrusted input values — only ``type(x).__name__`` is safe.
     """
     errors: list[str] = []
 
@@ -448,17 +517,29 @@ def validate_worker_slot_store(data: object) -> list[str]:
     if not isinstance(data, dict):
         return ["root must be an object"]
 
+    # ── Guard: verify all root keys are str before any set operations.
+    #         This prevents malicious keys from breaking sorted().
     # ── schema_version ─────────────────────────────────────────────────
     sv = data.get("schema_version")
     if sv != SCHEMA_VERSION:
         errors.append(
-            f"root.schema_version must be {SCHEMA_VERSION!r}, got {sv!r}"
+            "root.schema_version must be "
+            + SCHEMA_VERSION
+            + ", got "
+            + _safe_type_name(sv)
         )
 
     # ── exact root keys ────────────────────────────────────────────────
-    actual_root = set(data.keys())
-    missing_root = _ROOT_FIELD_SET - actual_root
-    extra_root = actual_root - _ROOT_FIELD_SET
+    # Collect only str keys for safe comparison.
+    str_keys: set[str] = set()
+    non_str_keys = 0
+    for k in data:
+        if isinstance(k, str):
+            str_keys.add(k)
+        else:
+            non_str_keys += 1
+    missing_root = _ROOT_FIELD_SET - str_keys
+    extra_root = str_keys - _ROOT_FIELD_SET
     if missing_root:
         errors.append(
             f"root missing key(s): {', '.join(sorted(missing_root))}"
@@ -467,25 +548,43 @@ def validate_worker_slot_store(data: object) -> list[str]:
         errors.append(
             f"root forbidden key(s): {', '.join(sorted(extra_root))}"
         )
+    if non_str_keys > 0:
+        errors.append(
+            f"root contains {non_str_keys} non-str key(s)"
+        )
 
     # ── updated_at ─────────────────────────────────────────────────────
     ua = data.get("updated_at")
     if not isinstance(ua, str) or not ua.strip():
         errors.append("root.updated_at must be a non-empty RFC 3339 string")
-    elif _RFC3339_RE.fullmatch(ua) is None:
-        errors.append(
-            f"root.updated_at must be RFC 3339, got {ua!r}"
-        )
+    else:
+        parsed_ua = _parse_rfc3339_utc(ua)
+        if parsed_ua is None:
+            errors.append(
+                "root.updated_at must be RFC 3339 UTC (Z or +00:00), "
+                f"got {_safe_type_name(ua)}"
+            )
+        else:
+            offset = parsed_ua.utcoffset()
+            if offset is None or offset.total_seconds() != 0:
+                errors.append(
+                    "root.updated_at must be UTC (Z or +00:00), "
+                    f"got {_safe_type_name(ua)}"
+                )
 
     # ── slot_epochs ────────────────────────────────────────────────────
     slot_epochs = data.get("slot_epochs")
     if not isinstance(slot_epochs, dict):
         errors.append("root.slot_epochs must be an object")
     else:
-        se_actual = set(slot_epochs.keys())
-        if se_actual != _STABLE_SLOT_SET:
-            se_missing = sorted(_STABLE_SLOT_SET - se_actual)
-            se_extra = sorted(se_actual - _STABLE_SLOT_SET)
+        # Collect only str keys for safe set operations.
+        se_str_keys: set[str] = set()
+        for k in slot_epochs:
+            if isinstance(k, str):
+                se_str_keys.add(k)
+        if se_str_keys != _STABLE_SLOT_SET:
+            se_missing = sorted(_STABLE_SLOT_SET - se_str_keys)
+            se_extra = sorted(se_str_keys - _STABLE_SLOT_SET)
             if se_missing:
                 errors.append(
                     "root.slot_epochs missing slot(s): "
@@ -502,7 +601,7 @@ def validate_worker_slot_store(data: object) -> list[str]:
             if isinstance(val, bool) or not isinstance(val, int):
                 errors.append(
                     f"root.slot_epochs.{sid} must be a non-bool int, "
-                    f"got {val!r}"
+                    f"got {_safe_type_name(val)}"
                 )
             elif val < 0:
                 errors.append(
@@ -513,7 +612,6 @@ def validate_worker_slot_store(data: object) -> list[str]:
     leases = data.get("leases")
     if not isinstance(leases, dict):
         errors.append("root.leases must be an object")
-        # Cannot validate further — return early.
         return errors
 
     # Collect active lease metadata for cross‑lease checks.
@@ -521,11 +619,15 @@ def validate_worker_slot_store(data: object) -> list[str]:
     seen_pairs: set[tuple[str, str]] = set()  # (worker_kind, worktree)
 
     for slot_key, raw_lease in leases.items():
-        prefix = f"root.leases.{slot_key}"
+        prefix = f"root.leases"
 
         if not isinstance(slot_key, str) or not slot_key:
-            errors.append(f"{prefix} slot key must be a non-empty string")
+            errors.append(
+                f"{prefix}[non-str-key] slot key must be a non-empty string, "
+                f"got {_safe_type_name(slot_key)}"
+            )
             continue
+        prefix = f"root.leases.{slot_key}"
         if slot_key not in _STABLE_SLOT_SET:
             errors.append(
                 f"{prefix} is not a valid stable slot ID"
@@ -537,9 +639,13 @@ def validate_worker_slot_store(data: object) -> list[str]:
             continue
 
         # ── exact lease keys ───────────────────────────────────────
-        la = set(raw_lease.keys())
-        lm = _LEASE_FIELD_SET - la
-        le = la - _LEASE_FIELD_SET
+        # Only compare str keys.
+        la_str: set[str] = set()
+        for lk in raw_lease:
+            if isinstance(lk, str):
+                la_str.add(lk)
+        lm = _LEASE_FIELD_SET - la_str
+        le = la_str - _LEASE_FIELD_SET
         if lm:
             errors.append(
                 f"{prefix} missing field(s): "
@@ -550,15 +656,18 @@ def validate_worker_slot_store(data: object) -> list[str]:
                 f"{prefix} forbidden field(s): "
                 + ", ".join(sorted(le))
             )
-        # Do not continue on key errors — remaining checks can still
-        # inspect individual fields if they exist.
 
         # ── lease.slot_id must match the key ───────────────────────
-        lid = raw_lease.get("slot_id")
-        if isinstance(lid, str) and lid != slot_key:
+        lid_val = raw_lease.get("slot_id")
+        if isinstance(lid_val, str) and lid_val != slot_key:
             errors.append(
-                f"{prefix}.slot_id={lid!r} does not match "
+                f"{prefix}.slot_id does not match "
                 f"the leases key {slot_key!r}"
+            )
+        elif not isinstance(lid_val, str):
+            errors.append(
+                f"{prefix}.slot_id must be a str, "
+                f"got {_safe_type_name(lid_val)}"
             )
 
         # ── lease_id uniqueness ────────────────────────────────────
@@ -566,7 +675,7 @@ def validate_worker_slot_store(data: object) -> list[str]:
         if isinstance(lease_id, str) and lease_id:
             if lease_id in seen_lease_ids:
                 errors.append(
-                    f"{prefix}.lease_id={lease_id!r} is duplicated"
+                    f"{prefix}.lease_id is duplicated"
                 )
             seen_lease_ids.add(lease_id)
 
@@ -576,8 +685,7 @@ def validate_worker_slot_store(data: object) -> list[str]:
         if isinstance(ep, bool) or not isinstance(ep, int):
             errors.append(
                 f"{prefix}.lease_epoch must be a non-bool int, "
-                f"got {type(ep).__name__ if not isinstance(ep, bool) else 'bool'}"
-                + (f" {ep!r}" if not isinstance(ep, bool) else f" {ep!r}")
+                f"got {_safe_type_name(ep)}"
             )
 
         # worker_kind
@@ -588,16 +696,15 @@ def validate_worker_slot_store(data: object) -> list[str]:
             except ValueError:
                 errors.append(
                     f"{prefix}.worker_kind must be a valid WorkerKind, "
-                    f"got {wk!r}"
+                    f"got {_safe_type_name(wk)}"
                 )
         elif wk is not None:
             errors.append(
                 f"{prefix}.worker_kind must be a str, "
-                f"got {type(wk).__name__}"
+                f"got {_safe_type_name(wk)}"
             )
 
-        # worker_kind ↔ slot consistency (lightweight — no dataclass
-        # construction).
+        # worker_kind ↔ slot consistency.
         if isinstance(wk, str) and isinstance(slot_key, str):
             expected = _SLOT_KIND.get(slot_key)
             if expected is not None:
@@ -608,8 +715,9 @@ def validate_worker_slot_store(data: object) -> list[str]:
                 else:
                     if parsed_wk != expected:
                         errors.append(
-                            f"{prefix}.worker_kind={wk!r} does not match "
-                            f"slot {slot_key!r} (expected {expected.value!r})"
+                            f"{prefix}.worker_kind does not match "
+                            f"slot {slot_key!r} "
+                            f"(expected {expected.value!r})"
                         )
 
         # epoch consistency with slot_epochs (if both valid)
@@ -634,17 +742,53 @@ def validate_worker_slot_store(data: object) -> list[str]:
             if fv is not None and not isinstance(fv, str):
                 errors.append(
                     f"{prefix}.{fn} must be a str, "
-                    f"got {type(fv).__name__}"
+                    f"got {_safe_type_name(fv)}"
                 )
 
-        # Timestamp format checks (only when strings).
+        # Timestamp UTC validation (real parser, not just regex).
         for fn in ("acquired_at", "heartbeat_at", "expires_at"):
             fv = raw_lease.get(fn)
             if isinstance(fv, str):
-                if _RFC3339_RE.fullmatch(fv) is None:
+                parsed_ts = _parse_rfc3339_utc(fv)
+                if parsed_ts is None:
                     errors.append(
-                        f"{prefix}.{fn} must be RFC 3339, got {fv!r}"
+                        f"{prefix}.{fn} must be RFC 3339 UTC "
+                        f"(Z or +00:00), "
+                        f"got {_safe_type_name(fv)}"
                     )
+                else:
+                    offset = parsed_ts.utcoffset()
+                    if offset is None or offset.total_seconds() != 0:
+                        errors.append(
+                            f"{prefix}.{fn} must be UTC "
+                            f"(Z or +00:00), "
+                            f"got {_safe_type_name(fv)}"
+                        )
+
+        # ── temporal ordering (when all three parse as UTC) ─────────
+        at_ts = (
+            _parse_rfc3339_utc(raw_lease["acquired_at"])
+            if isinstance(raw_lease.get("acquired_at"), str)
+            else None
+        )
+        ht_ts = (
+            _parse_rfc3339_utc(raw_lease["heartbeat_at"])
+            if isinstance(raw_lease.get("heartbeat_at"), str)
+            else None
+        )
+        et_ts = (
+            _parse_rfc3339_utc(raw_lease["expires_at"])
+            if isinstance(raw_lease.get("expires_at"), str)
+            else None
+        )
+        if at_ts is not None and ht_ts is not None and at_ts > ht_ts:
+            errors.append(
+                f"{prefix}.acquired_at must be <= heartbeat_at"
+            )
+        if ht_ts is not None and et_ts is not None and ht_ts >= et_ts:
+            errors.append(
+                f"{prefix}.heartbeat_at must be < expires_at"
+            )
 
         # ── per‑(worker_kind, worktree) uniqueness ─────────────────
         cw = raw_lease.get("canonical_worktree")
@@ -652,7 +796,7 @@ def validate_worker_slot_store(data: object) -> list[str]:
             pair = (wk, cw)
             if pair in seen_pairs:
                 errors.append(
-                    f"{prefix} duplicate (worker_kind={wk!r}, "
+                    f"{prefix} duplicate (worker_kind, "
                     f"canonical_worktree) pair"
                 )
             seen_pairs.add(pair)
@@ -678,16 +822,18 @@ def read_worker_slot_leases(project_root: Path) -> dict[str, object]:
     """
     if not isinstance(project_root, Path):
         raise TypeError(
-            f"project_root must be a Path, got {type(project_root).__name__}"
+            "project_root must be a Path, "
+            f"got {_safe_type_name(project_root)}"
         )
     if not project_root.is_absolute():
         raise ValueError(
-            f"project_root must be absolute, got {project_root}"
+            "project_root must be absolute, "
+            f"got {_safe_type_name(project_root)}"
         )
     if not project_root.is_dir():
         raise ValueError(
-            f"project_root does not exist or is not a directory: "
-            f"{project_root}"
+            "project_root does not exist or is not a directory: "
+            f"{_safe_type_name(project_root)}"
         )
 
     path = project_root / _RUNTIME_RELATIVE
@@ -758,6 +904,13 @@ def _exclusive_store_lock(project_root: Path) -> Iterator[None]:
 
     Raises :exc:`WorkerSlotContentionError` when the lock already exists.
     No waiting, sleeping, or retrying.
+
+    **Exception propagation rule:** If the caller's ``with`` block raises
+    an exception, release errors (missing / unreadable / mismatched lock)
+    are logged but the original caller exception is **always** propagated
+    unchanged.  If the caller's ``with`` block succeeds but the release
+    step detects a problem (lock missing, token mismatch, or unlink
+    failure), a :exc:`WorkerSlotLeaseError` is raised.
     """
     runtime_dir = project_root / ".agentdesk" / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -789,26 +942,80 @@ def _exclusive_store_lock(project_root: Path) -> Iterator[None]:
         raise
 
     # ── yield to caller ────────────────────────────────────────────────
+    body_exception: BaseException | None = None
     try:
         yield
+    except BaseException as _exc:
+        body_exception = _exc
     finally:
         # ── release (with token check) ─────────────────────────────
+        release_error: str | None = None
         try:
             stored = lock.read_text(encoding="utf-8").strip()
         except FileNotFoundError:
-            # Lock was already removed by someone else — nothing to do.
-            return
+            release_error = (
+                "worker-slot-lease lock file disappeared while held"
+            )
         except OSError:
-            # Cannot read — do NOT delete; we can't verify ownership.
-            return
-        if stored == token:
-            try:
-                lock.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError:
-                pass
-        # If token mismatches, do NOT delete — another process owns it.
+            release_error = (
+                "worker-slot-lease lock file is unreadable while held"
+            )
+        else:
+            if stored == token:
+                try:
+                    lock.unlink()
+                except FileNotFoundError:
+                    # Already gone — no action needed.
+                    pass
+                except OSError:
+                    release_error = (
+                        "worker-slot-lease lock file could not be removed"
+                    )
+            else:
+                # Token mismatch — lock was taken over.
+                release_error = (
+                    "worker-slot-lease lock file token mismatch — "
+                    "another process has taken over"
+                )
+
+        # If the body raised, propagate that — release errors are
+        # secondary (the original exception is always preserved).
+        # If the body succeeded but release detected a problem,
+        # raise a new exception.
+        if body_exception is not None:
+            raise body_exception
+        if release_error is not None:
+            raise WorkerSlotLeaseError(release_error)
+
+
+# ── directory fsync helper ─────────────────────────────────────────────────
+
+
+def _fsync_parent_directory(path: Path) -> None:
+    """Perform a best‑effort fsync on *path*'s parent directory.
+
+    On POSIX: any OSError is propagated — directory fsync must succeed.
+    On Windows: specific errno values (EACCES, EBADF, EINVAL) that
+    indicate the OS does not support directory fsync are silently
+    accepted at both the ``os.open`` and ``os.fsync`` stages; all other
+    errors are propagated.
+
+    The directory file descriptor is always closed, even on error.
+    """
+    try:
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+    except OSError as exc:
+        if not _is_dir_fsync_allowed_error(exc):
+            raise
+        # Windows can't even open the dir — safe to ignore.
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError as exc:
+        if not _is_dir_fsync_allowed_error(exc):
+            raise
+    finally:
+        os.close(dir_fd)
 
 
 # ── private atomic write ────────────────────────────────────────────────────
@@ -818,7 +1025,8 @@ def _serialize_store(data: object) -> str:
     """Serialize store *data* to JSON‑compatible YAML text."""
     if not isinstance(data, dict):
         raise TypeError(
-            f"store data must be a dict, got {type(data).__name__}"
+            "store data must be a dict, "
+            f"got {_safe_type_name(data)}"
         )
     return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
 
@@ -865,20 +1073,8 @@ def _atomic_write_store(project_root: Path, data: object) -> None:
             os.fsync(handle.fileno())
         os.chmod(tmp, previous_mode if previous_mode is not None else 0o644)
         os.replace(tmp, path)
-        # Best‑effort directory fsync.
-        try:
-            dir_fd = os.open(str(path.parent), os.O_RDONLY)
-        except OSError:
-            dir_fd = None
-        if dir_fd is not None:
-            try:
-                os.fsync(dir_fd)
-            except OSError:
-                # On Windows, directory fsync may not be supported —
-                # silently accept that specific failure.
-                pass
-            finally:
-                os.close(dir_fd)
+        # Directory fsync (with platform‑specific allowlist).
+        _fsync_parent_directory(path)
     except BaseException:
         # Clean up temp file — the original file was never touched
         # because ``os.replace`` never ran.

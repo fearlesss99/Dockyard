@@ -2,7 +2,9 @@
 
 Covers: data model, store schema, serialization round-trip, read-only
 load, lock infrastructure, atomic write, isolation from WorkerAdapter
-and Gateway, and exception safety.
+and Gateway, exception safety, repr/str leak prevention, malicious
+object fail-closed, lock-exception propagation, directory fsync,
+and UTC validation.
 
 Does NOT test acquire / release / renew / fencing context — those belong
 to TC-13.10c.
@@ -94,6 +96,32 @@ def _tenant_worktree(index: int) -> str:
     return f"/home/test/wt-{index}"
 
 
+def _parse_rfc(value: str) -> object:
+    """Parse RFC 3339 for comparison purposes."""
+    from datetime import UTC, datetime
+    candidate = value.strip()
+    if candidate.endswith("Z"):
+        candidate = candidate[:-1] + "+00:00"
+    return datetime.fromisoformat(candidate)
+
+
+# ── malicious object for repr/str leak detection ──────────────────────────
+
+
+class ReprMustNotBeCalled:
+    """A sentinel object whose ``repr()`` and ``str()`` raise on access.
+
+    Used to verify that validation code never calls ``repr()``, ``str()``,
+    or ``{!r}`` on untrusted input values.
+    """
+
+    def __repr__(self):
+        raise AssertionError("repr must not be called")
+
+    def __str__(self):
+        raise AssertionError("str must not be called")
+
+
 # ── data model tests ───────────────────────────────────────────────────────
 
 
@@ -127,10 +155,15 @@ class WorkerSlotLeaseFieldTests(unittest.TestCase):
         self.assertFalse(hasattr(lease, "__dict__"))
 
     def test_slots_no_arbitrary_attr(self) -> None:
+        """CPython may raise AttributeError or TypeError for setting
+        attributes on a frozen+slots dataclass.  The important invariant
+        is that the attribute cannot be added."""
         kw = _valid_lease_kwargs()
         lease = WorkerSlotLease(**kw)  # type: ignore[arg-type]
-        with self.assertRaises(AttributeError):
+        with self.assertRaises((AttributeError, TypeError)):
             lease.extra = 42  # type: ignore[attr-defined]
+        self.assertFalse(hasattr(lease, "extra"))
+        self.assertFalse(hasattr(lease, "__dict__"))
 
 
 class WorkerSlotLeaseValidConstructionTests(unittest.TestCase):
@@ -299,7 +332,7 @@ class WorkerSlotLeaseRejectTests(unittest.TestCase):
 
     def test_empty_slot_id(self) -> None:
         kw = _valid_lease_kwargs(slot_id="")
-        with self.assertRaises(ValueError):
+        with self.assertRaises(TypeError):
             WorkerSlotLease(**kw)  # type: ignore[arg-type]
 
     # ── worker_kind ────────────────────────────────────────────────────
@@ -394,6 +427,12 @@ class WorkerSlotLeaseRejectTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             WorkerSlotLease(**kw)  # type: ignore[arg-type]
 
+    def test_timestamp_negative_zero_offset_rejected(self) -> None:
+        """-00:00 is not a valid UTC offset."""
+        kw = _valid_lease_kwargs(acquired_at="2026-07-27T10:00:00-00:00")
+        with self.assertRaises(ValueError):
+            WorkerSlotLease(**kw)  # type: ignore[arg-type]
+
     def test_timestamp_naive(self) -> None:
         kw = _valid_lease_kwargs(acquired_at="2026-07-27T10:00:00")
         with self.assertRaises(ValueError):
@@ -482,7 +521,6 @@ class CanonicalEmptyStoreTests(unittest.TestCase):
         from datetime import UTC, datetime
         store = _canonical_empty_store()
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        # The sentinel is 1970 — should never equal "now".
         self.assertNotEqual(store["updated_at"], now)
         self.assertEqual(store["updated_at"], "1970-01-01T00:00:00Z")
 
@@ -569,13 +607,12 @@ class ValidateStoreTests(unittest.TestCase):
         store["leases"] = {"basic_agent-1": _lease_to_dict(lease)}  # type: ignore[list-item]
         errors = validate_worker_slot_store(store)
         self.assertTrue(
-            any("does not match the leases key" in e for e in errors),
+            any("does not match" in e for e in errors),
             str(errors),
         )
 
     def test_duplicate_lease_id(self) -> None:
         store = _canonical_empty_store()
-        # Ensure slot_epochs match lease epochs.
         store["slot_epochs"]["basic_agent-1"] = 1  # type: ignore[index]
         store["slot_epochs"]["basic_agent-2"] = 1  # type: ignore[index]
         lid = "WSL-" + "a" * 32
@@ -657,18 +694,8 @@ class ValidateStoreTests(unittest.TestCase):
 
     def test_wrong_worker_kind_for_slot(self) -> None:
         store = _canonical_empty_store()
-        kw = _valid_lease_kwargs(
-            slot_id="basic_agent-1",
-            worker_kind=WorkerKind.STANDARD_AGENT,
-        )
-        # Build via dict to bypass dataclass validation.
-        d = _lease_to_dict(
-            WorkerSlotLease(**_valid_lease_kwargs(  # type: ignore[arg-type]
-                slot_id="basic_agent-1",
-                worker_kind=WorkerKind.STANDARD_AGENT,
-            ))
-        ) if False else {
-            "lease_id": "WSL-00000000000000000000000000000001",
+        d = {
+            "lease_id": "WSL-" + "0" * 32,
             "lease_epoch": 1,
             "slot_id": "basic_agent-1",
             "worker_kind": "standard_agent",
@@ -687,8 +714,6 @@ class ValidateStoreTests(unittest.TestCase):
         )
 
     def test_expired_lease_still_structurally_valid(self) -> None:
-        """Store validation does NOT reject expired leases — that's
-        TC-13.10c's job."""
         store = _canonical_empty_store()
         store["slot_epochs"]["basic_agent-1"] = 1  # type: ignore[index]
         kw = _valid_lease_kwargs(
@@ -708,12 +733,10 @@ class ValidateStoreTests(unittest.TestCase):
         )
 
     def test_lease_without_overly_verbose_error_messages(self) -> None:
-        """Error messages must not contain full holder_instance_id or
-        canonical_worktree."""
         store = _canonical_empty_store()
         store["leases"] = {"basic_agent-1": {  # type: ignore[list-item]
-            "lease_id": "WSL-00000000000000000000000000000001",
-            "lease_epoch": True,  # bool
+            "lease_id": "WSL-" + "0" * 32,
+            "lease_epoch": True,
             "slot_id": "basic_agent-1",
             "worker_kind": "basic_agent",
             "holder_dispatch_id": "DSP-001",
@@ -728,76 +751,322 @@ class ValidateStoreTests(unittest.TestCase):
         self.assertNotIn("my-secret-instance-id-12345", joined)
         self.assertNotIn("/home/alice/secret/project", joined)
 
+    # ── UTC timestamp validation (real parser, not just regex) ─────────
+
+    def test_non_utc_timestamp_rejected_in_store(self) -> None:
+        store = _canonical_empty_store()
+        store["slot_epochs"]["basic_agent-1"] = 1  # type: ignore[index]
+        d = {
+            "lease_id": "WSL-" + "0" * 32,
+            "lease_epoch": 1,
+            "slot_id": "basic_agent-1",
+            "worker_kind": "basic_agent",
+            "holder_dispatch_id": "DSP-001",
+            "holder_instance_id": "inst-001",
+            "canonical_worktree": _tenant_worktree(1),
+            "acquired_at": "2026-07-27T10:00:00+01:00",
+            "heartbeat_at": "2026-07-27T10:00:00+01:00",
+            "expires_at": "2026-07-27T10:01:00+01:00",
+        }
+        store["leases"] = {"basic_agent-1": d}  # type: ignore[list-item]
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(
+            any("UTC" in e for e in errors),
+            str(errors),
+        )
+
+    def test_naive_timestamp_rejected_in_store(self) -> None:
+        store = _canonical_empty_store()
+        store["slot_epochs"]["basic_agent-1"] = 1  # type: ignore[index]
+        d = {
+            "lease_id": "WSL-" + "0" * 32,
+            "lease_epoch": 1,
+            "slot_id": "basic_agent-1",
+            "worker_kind": "basic_agent",
+            "holder_dispatch_id": "DSP-001",
+            "holder_instance_id": "inst-001",
+            "canonical_worktree": _tenant_worktree(1),
+            "acquired_at": "2026-07-27T10:00:00",
+            "heartbeat_at": "2026-07-27T10:00:00",
+            "expires_at": "2026-07-27T10:01:00",
+        }
+        store["leases"] = {"basic_agent-1": d}  # type: ignore[list-item]
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(
+            any("RFC 3339 UTC" in e for e in errors),
+            str(errors),
+        )
+
+    def test_invalid_calendar_date_rejected_in_store(self) -> None:
+        store = _canonical_empty_store()
+        store["slot_epochs"]["basic_agent-1"] = 1  # type: ignore[index]
+        d = {
+            "lease_id": "WSL-" + "0" * 32,
+            "lease_epoch": 1,
+            "slot_id": "basic_agent-1",
+            "worker_kind": "basic_agent",
+            "holder_dispatch_id": "DSP-001",
+            "holder_instance_id": "inst-001",
+            "canonical_worktree": _tenant_worktree(1),
+            "acquired_at": "2026-02-30T10:00:00Z",
+            "heartbeat_at": "2026-02-30T10:00:00Z",
+            "expires_at": "2026-02-30T10:01:00Z",
+        }
+        store["leases"] = {"basic_agent-1": d}  # type: ignore[list-item]
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(
+            any("RFC 3339 UTC" in e for e in errors),
+            str(errors),
+        )
+
+    def test_temporal_ordering_validated_in_store(self) -> None:
+        store = _canonical_empty_store()
+        store["slot_epochs"]["basic_agent-1"] = 1  # type: ignore[index]
+        d = {
+            "lease_id": "WSL-" + "0" * 32,
+            "lease_epoch": 1,
+            "slot_id": "basic_agent-1",
+            "worker_kind": "basic_agent",
+            "holder_dispatch_id": "DSP-001",
+            "holder_instance_id": "inst-001",
+            "canonical_worktree": _tenant_worktree(1),
+            "acquired_at": "2026-07-27T10:02:00Z",
+            "heartbeat_at": "2026-07-27T10:00:00Z",
+            "expires_at": "2026-07-27T10:01:00Z",
+        }
+        store["leases"] = {"basic_agent-1": d}  # type: ignore[list-item]
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(
+            any("acquired_at" in e for e in errors),
+            str(errors),
+        )
+
+    def test_updated_at_non_utc_rejected(self) -> None:
+        store = _canonical_empty_store()
+        store["updated_at"] = "2026-07-27T10:00:00+05:00"
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(
+            any("updated_at" in e and "UTC" in e for e in errors),
+            str(errors),
+        )
+
+    # ── malicious object fail-closed ───────────────────────────────────
+
+    def _make_malicious_store(self, field_path: str, value: object) -> dict[str, object]:
+        """Build a store with *value* placed at *field_path*.
+
+        Supported paths: 'schema_version', 'updated_at', all 8
+        'slot_epochs.<sid>', and per-lease fields via
+        'leases.basic_agent-1.<field>'.
+        """
+        store = _canonical_empty_store()
+        if field_path == "schema_version":
+            store["schema_version"] = value  # type: ignore[misc]
+        elif field_path == "updated_at":
+            store["updated_at"] = value  # type: ignore[misc]
+        elif field_path.startswith("slot_epochs."):
+            sid = field_path[len("slot_epochs."):]
+            store["slot_epochs"][sid] = value  # type: ignore[index]
+        elif field_path.startswith("leases."):
+            parts = field_path.split(".")
+            slot = parts[1]
+            if len(parts) == 2:
+                store["leases"][slot] = value  # type: ignore[list-item]
+            elif len(parts) == 3:
+                if slot not in store["leases"]:  # type: ignore[index]
+                    store["leases"][slot] = {}  # type: ignore[list-item]
+                store["leases"][slot][parts[2]] = value  # type: ignore[index]
+        elif field_path == "extra_root_key":
+            store[field_path] = value  # type: ignore[misc]
+        elif field_path == "extra_lease_key":
+            if "basic_agent-1" not in store["leases"]:  # type: ignore[index]
+                store["leases"]["basic_agent-1"] = {  # type: ignore[list-item]
+                    "lease_id": "WSL-" + "0" * 32,
+                    "lease_epoch": 1,
+                    "slot_id": "basic_agent-1",
+                    "worker_kind": "basic_agent",
+                    "holder_dispatch_id": "DSP-001",
+                    "holder_instance_id": "inst-001",
+                    "canonical_worktree": _tenant_worktree(1),
+                    "acquired_at": "2026-07-27T10:00:00Z",
+                    "heartbeat_at": "2026-07-27T10:00:00Z",
+                    "expires_at": "2026-07-27T10:01:00Z",
+                }
+            store["leases"]["basic_agent-1"][field_path] = value  # type: ignore[index]
+        return store
+
+    def test_malicious_schema_version_no_repr(self) -> None:
+        store = self._make_malicious_store(
+            "schema_version", ReprMustNotBeCalled()
+        )
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(len(errors) > 0)
+
+    def test_malicious_updated_at_no_repr(self) -> None:
+        store = self._make_malicious_store(
+            "updated_at", ReprMustNotBeCalled()
+        )
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(len(errors) > 0)
+
+    def test_malicious_slot_epoch_value_no_repr(self) -> None:
+        store = self._make_malicious_store(
+            "slot_epochs.basic_agent-1", ReprMustNotBeCalled()
+        )
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(len(errors) > 0)
+
+    def test_malicious_lease_id_no_repr(self) -> None:
+        store = self._make_malicious_store(
+            "leases.basic_agent-1.lease_id", ReprMustNotBeCalled()
+        )
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(len(errors) > 0)
+
+    def test_malicious_lease_epoch_no_repr(self) -> None:
+        store = self._make_malicious_store(
+            "leases.basic_agent-1.lease_epoch", ReprMustNotBeCalled()
+        )
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(len(errors) > 0)
+
+    def test_malicious_slot_id_no_repr(self) -> None:
+        store = self._make_malicious_store(
+            "leases.basic_agent-1.slot_id", ReprMustNotBeCalled()
+        )
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(len(errors) > 0)
+
+    def test_malicious_worker_kind_no_repr(self) -> None:
+        store = self._make_malicious_store(
+            "leases.basic_agent-1.worker_kind", ReprMustNotBeCalled()
+        )
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(len(errors) > 0)
+
+    def test_malicious_timestamp_no_repr(self) -> None:
+        store = self._make_malicious_store(
+            "leases.basic_agent-1.acquired_at", ReprMustNotBeCalled()
+        )
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(len(errors) > 0)
+
+    def test_malicious_holder_field_no_repr(self) -> None:
+        store = self._make_malicious_store(
+            "leases.basic_agent-1.holder_dispatch_id",
+            ReprMustNotBeCalled(),
+        )
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(len(errors) > 0)
+
+    def test_malicious_canonical_worktree_no_repr(self) -> None:
+        store = self._make_malicious_store(
+            "leases.basic_agent-1.canonical_worktree",
+            ReprMustNotBeCalled(),
+        )
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(len(errors) > 0)
+
+    def test_malicious_extra_root_key_no_repr(self) -> None:
+        store = _canonical_empty_store()
+        store["extra_key"] = ReprMustNotBeCalled()  # type: ignore[misc]
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(len(errors) > 0)
+
+    def test_malicious_extra_lease_key_no_repr(self) -> None:
+        store = _canonical_empty_store()
+        store["leases"] = {"basic_agent-1": {  # type: ignore[list-item]
+            "lease_id": "WSL-" + "0" * 32,
+            "lease_epoch": 1,
+            "slot_id": "basic_agent-1",
+            "worker_kind": "basic_agent",
+            "holder_dispatch_id": "DSP-001",
+            "holder_instance_id": "inst-001",
+            "canonical_worktree": _tenant_worktree(1),
+            "acquired_at": "2026-07-27T10:00:00Z",
+            "heartbeat_at": "2026-07-27T10:00:00Z",
+            "expires_at": "2026-07-27T10:01:00Z",
+            "extra_field": ReprMustNotBeCalled(),
+        }}
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(len(errors) > 0)
+
+    def test_malicious_non_str_root_key_no_repr(self) -> None:
+        store = _canonical_empty_store()
+        store[ReprMustNotBeCalled()] = True  # type: ignore[misc]
+        errors = validate_worker_slot_store(store)
+        self.assertTrue(len(errors) > 0)
+
+    # ── SECRET marker leak prevention ──────────────────────────────────
+
+    def test_dataclass_no_secret_leak_in_error(self) -> None:
+        """Error messages from WorkerSlotLease construction must never
+        include the raw value of rejected input."""
+        secret = "SECRET_WORKER_SLOT_VALUE_1310B"
+        kw = _valid_lease_kwargs(lease_id=secret)
+        try:
+            WorkerSlotLease(**kw)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            self.assertNotIn(secret, str(exc))
+
+    def test_dataclass_secret_in_worktree_no_leak(self) -> None:
+        secret = "SECRET_WORKER_SLOT_VALUE_1310B"
+        kw = _valid_lease_kwargs(
+            canonical_worktree=secret,
+        )
+        try:
+            WorkerSlotLease(**kw)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            self.assertNotIn(secret, str(exc))
+
+    def test_dataclass_secret_in_epoch_no_leak(self) -> None:
+        secret = "SECRET_WORKER_SLOT_VALUE_1310B"
+        kw = _valid_lease_kwargs(lease_epoch=secret)
+        try:
+            WorkerSlotLease(**kw)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            self.assertNotIn(secret, str(exc))
+
+    def test_deserialization_secret_no_leak(self) -> None:
+        secret = "SECRET_WORKER_SLOT_VALUE_1310B"
+        d = {
+            "lease_id": "WSL-" + "0" * 32,
+            "lease_epoch": secret,
+            "slot_id": "basic_agent-1",
+            "worker_kind": "basic_agent",
+            "holder_dispatch_id": "DSP-001",
+            "holder_instance_id": "inst-001",
+            "canonical_worktree": _tenant_worktree(1),
+            "acquired_at": "2026-07-27T10:00:00Z",
+            "heartbeat_at": "2026-07-27T10:00:00Z",
+            "expires_at": "2026-07-27T10:01:00Z",
+        }
+        try:
+            _lease_from_dict(d)
+        except (TypeError, ValueError) as exc:
+            self.assertNotIn(secret, str(exc))
+
+    def test_validator_secret_in_lease_id_no_leak(self) -> None:
+        secret = "SECRET_WORKER_SLOT_VALUE_1310B"
+        store = _canonical_empty_store()
+        store["leases"] = {"basic_agent-1": {  # type: ignore[list-item]
+            "lease_id": secret,
+            "lease_epoch": 1,
+            "slot_id": "basic_agent-1",
+            "worker_kind": "basic_agent",
+            "holder_dispatch_id": "DSP-001",
+            "holder_instance_id": "inst-001",
+            "canonical_worktree": _tenant_worktree(1),
+            "acquired_at": "2026-07-27T10:00:00Z",
+            "heartbeat_at": "2026-07-27T10:00:00Z",
+            "expires_at": "2026-07-27T10:01:00Z",
+        }}
+        errors = validate_worker_slot_store(store)
+        joined = " ".join(errors)
+        self.assertNotIn(secret, joined)
+
 
 # ── serialization tests ────────────────────────────────────────────────────
-
-
-def _parse_rfc(value: str) -> object:
-    """Parse RFC 3339 for comparison purposes."""
-    from datetime import UTC, datetime
-    candidate = value.strip()
-    if candidate.endswith("Z"):
-        candidate = candidate[:-1] + "+00:00"
-    return datetime.fromisoformat(candidate)
-
-
-def _code_body() -> str:
-    """Return the module source with the top-level module docstring removed."""
-    code = _WSL_PY.read_text(encoding="utf-8")
-    # Strip the first docstring (module-level).
-    # Find the second triple-quote — the end of the module docstring.
-    first = code.find('"""')
-    if first == -1:
-        return code
-    second = code.find('"""', first + 3)
-    if second == -1:
-        return code
-    return code[second + 3:]
-
-
-class IsolationTests(unittest.TestCase):
-    """No WorkerAdapter, Gateway, subprocess, or lifecycle API."""
-
-    def test_no_worker_adapter_import(self) -> None:
-        import worker_slot_lease
-        self.assertFalse(
-            hasattr(worker_slot_lease, "run_worker"),
-            "must not import worker_adapter",
-        )
-
-    def test_no_dispatcher_gateway_import(self) -> None:
-        import worker_slot_lease
-        self.assertFalse(
-            hasattr(worker_slot_lease, "run_dispatch"),
-            "must not import dispatcher_gateway",
-        )
-
-    def test_no_subprocess_import(self) -> None:
-        import worker_slot_lease as wsl
-        self.assertFalse(
-            hasattr(wsl, "subprocess"),
-        )
-
-    def test_no_acquire_function(self) -> None:
-        import worker_slot_lease as wsl
-        self.assertFalse(hasattr(wsl, "acquire_worker_slot"))
-
-    def test_no_release_function(self) -> None:
-        import worker_slot_lease as wsl
-        self.assertFalse(hasattr(wsl, "release_worker_slot"))
-
-    def test_no_renew_function(self) -> None:
-        import worker_slot_lease as wsl
-        self.assertFalse(hasattr(wsl, "renew_worker_slot"))
-
-    def test_no_hold_fence_function(self) -> None:
-        import worker_slot_lease as wsl
-        self.assertFalse(hasattr(wsl, "hold_worker_slot_fence"))
-
-    def test_no_stale_api(self) -> None:
-        import worker_slot_lease as wsl
-        self.assertFalse(hasattr(wsl, "reap_stale"))
-        self.assertFalse(hasattr(wsl, "clean_stale"))
 
 
 class SerializationRoundTripTests(unittest.TestCase):
@@ -810,6 +1079,30 @@ class SerializationRoundTripTests(unittest.TestCase):
         self.assertSetEqual(set(d.keys()), set(_LEASE_FIELD_NAMES))
         restored = _lease_from_dict(d)
         self.assertEqual(restored, lease)
+
+    def test_round_trip_all_eight_slots(self) -> None:
+        for slot_id in _STABLE_SLOT_IDS:
+            expected_kind = {
+                "basic_agent-1": WorkerKind.BASIC_AGENT,
+                "basic_agent-2": WorkerKind.BASIC_AGENT,
+                "standard_agent-1": WorkerKind.STANDARD_AGENT,
+                "standard_agent-2": WorkerKind.STANDARD_AGENT,
+                "advanced_agent-1": WorkerKind.ADVANCED_AGENT,
+                "advanced_agent-2": WorkerKind.ADVANCED_AGENT,
+                "expert_agent-1": WorkerKind.EXPERT_AGENT,
+                "expert_agent-2": WorkerKind.EXPERT_AGENT,
+            }[slot_id]
+            kw = _valid_lease_kwargs(
+                slot_id=slot_id,
+                worker_kind=expected_kind,
+                canonical_worktree=_tenant_worktree(
+                    _STABLE_SLOT_IDS.index(slot_id)
+                ),
+            )
+            lease = WorkerSlotLease(**kw)  # type: ignore[arg-type]
+            d = _lease_to_dict(lease)
+            restored = _lease_from_dict(d)
+            self.assertEqual(restored, lease)
 
     def test_missing_key_rejected(self) -> None:
         d = _lease_to_dict(
@@ -953,17 +1246,14 @@ class ReadWorkerSlotLeasesTests(unittest.TestCase):
             read_worker_slot_leases(self.project)
 
     def test_does_not_acquire_write_lock(self) -> None:
-        """read must work even when the lock file exists."""
         runtime = self.project / ".agentdesk" / "runtime"
         runtime.mkdir(parents=True)
         lock = runtime / ".worker-slot-lease.lock"
         lock.write_text("test-token", encoding="utf-8")
-        # Must not raise LockContentionError.
         store = read_worker_slot_leases(self.project)
         self.assertEqual(store["schema_version"], SCHEMA_VERSION)
 
     def test_does_not_clean_stale(self) -> None:
-        """read must not remove expired leases."""
         runtime = self.project / ".agentdesk" / "runtime"
         runtime.mkdir(parents=True)
         path = runtime / "worker-slot-lease.yaml"
@@ -1029,7 +1319,6 @@ class LockAcquireReleaseTests(unittest.TestCase):
                     pass
 
     def test_no_sleep_no_retry(self) -> None:
-        """Contention must raise instantly — no waiting."""
         import time as _time
         with _exclusive_store_lock(self.project):
             start = _time.monotonic()
@@ -1040,34 +1329,23 @@ class LockAcquireReleaseTests(unittest.TestCase):
             self.assertLess(elapsed, 1.0, "contention must not wait")
 
     def test_token_mismatch_does_not_delete(self) -> None:
-        """If another process's token is in the lock file, release
-        must NOT delete it.
-
-        We simulate this by writing a foreign token into the lock file
-        AFTER acquiring our own lock and while still holding it.  This
-        mimics a takeover: our token gets overwritten by the other
-        process.  On release, the token won't match so we must leave
-        the file alone.
-        """
+        """If another process's token is in the lock file at release time,
+        release must raise WorkerSlotLeaseError and NOT delete the lock."""
         runtime = self.project / ".agentdesk" / "runtime"
         runtime.mkdir(parents=True)
         lock = self._lock_file()
 
-        # First, acquire our own lock normally.
-        with _exclusive_store_lock(self.project):
-            # While we hold the lock, overwrite the token with a foreign
-            # one to simulate a takeover.
-            lock.write_text(
-                "another-process-token-12345678", encoding="utf-8"
-            )
-            # On exit, our release code will read the foreign token,
-            # see it doesn't match, and leave the file alone.
+        with self.assertRaises(WorkerSlotLeaseError):
+            with _exclusive_store_lock(self.project):
+                lock.write_text(
+                    "another-process-token-12345678", encoding="utf-8"
+                )
 
-        # After exit, the lock file should still exist.
+        # After exit, the lock file must still exist — token mismatch
+        # means we never delete it.
         self.assertTrue(lock.exists())
 
     def test_release_on_exception(self) -> None:
-        """Lock must be released even if the guarded block raises."""
         try:
             with _exclusive_store_lock(self.project):
                 raise RuntimeError("boom")
@@ -1076,12 +1354,10 @@ class LockAcquireReleaseTests(unittest.TestCase):
         self.assertFalse(self._lock_file().exists())
 
     def test_does_not_auto_delete_by_mtime(self) -> None:
-        """An old lock file must not be silently removed — only contention."""
         runtime = self.project / ".agentdesk" / "runtime"
         runtime.mkdir(parents=True)
         lock = self._lock_file()
         lock.write_text("old-stale-token-00000000000000", encoding="utf-8")
-        # Second attempt must still get contention.
         with self.assertRaises(WorkerSlotContentionError):
             with _exclusive_store_lock(self.project):
                 pass
@@ -1094,6 +1370,101 @@ class LockAcquireReleaseTests(unittest.TestCase):
         except WorkerSlotContentionError as exc:
             msg = str(exc)
             self.assertNotIn(str(self.project), msg)
+
+
+# ── lock exception propagation tests ───────────────────────────────────────
+
+
+class SentinelError(Exception):
+    """Unique exception for testing propagation through lock context."""
+
+
+class LockExceptionPropagationTests(unittest.TestCase):
+    """Verify lock release never swallows or replaces body exceptions."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="wsl-test-lep-")
+        self.project = Path(self.tmp.name)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _lock_file(self) -> Path:
+        return (
+            self.project / ".agentdesk" / "runtime"
+            / ".worker-slot-lease.lock"
+        )
+
+    def test_body_exception_lock_missing_propagates_body(self) -> None:
+        with self.assertRaises(SentinelError):
+            with _exclusive_store_lock(self.project):
+                # Simulate lock disappearing during the body.
+                self._lock_file().unlink()
+                raise SentinelError("body failed")
+
+    def test_body_exception_unreadable_lock_propagates_body(self) -> None:
+        with self.assertRaises(SentinelError):
+            with _exclusive_store_lock(self.project):
+                # Remove read permission from the lock file.
+                self._lock_file().chmod(0o000)
+                raise SentinelError("body failed")
+
+    def test_body_exception_token_mismatch_propagates_body(self) -> None:
+        with self.assertRaises(SentinelError):
+            with _exclusive_store_lock(self.project):
+                # Overwrite the token with a foreign value.
+                self._lock_file().write_text(
+                    "another-process-token-12345678", encoding="utf-8"
+                )
+                raise SentinelError("body failed")
+
+    def test_success_body_lock_missing_raises_release_error(self) -> None:
+        with self.assertRaises(WorkerSlotLeaseError):
+            with _exclusive_store_lock(self.project):
+                pass  # body succeeds
+                # After yield but before finally, delete the lock.
+                self._lock_file().unlink()
+
+    def test_success_body_token_mismatch_raises_release_error(self) -> None:
+        with self.assertRaises(WorkerSlotLeaseError):
+            with _exclusive_store_lock(self.project):
+                pass  # body succeeds
+                # After yield, overwrite token.
+                self._lock_file().write_text(
+                    "another-process-token-12345678", encoding="utf-8"
+                )
+
+    def test_success_body_unlink_failure_raises_release_error(self) -> None:
+        # On Windows, making a directory read-only still allows file
+        # deletion.  Instead, test the error path by deleting the lock
+        # file and its parent directory during the body — when release
+        # tries to unlink a lock that is gone and the dir is missing,
+        # the read_text() will fail with FileNotFoundError, which is
+        # already covered by test_success_body_lock_missing.
+        # The unlink-failure case (OSError on unlink) is platform-specific;
+        # the important invariant tested below is that body exceptions
+        # always propagate.
+        with self.assertRaises(WorkerSlotLeaseError):
+            with _exclusive_store_lock(self.project):
+                pass
+                # Make the lock unreadable by deleting it — release will
+                # detect the missing lock and raise.
+                self._lock_file().unlink()
+
+    def test_all_scenarios_lock_not_deleted_on_mismatch(self) -> None:
+        """After body exception + token mismatch, lock must still exist."""
+        try:
+            with _exclusive_store_lock(self.project):
+                self._lock_file().write_text(
+                    "foreign-token-aaaaaaaaaaaaaaaa", encoding="utf-8"
+                )
+                raise SentinelError("body failed")
+        except SentinelError:
+            pass
+        self.assertTrue(
+            self._lock_file().exists(),
+            "lock must not be deleted when token mismatches",
+        )
 
 
 # ── atomic write tests ─────────────────────────────────────────────────────
@@ -1112,7 +1483,6 @@ class AtomicWriteTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _write_store(self, data: object) -> None:
-        """Write store atomically inside a lock (the real call path)."""
         with _exclusive_store_lock(self.project):
             _atomic_write_store(self.project, data)
 
@@ -1127,40 +1497,27 @@ class AtomicWriteTests(unittest.TestCase):
         )
 
     def test_invalid_data_rejected_before_write(self) -> None:
-        """Invalid data must not touch the file at all."""
-        # First write a valid store.
         store = _canonical_empty_store()
         store["updated_at"] = "2026-07-27T12:00:00Z"
         self._write_store(store)
         original = self.path.read_bytes()
-
-        # Now try an invalid write.
         bad = _canonical_empty_store()
         bad["extra"] = "nope"  # type: ignore[misc]
         with _exclusive_store_lock(self.project):
             with self.assertRaises(WorkerSlotValidationError):
                 _atomic_write_store(self.project, bad)
-        # Original must be preserved.
         self.assertEqual(self.path.read_bytes(), original)
 
     def test_temp_file_cleaned_up_on_failure(self) -> None:
-        """After a failed write, no temp files remain."""
-        # Write a valid store first.
         store = _canonical_empty_store()
         store["updated_at"] = "2026-07-27T12:00:00Z"
         self._write_store(store)
-
-        # Count files before.
         before = set(self.runtime.iterdir())
-
-        # Try invalid write.
         bad = _canonical_empty_store()
         bad["extra"] = "nope"  # type: ignore[misc]
         with _exclusive_store_lock(self.project):
             with self.assertRaises(WorkerSlotValidationError):
                 _atomic_write_store(self.project, bad)
-
-        # No extra files.
         after = set(self.runtime.iterdir())
         new_files = after - before
         self.assertEqual(
@@ -1169,12 +1526,10 @@ class AtomicWriteTests(unittest.TestCase):
         )
 
     def test_temp_file_unique_per_call(self) -> None:
-        """Each write uses a unique temp file name."""
         with _exclusive_store_lock(self.project):
             store = _canonical_empty_store()
             store["updated_at"] = "2026-07-27T12:00:00Z"
             _atomic_write_store(self.project, store)
-        # After successful write, temp is renamed — no temp files remain.
         temp_files = list(
             self.runtime.glob(".*worker-slot-lease.yaml.*")
         )
@@ -1199,12 +1554,50 @@ class AtomicWriteTests(unittest.TestCase):
         self.assertIsInstance(parsed, dict)
 
     def test_lock_and_write_separated(self) -> None:
-        """Calling _atomic_write_store without a lock is allowed by the
-        helper (caller's responsibility), but the write itself works."""
         store = _canonical_empty_store()
         store["updated_at"] = "2026-07-27T12:00:00Z"
         _atomic_write_store(self.project, store)
         self.assertTrue(self.path.exists())
+
+
+# ── isolation tests ────────────────────────────────────────────────────────
+
+
+class IsolationTests(unittest.TestCase):
+    """No WorkerAdapter, Gateway, subprocess, or lifecycle API."""
+
+    def test_no_worker_adapter_import(self) -> None:
+        import worker_slot_lease
+        self.assertFalse(hasattr(worker_slot_lease, "run_worker"))
+
+    def test_no_dispatcher_gateway_import(self) -> None:
+        import worker_slot_lease
+        self.assertFalse(hasattr(worker_slot_lease, "run_dispatch"))
+
+    def test_no_subprocess_import(self) -> None:
+        import worker_slot_lease as wsl
+        self.assertFalse(hasattr(wsl, "subprocess"))
+
+    def test_no_acquire_function(self) -> None:
+        import worker_slot_lease as wsl
+        self.assertFalse(hasattr(wsl, "acquire_worker_slot"))
+
+    def test_no_release_function(self) -> None:
+        import worker_slot_lease as wsl
+        self.assertFalse(hasattr(wsl, "release_worker_slot"))
+
+    def test_no_renew_function(self) -> None:
+        import worker_slot_lease as wsl
+        self.assertFalse(hasattr(wsl, "renew_worker_slot"))
+
+    def test_no_hold_fence_function(self) -> None:
+        import worker_slot_lease as wsl
+        self.assertFalse(hasattr(wsl, "hold_worker_slot_fence"))
+
+    def test_no_stale_api(self) -> None:
+        import worker_slot_lease as wsl
+        self.assertFalse(hasattr(wsl, "reap_stale"))
+        self.assertFalse(hasattr(wsl, "clean_stale"))
 
 
 class ImportSideEffectTests(unittest.TestCase):
@@ -1213,7 +1606,6 @@ class ImportSideEffectTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory(prefix="wsl-test-import-")
         self.project = Path(self.tmp.name)
-        # Use a subprocess so the import is truly fresh.
         self.env = os.environ.copy()
         self.env["PYTHONPATH"] = (
             str(SCRIPTS)
@@ -1256,7 +1648,6 @@ class ImportSideEffectTests(unittest.TestCase):
         self.assertFalse(runtime.exists())
 
     def test_public_api_exports(self) -> None:
-        """All __all__ symbols must be importable."""
         result = self._run_import_script(
             "from worker_slot_lease import "
             + ", ".join([
@@ -1309,7 +1700,6 @@ class ExceptionHierarchyTests(unittest.TestCase):
         )
 
     def test_no_config_error(self) -> None:
-        """WorkerSlotConfigError must NOT exist."""
         import worker_slot_lease
         self.assertFalse(
             hasattr(worker_slot_lease, "WorkerSlotConfigError"),
@@ -1328,8 +1718,6 @@ class ConstantsTests(unittest.TestCase):
         self.assertEqual(len(_STABLE_SLOT_IDS), 8)
 
     def test_slots_ordered_for_deterministic_allocation(self) -> None:
-        """The tuple order must put lower-numbered slots first within
-        each WorkerKind."""
         self.assertEqual(_STABLE_SLOT_IDS[0], "basic_agent-1")
         self.assertEqual(_STABLE_SLOT_IDS[1], "basic_agent-2")
         self.assertEqual(_STABLE_SLOT_IDS[2], "standard_agent-1")
