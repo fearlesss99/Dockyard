@@ -977,9 +977,35 @@ The overall WorkerSlotLease interface is fully implemented.
 
 ### 2.6 Approval, Escalation, Event, and Outbox Separation
 
-- **TASK_APPROVAL** (TC-13.12) uses structured scope (dispatch / accept /
-  integrate), not free-text.  Each approval is for exactly one action and one
-  delivery.  Revocation is an independent, immutable event.
+Approval in the AgentDesk control plane spans three **independent** domains.
+They must not be conflated:
+
+1. **Task Action Approval** (TC-13.12, §2.15) — authorises control-plane
+   actions.  Uses structured scope (`dispatch` / `accept` / `integrate`).
+   Each approval is for exactly one action and one delivery.
+   Evidence: ``TASK_APPROVAL_GRANTED`` and ``TASK_APPROVAL_REVOKED``
+   immutable records in ``docs/pm/approvals/``.  Checked by the
+   ``ApprovalGate`` runtime service (Interface #17, Target).
+
+2. **Owner Approval** — declared in the committed task-card frontmatter
+   ``owner_approval.gate``.  The only value attested in the current
+   template is ``"none"``.  Owner approval does **not** use
+   ``TASK_APPROVAL`` IDs and is independent of both task-action and
+   model-degradation approval domains.
+
+3. **Model Degradation Approval** — authorises model-tier downgrades when
+   ``degradation_policy == "require_pm_approval"`` and
+   ``selected_model_tier < preferred_model_tier``.  Evidence:
+   ``MODEL_DEGRADATION_APPROVED`` and ``MODEL_DEGRADATION_REVOKED``
+   events in ``docs/pm/events/``.  This domain is **not** a substitute
+   for task-action approval — it only authorises model-tier selection,
+   not dispatch / accept / integrate actions.  ``granted_approval_ids``
+   in the task ledger retains its model-degradation-only semantics.
+   TC-13.12 does **not** refactor the existing model degradation
+   pipeline.
+
+See §2.15 for the frozen ApprovalGate contract.
+
 - **Escalation** (TC-13.13 — difficulty tier change) is separate from
   **RateLimit** (TC-13.14 — provider 429 handling).  A rate-limit event must
   not change difficulty or generate `TASK_ESCALATED`.
@@ -4554,6 +4580,725 @@ intermediate "Current (contract frozen)" sub-status is permitted.
 
 ---
 
+### 2.15 ApprovalGate -- Frozen Contract (Target -- TC-13.12a)
+
+TC-13.12a freezes the **ApprovalGate contract** for structured task-action
+approval.  No production module is shipped under TC-13.12a -- the contract
+itself is the deliverable and must be implemented by TC-13.12b/c/d.
+
+---
+#### 2.15.1 Three Independent Approval Domains
+
+The AgentDesk control plane recognises exactly three independent approval
+domains.  They must not be conflated:
+
+| Domain | Purpose | Evidence | Gate / Checker |
+|--------|---------|----------|----------------|
+| **Task Action Approval** | Authorise ``dispatch``, ``accept``, or ``integrate`` control-plane actions | ``agentdesk.task-approval/v1`` grant / revoke records in ``docs/pm/approvals/`` | ``ApprovalGate`` (TC-13.12) |
+| **Owner Approval** | Declare whether the task's owner requires an explicit gate before a transition | Committed task-card frontmatter ``owner_approval.gate`` (only ``"none"`` attested) | PM / control-plane (reads task card) |
+| **Model Degradation Approval** | Authorise model-tier downgrades when ``degradation_policy == "require_pm_approval"`` | ``MODEL_DEGRADATION_APPROVED`` / ``MODEL_DEGRADATION_REVOKED`` events in ``docs/pm/events/`` | ``select_model.py`` + ``validate_project.py`` |
+
+Frozen rules:
+
+* Task Action Approval is the **only** domain that authorises control-plane
+  actions (dispatch / accept / integrate).
+* Owner Approval is a task-card-level declaration -- it does **not** use
+  ``TASK_APPROVAL`` IDs and is independent of both task-action and
+  model-degradation domains.
+* Model Degradation Approval only authorises model-tier selection -- it is
+  **not** a substitute for task-action approval.
+* ``granted_approval_ids`` in the task ledger retains its
+  model-degradation-only semantics.
+* TC-13.12 does **not** refactor the existing model degradation pipeline
+  (``MODEL_DEGRADATION_APPROVED``, ``MODEL_DEGRADATION_REVOKED``,
+  ``model_degradation_approval_id``, ``granted_approval_ids``).
+
+---
+#### 2.15.2 ApprovalScope
+
+A closed ``str`` enum with exactly three members:
+
+```python
+import enum
+
+@enum.unique
+class ApprovalScope(str, enum.Enum):
+    DISPATCH = "dispatch"
+    ACCEPT = "accept"
+    INTEGRATE = "integrate"
+```
+
+Frozen rules:
+
+* Exactly three values -- no more, no less.
+* ``str(member) == member.value`` -- JSON-serialised as lowercase strings.
+* Unknown values → fail-closed (``ValueError`` at construction).
+* A single approval covers **exactly one** scope.  Multi-scope approvals
+  are forbidden.
+* Free-text scope values are forbidden.
+* Bare strings are rejected at the public API boundary -- callers must
+  pass an ``ApprovalScope`` member, not a literal ``"dispatch"``.
+
+---
+#### 2.15.3 ApprovalSubject
+
+Immutable five-field dataclass identifying the control-plane action to be
+authorised:
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True, slots=True)
+class ApprovalSubject:
+    task_id: str              # ^TC-[0-9]{3,}$
+    revision: int             # non-bool, >= 1
+    attempt: int              # non-bool, >= 1
+    dispatch_id: str          # non-empty; no leading/trailing ws, NUL, CR, LF
+    accepted_commit: str | None  # None for dispatch/accept; 40-char hex SHA for integrate
+```
+
+| # | Field | Type | Rule |
+|---|-------|------|------|
+| 1 | ``task_id`` | ``str`` | Matches ``^TC-[0-9]{3,}$`` |
+| 2 | ``revision`` | ``int`` | Non-bool, >= 1 |
+| 3 | ``attempt`` | ``int`` | Non-bool, >= 1 |
+| 4 | ``dispatch_id`` | ``str`` | Non-empty, no leading/trailing whitespace, no NUL/CR/LF |
+| 5 | ``accepted_commit`` | ``str`` or ``None`` | ``None`` for ``dispatch`` and ``accept`` scopes; 40-char lowercase hex SHA for ``integrate`` |
+
+Fields permanently excluded from ``ApprovalSubject``:
+
+```text
+expected_snapshot_commit   — belongs to ApprovalCheckRequest
+path                       — never stored
+prompt                     — never stored
+provider / model_id        — model-tier concerns, not action-authorisation
+lease / actor / reason     — belong to ApprovalEvidence
+```
+
+---
+#### 2.15.4 ApprovalCheckRequest
+
+Immutable three-field input to ``ApprovalGate.check()`` and
+``ApprovalGate.require()``:
+
+```python
+@dataclass(frozen=True, slots=True)
+class ApprovalCheckRequest:
+    scope: ApprovalScope
+    subject: ApprovalSubject
+    expected_snapshot_commit: str  # 40-char hex SHA
+```
+
+| # | Field | Type | Rule |
+|---|-------|------|------|
+| 1 | ``scope`` | ``ApprovalScope`` | Must be a member of ``ApprovalScope`` |
+| 2 | ``subject`` | ``ApprovalSubject`` | Identifies the action to authorise |
+| 3 | ``expected_snapshot_commit`` | ``str`` | 40-char lowercase hex SHA -- caller's observed Git HEAD |
+
+The request does **not** carry an ``approval_id``.  The Gate resolves all
+matching evidence from ``docs/pm/approvals/``.  If multiple valid grants
+match the same scope + subject, the Gate must fail-closed with
+``ApprovalAmbiguousError`` rather than silently picking one.
+
+---
+#### 2.15.5 Approval Evidence Schema — ``agentdesk.task-approval/v1``
+
+Approval evidence lives in a **new** canonical directory,
+``docs/pm/approvals/``, separate from ``docs/pm/events/``.
+Rationale: approval evidence is not a state-transition event.  Both grant
+and revoke records are append-only and immutable after creation.
+
+**File location**: ``docs/pm/approvals/<event-id>.yaml`` -- filename is
+derived from ``event_id`` only.  ``approval_id`` must never be used
+directly as a path component.
+
+---
+##### 2.15.5.1 Grant Evidence — Exact 16 Root Keys
+
+```yaml
+schema_version: agentdesk.task-approval/v1
+record_type: grant
+approval_id: APR-...
+event_id: EVT-...
+scope: dispatch               # dispatch | accept | integrate
+task_id: TC-001
+revision: 1
+attempt: 1
+dispatch_id: DSP-...
+accepted_commit: null         # null for dispatch and accept; 40-char SHA for integrate
+actor_role_id: PM
+lease_epoch: 1
+granted_at: 2026-07-27T08:00:00Z
+expires_at: null              # null = never expires
+reason: ...
+snapshot_commit: <40-char-hex-sha>
+```
+
+| # | Field | Type | Rule |
+|---|-------|------|------|
+| 1 | ``schema_version`` | ``str`` | Fixed: ``"agentdesk.task-approval/v1"`` |
+| 2 | ``record_type`` | ``str`` | Fixed: ``"grant"`` |
+| 3 | ``approval_id`` | ``str`` | ``APR-*`` pattern; globally unique |
+| 4 | ``event_id`` | ``str`` | ``EVT-*`` pattern; globally unique; used as filename stem |
+| 5 | ``scope`` | ``str`` | ``"dispatch"``, ``"accept"``, or ``"integrate"`` |
+| 6 | ``task_id`` | ``str`` | ``TC-NNN`` |
+| 7 | ``revision`` | ``int`` | Non-bool, >= 1 |
+| 8 | ``attempt`` | ``int`` | Non-bool, >= 1 |
+| 9 | ``dispatch_id`` | ``str`` | Non-empty |
+| 10 | ``accepted_commit`` | ``str`` or ``null`` | ``null`` for dispatch/accept; 40-char hex SHA for integrate |
+| 11 | ``actor_role_id`` | ``str`` | Fixed: ``"PM"`` |
+| 12 | ``lease_epoch`` | ``int`` | Non-bool, >= 1 |
+| 13 | ``granted_at`` | ``str`` | RFC 3339 UTC |
+| 14 | ``expires_at`` | ``str`` or ``null`` | ``null`` = never expires; otherwise RFC 3339 UTC strictly after ``granted_at`` |
+| 15 | ``reason`` | ``str`` | Non-empty |
+| 16 | ``snapshot_commit`` | ``str`` | 40-char hex SHA -- Git HEAD at grant creation time |
+
+Extra or missing root keys → fail-closed (``ApprovalValidationError``).
+The key set is frozen -- no optional keys beyond ``accepted_commit`` and
+``expires_at``.
+
+##### 2.15.5.2 Revoke Evidence — Exact 10 Root Keys
+
+```yaml
+schema_version: agentdesk.task-approval/v1
+record_type: revoke
+approval_id: APR-...          # references the original grant
+event_id: EVT-...
+task_id: TC-001
+actor_role_id: PM
+lease_epoch: 2
+revoked_at: 2026-07-27T09:00:00Z
+reason: ...
+snapshot_commit: <40-char-hex-sha>
+```
+
+| # | Field | Type | Rule |
+|---|-------|------|------|
+| 1 | ``schema_version`` | ``str`` | Fixed: ``"agentdesk.task-approval/v1"`` |
+| 2 | ``record_type`` | ``str`` | Fixed: ``"revoke"`` |
+| 3 | ``approval_id`` | ``str`` | ``APR-*`` -- references the original grant |
+| 4 | ``event_id`` | ``str`` | ``EVT-*`` -- globally unique |
+| 5 | ``task_id`` | ``str`` | ``TC-NNN`` -- for cross-reference with the grant |
+| 6 | ``actor_role_id`` | ``str`` | Fixed: ``"PM"`` |
+| 7 | ``lease_epoch`` | ``int`` | Non-bool, >= 1 |
+| 8 | ``revoked_at`` | ``str`` | RFC 3339 UTC |
+| 9 | ``reason`` | ``str`` | Non-empty |
+| 10 | ``snapshot_commit`` | ``str`` | 40-char hex SHA -- Git HEAD at revoke creation time |
+
+Each grant may have **at most one** revoke.  Revocation does not modify
+the grant file.  Extra or missing root keys → fail-closed.
+
+---
+#### 2.15.6 Evidence Creation Ownership
+
+**ApprovalGate** (read-only):
+
+* Load, parse, and validate approval evidence from
+  ``docs/pm/approvals/``.
+* Match evidence against ``ApprovalCheckRequest``.
+* Return ``ApprovalCheckResult`` (or raise on integrity errors).
+* **Never** creates grant files.
+* **Never** creates revoke files.
+* **Never** modifies ``tasks.yaml``, ``events/``, ``outbox/``, or
+  ``acceptances/``.
+
+**Approval Evidence Writer** — co-resides in the same production module
+``skills/agentdesk/scripts/approval_gate.py``.  Public API frozen here:
+
+```python
+def write_grant(
+    project_root: Path,
+    approval_id: str,
+    event_id: str,
+    scope: ApprovalScope,
+    subject: ApprovalSubject,
+    lease_epoch: int,
+    now: datetime,
+    reason: str,
+    expires_at: str | None,
+    expected_snapshot_commit: str,
+) -> tuple[Path, str]:
+    """Atomically write a TASK_APPROVAL grant evidence file.
+
+    Acquires the project-level state lock internally.
+    Returns ``(file_path, snapshot_commit_written)``.
+    Raises ``ApprovalValidationError`` on duplicate ``approval_id``
+    or schema violations.
+    Raises ``ApprovalSnapshotConflictError`` on CAS failure.
+    """
+    ...
+
+
+def write_revoke(
+    project_root: Path,
+    approval_id: str,
+    event_id: str,
+    lease_epoch: int,
+    now: datetime,
+    reason: str,
+    expected_snapshot_commit: str,
+) -> tuple[Path, str]:
+    """Atomically write a TASK_APPROVAL revoke evidence file.
+
+    Acquires the project-level state lock internally.
+    Validates that the grant exists and is not already revoked.
+    Returns ``(file_path, snapshot_commit_written)``.
+    Raises ``ApprovalNotFoundError`` if the grant does not exist.
+    Raises ``ApprovalAmbiguousError`` if the grant is already revoked.
+    """
+    ...
+```
+
+Frozen writer rules:
+
+* Writer acquires the project-level state lock internally (same
+  ``.agentdesk/runtime/.state-transition.lock``).
+* Writer performs CAS: ``git rev-parse HEAD`` must equal
+  ``expected_snapshot_commit``.
+* Writer performs duplicate detection: ``approval_id`` uniqueness,
+  single revoke per grant.
+* Writer uses atomic write (``tempfile.mkstemp`` → ``fsync`` →
+  ``os.replace``) -- the same pattern as ``worker_slot_lease.py``.
+* Writer does **not** update ``tasks.yaml`` -- that is the caller's
+  responsibility via ``ControlPlaneTransitionService``.
+* Writer does **not** increment ``lease_epoch`` -- the caller provides
+  the current value.
+* Both ``write_grant`` and ``write_revoke`` are in the module's
+  ``__all__``.
+
+---
+#### 2.15.7 Runtime Public API
+
+Production module: ``skills/agentdesk/scripts/approval_gate.py``
+(does **not** exist as of TC-13.12a).
+
+Frozen module-level ``__all__``:
+
+```python
+__all__ = [
+    "ApprovalScope",
+    "ApprovalSubject",
+    "ApprovalCheckRequest",
+    "ApprovalEvidence",
+    "ApprovalCheckResult",
+    "ApprovalGate",
+    "ApprovalError",
+    "ApprovalValidationError",
+    "ApprovalNotFoundError",
+    "ApprovalAmbiguousError",
+    "ApprovalExpiredError",
+    "ApprovalRevokedError",
+    "ApprovalSnapshotConflictError",
+    "write_grant",
+    "write_revoke",
+]
+```
+
+Exactly **15** public symbols -- no more, no less.
+
+---
+##### 2.15.7.1 ``ApprovalGate`` Service
+
+```python
+@dataclass(frozen=True, slots=True)
+class ApprovalGate:
+    """Read-only approval gate for control-plane actions.
+
+    Takes a ``project_root`` and does NOT store mutable state.
+    Every ``check`` / ``require`` call is self-contained.
+    """
+    project_root: Path
+
+    def check(
+        self,
+        request: ApprovalCheckRequest,
+        now: datetime,
+    ) -> ApprovalCheckResult:
+        """Validate approval for *request*.
+
+        Returns a structured ``ApprovalCheckResult`` for normal
+        business rejections (not-found, expired, revoked,
+        wrong-scope, wrong-subject).  Raises exceptions only for
+        evidence-integrity failures (malformed, ambiguity, schema
+        violations, snapshot mismatch).
+        """
+        ...
+
+    def require(
+        self,
+        request: ApprovalCheckRequest,
+        now: datetime,
+    ) -> ApprovalEvidence:
+        """Require a valid approval for *request*.
+
+        Returns the matching ``ApprovalEvidence`` on success.
+        Raises ``ApprovalError`` (or subclass) on any failure --
+        does NOT return ``None``, does NOT return a boolean.
+        """
+        ...
+```
+
+Frozen API rules:
+
+1. ``project_root`` is an absolute ``Path`` supplied at construction.
+2. ``now`` is an explicit ``datetime`` parameter -- the service never
+   calls ``datetime.now()`` internally.
+3. ``check()`` returns a structured result for business rejections.
+4. ``require()`` raises on any failure -- business or integrity.
+5. Both methods are **pure read-only** -- zero file writes.
+6. Error messages use ``type(x).__name__``, never ``repr()`` or
+   ``str()``, on untrusted input values.
+7. Error messages may contain safe identifiers: ``task_id``,
+   ``event_id``, ``approval_id``, ``scope``, field names, and
+   exception class names.
+8. Error messages must **never** contain: paths, prompt content,
+   secrets, ``holder_instance_id``, ``canonical_worktree``.
+
+---
+#### 2.15.8 ApprovalCheckResult
+
+Immutable four-field result from ``ApprovalGate.check()``:
+
+```python
+@dataclass(frozen=True, slots=True)
+class ApprovalCheckResult:
+    passed: bool
+    failure_code: str | None
+    matched_evidence: ApprovalEvidence | None
+    checked_at: str                # RFC 3339 UTC
+```
+
+| # | Field | Type | Rule |
+|---|-------|------|------|
+| 1 | ``passed`` | ``bool`` | ``True`` when a valid matching grant exists |
+| 2 | ``failure_code`` | ``str`` or ``None`` | ``None`` when ``passed``; non-empty when ``not passed`` |
+| 3 | ``matched_evidence`` | ``ApprovalEvidence`` or ``None`` | Non-``None`` when ``passed``; ``None`` when ``not passed`` |
+| 4 | ``checked_at`` | ``str`` | RFC 3339 UTC -- the caller's ``now`` |
+
+**Frozen ``failure_code`` values** (for ``passed=False``):
+
+| ``failure_code`` | Meaning |
+|------------------|---------|
+| ``not_found`` | No matching grant evidence exists |
+| ``expired`` | A grant exists but ``now >= expires_at`` |
+| ``revoked`` | A grant exists but a revoke record also exists |
+| ``wrong_scope`` | A grant exists for this subject but with a different ``scope`` |
+| ``wrong_subject`` | A grant exists for this ``task_id`` but with mismatched ``revision`` / ``attempt`` / ``dispatch_id`` / ``accepted_commit`` |
+
+The following conditions raise **exceptions** (not failure_code):
+
+* Malformed evidence (schema violation, missing/extra keys)
+* Unknown ``schema_version``
+* Duplicate active grants for the same scope + subject (ambiguity)
+* ``expected_snapshot_commit`` mismatch
+
+No free-text ``reason`` field -- the ``failure_code`` is sufficient for
+machine-readable decisions.
+
+---
+#### 2.15.9 Fail-Closed Matching
+
+A grant is **valid** for a given ``ApprovalCheckRequest`` when **all** of
+the following hold:
+
+| # | Criterion | Violation → |
+|---|-----------|-------------|
+| 1 | ``schema_version`` == ``"agentdesk.task-approval/v1"`` | ``ApprovalValidationError`` |
+| 2 | ``record_type`` == ``"grant"`` | ``ApprovalValidationError`` |
+| 3 | Grant root keys **exactly** match the frozen set (no extra, no missing) | ``ApprovalValidationError`` |
+| 4 | ``scope`` == ``request.scope`` | failure_code: ``wrong_scope`` |
+| 5 | ``task_id`` == ``request.subject.task_id`` | failure_code: ``wrong_subject`` |
+| 6 | ``revision`` == ``request.subject.revision`` | failure_code: ``wrong_subject`` |
+| 7 | ``attempt`` == ``request.subject.attempt`` | failure_code: ``wrong_subject`` |
+| 8 | ``dispatch_id`` == ``request.subject.dispatch_id`` | failure_code: ``wrong_subject`` |
+| 9 | ``accepted_commit`` == ``request.subject.accepted_commit`` | failure_code: ``wrong_subject`` |
+| 10 | ``actor_role_id`` == ``"PM"`` | ``ApprovalValidationError`` |
+| 11 | ``lease_epoch`` is non-bool ``int`` >= 1 | ``ApprovalValidationError`` |
+| 12 | ``now < expires_at`` (``null`` → never expires) | failure_code: ``expired`` |
+| 13 | No revoke record exists for this ``approval_id`` with ``now >= revoked_at`` | failure_code: ``revoked`` |
+| 14 | ``approval_id`` is unique within ``docs/pm/approvals/`` | ``ApprovalValidationError`` |
+| 15 | At most **one** active grant for the same scope + subject | ``ApprovalAmbiguousError`` |
+
+**Ambiguity rule**: if two or more active (unexpired, unrevoked) grants
+match the same scope + subject, the Gate raises
+``ApprovalAmbiguousError`` -- it must not arbitrarily pick one.
+
+**Evidence integrity**: malformed evidence, unknown schema versions,
+extra/missing keys, and snapshot-commit mismatches always raise
+exceptions -- never downgraded to a ``failure_code``.
+
+---
+#### 2.15.10 Git Snapshot Rules
+
+Frozen rules for ``expected_snapshot_commit``:
+
+1. ``request.expected_snapshot_commit`` is the caller's observed Git HEAD
+   (40-char hex SHA obtained via ``git rev-parse HEAD``).
+
+2. ``ApprovalGate`` reads the current repository HEAD at entry via
+   ``git rev-parse HEAD`` (argv array, ``shell=False``, no remote, no
+   fetch, no network).
+
+3. If current HEAD != ``request.expected_snapshot_commit`` →
+   ``ApprovalSnapshotConflictError`` (fail-closed, zero writes).
+
+4. Each evidence record carries a ``snapshot_commit`` -- the Git HEAD
+   at the time the grant or revoke was created.
+
+5. **Newly-created, not-yet-committed evidence is valid**: the Gate
+   reads evidence from the working-tree file at
+   ``docs/pm/approvals/<event-id>.yaml``.  The evidence's
+   ``snapshot_commit`` must be an ancestor of (or equal to)
+   ``expected_snapshot_commit`` -- verified via
+   ``git merge-base --is-ancestor evidence.snapshot_commit expected_snapshot_commit``.
+
+6. The ancestry check does **not** require the evidence file to exist
+   in the ``snapshot_commit`` -- it only requires that the commit
+   referenced by ``snapshot_commit`` is reachable from
+   ``expected_snapshot_commit``.  This allows evidence created at the
+   current HEAD (not yet committed) to be immediately usable: the
+   evidence's ``snapshot_commit`` equals ``expected_snapshot_commit``,
+   and a commit is trivially its own ancestor.
+
+7. Evidence whose ``snapshot_commit`` points to unreachable or future
+   history → ``ApprovalSnapshotConflictError``.
+
+8. Git calls: ``argv`` array, ``shell=False``.  No remote operations,
+   no fetch, no network access.
+
+---
+#### 2.15.11 Locking and TOCTOU
+
+**ApprovalGate itself acquires no locks** -- neither the worker-slot
+lock nor the control-plane state lock.  It reads immutable evidence
+from ``docs/pm/approvals/`` (append-only; existing records are never
+modified).
+
+**Caller responsibility**: the caller must hold the project-level
+control-plane state lock before invoking ``ApprovalGate.check()`` or
+``ApprovalGate.require()`` for a transition that will write canonical
+state.  The lock-held check is the authoritative approval decision.
+An external pre-check without the state lock is **not** a substitute.
+
+**Integration point with TC-13.11** (to be implemented in TC-13.12c):
+the ``ControlPlaneTransitionService`` calls ``ApprovalGate`` **after**
+the state lock is acquired and **after** CAS validation passes, but
+**before** any canonical files are written.  The internal
+implementation may change, but the public API of
+``TransitionRequest``, ``TransitionCAS``, ``DispatchCAS``,
+``apply_transition()``, and the ``__all__`` list are unchanged.
+
+**Idempotent replay**: when ``apply_transition()`` detects an existing
+transition event, it returns the original ``guard_results`` without
+re-querying the Gate.  The ``guard_results`` recorded at the time of
+the original transition capture the approval state that was valid then.
+
+**Revoke does not invalidate history**: a revoke record blocks **new**
+transitions but does **not** retroactively invalidate transitions
+whose ``guard_results`` recorded ``passed`` at the time of execution.
+
+---
+#### 2.15.12 GuardResult Mapping
+
+On a successful approval check, the caller constructs a ``GuardResult``:
+
+```python
+GuardResult(
+    guard="approval_gate",
+    inputs=(
+        GuardInput(key="scope", value=str(scope.value)),
+        GuardInput(key="approval_id", value=evidence.approval_id),
+    ),
+    result="passed",
+    checked_at="<RFC3339 UTC>",
+    evidence_ref="docs/pm/approvals/<event-id>.yaml",
+)
+```
+
+Frozen rules:
+
+* ``guard`` name is exactly ``"approval_gate"``.
+* ``inputs`` contain exactly two entries: ``scope`` and ``approval_id``.
+* ``result`` is ``"passed"``.
+* ``evidence_ref`` is the project-relative canonical path to the
+  grant file (or the revoke file, for revoked cases recorded in
+  history).
+* Full approval content is **not** copied into guard inputs.
+* An unpassed approval check must **never** proceed to
+  ``apply_transition()``.
+* Idempotent replay compares original event bytes -- it does not
+  regenerate ``checked_at``.
+
+---
+#### 2.15.13 Three-Scope Integration
+
+Each ``ApprovalScope`` maps to a specific transition type and subject
+binding:
+
+| Scope | Transition | Subject source | ``accepted_commit`` |
+|-------|-----------|---------------|---------------------|
+| ``dispatch`` | ``TASK_DISPATCHED`` | ``DispatchPayload.dispatch_id``, ``DispatchPayload.new_attempt`` | ``None`` |
+| ``accept`` | ``DELIVERY_ACCEPTED`` | ``DispatchCAS.expected_dispatch_id``, ``DispatchCAS.expected_attempt`` | ``None`` |
+| ``integrate`` | ``CHANGE_INTEGRATED`` | Task-ledger ``attempt`` + ``dispatch_id`` | Matches ``IntegrationPayload.integrated_commit`` or task-ledger ``accepted_commit`` |
+
+All three scopes are checked after CAS validation and before canonical
+writes, while the state lock is held.
+
+---
+#### 2.15.14 Exception Hierarchy
+
+Independent root -- **not** a subclass of ``ControlPlaneTransitionError``:
+
+```text
+ApprovalError                              (Exception)
+├── ApprovalValidationError                — schema violation, unknown version,
+│                                            extra/missing keys, malformed fields,
+│                                            illegal actor_role_id, bad lease_epoch
+├── ApprovalNotFoundError                  — no matching grant evidence exists
+├── ApprovalAmbiguousError                 — multiple active grants for same
+│                                            scope + subject
+├── ApprovalExpiredError                   — grant exists but now >= expires_at
+├── ApprovalRevokedError                   — grant exists but a revoke record
+│                                            also exists with now >= revoked_at
+└── ApprovalSnapshotConflictError          — expected_snapshot_commit != HEAD,
+                                             or evidence snapshot_commit not an
+                                             ancestor of expected_snapshot_commit
+```
+
+All exception types guarantee **zero canonical file writes** -- every
+managed file remains byte-for-byte unchanged.
+
+Propagation rules:
+
+* ``ApprovalError`` subclasses propagate unchanged through
+  ``ControlPlaneTransitionService`` -- they are not wrapped into
+  ``TransitionValidationError``.
+* ``TypeError`` / ``ValueError`` for input-type violations (wrong types,
+  naive ``datetime``, non-UTC ``now``) follow existing module conventions.
+
+Error message safety:
+
+* May contain: ``task_id``, ``event_id``, ``approval_id``, ``scope``,
+  field names, exception class name.
+* Must **never** contain: paths, prompt content, secrets,
+  ``holder_instance_id``, ``canonical_worktree``, environment values.
+* Uses ``type(x).__name__`` for untrusted values -- never ``repr()``,
+  ``str()``, or ``{!r}``.
+
+---
+#### 2.15.15 Validator Responsibilities
+
+The offline project validator (``validate_project.py``, TC-13.12d)
+must validate the following for ``agentdesk.task-approval/v1``
+evidence:
+
+1. Grant and revoke records have exact schema (correct keys, no
+   extra, no missing).
+2. ``approval_id`` and ``event_id`` are globally unique within
+   ``docs/pm/approvals/``.
+3. ``scope`` is one of the three frozen values.
+4. Subject fields (``task_id``, ``revision``, ``attempt``,
+   ``dispatch_id``, ``accepted_commit``) are internally consistent
+   with the ``scope``.
+5. ``actor_role_id`` is ``"PM"``.
+6. ``lease_epoch`` is a non-bool integer >= 1.
+7. All timestamps are RFC 3339 UTC.
+8. ``expires_at`` (if non-null) is strictly after ``granted_at``.
+9. Revoke ``approval_id`` references an existing grant.
+10. Each grant has at most one revoke.
+11. No two active grants cover the same scope + subject.
+12. No orphan evidence (grant references a ``task_id`` / ``revision`` /
+    ``attempt`` / ``dispatch_id`` that does not exist in the task
+    ledger or event history).
+13. ``snapshot_commit`` ancestry is verifiable via Git history.
+14. Evidence file paths are safe (derived from ``event_id``, validated
+    against ``EVT-*`` pattern).
+
+The runtime Gate does **not** assume the offline validator has already
+run.  It must still perform fail-closed validation of every evidence
+record it reads.
+
+---
+#### 2.15.16 Security Boundary
+
+Frozen security rules for the ``approval_gate`` module:
+
+* **Import**: zero output, zero file I/O.
+* **``check()`` / ``require()``**: zero canonical file writes.
+* **No environment variable reads**.
+* **No network access**.
+* **No model / API calls**.
+* **Git**: read-only ``argv``-based calls (``rev-parse``,
+  ``merge-base``); ``shell=False``; no remote, no fetch.
+* **``project_root``**: must be absolute, existing directory.
+* **No arbitrary evidence path parameter** -- evidence path derived
+  internally from ``event_id``.
+* **``event_id`` / ``approval_id``** are validated against their
+  patterns before any filesystem use; never used as bare path
+  components without validation.
+* **No bare ``assert``** in security-critical validation paths.
+* **``python -O``** behaviour is unchanged (no reliance on assert
+  statements for security checks).
+
+---
+#### 2.15.17 Task-Card Split
+
+```text
+TC-13.12a — this frozen contract (§2.15)
+TC-13.12b — typed models (ApprovalScope, ApprovalSubject,
+            ApprovalCheckRequest, ApprovalEvidence,
+            ApprovalCheckResult), evidence store/writer
+            (write_grant, write_revoke), schema validation
+TC-13.12c — read-only runtime gate (ApprovalGate.check,
+            ApprovalGate.require), ControlPlaneTransitionService
+            internal integration
+TC-13.12d — offline validator integration (validate_project.py),
+            replay, TOCTOU, concurrency hardening
+```
+
+| Card | Depends on | Scope | Interface #17 status after completion |
+|------|-----------|-------|--------------------------------------|
+| TC-13.12a | TC-13.11c | This contract only | **Target** |
+| TC-13.12b | TC-13.12a | Data models, writer, schema validation | Target |
+| TC-13.12c | TC-13.12b, TC-13.11 | Runtime gate + integration | Target |
+| TC-13.12d | TC-13.12c | Offline validator + replay hardening | Target → **Current** |
+
+Interface #17 status must remain **Target** until TC-13.12d is complete
+and the production module and full test suite are committed.  No
+intermediate "Current (contract frozen)" sub-status is permitted.
+
+---
+#### 2.15.18 Explicit Non-Goals
+
+TC-13.12a must **not** implement, freeze, or assume responsibility for:
+
+* **Production module** (``approval_gate.py``) — does not exist.
+* **TC-13.11 modifications** — ``control_plane_transition.py`` is
+  unchanged.
+* **``validate_project.py`` modifications** — validator is unchanged.
+* **``TASK_APPROVAL`` write implementation** — deferred to TC-13.12b.
+* **Runtime gate implementation** — deferred to TC-13.12c.
+* **Interface #17** — remains **Target**.
+* **TC-13.13 (EscalationService)** — not started; remains Target.
+* **Subprocess invocation** — no CLI, model, or network calls.
+* **Git worktree creation or deletion** — out of scope.
+* **Secret / auth management** — credentials are never read, written,
+  or logged.
+
+---
+#### 2.15.19 Status
+
+* ADR Interface Status row #17 "AgentDesk ApprovalGate"
+  remains **Target**.
+* This section (§2.15) is the Frozen Contract for TC-13.12a.
+* The production module ``skills/agentdesk/scripts/approval_gate.py``
+  does **not** exist.
+* TC-13.12b, TC-13.12c, and TC-13.12d are deferred to future task
+  cards.
+* TC-13.13 and all subsequent Target interfaces remain **Target**.
+
+---
+
 ## 3. Ownership Boundaries
 
 | Domain | Owned by | Description |
@@ -4565,7 +5310,9 @@ intermediate "Current (contract frozen)" sub-status is permitted.
 | Dispatch & attempt lifecycle | **AgentDesk** | `dispatch_id`, `attempt`, `current_dispatch`, `model_selection` |
 | Worker slot & lease | **AgentDesk** | `WorkerSlotLease`, slot allocation, concurrency fencing |
 | Worktree lifecycle | **AgentDesk** | Create at `report_commit`, remove after audit |
-| Approval & revocation | **AgentDesk** | TASK_APPROVAL events, MODEL_DEGRADATION_APPROVED/REVOKED |
+| Task-action approval & revocation | **AgentDesk** | ``TASK_APPROVAL_GRANTED`` / ``TASK_APPROVAL_REVOKED`` records (§2.15) |
+| Model degradation approval & revocation | **AgentDesk** | ``MODEL_DEGRADATION_APPROVED`` / ``MODEL_DEGRADATION_REVOKED`` events |
+| Owner approval | **AgentDesk** | Task-card frontmatter ``owner_approval.gate`` (currently ``"none"``) |
 | Rate limiting | **AgentDesk** | Provider 429 handling, backoff, notification |
 | Escalation | **AgentDesk** | Difficulty tier progression |
 | Double-commit delivery | **AgentDesk** | `implementation_commit` → `report_commit` → acceptance → integration |
@@ -4583,7 +5330,7 @@ or `result.json`.  MAD never opens `docs/pm/state/tasks.yaml` or
 | Prefix | Owner | Examples |
 |--------|-------|----------|
 | `mad.*` | MAD | `mad.agents/v1`, `mad.run-result/v1`, `mad.audit-result/v1` |
-| `agentdesk.*` | AgentDesk | `agentdesk.tasks/v2`, `agentdesk.state-event/v2`, `agentdesk.worker-slot-lease/v1`, `agentdesk.mad-refs/v1` |
+| `agentdesk.*` | AgentDesk | `agentdesk.tasks/v2`, `agentdesk.state-event/v2`, `agentdesk.task-approval/v1`, `agentdesk.worker-slot-lease/v1`, `agentdesk.mad-refs/v1` |
 
 No schema version from one namespace may be re-declared in the other.
 Cross-references (e.g. an AgentDesk event referencing a `deliberation_id`)
@@ -4610,8 +5357,11 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.10b | WorkerSlotLease data model, validation, runtime store, atomic I/O, file lock | TC-13.10a |
 | TC-13.10c | WorkerSlotLease acquire / release / renew / hold fence | TC-13.10b |
 | TC-13.11 | ControlPlaneTransitionService | TC-13.10c, TC-13.2 |
-| TC-13.12 | ApprovalGate (TASK_APPROVAL structured scope) | TC-13.11 |
-| TC-13.13 | EscalationService | TC-13.11 |
+| TC-13.12a | ApprovalGate frozen contract (§2.15) | TC-13.11c |
+| TC-13.12b | ApprovalGate typed models, evidence store/writer, schema validation | TC-13.12a |
+| TC-13.12c | ApprovalGate read-only runtime gate, ControlPlaneTransitionService internal integration | TC-13.12b, TC-13.11 |
+| TC-13.12d | ApprovalGate offline validator, replay, TOCTOU, concurrency hardening | TC-13.12c |
+| TC-13.13 | EscalationService | TC-13.12d |
 | TC-13.14 | RateLimit service | TC-13.11 |
 | TC-13.15 | MAD `audit` sub-command (`mad.audit-result/v1`) | TC-13.2 |
 | TC-13.16 | AgentDesk MadAuditGateway | TC-13.15 |

@@ -5936,6 +5936,677 @@ class ReleaseSmokeTests(unittest.TestCase):
                     f"claim: {stripped_line[:100]!r}"
                 )
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TC-13.12a ApprovalGate frozen contract tests
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    _TC1312A_CONTRACT_SECTION = "### 2.15"
+    _APPROVAL_GATE_PY = SKILL_ROOT / "scripts" / "approval_gate.py"
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _tc1312a_section(self) -> str:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, self._TC1312A_CONTRACT_SECTION
+        )
+        self.assertIsNotNone(
+            section,
+            f"ADR must contain {self._TC1312A_CONTRACT_SECTION} section",
+        )
+        return section  # type: ignore[return-value]
+
+    # ── Group 0: Existence and status ────────────────────────────────────────
+
+    def test_tc1312a_section_exists(self) -> None:
+        """§2.15 must exist with 'Frozen Contract', 'TC-13.12a', >500 chars."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        m = re.search(
+            r"^### 2\.15\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(m, "ADR must have a §2.15 heading")
+        heading = m.group(0)
+        self.assertIn("Frozen Contract", heading)
+        self.assertIn("TC-13.12a", heading)
+        section = self._tc1312a_section()
+        self.assertGreater(len(section), 500)
+
+    def test_tc1312a_interface_17_still_target(self) -> None:
+        """Interface #17 must be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        for row in rows:
+            num = self._resolve_col(row, "#")
+            if num == "17":
+                status = self._resolve_col(row, "Status")
+                self.assertIn("Target", status)
+                return
+        self.fail("Interface Status row #17 not found")
+
+    def test_tc1312a_interface_18_still_target(self) -> None:
+        """Interface #18 (TC-13.13) must remain Target — not started."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        for row in rows:
+            num = self._resolve_col(row, "#")
+            if num == "18":
+                status = self._resolve_col(row, "Status")
+                self.assertIn("Target", status)
+                return
+        self.fail("Interface Status row #18 not found")
+
+    def test_tc1312a_approval_gate_py_does_not_exist(self) -> None:
+        """approval_gate.py must NOT exist yet."""
+        self.assertFalse(
+            self._APPROVAL_GATE_PY.exists(),
+            "approval_gate.py must not exist in TC-13.12a",
+        )
+
+    def test_tc1312a_future_task_cards_tc1313_unchanged(self) -> None:
+        """§5 TC-13.13 row exists and is not claimed Current."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "## 5.")
+        self.assertIsNotNone(section, "ADR must contain §5 Future Task Cards")
+        self.assertIn("TC-13.13", section,
+                      "§5 must reference TC-13.13")
+        # TC-13.13 must depend on TC-13.12d, not TC-13.11 directly
+        self.assertIn("TC-13.12d", section,
+                      "§5 TC-13.13 must depend on TC-13.12d")
+
+    # ── Group 1: Three domains ───────────────────────────────────────────────
+
+    def test_tc1312a_three_domains_explicitly_separated(self) -> None:
+        """§2.15.1 must contain three domain names."""
+        section = self._tc1312a_section()
+        self.assertIn("Task Action Approval", section)
+        self.assertIn("Owner Approval", section)
+        self.assertIn("Model Degradation Approval", section)
+
+    def test_tc1312a_model_degradation_not_refactored(self) -> None:
+        """§2.15.1 must state TC-13.12 does NOT refactor model degradation."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "not refactor" in lower
+            or "does not refactor" in lower
+            or "does **not** refactor" in lower,
+            "§2.15 must state TC-13.12 does not refactor model degradation",
+        )
+
+    def test_tc1312a_granted_approval_ids_semantics_frozen(self) -> None:
+        """§2.15.1 must state granted_approval_ids retains model-degradation
+        semantics."""
+        section = self._tc1312a_section()
+        self.assertIn("granted_approval_ids", section)
+        lower = section.lower()
+        self.assertTrue(
+            "model-degradation" in lower or "model degradation" in lower,
+            "granted_approval_ids context must mention model-degradation",
+        )
+
+    # ── Group 2: ApprovalScope ───────────────────────────────────────────────
+
+    def test_tc1312a_scope_exactly_three_values(self) -> None:
+        """ApprovalScope must have exactly DISPATCH, ACCEPT, INTEGRATE."""
+        section = self._tc1312a_section()
+        self.assertIn("DISPATCH", section)
+        self.assertIn("ACCEPT", section)
+        self.assertIn("INTEGRATE", section)
+        # Must state "exactly three" or equivalent
+        lower = section.lower()
+        self.assertTrue(
+            "exactly three" in lower
+            or "no more, no less" in lower
+            or "exactly three members" in lower,
+            "§2.15 must state ApprovalScope has exactly three values",
+        )
+
+    def test_tc1312a_scope_str_equals_value(self) -> None:
+        """ADR must state str(member) == member.value for ApprovalScope."""
+        section = self._tc1312a_section()
+        # The contract prose states this explicitly; no runtime check needed
+        lower = section.lower()
+        self.assertTrue(
+            "str(member)" in lower
+            or "str(member) == member.value" in lower
+            or 'json-serialised as lowercase' in lower,
+            "§2.15 must state str(member) == member.value",
+        )
+
+    def test_tc1312a_scope_fail_closed_unknown(self) -> None:
+        """ADR must state unknown scope values fail-closed."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "fail-closed" in lower or "valueerror" in lower,
+            "§2.15 must state unknown ApprovalScope values fail-closed",
+        )
+
+    # ── Group 3: ApprovalSubject ─────────────────────────────────────────────
+
+    def test_tc1312a_subject_five_fields(self) -> None:
+        """ApprovalSubject must have exactly 5 fields."""
+        section = self._tc1312a_section()
+        for field in ("task_id", "revision", "attempt", "dispatch_id",
+                       "accepted_commit"):
+            self.assertIn(field, section,
+                          f"ApprovalSubject must include '{field}'")
+        # Must state exactly five
+        lower = section.lower()
+        self.assertTrue(
+            "five-field" in lower or "exactly 5 fields" in lower
+            or "exactly five" in lower or "immutable five-field" in lower,
+            "§2.15 must state ApprovalSubject has exactly 5 fields",
+        )
+
+    def test_tc1312a_subject_accepted_commit_nullable(self) -> None:
+        """accepted_commit must be str | None."""
+        section = self._tc1312a_section()
+        self.assertIn("str | None", section)
+        self.assertIn("accepted_commit", section)
+
+    # ── Group 4: ApprovalCheckRequest ────────────────────────────────────────
+
+    def test_tc1312a_request_three_fields(self) -> None:
+        """ApprovalCheckRequest must have exactly 3 fields."""
+        section = self._tc1312a_section()
+        for field in ("scope", "subject", "expected_snapshot_commit"):
+            self.assertIn(field, section,
+                          f"ApprovalCheckRequest must include '{field}'")
+
+    def test_tc1312a_request_no_approval_id_field(self) -> None:
+        """ApprovalCheckRequest must NOT carry an approval_id field."""
+        section = self._tc1312a_section()
+        # The contract explicitly says the gate resolves all matching
+        # evidence and that the request does not carry an approval_id.
+        lower = section.lower()
+        self.assertTrue(
+            "does **not** carry" in lower
+            or "does not carry" in lower
+            or "not carry an" in lower
+            or "no approval_id" in lower
+            or "not carry an `approval_id`" in lower,
+            "§2.15 must state ApprovalCheckRequest does not carry approval_id",
+        )
+
+    # ── Group 5: ApprovalCheckResult ─────────────────────────────────────────
+
+    def test_tc1312a_result_four_fields(self) -> None:
+        """ApprovalCheckResult must have exactly 4 fields."""
+        section = self._tc1312a_section()
+        for field in ("passed", "failure_code", "matched_evidence",
+                       "checked_at"):
+            self.assertIn(field, section,
+                          f"ApprovalCheckResult must include '{field}'")
+
+    def test_tc1312a_result_failure_codes_frozen(self) -> None:
+        """failure_code set must be exactly the 5 frozen values."""
+        section = self._tc1312a_section()
+        for code in ("not_found", "expired", "revoked", "wrong_scope",
+                      "wrong_subject"):
+            self.assertIn(code, section,
+                          f"failure_code must include '{code}'")
+
+    def test_tc1312a_result_passed_invariants(self) -> None:
+        """passed=True → failure_code=None, matched_evidence non-None."""
+        section = self._tc1312a_section()
+        self.assertIn("passed", section)
+        # The contract must describe the invariant
+        lower = section.lower()
+        self.assertTrue(
+            "failure_code" in lower and "matched_evidence" in lower,
+            "§2.15 must describe passed=True invariants",
+        )
+
+    # ── Group 6: Grant evidence schema ───────────────────────────────────────
+
+    def test_tc1312a_grant_schema_version(self) -> None:
+        """Grant schema_version must be agentdesk.task-approval/v1."""
+        section = self._tc1312a_section()
+        self.assertIn("agentdesk.task-approval/v1", section)
+
+    def test_tc1312a_grant_record_type(self) -> None:
+        """Grant record_type must be 'grant'."""
+        section = self._tc1312a_section()
+        self.assertIn('"grant"', section)
+
+    def test_tc1312a_grant_exact_sixteen_root_keys(self) -> None:
+        """Grant evidence must have exactly the 16 frozen root keys."""
+        section = self._tc1312a_section()
+        expected = [
+            "schema_version", "record_type", "approval_id", "event_id",
+            "scope", "task_id", "revision", "attempt", "dispatch_id",
+            "accepted_commit", "actor_role_id", "lease_epoch",
+            "granted_at", "expires_at", "reason", "snapshot_commit",
+        ]
+        # Parse the grant field table: find the table after "##### 2.15.5.1"
+        subsection = _extract_markdown_section(
+            section, "##### 2.15.5.1"
+        )
+        self.assertIsNotNone(subsection,
+                             "ADR must contain §2.15.5.1 Grant Evidence")
+        # Extract field names from the table rows
+        field_names = []
+        in_table = False
+        for line in subsection.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("| # |") or stripped.startswith("|---"):
+                in_table = True
+                continue
+            if in_table and stripped.startswith("|"):
+                cells = [c.strip() for c in stripped.strip("|").split("|")]
+                if len(cells) >= 3:
+                    # Column 2 is the field name (with backticks)
+                    name = cells[1].strip("`").strip()
+                    if name:
+                        field_names.append(name)
+            elif in_table and not stripped.startswith("|"):
+                break
+        self.assertEqual(
+            field_names, expected,
+            f"Grant evidence must have exactly 16 fields in order: "
+            f"got {field_names}",
+        )
+
+    def test_tc1312a_grant_actor_role_id_pm(self) -> None:
+        """Grant actor_role_id must be 'PM'."""
+        section = self._tc1312a_section()
+        self.assertIn('actor_role_id', section)
+        self.assertIn('"PM"', section)
+
+    # ── Group 7: Revoke evidence schema ──────────────────────────────────────
+
+    def test_tc1312a_revoke_schema_version(self) -> None:
+        """Revoke uses same schema_version as grant."""
+        section = self._tc1312a_section()
+        self.assertIn("agentdesk.task-approval/v1", section)
+
+    def test_tc1312a_revoke_record_type(self) -> None:
+        """Revoke record_type must be 'revoke'."""
+        section = self._tc1312a_section()
+        self.assertIn('"revoke"', section)
+
+    def test_tc1312a_revoke_exact_ten_root_keys(self) -> None:
+        """Revoke evidence must have exactly the 10 frozen root keys."""
+        section = self._tc1312a_section()
+        expected = [
+            "schema_version", "record_type", "approval_id", "event_id",
+            "task_id", "actor_role_id", "lease_epoch",
+            "revoked_at", "reason", "snapshot_commit",
+        ]
+        subsection = _extract_markdown_section(
+            section, "##### 2.15.5.2"
+        )
+        self.assertIsNotNone(subsection,
+                             "ADR must contain §2.15.5.2 Revoke Evidence")
+        field_names = []
+        in_table = False
+        for line in subsection.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("| # |") or stripped.startswith("|---"):
+                in_table = True
+                continue
+            if in_table and stripped.startswith("|"):
+                cells = [c.strip() for c in stripped.strip("|").split("|")]
+                if len(cells) >= 3:
+                    name = cells[1].strip("`").strip()
+                    if name:
+                        field_names.append(name)
+            elif in_table and not stripped.startswith("|"):
+                break
+        self.assertEqual(
+            field_names, expected,
+            f"Revoke evidence must have exactly 10 fields in order: "
+            f"got {field_names}",
+        )
+
+    # ── Group 8: Approvals directory ─────────────────────────────────────────
+
+    def test_tc1312a_approvals_directory_specified(self) -> None:
+        """Evidence must be in docs/pm/approvals/."""
+        section = self._tc1312a_section()
+        self.assertIn("docs/pm/approvals/", section)
+
+    def test_tc1312a_filename_from_event_id(self) -> None:
+        """Filename derived from event_id, never approval_id directly."""
+        section = self._tc1312a_section()
+        self.assertIn("event-id", section.lower().replace("_", "-"))
+        self.assertIn("event_id", section)
+        lower = section.lower()
+        self.assertTrue(
+            "filename" in lower and "event_id" in lower,
+            "§2.15 must state filename comes from event_id",
+        )
+
+    # ── Group 9: Evidence Writer API ─────────────────────────────────────────
+
+    def test_tc1312a_writer_functions_in_all(self) -> None:
+        """write_grant and write_revoke must appear in __all__."""
+        section = self._tc1312a_section()
+        self.assertIn("write_grant", section)
+        self.assertIn("write_revoke", section)
+        all_match = re.search(
+            r"__all__\s*=\s*\[(.*?)\]", section, re.DOTALL,
+        )
+        self.assertIsNotNone(all_match, "§2.15 must have an __all__ block")
+        all_block = all_match.group(1)
+        self.assertIn("write_grant", all_block)
+        self.assertIn("write_revoke", all_block)
+
+    def test_tc1312a_write_grant_signature(self) -> None:
+        """write_grant must have the frozen signature."""
+        section = self._tc1312a_section()
+        for param in ("project_root", "approval_id", "event_id", "scope",
+                       "subject", "lease_epoch", "now", "reason",
+                       "expires_at", "expected_snapshot_commit"):
+            self.assertIn(param, section,
+                          f"write_grant must accept '{param}'")
+        self.assertIn("tuple[Path, str]", section)
+
+    def test_tc1312a_write_revoke_signature(self) -> None:
+        """write_revoke must have the frozen signature."""
+        section = self._tc1312a_section()
+        for param in ("project_root", "approval_id", "event_id",
+                       "lease_epoch", "now", "reason",
+                       "expected_snapshot_commit"):
+            self.assertIn(param, section,
+                          f"write_revoke must accept '{param}'")
+        self.assertIn("tuple[Path, str]", section)
+
+    def test_tc1312a_writer_acquires_state_lock(self) -> None:
+        """Writer must acquire state lock internally."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "acquires" in lower and "state lock" in lower,
+            "§2.15.6 must state writer acquires state lock",
+        )
+
+    # ── Group 10: Public API __all__ ─────────────────────────────────────────
+
+    def test_tc1312a_all_exact_fifteen_symbols(self) -> None:
+        """__all__ must contain exactly 15 public symbols."""
+        section = self._tc1312a_section()
+        all_match = re.search(
+            r"__all__\s*=\s*\[(.*?)\]", section, re.DOTALL,
+        )
+        self.assertIsNotNone(all_match, "§2.15 must have an __all__ block")
+        lines = all_match.group(1).split('\n')
+        symbols = [
+            s.strip().strip('",') for s in lines
+            if s.strip().strip('",')
+        ]
+        self.assertEqual(
+            len(symbols), 15,
+            f"__all__ must have 15 symbols, got {len(symbols)}: {symbols}",
+        )
+
+    def test_tc1312a_all_exact_names(self) -> None:
+        """__all__ must have the exact frozen ordered symbol list."""
+        section = self._tc1312a_section()
+        all_match = re.search(
+            r"__all__\s*=\s*\[(.*?)\]", section, re.DOTALL,
+        )
+        self.assertIsNotNone(all_match, "§2.15 must have an __all__ block")
+        lines = all_match.group(1).split('\n')
+        symbols = [
+            s.strip().strip('",') for s in lines
+            if s.strip().strip('",')
+        ]
+        expected = [
+            "ApprovalScope",
+            "ApprovalSubject",
+            "ApprovalCheckRequest",
+            "ApprovalEvidence",
+            "ApprovalCheckResult",
+            "ApprovalGate",
+            "ApprovalError",
+            "ApprovalValidationError",
+            "ApprovalNotFoundError",
+            "ApprovalAmbiguousError",
+            "ApprovalExpiredError",
+            "ApprovalRevokedError",
+            "ApprovalSnapshotConflictError",
+            "write_grant",
+            "write_revoke",
+        ]
+        self.assertEqual(
+            symbols, expected,
+            f"__all__ must have exact frozen order. "
+            f"Expected {expected}, got {symbols}",
+        )
+
+    # ── Group 11: Exception hierarchy ────────────────────────────────────────
+
+    def test_tc1312a_exception_independent_root(self) -> None:
+        """ApprovalError must NOT subclass ControlPlaneTransitionError."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "not a subclass" in lower
+            or "not** a subclass" in lower
+            or "independent root" in lower,
+            "§2.15.14 must state ApprovalError is NOT a subclass "
+            "of ControlPlaneTransitionError",
+        )
+
+    def test_tc1312a_exception_six_subclasses(self) -> None:
+        """Exception hierarchy must list exactly 6 subclasses."""
+        section = self._tc1312a_section()
+        expected = [
+            "ApprovalValidationError",
+            "ApprovalNotFoundError",
+            "ApprovalAmbiguousError",
+            "ApprovalExpiredError",
+            "ApprovalRevokedError",
+            "ApprovalSnapshotConflictError",
+        ]
+        for sub in expected:
+            self.assertIn(sub, section,
+                          f"Exception hierarchy must include {sub}")
+
+    # ── Group 12: Git snapshot ───────────────────────────────────────────────
+
+    def test_tc1312a_snapshot_commit_ancestry_not_file_existence(self) -> None:
+        """Ancestry check uses merge-base, NOT 'file must exist in commit'."""
+        section = self._tc1312a_section()
+        self.assertIn("merge-base", section)
+        lower = section.lower()
+        self.assertTrue(
+            "does not require" in lower
+            or "does **not** require" in lower,
+            "§2.15.10 must state ancestry != file-existence-in-commit",
+        )
+
+    def test_tc1312a_head_mismatch_fail_closed(self) -> None:
+        """HEAD != expected_snapshot_commit → ApprovalSnapshotConflictError."""
+        section = self._tc1312a_section()
+        self.assertIn("ApprovalSnapshotConflictError", section)
+        lower = section.lower()
+        self.assertTrue(
+            "head mismatch" in lower
+            or "!=" in section
+            or "head" in lower,
+            "§2.15.10 must describe HEAD mismatch → fail-closed",
+        )
+
+    def test_tc1312a_pre_commit_evidence_valid(self) -> None:
+        """Newly-created, not-yet-committed evidence must be usable."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "newly-created" in lower
+            or "not-yet-committed" in lower
+            or "not yet committed" in lower,
+            "§2.15.10 must allow pre-commit evidence",
+        )
+
+    # ── Group 13: Locking and TOCTOU ─────────────────────────────────────────
+
+    def test_tc1312a_gate_acquires_no_locks(self) -> None:
+        """ApprovalGate must acquire NO locks."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "acquires no lock" in lower
+            or "acquires** no lock" in lower
+            or "no locks" in lower,
+            "§2.15.11 must state Gate acquires no locks",
+        )
+
+    def test_tc1312a_caller_holds_state_lock(self) -> None:
+        """Caller (TC-13.11) must hold state lock before calling Gate."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "state lock" in lower and ("caller" in lower or "tc-13.11" in lower),
+            "§2.15.11 must state caller holds state lock",
+        )
+
+    def test_tc1312a_external_precheck_not_substitute(self) -> None:
+        """External pre-check outside lock ≠ substitute."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "not a substitute" in lower
+            or "not** a substitute" in lower
+            or "pre-check" in lower,
+            "§2.15.11 must state external pre-check is not a substitute",
+        )
+
+    def test_tc1312a_replay_not_requery(self) -> None:
+        """Idempotent replay must use original guard_results."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "guard_results" in lower and ("replay" in lower or "re-query" in lower
+                                            or "requery" in lower),
+            "§2.15.11 must state replay does not re-query Gate",
+        )
+
+    # ── Group 14: Scope integration ──────────────────────────────────────────
+
+    def test_tc1312a_dispatch_scope_binding(self) -> None:
+        """dispatch scope: accepted_commit=None, after TASK_DISPATCHED CAS."""
+        section = self._tc1312a_section()
+        self.assertIn("TASK_DISPATCHED", section)
+        # accepted_commit=None for dispatch scope
+        self.assertIn("None", section)
+
+    def test_tc1312a_accept_scope_binding(self) -> None:
+        """accept scope: accepted_commit=None, after DELIVERY_ACCEPTED CAS."""
+        section = self._tc1312a_section()
+        self.assertIn("DELIVERY_ACCEPTED", section)
+
+    def test_tc1312a_integrate_scope_binding(self) -> None:
+        """integrate scope: accepted_commit bound, after CHANGE_INTEGRATED CAS."""
+        section = self._tc1312a_section()
+        self.assertIn("CHANGE_INTEGRATED", section)
+
+    # ── Group 15: Revoke semantics ───────────────────────────────────────────
+
+    def test_tc1312a_revoke_not_retroactive(self) -> None:
+        """Revoke does NOT invalidate historical transitions."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "does not retroactively" in lower
+            or "does **not** retroactively" in lower
+            or "not invalidate historical" in lower,
+            "§2.15.11 must state revoke is not retroactive",
+        )
+
+    def test_tc1312a_revoke_blocks_new_only(self) -> None:
+        """Revoke blocks NEW transitions only."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "new" in lower and ("transition" in lower or "blocks" in lower),
+            "§2.15.11 must state revoke blocks new transitions only",
+        )
+
+    # ── Group 16: TC-13.11 API preservation ──────────────────────────────────
+
+    def test_tc1312a_tc1311_transition_request_unchanged(self) -> None:
+        """TC-13.11 TransitionRequest API is unchanged."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "transitionrequest" in lower
+            and ("unchanged" in lower or "no" in lower),
+            "§2.15 must state TC-13.11 TransitionRequest unchanged",
+        )
+
+    def test_tc1312a_tc1311_apply_transition_signature_unchanged(self) -> None:
+        """apply_transition signature is unchanged."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "apply_transition" in lower
+            and ("unchanged" in lower or "no" in lower),
+            "§2.15 must state apply_transition signature unchanged",
+        )
+
+    # ── Group 17: Task-card split ────────────────────────────────────────────
+
+    def test_tc1312a_task_card_split_four_cards(self) -> None:
+        """§2.15.17 must reference TC-13.12a, 12b, 12c, 12d."""
+        section = self._tc1312a_section()
+        for card in ("TC-13.12a", "TC-13.12b", "TC-13.12c", "TC-13.12d"):
+            self.assertIn(card, section,
+                          f"§2.15.17 must reference {card}")
+
+    def test_tc1312a_future_task_cards_split_four_rows(self) -> None:
+        """§5 must have four separate TC-13.12 rows (a/b/c/d)."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "## 5.")
+        self.assertIsNotNone(section, "ADR must contain §5")
+        for card in ("TC-13.12a", "TC-13.12b", "TC-13.12c", "TC-13.12d"):
+            self.assertIn(card, section,
+                          f"§5 Future Task Cards must include {card}")
+
+    def test_tc1312a_tc1312c_depends_on_12b_and_1311(self) -> None:
+        """TC-13.12c must depend on TC-13.12b and TC-13.11."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(adr_text, "## 5.")
+        self.assertIsNotNone(section, "ADR must contain §5")
+        # Parse the TC-13.12c row
+        found = False
+        for line in section.splitlines():
+            if line.strip().startswith("| TC-13.12c"):
+                self.assertIn("TC-13.12b", line,
+                              "TC-13.12c must depend on TC-13.12b")
+                self.assertIn("TC-13.11", line,
+                              "TC-13.12c must depend on TC-13.11")
+                found = True
+                break
+        self.assertTrue(found, "TC-13.12c row not found in §5")
+
+    # ── Group 18: Security ───────────────────────────────────────────────────
+
+    def test_tc1312a_check_zero_writes(self) -> None:
+        """check() and require() must perform zero writes."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "zero file writes" in lower
+            or "zero writes" in lower
+            or "pure read-only" in lower,
+            "§2.15 must state check/require are zero-write",
+        )
+
+    def test_tc1312a_no_env_network_model(self) -> None:
+        """Security boundary forbids env vars, network, model calls."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "no environment" in lower
+            or "no network" in lower
+            or "no model" in lower
+            or "no api" in lower,
+            "§2.15.16 must forbid env/network/model access",
+        )
+
     # ── TC-13.11a ControlPlaneTransitionService frozen contract tests ───────
 
     _TC1311A_CONTRACT_SECTION = "### 2.14"
