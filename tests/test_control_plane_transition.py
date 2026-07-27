@@ -8666,6 +8666,80 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         finally:
             tmpdir.cleanup()
 
+    def test_legal_review7_h1_passes_real_validator(self):
+        """When acceptance file has correct filename and matching H1
+        (Review 7), real validator reports zero H1-related errors."""
+        import json as _json
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            self._setup_acceptance_project(root)
+            lease = self._make_acceptance_lease(root)
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review7.md"
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-LEGALH1",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path=acc_path,
+                    residual_risks=(),
+                    criteria_evidence=("evidence",),
+                    rationale="Accepted.",
+                ),
+                event_context=self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            svc.apply_transition(req, lease, now)
+
+            # Leave the generated file unmodified — filename
+            # review7.md and H1 'Review 7' should match.
+            acc_file = root / acc_path
+            acc_text = acc_file.read_text(encoding="utf-8")
+            self.assertIn("Review 7", acc_text,
+                          "Generated acceptance must contain Review 7")
+
+            state_data = _json.loads(
+                (root / "docs" / "pm" / "state" / "tasks.yaml").read_text(encoding="utf-8")
+            )
+            task = state_data["tasks"][0]
+            reporter = Reporter()
+            _validate_acceptance_record(
+                acc_file, root, task, None, None,
+                "test:legal-review7-h1", "accepted", False, reporter,
+            )
+            # H1 must match the filename — zero errors for correct file.
+            self.assertEqual(reporter.errors, 0,
+                             f"Legal Review 7 H1 must produce 0 errors, "
+                             f"got {reporter.errors}")
+        finally:
+            tmpdir.cleanup()
+
     def test_invalid_owner_approval_fails_real_validator(self):
         """When 'gate: none' is changed to an illegal gate value in the
         generated acceptance, real validator reports errors."""

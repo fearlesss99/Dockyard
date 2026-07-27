@@ -3630,6 +3630,82 @@ def _validate_acceptance_record(
             f"{context} reviewed_dispatch_id must match the immutable delivery report dispatch_id"
         )
 
+    # Validate H1 body header matches filename identity.
+    # The filename encodes task_id, revision, attempt, review_n.
+    # The first H1 must match those values exactly.
+    _ACCEPTANCE_FILENAME_RE = re.compile(
+        r"^(TC-[0-9]{3,})-r([1-9][0-9]*)-a([1-9][0-9]*)-review([1-9][0-9]*)\.md$"
+    )
+    filename = PurePosixPath(logical_path).name
+    fn_match = _ACCEPTANCE_FILENAME_RE.match(filename)
+    if fn_match is None:
+        reporter.error(
+            f"{context} filename must match "
+            f"{{task_id}}-r{{revision}}-a{{attempt}}-review{{N}}.md, "
+            f"got {filename!r}"
+        )
+    else:
+        fn_task_id = fn_match.group(1)
+        fn_revision = int(fn_match.group(2))
+        fn_attempt = int(fn_match.group(3))
+        fn_review_n = int(fn_match.group(4))
+
+        # Extract H1 headers from body (after frontmatter separator).
+        _H1_RE = re.compile(r"^# (.+)$", re.MULTILINE)
+        h1_matches = _H1_RE.findall(content)
+        if len(h1_matches) == 0:
+            reporter.error(
+                f"{context} body must contain an H1 header with "
+                f"task_id, revision, attempt, and review number"
+            )
+        elif len(h1_matches) > 1:
+            reporter.error(
+                f"{context} body must contain exactly one H1 header, "
+                f"found {len(h1_matches)}: {h1_matches!r}"
+            )
+        else:
+            # Expected format: "TC-001 — Revision 1, Attempt 1, Review 7"
+            _H1_IDENTITY_RE = re.compile(
+                r"^(TC-[0-9]{3,})\s*[-—]\s*"
+                r"Revision\s+([1-9][0-9]*),\s*"
+                r"Attempt\s+([1-9][0-9]*),\s*"
+                r"Review\s+([1-9][0-9]*)$"
+            )
+            h1 = h1_matches[0].strip()
+            h1m = _H1_IDENTITY_RE.match(h1)
+            if h1m is None:
+                reporter.error(
+                    f"{context} H1 must match "
+                    f"'TC-NNN — Revision R, Attempt A, Review N', "
+                    f"got {h1!r}"
+                )
+            else:
+                h1_task_id = h1m.group(1)
+                h1_revision = int(h1m.group(2))
+                h1_attempt = int(h1m.group(3))
+                h1_review_n = int(h1m.group(4))
+
+                if h1_task_id != fn_task_id:
+                    reporter.error(
+                        f"{context} H1 task_id {h1_task_id!r} does not "
+                        f"match filename {fn_task_id!r}"
+                    )
+                if h1_revision != fn_revision:
+                    reporter.error(
+                        f"{context} H1 revision {h1_revision} does not "
+                        f"match filename revision {fn_revision}"
+                    )
+                if h1_attempt != fn_attempt:
+                    reporter.error(
+                        f"{context} H1 attempt {h1_attempt} does not "
+                        f"match filename attempt {fn_attempt}"
+                    )
+                if h1_review_n != fn_review_n:
+                    reporter.error(
+                        f"{context} H1 review number {h1_review_n} does not "
+                        f"match filename review number {fn_review_n}"
+                    )
+
     # Validate type: must be a supported task type (from committed task-card contract).
     acceptance_type = frontmatter.get("type")
     if acceptance_type not in TASK_TYPES:
