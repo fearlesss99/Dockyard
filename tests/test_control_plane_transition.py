@@ -6409,25 +6409,124 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
     def setUp(self):
         super().setUp()
         self._harness = _TransitionTestHarness()
+        import json as _json_for_setup
+        self._json = _json_for_setup
 
-    def test_event_write_failure_preserves_original(self):
-        """When event write fails, no files are created."""
-        import json as _json
+    def _make_tasks_yaml(self, root: Path, task_state: str = "draft",
+                         task_id: str = "TC-001", revision: int = 1,
+                         extra_task: dict | None = None):
+        """Write canonical tasks.yaml."""
+        state_dir = root / "docs" / "pm" / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        task = {
+            "task_id": task_id,
+            "revision": revision,
+            "state": task_state,
+            "task_card_path": f"docs/pm/tasks/{task_id}.md",
+            "task_card_commit": "a" * 40,
+            "attempt": None,
+            "current_dispatch": None,
+            "report_path": None,
+            "implementation_commit": None,
+            "report_commit": None,
+            "accepted_commit": None,
+            "acceptance_path": None,
+            "integrated_commit": None,
+            "delivery_state": None,
+            "blocked_reason": None,
+            "blocked_kind": None,
+            "blocked_owner": None,
+            "unblock_condition": None,
+            "review_after": None,
+            "blocked_attempt_valid": None,
+            "resume_state": None,
+            "superseded_by": None,
+            "timestamps": {
+                "created_at": "2026-07-27T00:00:00Z",
+                "updated_at": "2026-07-27T00:00:00Z",
+            },
+        }
+        if extra_task:
+            task.update(extra_task)
+        state = {
+            "schema_version": "agentdesk.tasks/v2",
+            "project_id": "test-project",
+            "updated_at": "2026-07-27T00:00:00Z",
+            "pm_control": {
+                "holder_id": "pm-test-001",
+                "lease_epoch": 1,
+                "mode": "timed",
+            },
+            "tasks": [task],
+        }
+        tasks_path = state_dir / "tasks.yaml"
+        tasks_path.write_text(self._json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
-        tmpdir, root, head, svc, task = self._harness._setup_project(
-            self.cpt, task_state="draft", task_id="TC-001", revision=1,
+    def _init_git(self, root: Path) -> str:
+        subprocess.run(
+            ["git", "-C", str(root), "init", "-q"],
+            check=True, timeout=10, capture_output=True,
         )
-        try:
-            # Create read-only events dir to force write failure.
-            events_dir = root / "docs" / "pm" / "events"
-            # Use a file named as a directory to block mkdir.
-            events_dir.rmdir()
-            events_dir.write_bytes(b"")
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.email", "test@test"],
+            check=True, timeout=10, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.name", "Test"],
+            check=True, timeout=10, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "add", "-A"],
+            check=True, timeout=10, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-m", "init"],
+            check=True, timeout=10, capture_output=True,
+        )
+        r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        return r.stdout.strip()
 
+    # ── Helper: inject failure on Nth call to _atomic_write_bytes ──────
+
+    def _inject_atomic_write_failure(self, fail_on_call: int):
+        """Replace _atomic_write_bytes with a version that fails
+        on the `fail_on_call`-th invocation (1-indexed)."""
+        import control_plane_transition as cpt
+        original = cpt._atomic_write_bytes
+        call_count = [0]
+
+        def failing_write(path, content):
+            call_count[0] += 1
+            if call_count[0] == fail_on_call:
+                raise OSError(f"simulated write failure at call {fail_on_call}")
+            return original(path, content)
+
+        cpt._atomic_write_bytes = failing_write
+        return call_count
+
+    def _restore_atomic_write(self):
+        import control_plane_transition as cpt
+        # Restore by re-importing... actually, we need to save the original.
+        # The test harness saves original before injection.
+        pass
+
+    def test_event_write_failure_zero_files(self):
+        """Failure at event write (call 1) — zero canonical files mutated."""
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            events_dir = root / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            self._make_tasks_yaml(root, task_state="draft")
+            head = self._init_git(root)
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
             cas = self.cpt.TransitionCAS(
                 task_id="TC-001", expected_revision=1,
-                expected_state="draft",
-                expected_snapshot_commit=head,
+                expected_state="draft", expected_snapshot_commit=head,
             )
             ctx = self.cpt.TransitionEventContext(
                 source_message_id=None, evidence_refs=(), guard_results=(),
@@ -6440,25 +6539,1794 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
                 event_context=ctx,
             )
             now = datetime(2026, 7, 27, 10, 0, 0, tzinfo=UTC)
-            with self.assertRaises(Exception):
-                svc.apply_transition(req, None, now)
 
-            # tasks.yaml must NOT have changed.
+            # Save original.
+            import control_plane_transition as cpt
+            TransitionWriteError = cpt.TransitionWriteError
+            original_write = cpt._atomic_write_bytes
+            call_count = [0]
+
+            def fail_call1(path, content):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise OSError("simulated event write failure")
+                return original_write(path, content)
+
+            cpt._atomic_write_bytes = fail_call1
+            try:
+                with self.assertRaises(TransitionWriteError) as cm:
+                    svc.apply_transition(req, None, now)
+                self.assertIn("event", str(cm.exception))
+                # Exception chain preserves root cause.
+                self.assertIsInstance(cm.exception.__cause__, OSError)
+            finally:
+                cpt._atomic_write_bytes = original_write
+
+            # Zero canonical files written.
+            self.assertEqual(
+                len(list(events_dir.glob("*.yaml"))), 0,
+                "No event files should exist after event write failure"
+            )
+            # tasks.yaml unchanged.
             tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
-            if tasks_path.exists():
-                state = _json.loads(tasks_path.read_text(encoding="utf-8"))
-                self.assertEqual(state["tasks"][0]["state"], "draft",
-                                 "tasks.yaml must not be mutated on write failure")
+            state = self._json.loads(tasks_path.read_text(encoding="utf-8"))
+            self.assertEqual(state["tasks"][0]["state"], "draft")
         finally:
             tmpdir.cleanup()
 
-    def test_tasks_write_last(self):
-        """Tasks is the last canonical write — event, outbox, acceptance
-        are written before it.  This is verified by the ordering in
-        _write_canonical_files."""
-        # Verified by code review: tasks.yaml is written last.
-        # The write order is: event → outbox → acceptance → tasks.yaml.
-        pass
+    def test_outbox_write_failure_event_written(self):
+        """Failure at outbox write (call 2) — event exists, outbox not."""
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from dispatcher_gateway import ModelSelectionSnapshot
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            events_dir = root / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            outbox_dir = root / "docs" / "pm" / "outbox"
+            outbox_dir.mkdir(parents=True, exist_ok=True)
+            acc_dir = root / "docs" / "pm" / "acceptances"
+            acc_dir.mkdir(parents=True, exist_ok=True)
+            # Worker slot store.
+            runtime_dir = root / ".agentdesk" / "runtime"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            lease_store_path = runtime_dir / "worker-slot-lease.yaml"
+            lease_store_path.write_text(
+                self._json.dumps({
+                    "schema_version": "agentdesk.worker-slot-lease/v1",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "slot_epochs": {
+                        "basic_agent-1": 1, "basic_agent-2": 0,
+                        "standard_agent-1": 0, "standard_agent-2": 0,
+                        "advanced_agent-1": 0, "advanced_agent-2": 0,
+                        "expert_agent-1": 0, "expert_agent-2": 0,
+                    },
+                    "leases": {
+                        "basic_agent-1": {
+                            "lease_id": "WSL-" + "a" * 32,
+                            "lease_epoch": 1,
+                            "slot_id": "basic_agent-1",
+                            "worker_kind": "basic_agent",
+                            "holder_dispatch_id": "DSP-001",
+                            "holder_instance_id": "worker-inst-1",
+                            "canonical_worktree": str(root).replace("\\", "/"),
+                            "acquired_at": "2026-07-27T09:00:00Z",
+                            "heartbeat_at": "2026-07-27T09:00:00Z",
+                            "expires_at": "2026-08-27T09:00:00Z",
+                        },
+                    },
+                }, ensure_ascii=False), encoding="utf-8"
+            )
+            self._make_tasks_yaml(root, task_state="ready")
+            head = self._init_git(root)
+
+            ms = ModelSelectionSnapshot.from_mapping({
+                "required_model_tier": "standard",
+                "required_model_capabilities": ["read"],
+                "model_binding_id": "bind-1",
+                "selected_model_provider": "test",
+                "selected_model_id": "claude-sonnet",
+                "selected_model_tier": "standard",
+                "selected_deliberation_tier": "balanced",
+                "selected_context_window_tokens": 200000,
+                "selected_model_capabilities": ["read"],
+                "model_degradation_approval_id": None,
+            })
+
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32,
+                lease_epoch=1,
+                slot_id="basic_agent-1",
+                worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-001",
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-27T09:00:00Z",
+                heartbeat_at="2026-07-27T09:00:00Z",
+                expires_at="2026-08-27T09:00:00Z",
+            )
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="ready", expected_snapshot_commit=head,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-OUTBOXFAIL",
+                event_type="TASK_DISPATCHED",
+                payload=self.cpt.DispatchPayload(
+                    dispatch_id="DSP-001", role_id="worker",
+                    model_selection=ms,
+                    task_card_path="docs/pm/tasks/TC-001.md",
+                    task_card_commit="a" * 40,
+                    base_commit="0" * 40, branch="main",
+                    report_path="docs/pm/reports/TC-001-r1-a1.md",
+                    outbox_message_id="MSG-20260727-OUTFAIL",
+                    new_attempt=1,
+                ),
+                event_context=ctx,
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+
+            import control_plane_transition as cpt
+            TransitionWriteError = cpt.TransitionWriteError
+            original_write = cpt._atomic_write_bytes
+            call_count = [0]
+
+            def fail_call2(path, content):
+                call_count[0] += 1
+                if call_count[0] == 2:
+                    raise OSError("simulated outbox write failure")
+                return original_write(path, content)
+
+            cpt._atomic_write_bytes = fail_call2
+            try:
+                with self.assertRaises(TransitionWriteError) as cm:
+                    svc.apply_transition(req, lease, now)
+                self.assertIn("outbox", str(cm.exception))
+                self.assertIsInstance(cm.exception.__cause__, OSError)
+            finally:
+                cpt._atomic_write_bytes = original_write
+
+            # Event exists (call 1 succeeded before call 2 failed).
+            event_files = list(events_dir.glob("*.yaml"))
+            self.assertEqual(len(event_files), 1,
+                             "Event file should exist after event write success")
+            self.assertIn("EVT-20260727-OUTBOXFAIL", event_files[0].name)
+            # Outbox does not exist.
+            outbox_files = list(outbox_dir.glob("*.yaml"))
+            self.assertEqual(len(outbox_files), 0,
+                             "No outbox files should exist after outbox write failure")
+            # tasks.yaml unchanged.
+            tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+            state = self._json.loads(tasks_path.read_text(encoding="utf-8"))
+            self.assertEqual(state["tasks"][0]["state"], "ready",
+                             "tasks.yaml must not be mutated on outbox write failure")
+        finally:
+            tmpdir.cleanup()
+
+    def test_acceptance_write_failure_event_outbox_written(self):
+        """Failure at acceptance write (call 2 for DELIVERY_ACCEPTED
+        which has no outbox) — event exists, acceptance not,
+        tasks.yaml unchanged."""
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from dispatcher_gateway import ModelSelectionSnapshot
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            events_dir = root / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            outbox_dir = root / "docs" / "pm" / "outbox"
+            outbox_dir.mkdir(parents=True, exist_ok=True)
+            acc_dir = root / "docs" / "pm" / "acceptances"
+            acc_dir.mkdir(parents=True, exist_ok=True)
+            runtime_dir = root / ".agentdesk" / "runtime"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            lease_store_path = runtime_dir / "worker-slot-lease.yaml"
+            lease_store_path.write_text(
+                self._json.dumps({
+                    "schema_version": "agentdesk.worker-slot-lease/v1",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "slot_epochs": {
+                        "basic_agent-1": 1, "basic_agent-2": 0,
+                        "standard_agent-1": 0, "standard_agent-2": 0,
+                        "advanced_agent-1": 0, "advanced_agent-2": 0,
+                        "expert_agent-1": 0, "expert_agent-2": 0,
+                    },
+                    "leases": {
+                        "basic_agent-1": {
+                            "lease_id": "WSL-" + "a" * 32,
+                            "lease_epoch": 1,
+                            "slot_id": "basic_agent-1",
+                            "worker_kind": "basic_agent",
+                            "holder_dispatch_id": "DSP-001",
+                            "holder_instance_id": "worker-inst-1",
+                            "canonical_worktree": str(root).replace("\\", "/"),
+                            "acquired_at": "2026-07-27T09:00:00Z",
+                            "heartbeat_at": "2026-07-27T09:00:00Z",
+                            "expires_at": "2026-08-27T09:00:00Z",
+                        },
+                    },
+                }, ensure_ascii=False), encoding="utf-8"
+            )
+            # Task card committed to git.
+            task_card_dir = root / "docs" / "pm" / "tasks"
+            task_card_dir.mkdir(parents=True, exist_ok=True)
+            task_card = task_card_dir / "TC-001.md"
+            task_card.write_text(
+                "---\n"
+                "type: implementation\n"
+                "role_id: worker-basic\n"
+                "base_commit: " + "b" * 40 + "\n"
+                "owner_approval:\n"
+                "  gate: none\n"
+                "  approval_ids: []\n"
+                "---\n",
+                encoding="utf-8",
+            )
+            # Init git, commit task card.
+            subprocess.run(
+                ["git", "-C", str(root), "init", "-q"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.email", "test@test"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.name", "Test"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "add-task-card"],
+                check=True, timeout=10, capture_output=True,
+            )
+            self._make_tasks_yaml(root, task_state="review_ready",
+                                  extra_task={
+                                      "attempt": 1,
+                                      "current_dispatch": {
+                                          "dispatch_id": "DSP-001",
+                                          "role_id": "worker-basic",
+                                          "base_commit": "b" * 40,
+                                          "branch": "main",
+                                          "model_selection": {},
+                                      },
+                                      "implementation_commit": "a" * 40,
+                                      "report_commit": "b" * 40,
+                                      "delivery_state": "submitted",
+                                      "task_card_commit": "a" * 40,
+                                      "task_card_path": "docs/pm/tasks/TC-001.md",
+                                  })
+
+            # Init git.
+            subprocess.run(
+                ["git", "-C", str(root), "init", "-q"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.email", "test@test"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.name", "Test"],
+                check=True, timeout=10, capture_output=True,
+            )
+            # Commit task card to git.
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "add-task-card-and-tasks"],
+                check=True, timeout=10, capture_output=True,
+            )
+            # Fix task_card_commit -> real HEAD SHA.
+            r_head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            real_head = r_head.stdout.strip()
+            ts_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+            ts = self._json.loads(ts_path.read_text(encoding="utf-8"))
+            ts["tasks"][0]["task_card_commit"] = real_head
+            ts_path.write_text(self._json.dumps(ts, ensure_ascii=False), encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "fix-commit-ref"],
+                check=True, timeout=10, capture_output=True,
+            )
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32,
+                lease_epoch=1,
+                slot_id="basic_agent-1",
+                worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-001",
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-27T09:00:00Z",
+                heartbeat_at="2026-07-27T09:00:00Z",
+                expires_at="2026-08-27T09:00:00Z",
+            )
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-ACCEPTFAIL",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review7.md",
+                    residual_risks=(),
+                    criteria_evidence=("Check passed",),
+                    rationale="Accepted.",
+                ),
+                event_context=ctx,
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+
+            import control_plane_transition as cpt
+            TransitionWriteError = cpt.TransitionWriteError
+            original_write = cpt._atomic_write_bytes
+            call_count = [0]
+
+            def fail_call2_acc(path, content):
+                call_count[0] += 1
+                if call_count[0] == 2:
+                    raise OSError("simulated acceptance write failure")
+                return original_write(path, content)
+
+            cpt._atomic_write_bytes = fail_call2_acc
+            try:
+                with self.assertRaises(TransitionWriteError) as cm:
+                    svc.apply_transition(req, lease, now)
+                self.assertIn("acceptance", str(cm.exception).lower())
+                self.assertIsInstance(cm.exception.__cause__, OSError)
+            finally:
+                cpt._atomic_write_bytes = original_write
+
+            # Event exists.
+            self.assertEqual(len(list(events_dir.glob("*.yaml"))), 1)
+            # Acceptance does not exist.
+            self.assertEqual(len(list(acc_dir.glob("*.md"))), 0,
+                             "Acceptance file must not exist after acceptance write failure")
+            # tasks.yaml unchanged.
+            tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+            state = self._json.loads(tasks_path.read_text(encoding="utf-8"))
+            self.assertEqual(state["tasks"][0]["state"], "review_ready")
+        finally:
+            tmpdir.cleanup()
+
+    def test_tasks_write_failure_canonical_partial(self):
+        """Failure at tasks.yaml write (call 3 for DISPATCH which has
+        event+outbox before tasks) — event+outbox exist,
+        tasks.yaml unchanged.  Documents actual partial state."""
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from dispatcher_gateway import ModelSelectionSnapshot
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            events_dir = root / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            outbox_dir = root / "docs" / "pm" / "outbox"
+            outbox_dir.mkdir(parents=True, exist_ok=True)
+            runtime_dir = root / ".agentdesk" / "runtime"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            lease_store_path = runtime_dir / "worker-slot-lease.yaml"
+            lease_store_path.write_text(
+                self._json.dumps({
+                    "schema_version": "agentdesk.worker-slot-lease/v1",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "slot_epochs": {
+                        "basic_agent-1": 1, "basic_agent-2": 0,
+                        "standard_agent-1": 0, "standard_agent-2": 0,
+                        "advanced_agent-1": 0, "advanced_agent-2": 0,
+                        "expert_agent-1": 0, "expert_agent-2": 0,
+                    },
+                    "leases": {
+                        "basic_agent-1": {
+                            "lease_id": "WSL-" + "a" * 32,
+                            "lease_epoch": 1, "slot_id": "basic_agent-1",
+                            "worker_kind": "basic_agent",
+                            "holder_dispatch_id": "DSP-001",
+                            "holder_instance_id": "worker-inst-1",
+                            "canonical_worktree": str(root).replace("\\", "/"),
+                            "acquired_at": "2026-07-27T09:00:00Z",
+                            "heartbeat_at": "2026-07-27T09:00:00Z",
+                            "expires_at": "2026-08-27T09:00:00Z",
+                        },
+                    },
+                }, ensure_ascii=False), encoding="utf-8"
+            )
+            self._make_tasks_yaml(root, task_state="ready")
+            head = self._init_git(root)
+
+            ms = ModelSelectionSnapshot.from_mapping({
+                "required_model_tier": "standard",
+                "required_model_capabilities": ["read"],
+                "model_binding_id": "bind-1",
+                "selected_model_provider": "test",
+                "selected_model_id": "claude-sonnet",
+                "selected_model_tier": "standard",
+                "selected_deliberation_tier": "balanced",
+                "selected_context_window_tokens": 200000,
+                "selected_model_capabilities": ["read"],
+                "model_degradation_approval_id": None,
+            })
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32, lease_epoch=1,
+                slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-001",
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-27T09:00:00Z",
+                heartbeat_at="2026-07-27T09:00:00Z",
+                expires_at="2026-08-27T09:00:00Z",
+            )
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="ready", expected_snapshot_commit=head,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-TASKSFAIL",
+                event_type="TASK_DISPATCHED",
+                payload=self.cpt.DispatchPayload(
+                    dispatch_id="DSP-001", role_id="worker",
+                    model_selection=ms,
+                    task_card_path="docs/pm/tasks/TC-001.md",
+                    task_card_commit="a" * 40,
+                    base_commit="0" * 40, branch="main",
+                    report_path="docs/pm/reports/TC-001-r1-a1.md",
+                    outbox_message_id="MSG-20260727-TASKSFAIL",
+                    new_attempt=1,
+                ),
+                event_context=ctx,
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+
+            import control_plane_transition as cpt
+            TransitionWriteError = cpt.TransitionWriteError
+            original_write = cpt._atomic_write_bytes
+            call_count = [0]
+
+            def fail_call3_tasks(path, content):
+                call_count[0] += 1
+                if call_count[0] == 3:
+                    raise OSError("simulated tasks.yaml write failure")
+                return original_write(path, content)
+
+            cpt._atomic_write_bytes = fail_call3_tasks
+            try:
+                with self.assertRaises(TransitionWriteError) as cm:
+                    svc.apply_transition(req, lease, now)
+                self.assertIn("tasks.yaml", str(cm.exception))
+                self.assertIsInstance(cm.exception.__cause__, OSError)
+            finally:
+                cpt._atomic_write_bytes = original_write
+
+            # Event and outbox exist (writes 1+2 succeeded).
+            self.assertEqual(len(list(events_dir.glob("*.yaml"))), 1)
+            self.assertEqual(len(list(outbox_dir.glob("*.yaml"))), 1)
+            # tasks.yaml unchanged.
+            tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+            state = self._json.loads(tasks_path.read_text(encoding="utf-8"))
+            self.assertEqual(state["tasks"][0]["state"], "ready",
+                             "tasks.yaml must not be mutated")
+        finally:
+            tmpdir.cleanup()
+
+    def test_board_write_failure_canonical_consistent(self):
+        """Failure at BOARD.md write — canonical state is consistent,
+        view is stale.  This does not roll back canonical files."""
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            events_dir = root / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            self._make_tasks_yaml(root, task_state="draft")
+            head = self._init_git(root)
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="draft", expected_snapshot_commit=head,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-BOARDFAIL",
+                event_type="TASK_SPECIFIED",
+                payload=self.cpt.SpecifyPayload(),
+                event_context=ctx,
+            )
+            now = datetime(2026, 7, 27, 10, 0, 0, tzinfo=UTC)
+
+            import control_plane_transition as cpt
+            TransitionWriteError = cpt.TransitionWriteError
+            original_write = cpt._atomic_write_bytes
+            call_count = [0]
+
+            def fail_call3_board(path, content):
+                call_count[0] += 1
+                if call_count[0] == 3:
+                    raise OSError("simulated BOARD.md write failure")
+                return original_write(path, content)
+
+            cpt._atomic_write_bytes = fail_call3_board
+            try:
+                with self.assertRaises(TransitionWriteError) as cm:
+                    svc.apply_transition(req, None, now)
+                self.assertIn("BOARD.md", str(cm.exception))
+            finally:
+                cpt._atomic_write_bytes = original_write
+
+            # Canonical state IS consistent — event exists, tasks updated.
+            self.assertEqual(len(list(events_dir.glob("*.yaml"))), 1)
+            tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+            state = self._json.loads(tasks_path.read_text(encoding="utf-8"))
+            self.assertEqual(state["tasks"][0]["state"], "ready",
+                             "Canonical state must be consistent")
+            # BOARD.md may or may not exist (depends on timing of failure).
+        finally:
+            tmpdir.cleanup()
+
+    def test_status_write_failure_canonical_consistent(self):
+        """Failure at STATUS.md write — canonical state is consistent,
+        view may be stale."""
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            events_dir = root / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            self._make_tasks_yaml(root, task_state="draft")
+            head = self._init_git(root)
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="draft", expected_snapshot_commit=head,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-STATUSFAIL",
+                event_type="TASK_SPECIFIED",
+                payload=self.cpt.SpecifyPayload(),
+                event_context=ctx,
+            )
+            now = datetime(2026, 7, 27, 10, 0, 0, tzinfo=UTC)
+
+            import control_plane_transition as cpt
+            TransitionWriteError = cpt.TransitionWriteError
+            original_write = cpt._atomic_write_bytes
+            call_count = [0]
+
+            def fail_call4_status(path, content):
+                call_count[0] += 1
+                if call_count[0] == 4:
+                    raise OSError("simulated STATUS.md write failure")
+                return original_write(path, content)
+
+            cpt._atomic_write_bytes = fail_call4_status
+            try:
+                with self.assertRaises(TransitionWriteError) as cm:
+                    svc.apply_transition(req, None, now)
+                self.assertIn("STATUS.md", str(cm.exception))
+            finally:
+                cpt._atomic_write_bytes = original_write
+
+            # Canonical state IS consistent.
+            tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+            state = self._json.loads(tasks_path.read_text(encoding="utf-8"))
+            self.assertEqual(state["tasks"][0]["state"], "ready")
+        finally:
+            tmpdir.cleanup()
+
+    def test_write_order_enforced(self):
+        """Fixed write order: event → outbox → acceptance → tasks.yaml
+        → BOARD.md → STATUS.md.  Verified via call trace."""
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from dispatcher_gateway import ModelSelectionSnapshot
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            events_dir = root / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            outbox_dir = root / "docs" / "pm" / "outbox"
+            outbox_dir.mkdir(parents=True, exist_ok=True)
+            runtime_dir = root / ".agentdesk" / "runtime"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            lease_store_path = runtime_dir / "worker-slot-lease.yaml"
+            lease_store_path.write_text(
+                self._json.dumps({
+                    "schema_version": "agentdesk.worker-slot-lease/v1",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "slot_epochs": {
+                        "basic_agent-1": 1, "basic_agent-2": 0,
+                        "standard_agent-1": 0, "standard_agent-2": 0,
+                        "advanced_agent-1": 0, "advanced_agent-2": 0,
+                        "expert_agent-1": 0, "expert_agent-2": 0,
+                    },
+                    "leases": {
+                        "basic_agent-1": {
+                            "lease_id": "WSL-" + "a" * 32,
+                            "lease_epoch": 1, "slot_id": "basic_agent-1",
+                            "worker_kind": "basic_agent",
+                            "holder_dispatch_id": "DSP-001",
+                            "holder_instance_id": "worker-inst-1",
+                            "canonical_worktree": str(root).replace("\\", "/"),
+                            "acquired_at": "2026-07-27T09:00:00Z",
+                            "heartbeat_at": "2026-07-27T09:00:00Z",
+                            "expires_at": "2026-08-27T09:00:00Z",
+                        },
+                    },
+                }, ensure_ascii=False), encoding="utf-8"
+            )
+            self._make_tasks_yaml(root, task_state="ready")
+            head = self._init_git(root)
+
+            ms = ModelSelectionSnapshot.from_mapping({
+                "required_model_tier": "standard",
+                "required_model_capabilities": ["read"],
+                "model_binding_id": "bind-1",
+                "selected_model_provider": "test",
+                "selected_model_id": "claude-sonnet",
+                "selected_model_tier": "standard",
+                "selected_deliberation_tier": "balanced",
+                "selected_context_window_tokens": 200000,
+                "selected_model_capabilities": ["read"],
+                "model_degradation_approval_id": None,
+            })
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32, lease_epoch=1,
+                slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-001",
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-27T09:00:00Z",
+                heartbeat_at="2026-07-27T09:00:00Z",
+                expires_at="2026-08-27T09:00:00Z",
+            )
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="ready", expected_snapshot_commit=head,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-ORDER",
+                event_type="TASK_DISPATCHED",
+                payload=self.cpt.DispatchPayload(
+                    dispatch_id="DSP-001", role_id="worker",
+                    model_selection=ms,
+                    task_card_path="docs/pm/tasks/TC-001.md",
+                    task_card_commit="a" * 40,
+                    base_commit="0" * 40, branch="main",
+                    report_path="docs/pm/reports/TC-001-r1-a1.md",
+                    outbox_message_id="MSG-20260727-ORDER",
+                    new_attempt=1,
+                ),
+                event_context=ctx,
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+
+            import control_plane_transition as cpt
+            TransitionWriteError = cpt.TransitionWriteError
+            original_write = cpt._atomic_write_bytes
+            trace: list[str] = []
+
+            def tracing_write(path, content):
+                rel = str(path).replace(str(root), "").replace("\\", "/")
+                trace.append(rel)
+                return original_write(path, content)
+
+            cpt._atomic_write_bytes = tracing_write
+            try:
+                svc.apply_transition(req, lease, now)
+            finally:
+                cpt._atomic_write_bytes = original_write
+
+            # Verify order: event, outbox, tasks.yaml, BOARD.md, STATUS.md.
+            event_idx = next(i for i, p in enumerate(trace)
+                             if "docs/pm/events/" in p)
+            outbox_idx = next(i for i, p in enumerate(trace)
+                              if "docs/pm/outbox/" in p)
+            tasks_idx = next(i for i, p in enumerate(trace)
+                             if "tasks.yaml" in p)
+            board_idx = next(i for i, p in enumerate(trace)
+                             if "BOARD.md" in p)
+            status_idx = next(i for i, p in enumerate(trace)
+                              if "STATUS.md" in p)
+
+            self.assertLess(event_idx, outbox_idx,
+                            "event must be written before outbox")
+            self.assertLess(outbox_idx, tasks_idx,
+                            "outbox must be written before tasks.yaml")
+            self.assertLess(tasks_idx, board_idx,
+                            "tasks.yaml must be written before BOARD.md")
+            self.assertLess(board_idx, status_idx,
+                            "BOARD.md must be written before STATUS.md")
+        finally:
+            tmpdir.cleanup()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# TC-13.11c.2: Delivery Accepted E2E with Real Validator (Sections 5-6)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
+
+    def setUp(self):
+        super().setUp()
+        self._harness = _TransitionTestHarness()
+
+    def test_delivery_accepted_e2e_success(self):
+        """Full DELIVERY_ACCEPTED: generates acceptance, validates with
+        real project validator, all fields from authoritative sources."""
+        import json as _json
+        import json
+        import sys as _sys
+
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+
+            # ── Project structure ──
+            events_dir = root / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            acc_dir = root / "docs" / "pm" / "acceptances"
+            acc_dir.mkdir(parents=True, exist_ok=True)
+            reports_dir = root / "docs" / "pm" / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            state_dir = root / "docs" / "pm" / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            runtime_dir = root / ".agentdesk" / "runtime"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+
+            # ── Committed task-card in Git with all required fields ──
+            task_card_dir = root / "docs" / "pm" / "tasks"
+            task_card_dir.mkdir(parents=True, exist_ok=True)
+            task_card = task_card_dir / "TC-001.md"
+            task_card_content = (
+                "---\n"
+                "type: implementation\n"
+                "role_id: worker-basic\n"
+                "base_commit: " + "b" * 40 + "\n"
+                "owner_approval:\n"
+                "  gate: none\n"
+                "  approval_ids: []\n"
+                "---\n"
+                "\n"
+                "# TC-001 Task\n"
+            )
+            task_card.write_text(task_card_content, encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(root), "init", "-q"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.email", "test@test"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.name", "Test"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "add-task-card"],
+                check=True, timeout=10, capture_output=True,
+            )
+            r = subprocess.run(
+                ["git", "-C", str(root), "cat-file", "blob", "HEAD:docs/pm/tasks/TC-001.md"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            task_card_commit = "t" * 40  # placeholder
+            r2 = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            task_card_commit = r2.stdout.strip()
+
+            # ── Worker slot lease store ──
+            lease_store_path = runtime_dir / "worker-slot-lease.yaml"
+            lease_store_path.write_text(
+                _json.dumps({
+                    "schema_version": "agentdesk.worker-slot-lease/v1",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "slot_epochs": {
+                        "basic_agent-1": 1, "basic_agent-2": 0,
+                        "standard_agent-1": 0, "standard_agent-2": 0,
+                        "advanced_agent-1": 0, "advanced_agent-2": 0,
+                        "expert_agent-1": 0, "expert_agent-2": 0,
+                    },
+                    "leases": {
+                        "basic_agent-1": {
+                            "lease_id": "WSL-" + "a" * 32,
+                            "lease_epoch": 1,
+                            "slot_id": "basic_agent-1",
+                            "worker_kind": "basic_agent",
+                            "holder_dispatch_id": "DSP-001",
+                            "holder_instance_id": "worker-inst-1",
+                            "canonical_worktree": str(root).replace("\\", "/"),
+                            "acquired_at": "2026-07-27T09:00:00Z",
+                            "heartbeat_at": "2026-07-27T09:00:00Z",
+                            "expires_at": "2026-08-27T09:00:00Z",
+                        },
+                    },
+                }, ensure_ascii=False), encoding="utf-8"
+            )
+
+            # ── Delivery report in Git (required by validator) ──
+            report = reports_dir / "TC-001-r1-a1.md"
+            report_content = (
+                "---\n"
+                "schema_version: agentdesk.delivery-report/v2\n"
+                "dispatch_id: DSP-001\n"
+                "task_id: TC-001\n"
+                "revision: 1\n"
+                "attempt: 1\n"
+                "implementation_commit: " + "a" * 40 + "\n"
+                "report_commit: " + "b" * 40 + "\n"
+                "---\n"
+            )
+            report.write_text(report_content, encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "add-report"],
+                check=True, timeout=10, capture_output=True,
+            )
+
+            # ── tasks.yaml ──
+            task_data = {
+                "task_id": "TC-001",
+                "revision": 1,
+                "state": "review_ready",
+                "attempt": 1,
+                "task_card_path": "docs/pm/tasks/TC-001.md",
+                "task_card_commit": task_card_commit,
+                "current_dispatch": {
+                    "dispatch_id": "DSP-001",
+                    "role_id": "worker-basic",
+                    "base_commit": "b" * 40,
+                    "branch": "main",
+                    "model_selection": {},
+                },
+                "report_path": "docs/pm/reports/TC-001-r1-a1.md",
+                "implementation_commit": "a" * 40,
+                "report_commit": "b" * 40,
+                "accepted_commit": None,
+                "acceptance_path": None,
+                "integrated_commit": None,
+                "delivery_state": "submitted",
+                "blocked_reason": None,
+                "blocked_kind": None,
+                "blocked_owner": None,
+                "unblock_condition": None,
+                "review_after": None,
+                "blocked_attempt_valid": None,
+                "resume_state": None,
+                "superseded_by": None,
+                "timestamps": {
+                    "created_at": "2026-07-27T00:00:00Z",
+                    "updated_at": "2026-07-27T00:00:00Z",
+                },
+            }
+            state = {
+                "schema_version": "agentdesk.tasks/v2",
+                "project_id": "test-project",
+                "updated_at": "2026-07-27T00:00:00Z",
+                "pm_control": {
+                    "holder_id": "pm-test-001",
+                    "lease_epoch": 1,
+                    "mode": "timed",
+                },
+                "tasks": [task_data],
+            }
+            tasks_path = state_dir / "tasks.yaml"
+            tasks_path.write_text(
+                _json.dumps(state, ensure_ascii=False), encoding="utf-8"
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "add-tasks"],
+                check=True, timeout=10, capture_output=True,
+            )
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+
+            # ── Execute DELIVERY_ACCEPTED ──
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32, lease_epoch=1,
+                slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-001",
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-27T09:00:00Z",
+                heartbeat_at="2026-07-27T09:00:00Z",
+                expires_at="2026-08-27T09:00:00Z",
+            )
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=("docs/pm/reports/TC-001-r1-a1.md",),
+                guard_results=(),
+            )
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review7.md"
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-DELACC",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path=acc_path,
+                    residual_risks=("Low risk",),
+                    criteria_evidence=("Check A passed", "Check B passed"),
+                    rationale="All checks passed, ready to integrate.",
+                ),
+                event_context=ctx,
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            result = svc.apply_transition(req, lease, now)
+
+            # ── Assert TransitionResult ──
+            self.assertEqual(result.task_id, "TC-001")
+            self.assertEqual(result.to_state, "accepted")
+
+            # ── Assert task at target state ──
+            post_state = _json.loads(tasks_path.read_text(encoding="utf-8"))
+            post_task = post_state["tasks"][0]
+            self.assertEqual(post_task["state"], "accepted")
+            self.assertEqual(post_task["accepted_commit"], "a" * 40)
+            self.assertEqual(post_task["acceptance_path"], acc_path)
+
+            # ── Assert event file ──
+            event_path = events_dir / "EVT-20260727-DELACC.yaml"
+            self.assertTrue(event_path.exists())
+            event_text = event_path.read_text(encoding="utf-8")
+            self.assertIn("DELIVERY_ACCEPTED", event_text)
+            self.assertIn("review_ready", event_text)
+            self.assertIn("accepted", event_text)
+
+            # ── Assert acceptance file exists at precise path ──
+            acc_file = root / acc_path
+            self.assertTrue(acc_file.exists())
+            acc_text = acc_file.read_text(encoding="utf-8")
+
+            # Frontmatter checks.
+            self.assertIn("schema_version: agentdesk.acceptance/v2", acc_text)
+            self.assertIn("task_id: TC-001", acc_text)
+            self.assertIn("revision: 1", acc_text)
+            self.assertIn("decision: accepted", acc_text)
+            self.assertIn("reviewed_dispatch_id: DSP-001", acc_text)
+            self.assertIn("attempt: 1", acc_text)
+            self.assertIn("type: implementation", acc_text)
+            self.assertIn("role_id: worker-basic", acc_text)
+            self.assertIn("reviewer_role_id: PM", acc_text)
+            self.assertIn("reviewer_id:", acc_text)
+            self.assertIn("lease_epoch: 1", acc_text)
+            self.assertIn("base_commit: " + "b" * 40, acc_text)
+            self.assertIn("implementation_commit: " + "a" * 40, acc_text)
+            self.assertIn("report_commit: " + "b" * 40, acc_text)
+            self.assertIn("accepted_commit: " + "a" * 40, acc_text)
+            self.assertIn("gate: none", acc_text)
+            self.assertIn("approval_ids: []", acc_text)
+            self.assertIn("created_at: 2026-07-27T11:00:00Z", acc_text)
+
+            # Body checks — review number from path.
+            self.assertIn("Review 7", acc_text)
+            self.assertIn("## Decision", acc_text)
+            self.assertIn("## Scope Review", acc_text)
+            self.assertIn("## Criteria And Checks", acc_text)
+            self.assertIn("## Rationale And Next Integration Step", acc_text)
+            self.assertIn("Check A passed", acc_text)
+            self.assertIn("Check B passed", acc_text)
+            self.assertIn("Low risk", acc_text)
+            self.assertIn("All checks passed, ready to integrate.", acc_text)
+
+            # ── Verify type, role_id, base_commit from committed task-card ──
+            self.assertIn("type: implementation", acc_text)
+            self.assertIn("role_id: worker-basic", acc_text)
+            self.assertIn("base_commit: " + "b" * 40, acc_text)
+
+            # ── Idempotent replay — same bytes, zero writes ──
+            import control_plane_transition as cpt_module
+            events_dir_clear = root / "docs" / "pm" / "events"
+            event_files_before = list(events_dir_clear.glob("*.yaml"))
+            acc_dir_clear = root / "docs" / "pm" / "acceptances"
+            acc_files_before = list(acc_dir_clear.glob("*.md"))
+            result2 = svc.apply_transition(req, lease, now)
+            self.assertEqual(result2.to_state, "accepted")
+            event_files_after = list(events_dir_clear.glob("*.yaml"))
+            acc_files_after = list(acc_dir_clear.glob("*.md"))
+            self.assertEqual(len(event_files_before), len(event_files_after),
+                             "Idempotent replay must not create new event files")
+            self.assertEqual(len(acc_files_before), len(acc_files_after),
+                             "Idempotent replay must not create new acceptance files")
+            # Same file bytes.
+            self.assertEqual(
+                (root / acc_path).read_bytes(),
+                acc_text.encode("utf-8"),
+                "Idempotent replay acceptance bytes must be identical"
+            )
+
+            # ── Real validator: no errors on generated acceptance ──
+            self._run_real_acceptance_validator(
+                root, "TC-001", acc_path, "accepted", expected_errors=0
+            )
+        finally:
+            tmpdir.cleanup()
+
+    def _run_real_acceptance_validator(self, root: Path, task_id: str,
+                                       acc_path: str, state: str,
+                                       expected_errors: int = 0):
+        """Run the real project-level _validate_acceptance_record on
+        the generated acceptance file.  Fails the test if the number
+        of validation errors does not match expected_errors."""
+        import sys as _sys
+
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from validate_project import (
+                Reporter, _validate_acceptance_record,
+                _read_frontmatter_scalars,
+            )
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        # Read the canonical task from tasks.yaml.
+        import json as _validator_json
+        state_data = _validator_json.loads(
+            (root / "docs" / "pm" / "state" / "tasks.yaml")
+            .read_text(encoding="utf-8")
+        )
+        task = None
+        for t in state_data.get("tasks", []):
+            if t.get("task_id") == task_id:
+                task = t
+                break
+        self.assertIsNotNone(task, f"Task {task_id} not found")
+
+        # Read task-card frontmatter.
+        task_card_path = root / (task.get("task_card_path") or "")
+        task_card_fm = None
+        if task_card_path.is_file():
+            reporter_tmp = Reporter()
+            task_card_fm = _read_frontmatter_scalars(
+                task_card_path, "task-card", reporter_tmp
+            )
+
+        # Run the real validator.
+        reporter = Reporter()
+        acceptance_file = root / acc_path
+        _validate_acceptance_record(
+            acceptance_file, root, task, task_card_fm,
+            None,  # delivery_report — None is accepted
+            f"test:{acc_path}", state, False, reporter,
+        )
+        self.assertEqual(
+            reporter.errors, expected_errors,
+            f"Real validator must report {expected_errors} acceptance "
+            f"errors, got {reporter.errors}. "
+            f"Full output: passes={reporter.passes}, "
+            f"warnings={reporter.warnings}"
+        )
+
+    def test_review1_path_generates_review_1(self):
+        """review1 in path → body header contains 'Review 1'."""
+        import json as _json
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            self._setup_acceptance_project(root)
+
+            lease = self._make_acceptance_lease(root)
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review1.md"
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-R1",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path=acc_path,
+                    residual_risks=(),
+                    criteria_evidence=("evidence",),
+                    rationale="Accepted.",
+                ),
+                event_context=self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            svc.apply_transition(req, lease, now)
+            acc_text = (root / acc_path).read_text(encoding="utf-8")
+            self.assertIn("Review 1", acc_text)
+            self.assertNotIn("Review 7", acc_text)
+        finally:
+            tmpdir.cleanup()
+
+    def test_review7_path_generates_review_7(self):
+        """review7 in path → body header contains 'Review 7'."""
+        import json as _json
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            self._setup_acceptance_project(root)
+            lease = self._make_acceptance_lease(root)
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review7.md"
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-R7",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path=acc_path,
+                    residual_risks=(),
+                    criteria_evidence=("evidence",),
+                    rationale="Accepted.",
+                ),
+                event_context=self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            svc.apply_transition(req, lease, now)
+            acc_text = (root / acc_path).read_text(encoding="utf-8")
+            self.assertIn("Review 7", acc_text)
+        finally:
+            tmpdir.cleanup()
+
+    def test_review42_path_generates_review_42(self):
+        """review42 in path → body header contains 'Review 42'."""
+        import json as _json
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            self._setup_acceptance_project(root)
+            lease = self._make_acceptance_lease(root)
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review42.md"
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-R42",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path=acc_path,
+                    residual_risks=(),
+                    criteria_evidence=("evidence",),
+                    rationale="Accepted.",
+                ),
+                event_context=self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            svc.apply_transition(req, lease, now)
+            acc_text = (root / acc_path).read_text(encoding="utf-8")
+            self.assertIn("Review 42", acc_text)
+        finally:
+            tmpdir.cleanup()
+
+    def test_same_path_replay_produces_byte_identical_acceptance(self):
+        """Same path replayed produces byte-identical acceptance bytes."""
+        import json as _json
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            self._setup_acceptance_project(root)
+            lease = self._make_acceptance_lease(root)
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review7.md"
+
+            def run():
+                cas = self.cpt.TransitionCAS(
+                    task_id="TC-001", expected_revision=1,
+                    expected_state="review_ready", expected_snapshot_commit=head,
+                )
+                dc = self.cpt.DispatchCAS(
+                    expected_dispatch_id="DSP-001", expected_attempt=1,
+                )
+                req = self.cpt.TransitionRequest(
+                    cas=cas, dispatch_cas=dc,
+                    event_id="EVT-20260727-IDEM",
+                    event_type="DELIVERY_ACCEPTED",
+                    payload=self.cpt.DeliveryAcceptedPayload(
+                        accepted_commit="a" * 40,
+                        acceptance_path=acc_path,
+                        residual_risks=(),
+                        criteria_evidence=("evidence",),
+                        rationale="Accepted.",
+                    ),
+                    event_context=self.cpt.TransitionEventContext(
+                        source_message_id=None, evidence_refs=(), guard_results=(),
+                    ),
+                )
+                now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+                svc.apply_transition(req, lease, now)
+
+            run()
+            bytes1 = (root / acc_path).read_bytes()
+
+            # Replay: idempotent, same bytes.
+            run()
+            bytes2 = (root / acc_path).read_bytes()
+            self.assertEqual(bytes1, bytes2,
+                             "Same path replay must produce byte-identical acceptance")
+        finally:
+            tmpdir.cleanup()
+
+    def test_path_mismatch_task_id_zero_writes(self):
+        """Acceptance path with wrong task_id → zero writes."""
+        import json as _json
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            self._setup_acceptance_project(root)
+            lease = self._make_acceptance_lease(root)
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-MISMATCH",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path="docs/pm/acceptances/TC-999-r1-a1-review1.md",
+                    residual_risks=(),
+                    criteria_evidence=("evidence",),
+                    rationale="Accepted.",
+                ),
+                event_context=self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            with self.assertRaises(self.cpt.TransitionValidationError):
+                svc.apply_transition(req, lease, now)
+            # Zero writes.
+            events_dir = root / "docs" / "pm" / "events"
+            self.assertEqual(len(list(events_dir.glob("*.yaml"))), 0)
+            acc_dir = root / "docs" / "pm" / "acceptances"
+            self.assertEqual(len(list(acc_dir.glob("*.md"))), 0)
+        finally:
+            tmpdir.cleanup()
+
+    def test_type_null_fails_real_validator(self):
+        """When type is changed to null in acceptance, real validator
+        reports errors."""
+        import json as _json
+        import json
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            self._setup_acceptance_project(root)
+            lease = self._make_acceptance_lease(root)
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review7.md"
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-TYPENULL",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path=acc_path,
+                    residual_risks=(),
+                    criteria_evidence=("evidence",),
+                    rationale="Accepted.",
+                ),
+                event_context=self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            svc.apply_transition(req, lease, now)
+
+            # Corrupt acceptance: delete required frontmatter field.
+            acc_file = root / acc_path
+            acc_text = acc_file.read_text(encoding="utf-8")
+            lines = acc_text.splitlines()
+            filtered = [l for l in lines if not l.startswith("decision:")]
+            corrupted = "\n".join(filtered)
+            acc_file.write_text(corrupted, encoding="utf-8")
+            state_data = _json.loads(
+                (root / "docs" / "pm" / "state" / "tasks.yaml").read_text(encoding="utf-8")
+            )
+            task = state_data["tasks"][0]
+            reporter = Reporter()
+            _validate_acceptance_record(
+                acc_file, root, task, None, None,
+                "test:corrupted", "accepted", False, reporter,
+            )
+            self.assertGreater(reporter.errors, 0,
+                               "Real validator must report errors when type is null")
+        finally:
+            tmpdir.cleanup()
+
+    # ── Helpers ──
+
+    def _setup_acceptance_project(self, root: Path):
+        """Create a minimal project with committed task-card, delivery
+        report, tasks.yaml, and worker-slot-lease store suitable for
+        DELIVERY_ACCEPTED."""
+        import json as _setup_json
+        setup_json = _setup_json
+        events_dir = root / "docs" / "pm" / "events"
+        events_dir.mkdir(parents=True, exist_ok=True)
+        acc_dir = root / "docs" / "pm" / "acceptances"
+        acc_dir.mkdir(parents=True, exist_ok=True)
+        reports_dir = root / "docs" / "pm" / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        state_dir = root / "docs" / "pm" / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        runtime_dir = root / ".agentdesk" / "runtime"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+
+        # Task card.
+        task_card_dir = root / "docs" / "pm" / "tasks"
+        task_card_dir.mkdir(parents=True, exist_ok=True)
+        task_card = task_card_dir / "TC-001.md"
+        task_card.write_text(
+            "---\n"
+            "type: implementation\n"
+            "role_id: worker-basic\n"
+            "base_commit: " + "b" * 40 + "\n"
+            "owner_approval:\n"
+            "  gate: none\n"
+            "  approval_ids: []\n"
+            "---\n\n# TC-001\n",
+            encoding="utf-8",
+        )
+
+        # Git init.
+        subprocess.run(
+            ["git", "-C", str(root), "init", "-q"],
+            check=True, timeout=10, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.email", "test@test"],
+            check=True, timeout=10, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.name", "Test"],
+            check=True, timeout=10, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "add", "-A"],
+            check=True, timeout=10, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-m", "add-task-card"],
+            check=True, timeout=10, capture_output=True,
+        )
+        r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        task_card_commit = r.stdout.strip()
+
+        # Worker slot lease store.
+        lease_store_path = runtime_dir / "worker-slot-lease.yaml"
+        lease_store_path.write_text(
+            _setup_json.dumps({
+                "schema_version": "agentdesk.worker-slot-lease/v1",
+                "updated_at": "1970-01-01T00:00:00Z",
+                "slot_epochs": {
+                    "basic_agent-1": 1, "basic_agent-2": 0,
+                    "standard_agent-1": 0, "standard_agent-2": 0,
+                    "advanced_agent-1": 0, "advanced_agent-2": 0,
+                    "expert_agent-1": 0, "expert_agent-2": 0,
+                },
+                "leases": {
+                    "basic_agent-1": {
+                        "lease_id": "WSL-" + "a" * 32,
+                        "lease_epoch": 1,
+                        "slot_id": "basic_agent-1",
+                        "worker_kind": "basic_agent",
+                        "holder_dispatch_id": "DSP-001",
+                        "holder_instance_id": "worker-inst-1",
+                        "canonical_worktree": str(root).replace("\\", "/"),
+                        "acquired_at": "2026-07-27T09:00:00Z",
+                        "heartbeat_at": "2026-07-27T09:00:00Z",
+                        "expires_at": "2026-08-27T09:00:00Z",
+                    },
+                },
+            }, ensure_ascii=False), encoding="utf-8"
+        )
+
+        # Delivery report.
+        report = reports_dir / "TC-001-r1-a1.md"
+        report.write_text(
+            "---\n"
+            "schema_version: agentdesk.delivery-report/v2\n"
+            "dispatch_id: DSP-001\n"
+            "task_id: TC-001\n"
+            "revision: 1\n"
+            "attempt: 1\n"
+            "implementation_commit: " + "a" * 40 + "\n"
+            "report_commit: " + "b" * 40 + "\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "add", "-A"],
+            check=True, timeout=10, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-m", "add-report"],
+            check=True, timeout=10, capture_output=True,
+        )
+
+        # tasks.yaml.
+        task_data = {
+            "task_id": "TC-001", "revision": 1, "state": "review_ready",
+            "attempt": 1,
+            "task_card_path": "docs/pm/tasks/TC-001.md",
+            "task_card_commit": task_card_commit,
+            "current_dispatch": {
+                "dispatch_id": "DSP-001", "role_id": "worker-basic",
+                "base_commit": "b" * 40, "branch": "main", "model_selection": {},
+            },
+            "report_path": "docs/pm/reports/TC-001-r1-a1.md",
+            "implementation_commit": "a" * 40,
+            "report_commit": "b" * 40,
+            "accepted_commit": None, "acceptance_path": None,
+            "integrated_commit": None, "delivery_state": "submitted",
+            "blocked_reason": None, "blocked_kind": None,
+            "blocked_owner": None, "unblock_condition": None,
+            "review_after": None, "blocked_attempt_valid": None,
+            "resume_state": None, "superseded_by": None,
+            "timestamps": {
+                "created_at": "2026-07-27T00:00:00Z",
+                "updated_at": "2026-07-27T00:00:00Z",
+            },
+        }
+        state = {
+            "schema_version": "agentdesk.tasks/v2",
+            "project_id": "test-project",
+            "updated_at": "2026-07-27T00:00:00Z",
+            "pm_control": {
+                "holder_id": "pm-test-001", "lease_epoch": 1, "mode": "timed",
+            },
+            "tasks": [task_data],
+        }
+        tasks_path = state_dir / "tasks.yaml"
+        tasks_path.write_text(_setup_json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(root), "add", "-A"],
+            check=True, timeout=10, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-m", "add-all"],
+            check=True, timeout=10, capture_output=True,
+        )
+
+    def _make_acceptance_lease(self, root: Path):
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+        return WorkerSlotLease(
+            lease_id="WSL-" + "a" * 32, lease_epoch=1,
+            slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
+            holder_dispatch_id="DSP-001",
+            holder_instance_id="worker-inst-1",
+            canonical_worktree=str(root).replace("\\", "/"),
+            acquired_at="2026-07-27T09:00:00Z",
+            heartbeat_at="2026-07-27T09:00:00Z",
+            expires_at="2026-08-27T09:00:00Z",
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# TC-13.11c.2: Weak Test Prevention (Section 8)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestWeakTestPrevention(unittest.TestCase):
+
+    def test_no_pass_only_test_methods(self):
+        """No test method body in this file may consist solely of 'pass'."""
+        import ast
+
+        src_path = Path(__file__).resolve()
+        source = src_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        violations: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if not node.name.startswith("test_"):
+                continue
+            body = node.body
+            if len(body) == 1 and isinstance(body[0], ast.Pass):
+                violations.append(f"{node.name} at line {node.lineno}")
+            # Detect comment-only claims.
+            if len(body) == 1 and isinstance(body[0], ast.Expr):
+                if isinstance(body[0].value, ast.Constant):
+                    val = body[0].value.value
+                    if isinstance(val, str) and "verified by code review" in val.lower():
+                        violations.append(
+                            f"{node.name} at line {node.lineno}: "
+                            "claims 'verified by code review' in a bare string"
+                        )
+
+        self.assertEqual(
+            len(violations), 0,
+            f"Weak test methods detected: {', '.join(violations)}"
+        )
+
+    def test_no_bare_exception_assert_raises_in_matrix(self):
+        """Write failure tests must assert specific exception types,
+        not bare Exception."""
+        import ast
+        src_path = Path(__file__).resolve()
+        source = src_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        # Find the TestWriteFailureMatrix class.
+        violations: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            if node.name != "TestWriteFailureMatrix":
+                continue
+            for item in ast.walk(node):
+                if not isinstance(item, ast.Call):
+                    continue
+                # self.assertRaises(Exception, ...) is weak.
+                if isinstance(item.func, ast.Attribute):
+                    if item.func.attr == "assertRaises":
+                        if item.args and isinstance(item.args[0], ast.Name):
+                            if item.args[0].id == "Exception":
+                                violations.append(
+                                    f"Line {item.lineno}: bare Exception in assertRaises"
+                                )
+        self.assertEqual(
+            len(violations), 0,
+            f"Weak exception assertions: {', '.join(violations)}"
+        )
 
 
 if __name__ == "__main__":

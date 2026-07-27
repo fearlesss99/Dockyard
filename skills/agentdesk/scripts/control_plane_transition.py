@@ -3012,12 +3012,167 @@ def _build_outbox_bytes(
 # -- acceptance record builder --
 
 
+def _read_committed_task_card_frontmatter(
+    project_root: Path,
+    task_card_path: str,
+    task_card_commit: str,
+) -> dict[str, Any]:
+    """Read and parse committed task-card frontmatter from Git.
+
+    Returns the validated frontmatter dict with keys:
+    ``type``, ``role_id``, ``base_commit``, ``owner_approval``.
+
+    Raises ``TransitionSchemaError`` on any failure — zero authoritative writes.
+    """
+    # Read blob from Git.
+    blob_path = f"{task_card_commit}:{task_card_path}"
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_root), "cat-file", "blob", blob_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        raise TransitionSchemaError(
+            "cannot read committed task-card from Git"
+        ) from exc
+    if result.returncode != 0:
+        raise TransitionSchemaError(
+            "committed task-card blob not found in Git"
+        )
+    content = result.stdout
+    if not content:
+        raise TransitionSchemaError(
+            "committed task-card is empty"
+        )
+
+    # Parse YAML frontmatter between --- delimiters.
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise TransitionSchemaError(
+            "committed task-card missing frontmatter start"
+        )
+    end_idx: int | None = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end_idx = i
+            break
+    if end_idx is None:
+        raise TransitionSchemaError(
+            "committed task-card missing frontmatter end"
+        )
+
+    # Parse frontmatter lines into a flat dict.  Skip indented lines
+    # in the top-level pass — they belong to nested blocks.
+    fm: dict[str, Any] = {}
+    for line in lines[1:end_idx]:
+        if not line or line[0].isspace():
+            continue  # Skip indented nested-block lines.
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" in stripped:
+            key, sep, raw_val = stripped.partition(":")
+            key = key.strip()
+            raw_val = raw_val.strip()
+            if raw_val == "":
+                # Key-only line (e.g. 'owner_approval:') — nested block marker.
+                fm[key] = None
+            elif raw_val == "null" or raw_val == "~":
+                fm[key] = None
+            elif raw_val == "true":
+                fm[key] = True
+            elif raw_val == "false":
+                fm[key] = False
+            elif raw_val.isdigit() or (raw_val.startswith("-") and raw_val[1:].isdigit()):
+                fm[key] = int(raw_val)
+            elif raw_val.startswith('"') and raw_val.endswith('"'):
+                fm[key] = raw_val[1:-1]
+            else:
+                fm[key] = raw_val
+
+    # Parse nested owner_approval if present as inline dict in frontmatter.
+    _owner_approval = fm.get("owner_approval")
+    _gate: str | None = None
+    if isinstance(_owner_approval, dict):
+        _gate = _owner_approval.get("gate")
+    else:
+        # Look for YAML block-style owner_approval in remaining lines.
+        # The frontmatter parser above only handles `key: value` pairs.
+        # For owner_approval nested dict, we need to scan block indentation.
+        for i in range(len(lines[1:end_idx])):
+            line = lines[1 : end_idx][i]
+            stripped = line.strip()
+            if stripped == "owner_approval:":
+                # Read next indented lines as sub-dict.
+                _oa: dict[str, Any] = {}
+                remaining = lines[1 : end_idx][i + 1:]
+                for subline in remaining:
+                    if not subline or not subline.startswith("  "):
+                        break
+                    sub_stripped = subline.strip()
+                    if ":" in sub_stripped:
+                        sk, _, sv = sub_stripped.partition(":")
+                        sk = sk.strip()
+                        sv = sv.strip()
+                        if sv in ("none", "null", "~"):
+                            _oa[sk] = sv if sk == "gate" else None
+                        elif sv == "[]":
+                            _oa[sk] = []
+                        else:
+                            _oa[sk] = sv
+                if _oa:
+                    _owner_approval = _oa
+                    _gate = _oa.get("gate")
+                break
+
+    if not isinstance(_owner_approval, dict):
+        raise TransitionSchemaError(
+            "committed task-card frontmatter 'owner_approval' must be a mapping"
+        )
+    if not isinstance(_gate, str) or _gate != "none":
+        raise TransitionSchemaError(
+            "committed task-card owner_approval.gate must be 'none' — "
+            f"got {_safe_type_name(_gate)}"
+        )
+    # Validate required fields.
+    _task_type = fm.get("type")
+    if not isinstance(_task_type, str) or not _task_type:
+        raise TransitionSchemaError(
+            "committed task-card frontmatter 'type' must be a non-empty str"
+        )
+
+    _role_id = fm.get("role_id")
+    if not isinstance(_role_id, str) or not _role_id:
+        raise TransitionSchemaError(
+            "committed task-card frontmatter 'role_id' must be a non-empty str"
+        )
+
+    _base_commit = fm.get("base_commit")
+    try:
+        _validate_sha(_base_commit, "task-card base_commit")
+    except (TypeError, ValueError) as exc:
+        raise TransitionSchemaError(
+            "committed task-card frontmatter 'base_commit' must be a valid SHA"
+        ) from exc
+
+    return {
+        "type": _task_type,
+        "role_id": _role_id,
+        "base_commit": _base_commit,
+        "owner_approval": {"gate": "none", "approval_ids": []},
+    }
+
+
 def _build_acceptance_bytes(
     request: TransitionRequest,
     pre_transition_task: dict[str, Any],
     pm_holder_id: str,
     pm_lease_epoch: int,
     now: datetime,
+    review_number: int,
+    task_card_frontmatter: dict[str, Any] | None = None,
 ) -> bytes | None:
     """Build acceptance markdown bytes for DELIVERY_ACCEPTED, or None.
 
@@ -3026,6 +3181,14 @@ def _build_acceptance_bytes(
 
     Generates ``agentdesk.acceptance/v2`` with full frontmatter and body
     sections per the frozen contract.
+
+    ``review_number`` is the deterministic review number from
+    ``_parse_review_n_from_path()`` — NOT hard-coded.
+
+    ``task_card_frontmatter`` is the validated frontmatter from the
+    committed task-card at ``task_card_commit`` — must be provided.
+    Type, role_id, base_commit, and owner_approval.gate are read
+    from this authoritative source, never guessed.
     """
     if not isinstance(request.payload, DeliveryAcceptedPayload):
         return None
@@ -3033,32 +3196,55 @@ def _build_acceptance_bytes(
     payload = request.payload
     occurrence = _format_rfc3339_utc(now)
 
+    # ── Authoritative sources ──────────────────────────────────────────
+    # Committed task-card (required).
+    if task_card_frontmatter is None:
+        raise TransitionSchemaError(
+            "task_card_frontmatter is required for acceptance"
+        )
+    task_type: str = str(task_card_frontmatter.get("type", ""))
+    if not task_type:
+        raise TransitionSchemaError(
+            "task type from committed task-card is empty"
+        )
+    task_card_role_id: str = str(task_card_frontmatter.get("role_id", ""))
+    if not task_card_role_id:
+        raise TransitionSchemaError(
+            "role_id from committed task-card is empty"
+        )
+    task_card_base_commit: str = str(task_card_frontmatter.get("base_commit", ""))
+    if not task_card_base_commit:
+        raise TransitionSchemaError(
+            "base_commit from committed task-card is empty"
+        )
+    owner_approval_block = task_card_frontmatter.get("owner_approval", {})
+    if not isinstance(owner_approval_block, dict):
+        owner_approval_block = {}
+    owner_approval_gate: str = str(owner_approval_block.get("gate", "none"))
+    if owner_approval_gate != "none":
+        raise TransitionSchemaError(
+            "owner_approval.gate must be 'none'"
+        )
+    owner_approval_ids: list[str] = []
+
     # ── Pre-extract from CAS-verified canonical (pre-transition) task ──
     cd = pre_transition_task.get("current_dispatch")
     reviewed_dispatch_id: str | None = None
-    role_id: str | None = None
-    base_commit: str | None = None
+    role_id: str | None = task_card_role_id
+    base_commit: str = task_card_base_commit
     if isinstance(cd, dict):
-        reviewed_dispatch_id = cd.get("dispatch_id")
-        if isinstance(reviewed_dispatch_id, str) and reviewed_dispatch_id:
-            pass
-        else:
-            reviewed_dispatch_id = None
-        role_id = cd.get("role_id")
-        if not isinstance(role_id, str) or not role_id:
-            role_id = None
-        base_commit = cd.get("base_commit")
-        if not isinstance(base_commit, str) or not base_commit:
-            base_commit = None
+        cd_dispatch = cd.get("dispatch_id")
+        reviewed_dispatch_id = cd_dispatch if (
+            isinstance(cd_dispatch, str) and cd_dispatch
+        ) else None
 
     # DispatchCAS overrides reviewed_dispatch_id when present.
     dc = request.dispatch_cas
     if dc is not None:
         reviewed_dispatch_id = dc.expected_dispatch_id
 
-    attempt = pre_transition_task.get("attempt")
-    if isinstance(attempt, bool) or not isinstance(attempt, int):
-        attempt = None
+    # attempt from DispatchCAS (frozen contract: expected_attempt).
+    attempt = dc.expected_attempt if dc is not None else None
 
     task_revision = request.cas.expected_revision
 
@@ -3070,18 +3256,22 @@ def _build_acceptance_bytes(
     if not isinstance(report_commit, str) or not report_commit:
         report_commit = None
 
-    # task type derived from committed task card (via payload context).
-    task_type: str | None = None
-    # role_id from current_dispatch (pre-transition).
     # reviewer_role_id is fixed "PM".
     reviewer_id = pm_holder_id
 
-    # accepted_commit == implementation_commit (frozen contract).
+    # accepted_commit from payload; must be a valid SHA.
     accepted_commit = payload.accepted_commit
-
-    # owner approval: fixed none + [].
-    owner_approval_gate = "none"
-    owner_approval_ids: list[str] = []
+    try:
+        _validate_sha(accepted_commit, "accepted_commit")
+    except (TypeError, ValueError) as exc:
+        raise TransitionSchemaError(
+            "accepted_commit must be a 40-char hex SHA"
+        ) from exc
+    # Frozen contract: accepted_commit == implementation_commit.
+    if impl_commit is not None and accepted_commit != impl_commit:
+        raise TransitionSchemaError(
+            "accepted_commit must equal implementation_commit"
+        )
 
     # evidence_refs: from TransitionEventContext.
     evidence_refs = list(request.event_context.evidence_refs)
@@ -3103,12 +3293,12 @@ def _build_acceptance_bytes(
         f"reviewed_dispatch_id: {reviewed_dispatch_id if reviewed_dispatch_id else 'null'}"
     )
     fm_lines.append(f"attempt: {attempt if attempt is not None else 'null'}")
-    fm_lines.append(f"type: {task_type if task_type else 'null'}")
-    fm_lines.append(f"role_id: {role_id if role_id else 'null'}")
+    fm_lines.append(f"type: {task_type}")
+    fm_lines.append(f"role_id: {task_card_role_id}")
     fm_lines.append("reviewer_role_id: PM")
     fm_lines.append(f"reviewer_id: {reviewer_id}")
     fm_lines.append(f"lease_epoch: {pm_lease_epoch}")
-    fm_lines.append(f"base_commit: {base_commit if base_commit else 'null'}")
+    fm_lines.append(f"base_commit: {task_card_base_commit}")
     fm_lines.append(
         f"implementation_commit: {impl_commit if impl_commit else 'null'}"
     )
@@ -3151,7 +3341,7 @@ def _build_acceptance_bytes(
     task_id = request.cas.task_id
     revision = task_revision
     att_str = str(attempt) if attempt is not None else "?"
-    rev_num_str = "1"  # review number — deterministic from acceptance_path.
+    rev_num_str = str(review_number)
 
     fm_lines.append(
         f"# {task_id} — Revision {revision}, Attempt {att_str}, Review {rev_num_str}"
@@ -3189,7 +3379,7 @@ def _build_acceptance_bytes(
     content = "\n".join(fm_lines)
     content_bytes = content.encode("utf-8")
 
-    # Validate structural schema (frontmatter keys).
+    # Structural schema validation (frontmatter keys).
     _validate_acceptance_frontmatter(content_bytes, request, pre_transition_task)
 
     return content_bytes
@@ -3563,15 +3753,15 @@ def _execute_transition_core(
     # 3. Derive to_state.
     to_state = _derive_to_state(spec, request.payload)
 
-    # 4. Pre-validate acceptance_path BEFORE any mutation/write.
-    #    This must happen before building bytes to avoid any filesystem
-    #    operations on untrusted paths.
+    # 4. Pre-validate acceptance_path and parse review number
+    #    BEFORE any mutation/write.
     acceptance_path: str | None = None
+    review_number: int = 1
     if spec.produces_acceptance and isinstance(
         request.payload, DeliveryAcceptedPayload
     ):
         acceptance_path = request.payload.acceptance_path
-        _parse_review_n_from_path(
+        review_number = _parse_review_n_from_path(
             acceptance_path,
             request.cas.task_id,
             request.cas.expected_revision,
@@ -3611,10 +3801,33 @@ def _execute_transition_core(
         request, spec, task, to_state, now, lease_epoch, payload_digest
     )
 
-    # 9. Build acceptance bytes from PRE-TRANSITION canonical task.
+    # 9. Read committed task-card for acceptance (BEFORE any write).
+    task_card_frontmatter: dict[str, Any] | None = None
+    if spec.produces_acceptance and isinstance(
+        request.payload, DeliveryAcceptedPayload
+    ):
+        task_card_path = task.get("task_card_path")
+        task_card_commit = task.get("task_card_commit")
+        if not isinstance(task_card_path, str) or not task_card_path:
+            raise TransitionSchemaError(
+                "task_card_path is missing from canonical task — "
+                "cannot read committed task-card for acceptance"
+            )
+        if not isinstance(task_card_commit, str) or not task_card_commit:
+            raise TransitionSchemaError(
+                "task_card_commit is missing from canonical task — "
+                "cannot read committed task-card for acceptance"
+            )
+        task_card_frontmatter = _read_committed_task_card_frontmatter(
+            project_root, task_card_path, task_card_commit
+        )
+
+    # 10. Build acceptance bytes from PRE-TRANSITION canonical task
+    #     and committed task-card frontmatter.
     pm_lease_epoch = lease_epoch
     acceptance_bytes = _build_acceptance_bytes(
-        request, task, pm_holder_id, pm_lease_epoch, now
+        request, task, pm_holder_id, pm_lease_epoch, now,
+        review_number, task_card_frontmatter
     )
 
     tasks_bytes = _serialize_tasks_state(post_state)
