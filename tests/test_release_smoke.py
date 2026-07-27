@@ -6362,6 +6362,171 @@ class ReleaseSmokeTests(unittest.TestCase):
         section = self._tc1311a_section()
         self.assertIn("MODEL_SELECTION_FIELDS", section)
 
+    # ── implementability hardening tests ─────────────────────────────────────
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_tc1311a_no_pep695_type_alias(self) -> None:
+        """Must NOT use PEP 695 ``type X =`` syntax."""
+        section = self._tc1311a_section()
+        self.assertNotIn("type TransitionPayload", section)
+
+    def test_tc1311a_union_compatible_closed_union(self) -> None:
+        """TransitionPayload must be a Union[...] assignment, not a
+        PEP 695 type alias."""
+        section = self._tc1311a_section()
+        self.assertIn("TransitionPayload = Union[", section)
+
+    def test_tc1311a_union_exact_fourteen_variants(self) -> None:
+        """TransitionPayload union must contain exactly 14 payload
+        variants."""
+        section = self._tc1311a_section()
+        variants = [
+            "SpecifyPayload",
+            "DispatchPayload",
+            "AcknowledgePayload",
+            "DeliverySubmittedPayload",
+            "DeliveryAcceptedPayload",
+            "DeliveryReturnedPayload",
+            "RequeuePayload",
+            "IntegrationPayload",
+            "BlockedPayload",
+            "BlockerResolvedPayload",
+            "BlockerRescopedPayload",
+            "BlockerCancelledPayload",
+            "CancelledPayload",
+            "SupersededPayload",
+        ]
+        for v in variants:
+            self.assertIn(v, section, f"TransitionPayload must include {v}")
+
+    def test_tc1311a_transition_request_has_event_context(self) -> None:
+        """TransitionRequest must include event_context field."""
+        section = self._tc1311a_section()
+        self.assertIn("event_context: TransitionEventContext", section)
+
+    def test_tc1311a_event_context_exact_three_fields(self) -> None:
+        """TransitionEventContext must have exactly three fields."""
+        section = self._tc1311a_section()
+        ctx_match = re.search(
+            r"class TransitionEventContext:.*?(?=\nclass TransitionRequest)",
+            section, re.DOTALL,
+        )
+        self.assertIsNotNone(ctx_match)
+        body = ctx_match.group(0)
+        self.assertIn("source_message_id", body)
+        self.assertIn("evidence_refs", body)
+        self.assertIn("guard_results", body)
+
+    def test_tc1311a_source_message_id_nullable(self) -> None:
+        """source_message_id must be str | None."""
+        section = self._tc1311a_section()
+        fields = re.findall(r'source_message_id.*', section)
+        combined = ''.join(fields)
+        self.assertIn('None', combined)
+
+    def test_tc1311a_evidence_refs_deeply_immutable_tuple(self) -> None:
+        """evidence_refs must be tuple[str, ...]."""
+        section = self._tc1311a_section()
+        self.assertIn("tuple[str, ...]", section)
+
+    def test_tc1311a_guard_results_deeply_immutable_tuple(self) -> None:
+        """guard_results must be tuple[GuardResult, ...]."""
+        section = self._tc1311a_section()
+        self.assertIn("tuple[GuardResult, ...]", section)
+
+    def test_tc1311a_guard_result_frozen_slots(self) -> None:
+        """GuardResult must be frozen=True, slots=True (the decorator
+        appears on the line before the class)."""
+        section = self._tc1311a_section()
+        # Find the decorator + class block.
+        gr = re.search(
+            r"@dataclass\(frozen=True,\s*slots=True\)\s*\nclass GuardResult",
+            section,
+        )
+        self.assertIsNotNone(
+            gr, "GuardResult must have @dataclass(frozen=True, slots=True)"
+        )
+
+    def test_tc1311a_guard_result_no_mutable_collections(self) -> None:
+        """GuardResult field annotations must not use list, dict, or set.
+        (Local variables in __post_init__ may use list for validation.)"""
+        section = self._tc1311a_section()
+        gr = re.search(
+            r"class GuardResult:.*?(?=\n\n@dataclass|\n\nclass )",
+            section, re.DOTALL,
+        )
+        self.assertIsNotNone(gr)
+        body = gr.group(0)
+        # Extract just the field lines (before any method).
+        field_block = body.split('\n    def ')[0]
+        self.assertNotIn(": list", field_block)
+        self.assertNotIn(": dict", field_block)
+        self.assertNotIn(": set", field_block)
+
+    def test_tc1311a_guard_input_exists(self) -> None:
+        """GuardInput class must be defined."""
+        section = self._tc1311a_section()
+        self.assertIn("class GuardInput:", section)
+
+    def test_tc1311a_guard_input_yaml_scalar_values(self) -> None:
+        """GuardInput.value must be str | int | bool | None only."""
+        section = self._tc1311a_section()
+        gi = re.search(
+            r"class GuardInput:.*?(?=\n\n@dataclass|\n\nclass )",
+            section, re.DOTALL,
+        )
+        self.assertIsNotNone(gi, "GuardInput class not found")
+        body = gi.group(0)
+        self.assertIn("str | int | bool | None", body)
+
+    def test_tc1311a_guard_input_duplicate_keys_rejected(self) -> None:
+        """GuardResult must reject duplicate GuardInput keys."""
+        section = self._tc1311a_section()
+        self.assertIn("duplicate keys", section.lower())
+
+    def test_tc1311a_event_serialisation_source_table_exists(self) -> None:
+        """Section 2.14.12 must contain the event serialisation source
+        table."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "Event Serialisation Source Table", section,
+            "§2.14 must have event serialisation source table",
+        )
+        self.assertIn("source_message_id", section)
+        self.assertIn("evidence_refs", section)
+        self.assertIn("guard_results", section)
+        self.assertIn("service constant", section.lower())
+
+    def test_tc1311a_event_context_source_message_id_has_origin(self) -> None:
+        """source_message_id in serialisation table must reference
+        TransitionEventContext."""
+        section = self._tc1311a_section()
+        self.assertIn("TransitionEventContext.source_message_id", section)
+
+    def test_tc1311a_event_context_in_all(self) -> None:
+        """TransitionEventContext must be in __all__."""
+        section = self._tc1311a_section()
+        all_match = re.search(
+            r"__all__\s*=\s*\[(.*?)\]", section, re.DOTALL,
+        )
+        self.assertIsNotNone(all_match)
+        self.assertIn("TransitionEventContext", all_match.group(1))
+        self.assertIn("GuardResult", all_match.group(1))
+        self.assertIn("GuardInput", all_match.group(1))
+
+    def test_tc1311a_all_public_types_consistent_count(self) -> None:
+        """__all__ must contain exactly 31 public symbols (28 original
+        + 3 new: TransitionEventContext, GuardResult, GuardInput)."""
+        section = self._tc1311a_section()
+        all_match = re.search(
+            r"__all__\s*=\s*\[(.*?)\]", section, re.DOTALL,
+        )
+        self.assertIsNotNone(all_match)
+        lines = all_match.group(1).split('\n')
+        symbols = [
+            s.strip().strip('",') for s in lines
+            if s.strip().strip('",')
+        ]
+        self.assertEqual(
+            len(symbols), 31,
+            f"__all__ must have 31 symbols, got {len(symbols)}: {symbols}",
+        )

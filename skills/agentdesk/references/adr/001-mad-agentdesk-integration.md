@@ -3881,6 +3881,9 @@ __all__ = [
     "TransitionRequest",
     "TransitionPayload",
     "TransitionResult",
+    "TransitionEventContext",
+    "GuardResult",
+    "GuardInput",
     "SpecifyPayload",
     "DispatchPayload",
     "AcknowledgePayload",
@@ -4033,22 +4036,143 @@ class SupersededPayload:
 
 """TransitionPayload is a closed union; one variant per event_type."""
 
-type TransitionPayload = (
-    SpecifyPayload
-    | DispatchPayload
-    | AcknowledgePayload
-    | DeliverySubmittedPayload
-    | DeliveryAcceptedPayload
-    | DeliveryReturnedPayload
-    | RequeuePayload
-    | IntegrationPayload
-    | BlockedPayload
-    | BlockerResolvedPayload
-    | BlockerRescopedPayload
-    | BlockerCancelledPayload
-    | CancelledPayload
-    | SupersededPayload
-)
+TransitionPayload = Union[
+    SpecifyPayload,
+    DispatchPayload,
+    AcknowledgePayload,
+    DeliverySubmittedPayload,
+    DeliveryAcceptedPayload,
+    DeliveryReturnedPayload,
+    RequeuePayload,
+    IntegrationPayload,
+    BlockedPayload,
+    BlockerResolvedPayload,
+    BlockerRescopedPayload,
+    BlockerCancelledPayload,
+    CancelledPayload,
+    SupersededPayload,
+]
+
+
+@dataclass(frozen=True, slots=True)
+class GuardInput:
+    """Immutable single key-value pair for a guard input set.
+
+    ``GuardResult.inputs`` is ``tuple[GuardInput, ...]`` — key order
+    is caller-preserved.  Duplicate keys are rejected at construction.
+    """
+    key: str                             # non-empty, no leading/trailing whitespace
+    value: str | int | bool | None       # legal YAML scalar only
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key:
+            raise TypeError(
+                f"key must be a non-empty str, got {type(self.key).__name__}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class GuardResult:
+    """Immutable guard-check result for a state‑event ``guard_results`` list.
+
+    Constructed from validated fields — fail-closed on illegal input.
+    """
+    guard: str                           # non-empty guard identifier
+    inputs: tuple[GuardInput, ...]       # caller-preserved order; no duplicate keys
+    result: str                          # passed | failed | skipped | not_applicable
+    checked_at: str                      # RFC 3339 UTC
+    evidence_ref: str                    # non-empty evidence reference
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.guard, str) or not self.guard:
+            raise TypeError(
+                f"guard must be a non-empty str, got {type(self.guard).__name__}"
+            )
+        if not isinstance(self.inputs, tuple):
+            raise TypeError(
+                f"inputs must be a tuple, got {type(self.inputs).__name__}"
+            )
+        for i, item in enumerate(self.inputs):
+            if not isinstance(item, GuardInput):
+                raise TypeError(
+                    f"inputs[{i}] must be GuardInput, got {type(item).__name__}"
+                )
+        keys: list[str] = []
+        for inp in self.inputs:
+            keys.append(inp.key)
+        if len(keys) != len(set(keys)):
+            raise ValueError("guard inputs must not contain duplicate keys")
+        if self.result not in {"passed", "failed", "skipped", "not_applicable"}:
+            raise ValueError(
+                f"result must be passed|failed|skipped|not_applicable, "
+                f"got {type(self.result).__name__}"
+            )
+        if not isinstance(self.checked_at, str) or not self.checked_at:
+            raise TypeError(
+                f"checked_at must be non-empty RFC 3339 UTC str"
+            )
+        if not isinstance(self.evidence_ref, str) or not self.evidence_ref:
+            raise TypeError(
+                f"evidence_ref must be a non-empty str, "
+                f"got {type(self.evidence_ref).__name__}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class TransitionEventContext:
+    """Immutable event-context data supplied by the caller.
+
+    Provides ``source_message_id``, ``evidence_refs``, and
+    ``guard_results`` — the three fields that every
+    ``agentdesk.state-event/v2`` must carry but that are independent
+    of the transition payload.
+    """
+    source_message_id: str | None        # callback_id for callback-triggered transitions; None otherwise
+    evidence_refs: tuple[str, ...]       # caller-preserved order; no duplicates; each non-empty
+    guard_results: tuple[GuardResult, ...]  # caller-preserved order; may be empty
+
+    def __post_init__(self) -> None:
+        # source_message_id
+        if self.source_message_id is not None:
+            if not isinstance(self.source_message_id, str) or not self.source_message_id:
+                raise TypeError(
+                    "source_message_id must be a non-empty str or None, "
+                    f"got {type(self.source_message_id).__name__}"
+                )
+            if "\0" in self.source_message_id or "\r" in self.source_message_id or "\n" in self.source_message_id:
+                raise ValueError(
+                    "source_message_id must not contain NUL, CR, or LF"
+                )
+        # evidence_refs
+        if not isinstance(self.evidence_refs, tuple):
+            raise TypeError(
+                f"evidence_refs must be a tuple, got {type(self.evidence_refs).__name__}"
+            )
+        seen_refs: set[str] = set()
+        for i, ref in enumerate(self.evidence_refs):
+            if not isinstance(ref, str) or not ref:
+                raise TypeError(
+                    f"evidence_refs[{i}] must be a non-empty str"
+                )
+            if ref != ref.strip():
+                raise ValueError(
+                    f"evidence_refs[{i}] must not have leading or trailing whitespace"
+                )
+            if ref in seen_refs:
+                raise ValueError(
+                    f"evidence_refs must not contain duplicates"
+                )
+            seen_refs.add(ref)
+        # guard_results
+        if not isinstance(self.guard_results, tuple):
+            raise TypeError(
+                f"guard_results must be a tuple, got {type(self.guard_results).__name__}"
+            )
+        for i, item in enumerate(self.guard_results):
+            if not isinstance(item, GuardResult):
+                raise TypeError(
+                    f"guard_results[{i}] must be GuardResult, got {type(item).__name__}"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -4065,6 +4189,7 @@ class TransitionRequest:
     event_id: str                        # EVT-*; caller-generated, globally unique
     event_type: str                      # from frozen event-type names
     payload: TransitionPayload
+    event_context: TransitionEventContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -4128,9 +4253,53 @@ class ControlPlaneTransitionService:
    ``canonical_worktree``, or environment variable values.
 7. An ``event_type`` / payload variant mismatch is a
    ``TransitionValidationError`` (fail-closed, zero writes).
+8. ``TransitionEventContext`` is required in every ``TransitionRequest``.
+   The service does not supply defaults for ``source_message_id``,
+   ``evidence_refs``, or ``guard_results`` — the caller must explicitly
+   provide them.
+9. ``GuardInput`` values are restricted to YAML-friendly scalar types
+   (``str | int | bool | None``).  Nested structures, ``float``, and
+   arbitrary Python objects are rejected at construction.
+10. ``GuardResult`` is deeply immutable — ``inputs``,
+    ``evidence_refs`` (on ``TransitionEventContext``), and
+    ``guard_results`` are all ``tuple``, never ``list``/``dict``/``set``.
+    Source mutations after construction have no effect.
 
 ---
-#### 2.14.12 Exception Hierarchy — Frozen
+#### 2.14.12 Event Serialisation Source Table
+
+Every field in a generated ``agentdesk.state-event/v2`` file has a
+single, documented origin:
+
+| Event field | Source | Notes |
+|-------------|--------|-------|
+| ``schema_version`` | Service constant | ``"agentdesk.state-event/v2"`` |
+| ``event_id`` | ``TransitionRequest.event_id`` | Validated (``EVT-*``, unique) |
+| ``event_type`` | ``TransitionRequest.event_type`` | Validated against frozen names |
+| ``task_id`` | ``TransitionCAS.task_id`` | Validated against ``tasks.yaml`` |
+| ``revision`` | ``TransitionCAS.expected_revision`` (CAS-verified) | Current value from ``tasks.yaml`` after CAS |
+| ``attempt`` | ``DispatchCAS.expected_attempt`` (CAS-verified) | Current value from ``tasks.yaml``; ``null`` when no active dispatch |
+| ``dispatch_id`` | ``DispatchCAS.expected_dispatch_id`` (CAS-verified) | Current value; ``null`` when no active dispatch |
+| ``from_state`` | ``TransitionCAS.expected_state`` (CAS-verified) | Current value from ``tasks.yaml`` after CAS |
+| ``to_state`` | ``TransitionRequest.payload`` → derived by transition type | From §2.14.8 transition table |
+| ``source_message_id`` | ``TransitionEventContext.source_message_id`` | ``callback_id`` or ``null`` |
+| ``evidence_refs`` | ``TransitionEventContext.evidence_refs`` | Serialised as YAML list |
+| ``guard_results`` | ``TransitionEventContext.guard_results`` | Serialised as YAML list of mappings |
+| ``occurred_at`` | ``apply_transition(... now=...)`` | Service-formatted RFC 3339 UTC |
+| ``lease_epoch`` | ``WorkerSlotLease.lease_epoch`` (worker-lifecycle) or ``pm_control.lease_epoch`` (PM-only) | Current value after CAS |
+| ``actor_role_id`` | Service constant | ``"PM"`` for all control-plane events |
+| ``payload_digest`` (TASK_DISPATCHED only) | Service-computed | ``sha256:`` + SHA-256 of the final outbox file bytes |
+| ``accepted_commit`` (CHANGE_INTEGRATED, non-ancestor) | ``IntegrationPayload.integrated_commit`` (caller) | Required when ``accepted_commit`` is not ancestor of ``integrated_commit`` |
+| ``integrated_commit`` (CHANGE_INTEGRATED, non-ancestor) | ``IntegrationPayload.integrated_commit`` (caller) | Same as above |
+| ``equivalence_method`` (CHANGE_INTEGRATED, non-ancestor) | ``IntegrationPayload.equivalence_method`` (caller) | ``patch_id`` / ``tree`` / ``approved_mapping`` |
+| ``equivalence_result`` (CHANGE_INTEGRATED, non-ancestor) | Service constant | ``"passed"`` |
+| ``equivalence_evidence_ref`` (CHANGE_INTEGRATED, non-ancestor) | ``IntegrationPayload.equivalence_evidence_ref`` (caller) | Immutable check output ref |
+
+No event field is generated without a documented source.  No field
+appears in the output without an input channel to supply it.
+
+---
+#### 2.14.14 Exception Hierarchy — Frozen
 
 ```text
 ControlPlaneTransitionError                  (Exception)
@@ -4171,7 +4340,7 @@ The caller must run the validator and recovery procedures.
   service boundary untouched.
 
 ---
-#### 2.14.13 Acceptance Boundary
+#### 2.14.15 Acceptance Boundary
 
 The service may write acceptance records and update
 ``accepted_commit`` / ``acceptance_path`` / ``delivery_state`` when
