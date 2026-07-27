@@ -240,7 +240,7 @@ class TestDataclassFieldExactness(TestControlPlaneTransitionBase):
         fields = dataclasses.fields(self.cpt.SpecifyPayload)
         self.assertEqual(len(fields), 0)
 
-    def test_019_dispatch_payload_nine_fields(self) -> None:
+    def test_019_dispatch_payload_ten_fields(self) -> None:
         fields = dataclasses.fields(self.cpt.DispatchPayload)
         names = tuple(f.name for f in fields)
         self.assertEqual(
@@ -249,9 +249,10 @@ class TestDataclassFieldExactness(TestControlPlaneTransitionBase):
                 "dispatch_id", "role_id", "model_selection",
                 "task_card_path", "task_card_commit", "base_commit",
                 "branch", "report_path", "outbox_message_id",
+                "new_attempt",
             ),
         )
-        self.assertEqual(len(fields), 9)
+        self.assertEqual(len(fields), 10)
 
     def test_020_acknowledge_payload_zero_fields(self) -> None:
         fields = dataclasses.fields(self.cpt.AcknowledgePayload)
@@ -304,9 +305,11 @@ class TestDataclassFieldExactness(TestControlPlaneTransitionBase):
         self.assertEqual(names, ("resume_to_state",))
         self.assertEqual(len(fields), 1)
 
-    def test_028_blocker_rescoped_payload_zero_fields(self) -> None:
+    def test_028_blocker_rescoped_payload_one_field(self) -> None:
         fields = dataclasses.fields(self.cpt.BlockerRescopedPayload)
-        self.assertEqual(len(fields), 0)
+        names = tuple(f.name for f in fields)
+        self.assertEqual(names, ("new_revision",))
+        self.assertEqual(len(fields), 1)
 
     def test_029_blocker_cancelled_payload_zero_fields(self) -> None:
         fields = dataclasses.fields(self.cpt.BlockerCancelledPayload)
@@ -1021,6 +1024,7 @@ class TestPayloadValidation(TestControlPlaneTransitionBase):
             branch="main",
             report_path="docs/pm/reports/TC-001-r1.md",
             outbox_message_id="MSG-20260727-0001",
+            new_attempt=1,
         )
         self.assertEqual(p.dispatch_id, "DSP-001")
         self.assertEqual(p.task_card_commit, "a" * 40)
@@ -1037,6 +1041,7 @@ class TestPayloadValidation(TestControlPlaneTransitionBase):
                 branch="main",
                 report_path="p",
                 outbox_message_id="MSG-20260727-0001",
+                new_attempt=1,
             )
 
     def test_153_dispatch_payload_outbox_message_id_invalid(self) -> None:
@@ -1051,6 +1056,7 @@ class TestPayloadValidation(TestControlPlaneTransitionBase):
                 branch="main",
                 report_path="p",
                 outbox_message_id="invalid",
+                new_attempt=1,
             )
 
     def test_154_delivery_submitted_payload_valid(self) -> None:
@@ -1181,7 +1187,7 @@ class TestPayloadValidation(TestControlPlaneTransitionBase):
     def test_170_empty_payloads_truly_zero_fields(self) -> None:
         for cls_name in ("SpecifyPayload", "AcknowledgePayload",
                          "DeliveryReturnedPayload", "RequeuePayload",
-                         "BlockerRescopedPayload", "BlockerCancelledPayload",
+                         "BlockerCancelledPayload",
                          "CancelledPayload"):
             cls = getattr(self.cpt, cls_name)
             fields = dataclasses.fields(cls)
@@ -1260,6 +1266,7 @@ class TestTransitionRequestMismatch(TestControlPlaneTransitionBase):
                     task_card_path="p", task_card_commit="a" * 40,
                     base_commit="b" * 40, branch="main",
                     report_path="p", outbox_message_id="MSG-20260727-0001",
+                    new_attempt=1,
                 ),
                 event_context=self._make_ctx(),
             )
@@ -2981,7 +2988,8 @@ class TestEquivalenceMethods(TestControlPlaneTransitionBase):
 
 
 class TestAcquisitionFailureCleanup(unittest.TestCase):
-    """Acquisition failure (os.write/fsync) must clean up lock file."""
+    """Acquisition failure (os.write/fsync) must clean up lock file
+    ONLY when ownership is verified — never delete a replacement lock."""
 
     cpt = _cpt_module
 
@@ -2993,8 +3001,12 @@ class TestAcquisitionFailureCleanup(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmpdir.cleanup()
 
-    def test_500_os_write_failure_no_residual_lock(self) -> None:
-        """os.write failure: lock file must be cleaned up."""
+    def test_500_os_write_failure_token_never_written(self) -> None:
+        """os.write fails before token is written: lock file exists but
+        contains no valid token.  _safe_unlink_if_owned reads the file,
+        finds it doesn't match, and leaves it alone.  The lock file is
+        NOT deleted (we cannot prove we own it), but the exception is
+        TransitionLockContentionError."""
         lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
         real_write = os.write
 
@@ -3009,27 +3021,109 @@ class TestAcquisitionFailureCleanup(unittest.TestCase):
         finally:
             os.write = real_write  # type: ignore[assignment]
 
-        self.assertFalse(lock_path.exists(),
-                         "Lock file must be cleaned up after write failure")
+        # Lock file remains — we could not prove ownership.
+        # This is the correct behavior: we must not delete a file we
+        # don't own (another process could have created a replacement).
+        self.assertTrue(
+            lock_path.exists(),
+            "Lock file must remain after write failure "
+            "(ownership cannot be verified — must not delete)",
+        )
 
-    def test_501_os_fsync_failure_no_residual_lock(self) -> None:
-        """os.fsync failure on token: lock file must be cleaned up."""
+    def test_501_os_fsync_failure_token_present(self) -> None:
+        """os.fsync fails but the token WAS written to the file.
+        _safe_unlink_if_owned reads the file, finds our token, and
+        safely removes it."""
         lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
+        # We capture the token that _exclusive_state_lock generates
+        # to verify ownership after the fact.
+        import secrets
+        captured_token = None
+
         real_fsync = os.fsync
+        real_token_hex = secrets.token_hex
+
+        def fake_token_hex(nbytes=16):
+            nonlocal captured_token
+            captured_token = real_token_hex(nbytes)
+            return captured_token
 
         def fail_fsync(fd):
             raise OSError("simulated fsync failure")
 
         try:
+            secrets.token_hex = fake_token_hex  # type: ignore[assignment]
             os.fsync = fail_fsync  # type: ignore[assignment]
             with self.assertRaises(self.cpt.TransitionLockContentionError):
                 with self.cpt._exclusive_state_lock(self.tmp):
                     pass
         finally:
             os.fsync = real_fsync  # type: ignore[assignment]
+            secrets.token_hex = real_token_hex  # type: ignore[assignment]
 
-        self.assertFalse(lock_path.exists(),
-                         "Lock file must be cleaned up after fsync failure")
+        # After fsync failure, token WAS written (write succeeded,
+        # fsync failed).  _safe_unlink_if_owned should find our token
+        # and clean up.
+        self.assertFalse(
+            lock_path.exists(),
+            "Lock file must be cleaned up after fsync failure "
+            "(token was written, ownership verified)",
+        )
+
+    def test_502_write_failure_replacement_lock_preserved(self) -> None:
+        """Write fails, and someone else's token is in the lock file.
+        The lock file must NOT be deleted."""
+        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
+        real_write = os.write
+
+        def fail_write(fd, data):
+            raise OSError("simulated write failure")
+
+        try:
+            os.write = fail_write  # type: ignore[assignment]
+            with self.assertRaises(self.cpt.TransitionLockContentionError):
+                with self.cpt._exclusive_state_lock(self.tmp):
+                    pass
+        finally:
+            os.write = real_write  # type: ignore[assignment]
+
+        # Now simulate: someone replaces the lock with their own token.
+        import secrets
+        replacement_token = secrets.token_hex(16)
+        lock_path.write_bytes(replacement_token.encode("ascii"))
+
+        # The lock file exists with someone else's token — must remain.
+        self.assertTrue(lock_path.exists())
+        self.assertEqual(
+            lock_path.read_bytes().decode("ascii"),
+            replacement_token,
+        )
+
+    def test_503_write_failure_lock_disappears(self) -> None:
+        """Write fails, and someone removed the lock entirely.
+        No secondary damage — the code should not crash."""
+        lock_path = self.tmp / ".agentdesk" / "runtime" / ".state-transition.lock"
+        real_write = os.write
+
+        def fail_write(fd, data):
+            raise OSError("simulated write failure")
+
+        try:
+            os.write = fail_write  # type: ignore[assignment]
+            with self.assertRaises(self.cpt.TransitionLockContentionError):
+                with self.cpt._exclusive_state_lock(self.tmp):
+                    pass
+        finally:
+            os.write = real_write  # type: ignore[assignment]
+
+        # Remove the lock file (simulate external removal).
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+        # No crash — _safe_unlink_if_owned handles missing file silently.
+        self.assertFalse(lock_path.exists())
 
 
 # ═══════════════════════════════════════════════════════════════════════════

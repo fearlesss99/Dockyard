@@ -460,6 +460,7 @@ class DispatchPayload:
     branch: str
     report_path: str
     outbox_message_id: str
+    new_attempt: int
 
     def __post_init__(self) -> None:
         _validate_safe_str(self.dispatch_id, "dispatch_id")
@@ -481,6 +482,10 @@ class DispatchPayload:
                 f"outbox_message_id must match MSG-* pattern, "
                 f"got {_safe_type_name(self.outbox_message_id)}"
             )
+        _validate_non_bool_int(self.new_attempt, "new_attempt", min_val=1)
+        # new_attempt must equal the CAS-expected attempt + 1.
+        # Caller provides the target value; the service validates it
+        # against the current ledger during apply_transition().
 
 
 @dataclass(frozen=True, slots=True)
@@ -622,8 +627,13 @@ class BlockerResolvedPayload:
 class BlockerRescopedPayload:
     """Payload for blocked → draft (BLOCKER_RESCOPED)."""
 
-    # No extra fields beyond common event context.
-    pass
+    new_revision: int
+
+    def __post_init__(self) -> None:
+        _validate_non_bool_int(self.new_revision, "new_revision", min_val=1)
+        # new_revision must equal expected_revision + 1.
+        # Caller provides the target value; the service validates it
+        # against the current ledger during apply_transition().
 
 
 @dataclass(frozen=True, slots=True)
@@ -993,6 +1003,73 @@ class TransitionWriteError(ControlPlaneTransitionError):
 # ── state lock infrastructure ──────────────────────────────────────────────
 
 
+def _verify_lock_ownership_and_unlink(
+    lock_path: Path,
+    token: str,
+) -> str | None:
+    """Verify *lock_path* contains *token* and remove it.
+
+    Returns ``None`` on success, or a safe error string describing the
+    failure.  The lock file is **only** deleted when the stored bytes
+    exactly match *token* encoded as ASCII — no ``.strip()``, no
+    whitespace normalisation, no fallback to mtime.
+
+    Rules:
+    * File missing → error.
+    * File unreadable → error.
+    * Content not valid ASCII → error.
+    * Content != token → error (lock is NOT deleted).
+    * ``unlink()`` succeeds → ``None``.
+    * ``unlink()`` ``FileNotFoundError`` → error (someone else removed it).
+    * ``unlink()`` other ``OSError`` → error.
+    """
+    try:
+        stored_bytes = lock_path.read_bytes()
+    except FileNotFoundError:
+        return "control-plane state lock file disappeared while held"
+    except OSError:
+        return "control-plane state lock file is unreadable while held"
+
+    try:
+        stored = stored_bytes.decode("ascii")
+    except (ValueError, UnicodeDecodeError):
+        return "control-plane state lock file token is corrupted"
+
+    if stored != token:
+        # Token mismatch — do NOT delete.
+        return "control-plane state lock file token mismatch"
+
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        return "control-plane state lock file disappeared during release"
+    except OSError:
+        return "control-plane state lock file could not be removed"
+
+    return None
+
+
+def _safe_unlink_if_owned(lock_path: Path, token: str) -> None:
+    """Best-effort cleanup: remove *lock_path* only if it still contains
+    *token*.  Silently ignores all errors — used only during acquisition
+    failure cleanup where we must not obscure the original exception.
+    """
+    try:
+        stored_bytes = lock_path.read_bytes()
+    except (FileNotFoundError, OSError):
+        return
+    try:
+        stored = stored_bytes.decode("ascii")
+    except (ValueError, UnicodeDecodeError):
+        return
+    if stored != token:
+        return
+    try:
+        lock_path.unlink()
+    except OSError:
+        pass
+
+
 @contextmanager
 def _exclusive_state_lock(
     project_root: Path,
@@ -1034,10 +1111,10 @@ def _exclusive_state_lock(
             os.close(fd)
         except OSError:
             pass
-        try:
-            lock_path.unlink()
-        except OSError:
-            pass
+        # Only remove if we still own the path — never delete a
+        # replacement lock that may have been created by another
+        # process between our open and the write failure.
+        _safe_unlink_if_owned(lock_path, token)
         raise TransitionLockContentionError(
             "failed to write control-plane state lock token"
         ) from None
@@ -1052,39 +1129,7 @@ def _exclusive_state_lock(
         body_exception = _exc
     finally:
         # ── release (with token verification) ─────────────────────────
-        release_error: str | None = None
-        try:
-            stored_bytes = lock_path.read_bytes()
-        except FileNotFoundError:
-            release_error = (
-                "control-plane state lock file disappeared while held"
-            )
-        except OSError:
-            release_error = (
-                "control-plane state lock file is unreadable while held"
-            )
-        else:
-            try:
-                stored = stored_bytes.decode("ascii")
-            except (ValueError, UnicodeDecodeError):
-                release_error = (
-                    "control-plane state lock file token is corrupted"
-                )
-            else:
-                if stored == token:
-                    try:
-                        lock_path.unlink()
-                    except FileNotFoundError:
-                        pass
-                    except OSError:
-                        release_error = (
-                            "control-plane state lock file could not"
-                            " be removed"
-                        )
-                else:
-                    release_error = (
-                        "control-plane state lock file token mismatch"
-                    )
+        release_error = _verify_lock_ownership_and_unlink(lock_path, token)
 
         if body_exception is not None:
             raise body_exception

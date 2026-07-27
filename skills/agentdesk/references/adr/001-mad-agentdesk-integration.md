@@ -3778,11 +3778,16 @@ All state names are taken from the frozen ``STATES`` tuple in
 
 **Revision increment**: ``revision`` is bumped by the caller — the
 service never increments it.  The service validates that the
-caller-supplied ``expected_revision`` matches the current value.
+caller-supplied ``expected_revision`` matches the current value
+and that ``new_revision`` (in ``BlockerRescopedPayload``) equals
+``expected_revision + 1``.
 
 **Attempt increment**: ``attempt`` is set by the caller for each new
 dispatch — the service never increments it.  The service validates that
-the dispatch CAS ``expected_attempt`` matches.
+the dispatch CAS ``expected_attempt`` matches the current value and
+that ``new_attempt`` (in ``DispatchPayload``) provides the target
+attempt number.  The service never derives ``new_attempt`` from
+``expected_attempt + 1`` in place of explicit caller input.
 
 ---
 #### 2.14.9 Event File Rules — Frozen
@@ -3945,6 +3950,7 @@ class DispatchPayload:
     branch: str
     report_path: str
     outbox_message_id: str               # MSG-*
+    new_attempt: int                     # target attempt number (>= 1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -4010,8 +4016,7 @@ class BlockerResolvedPayload:
 @dataclass(frozen=True, slots=True)
 class BlockerRescopedPayload:
     """Payload for blocked → draft (BLOCKER_RESCOPED)."""
-    # No extra fields beyond common event context.
-    pass
+    new_revision: int                    # target revision (>= expected_revision + 1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -4278,8 +4283,8 @@ single, documented origin:
 | ``event_type`` | ``TransitionRequest.event_type`` | Validated against frozen names |
 | ``task_id`` | ``TransitionCAS.task_id`` | Validated against ``tasks.yaml`` |
 | ``revision`` | ``TransitionCAS.expected_revision`` (CAS-verified) | Current value from ``tasks.yaml`` after CAS |
-| ``attempt`` | ``DispatchCAS.expected_attempt`` (CAS-verified) | Current value from ``tasks.yaml``; ``null`` when no active dispatch |
-| ``dispatch_id`` | ``DispatchCAS.expected_dispatch_id`` (CAS-verified) | Current value; ``null`` when no active dispatch |
+| ``attempt`` | ``DispatchPayload.new_attempt`` (for ``TASK_DISPATCHED``) or ``DispatchCAS.expected_attempt`` (CAS-verified for non-dispatch transitions) | Caller-provided target value for new dispatches; current value from ``tasks.yaml`` for non-dispatch transitions; ``null`` when no active dispatch |
+| ``dispatch_id`` | ``DispatchPayload.dispatch_id`` (for ``TASK_DISPATCHED``) or ``DispatchCAS.expected_dispatch_id`` (CAS-verified) | Caller-provided for new dispatches; current value otherwise; ``null`` when no active dispatch |
 | ``from_state`` | ``TransitionCAS.expected_state`` (CAS-verified) | Current value from ``tasks.yaml`` after CAS |
 | ``to_state`` | ``TransitionRequest.payload`` → derived by transition type | From §2.14.8 transition table |
 | ``source_message_id`` | ``TransitionEventContext.source_message_id`` | ``callback_id`` or ``null`` |
@@ -4340,7 +4345,60 @@ The caller must run the validator and recovery procedures.
   service boundary untouched.
 
 ---
-#### 2.14.15 Acceptance Boundary
+#### 2.14.15 Acceptance Record Field Source Table
+
+Every field in a generated ``agentdesk.acceptance/v2`` record file has a
+single, documented origin.  The service constructs the frontmatter from
+the following sources — no field is synthesised without an input channel.
+
+| Acceptance field | Source | Notes |
+|------------------|--------|-------|
+| ``schema_version`` | Service constant | ``"agentdesk.acceptance/v2"`` |
+| ``task_id`` | ``TransitionCAS.task_id`` | CAS-verified |
+| ``revision`` | ``TransitionCAS.expected_revision`` | CAS-verified current value from ``tasks.yaml`` |
+| ``decision`` | Service constant | ``"accepted"`` for ``DELIVERY_ACCEPTED`` transitions |
+| ``reviewed_dispatch_id`` | ``DispatchCAS.expected_dispatch_id`` | CAS-verified; the dispatch being accepted |
+| ``attempt`` | ``DispatchCAS.expected_attempt`` | CAS-verified current attempt from ``tasks.yaml`` |
+| ``type`` | Derived from task ledger | ``task_type`` field from ``tasks.yaml`` |
+| ``role_id`` | Service constant or derived | The role that executed the accepted dispatch |
+| ``reviewer_role_id`` | Service constant | ``"PM"`` for control-plane acceptances |
+| ``reviewer_id`` | ``pm_control.holder_id`` | Current PM holder from ``tasks.yaml`` |
+| ``lease_epoch`` | ``pm_control.lease_epoch`` (PM-only) or ``WorkerSlotLease.lease_epoch`` | From the CAS epoch source |
+| ``base_commit`` | ``tasks.yaml`` task card ``base_commit`` | From the task card referenced by the dispatch |
+| ``implementation_commit`` | ``DeliveryAcceptedPayload.accepted_commit`` | Caller-provided; must also equal ``implementation_commit`` |
+| ``report_commit`` | ``tasks.yaml`` dispatch ``report_commit`` | From the current dispatch ledger |
+| ``accepted_commit`` | ``DeliveryAcceptedPayload.accepted_commit`` | Caller-provided; frozen as ``accepted_commit`` in ``tasks.yaml`` |
+| ``owner_approval`` | ``TransitionEventContext`` | Passed through from caller context; includes ``gate`` and ``approval_ids`` |
+| ``evidence_refs`` | ``TransitionEventContext.evidence_refs`` | Serialised as YAML list |
+| ``residual_risks`` | ``TransitionEventContext`` or ``DeliveryAcceptedPayload`` | Caller-supplied list of residual risk strings |
+| ``created_at`` | ``apply_transition(... now=...)`` | Service-formatted RFC 3339 UTC |
+| Body title | Service template | ``# {task_id} · Acceptance · Attempt {attempt} · Review {review_n}`` |
+| Body decision text | Service constant | ``accepted`` |
+| Body scope review checklist | Service template | Fixed checklist from acceptance template |
+| Body criteria and checks | ``DeliveryAcceptedPayload`` or call-site context | PM-supplied per-criterion evidence |
+| Body rationale | ``DeliveryAcceptedPayload`` or call-site context | PM-supplied justification text |
+
+**Required ``DeliveryAcceptedPayload`` fields for acceptance record
+construction**:
+
+All fields in the current ``DeliveryAcceptedPayload`` are already
+present (``accepted_commit``, ``acceptance_path``).  Two additional
+fields are required to fully populate the acceptance record without
+deriving values from the CAS alone:
+
+| Field | Type | Rule |
+|-------|------|------|
+| ``residual_risks`` | ``tuple[str, ...]`` | May be empty; each entry non-empty, no leading/trailing whitespace |
+| ``criteria_evidence`` | ``tuple[str, ...]`` | May be empty; each entry is a PM-supplied statement |
+| ``rationale`` | ``str`` | Non-empty; the PM's justification for acceptance |
+
+These fields must be added to ``DeliveryAcceptedPayload`` in a future
+task card (TC-13.11c or a prerequisite TC-13.11b.2) to finalise the
+acceptance contract.  The acceptance record **cannot** be written until
+all fields have a documented, typed input channel.
+
+---
+#### 2.14.16 Acceptance Boundary
 
 The service may write acceptance records and update
 ``accepted_commit`` / ``acceptance_path`` / ``delivery_state`` when
