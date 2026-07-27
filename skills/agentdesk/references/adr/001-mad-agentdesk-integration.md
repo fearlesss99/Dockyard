@@ -27,7 +27,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 14 | AgentDesk WorkerAdapter — four-tier Worker execution orchestration | **Current** | TC-13.9b | Basic/Standard/Advanced/Expert; WorkerKind + TaskDifficulty as independent inputs; provider/model from bindings only; budget computed, not enforced; concurrency slots deferred to TC-13.10 |
 | 15 | AgentDesk WorkerSlotLease | **Current** | TC-13.10c | `agentdesk.worker-slot-lease/v1`; frozen contract §2.5; implemented by TC-13.10a (frozen contract), TC-13.10b (data model, store, atomic I/O), TC-13.10c (acquire/release/renew/hold fence) |
 | 16 | AgentDesk ControlPlaneTransitionService | **Current** | TC-13.11c | CAS-write tasks, immutable events, replayable outbox |
-| 17 | AgentDesk ApprovalGate | **Target** | TC-13.12c | TASK_APPROVAL with structured scope (dispatch/accept/integrate); runtime gate + ControlPlaneTransitionService integration implemented |
+| 17 | AgentDesk ApprovalGate | **Current** | TC-13.12d | TASK_APPROVAL with structured scope (dispatch/accept/integrate); runtime gate + ControlPlaneTransitionService integration + offline validator implemented |
 | 18 | AgentDesk EscalationService | **Target** | TC-13.13 | Difficulty escalation independent of rate-limit |
 | 19 | AgentDesk RateLimit service | **Target** | TC-13.14 | Provider rate-limit handling independent of escalation |
 | 20 | AgentDesk MadAuditGateway | **Target** | TC-13.16 | Subprocess invocation of `mad audit` with worktree validation |
@@ -4580,7 +4580,7 @@ intermediate "Current (contract frozen)" sub-status is permitted.
 
 ---
 
-### 2.15 ApprovalGate -- Frozen Contract (Target -- TC-13.12a)
+### 2.15 ApprovalGate -- Frozen Contract (Current — TC-13.12d)
 
 TC-13.12a freezes the **ApprovalGate contract** for structured task-action
 approval.  No production module is shipped under TC-13.12a -- the contract
@@ -5352,17 +5352,16 @@ TC-13.12b — typed models (ApprovalScope, ApprovalSubject,
             (write_grant, write_revoke), schema validation
 TC-13.12c — read-only runtime gate (ApprovalGate.check,
             ApprovalGate.require), ControlPlaneTransitionService
-            internal integration
-TC-13.12d — offline validator integration (validate_project.py),
-            replay, TOCTOU, concurrency hardening
+            internal integration, replay / TOCTOU / concurrency
+TC-13.12d — offline validator integration (validate_project.py)
 ```
 
 | Card | Depends on | Scope | Interface #17 status after completion |
 |------|-----------|-------|--------------------------------------|
 | TC-13.12a | TC-13.11c | This contract only | **Target** |
 | TC-13.12b | TC-13.12a | Data models, writer, schema validation | Target (implemented) |
-| TC-13.12c | TC-13.12b, TC-13.11 | Runtime gate + integration | Target |
-| TC-13.12d | TC-13.12c | Offline validator + replay hardening | Target → **Current** |
+| TC-13.12c | TC-13.12b, TC-13.11 | Runtime gate + integration | Target (implemented) |
+| TC-13.12d | TC-13.12c | Offline validator + replay hardening | **Current** |
 
 Interface #17 status must remain **Target** until TC-13.12d is complete
 and the production module and full test suite are committed.  No
@@ -5390,22 +5389,38 @@ TC-13.12a must **not** implement, freeze, or assume responsibility for:
 #### 2.15.20 Status
 
 * ADR Interface Status row #17 "AgentDesk ApprovalGate"
-  remains **Target**.
-* This section (§2.15) is the Frozen Contract for TC-13.12a.
+  is now **Current**.
+* This section (§2.15) is the Frozen Contract for TC-13.12a — now
+  fully implemented across TC-13.12b/c/d.
 * **TC-13.12b is implemented**: the production module
   ``skills/agentdesk/scripts/approval_gate.py`` exists and exports
   the frozen 15-symbol ``__all__``.  Five typed models
   (``ApprovalScope``, ``ApprovalSubject``, ``ApprovalCheckRequest``,
   ``ApprovalEvidence``, ``ApprovalCheckResult``), seven exception
   types, the private evidence store loader, ``write_grant()``, and
-  ``write_revoke()`` are all committed.  ``ApprovalGate`` is a
-  frozen/slots stub — ``check()`` and ``require()`` raise
-  ``NotImplementedError`` (pending TC-13.12c).
-* Interface #17 remains **Target**.
-* TC-13.12c (read-only runtime gate + ControlPlaneTransitionService
-  integration) and TC-13.12d (offline validator + replay hardening)
+  ``write_revoke()`` are all committed.
+* **TC-13.12c is implemented**: ``ApprovalGate.check()`` and
+  ``ApprovalGate.require()`` are fully functional read-only runtime
+  gates.  ``ControlPlaneTransitionService`` integration with
+  ``_exclusive_state_lock`` gating is complete.  The "stub" phase
+  is retired — neither ``check()`` nor ``require()`` raises
+  ``NotImplementedError``.
+* **TC-13.12d is implemented**: the offline ApprovalGate validator
+  is integrated into ``validate_project.py``.  It covers all 14 ADR
+  §2.15.16 responsibilities: exact schema, global uniqueness, scope
+  validation, subject-scope consistency, actor_role_id, lease_epoch,
+  timestamp integrity, expires_at ordering, grant-revoke relationship,
+  single-revoke-per-grant, active-grant conflict detection, orphan
+  evidence detection, snapshot-commit ancestry, and path safety.
+  Replay, TOCTOU, and concurrency coverage was confirmed by existing
+  TC-13.12c tests (no duplication needed).  The full test suite
+  ``tests/test_approval_gate_validator.py`` exists.
+* **Offline validator is integrated**: ``validate_project.validate()``
+  calls ``_validate_approval_evidence()`` after all tasks are indexed,
+  reporting through the existing ``Reporter``.
+* Interface #17 is **Current**.
+* TC-13.13 (EscalationService) and all subsequent Target interfaces
   remain **Target**.
-* TC-13.13 and all subsequent Target interfaces remain **Target**.
 
 ---
 

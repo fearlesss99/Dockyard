@@ -15,7 +15,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Optional
 
@@ -86,6 +86,41 @@ PAYLOAD_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 EVENT_ID_RE = re.compile(r"^EVT-.+")
 MESSAGE_ID_RE = re.compile(r"^MSG-.+")
 APPROVAL_ID_RE = re.compile(r"^APR-.+")
+SAFE_EVENT_ID_FILENAME_RE = re.compile(
+    r"^EVT-[A-Za-z0-9][-A-Za-z0-9._]*$"
+)
+_APPROVAL_SCHEMA_VERSION = "agentdesk.task-approval/v1"
+_VALID_APPROVAL_SCOPES = frozenset({"dispatch", "accept", "integrate"})
+_GRANT_ROOT_KEYS: frozenset[str] = frozenset({
+    "schema_version",
+    "record_type",
+    "approval_id",
+    "event_id",
+    "scope",
+    "task_id",
+    "revision",
+    "attempt",
+    "dispatch_id",
+    "accepted_commit",
+    "actor_role_id",
+    "lease_epoch",
+    "granted_at",
+    "expires_at",
+    "reason",
+    "snapshot_commit",
+})
+_REVOKE_ROOT_KEYS: frozenset[str] = frozenset({
+    "schema_version",
+    "record_type",
+    "approval_id",
+    "event_id",
+    "task_id",
+    "actor_role_id",
+    "lease_epoch",
+    "revoked_at",
+    "reason",
+    "snapshot_commit",
+})
 
 REQUIRED_FILES = (
     Path("AGENTS.md"),
@@ -4259,6 +4294,457 @@ def _validate_task(
         reporter.passed(f"validated task {task_label} ({state})")
 
 
+def _validate_approval_evidence(
+    project: Path,
+    task_ledger_index: dict[str, dict[str, Any]],
+    reporter: Reporter,
+) -> None:
+    """Validate agentdesk.task-approval/v1 evidence (ADR §2.15.16).
+
+    Scans ``docs/pm/approvals/*.yaml``, validates grant/revoke schema,
+    uniqueness, scope, subject consistency, timestamps, lease_epoch,
+    grant-revoke relationships, active-conflict detection, orphan
+    detection, snapshot ancestry, and path safety.
+
+    The validator reads evidence files but does not modify them, create
+    temporary files, acquire locks, or access the network.
+    """
+    approvals_dir = project / "docs" / "pm" / "approvals"
+    if not approvals_dir.is_dir():
+        return
+
+    # ── collect evidence files ──
+    evidence_files: list[Path] = []
+    try:
+        for entry in sorted(approvals_dir.iterdir()):
+            if entry.is_dir():
+                continue
+            if not entry.is_file():
+                continue
+            # Ignore non-YAML and README.md
+            if entry.suffix != ".yaml":
+                continue
+            if entry.name == "README.md":
+                continue
+            # Reject symlink / reparse point
+            if entry.is_symlink():
+                reporter.error(
+                    f"approval evidence must not be a symlink: "
+                    f"{entry.relative_to(project).as_posix()}"
+                )
+                continue
+            # Validate filename pattern
+            stem = entry.stem
+            if SAFE_EVENT_ID_FILENAME_RE.fullmatch(stem) is None:
+                # Non-EVT files are ignored silently
+                continue
+            evidence_files.append(entry)
+    except OSError as exc:
+        reporter.error(f"cannot scan approvals directory: {exc}")
+        return
+
+    if not evidence_files:
+        return
+
+    # Single validation-time clock reference — prevents boundary drift
+    validation_now = datetime.now(timezone.utc).replace(microsecond=0)
+
+    head_commit = _git_head_commit(project)
+
+    # ── parse all evidence records ──
+    grants: list[dict[str, Any]] = []
+    revokes: list[dict[str, Any]] = []
+    seen_approval_ids: dict[str, list[str]] = {}
+    seen_event_ids: dict[str, list[str]] = {}
+
+    for ev_path in evidence_files:
+        logical_path = ev_path.relative_to(project).as_posix()
+
+        # Read file
+        try:
+            raw = ev_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            reporter.error(f"cannot read approval evidence {logical_path}: {exc}")
+            continue
+        except UnicodeDecodeError:
+            reporter.error(
+                f"approval evidence is not valid UTF-8: {logical_path}"
+            )
+            continue
+
+        # Parse JSON-compatible YAML
+        value = _parse_json_compatible_object(
+            raw, f"approval evidence {logical_path}", reporter
+        )
+        if value is None:
+            continue
+
+        # Validate schema_version
+        schema_ver = value.get("schema_version")
+        if schema_ver != _APPROVAL_SCHEMA_VERSION:
+            reporter.error(
+                f"approval evidence {logical_path} schema_version must be "
+                f"{_APPROVAL_SCHEMA_VERSION!r}"
+            )
+            continue
+
+        # Validate record_type
+        record_type = value.get("record_type")
+        if record_type == "grant":
+            _require_exact_keys(
+                value,
+                _GRANT_ROOT_KEYS,
+                f"approval evidence {logical_path}",
+                reporter,
+            )
+            grants.append({"path": logical_path, "values": value, "raw": raw})
+        elif record_type == "revoke":
+            _require_exact_keys(
+                value,
+                _REVOKE_ROOT_KEYS,
+                f"approval evidence {logical_path}",
+                reporter,
+            )
+            revokes.append({"path": logical_path, "values": value, "raw": raw})
+        else:
+            reporter.error(
+                f"approval evidence {logical_path} record_type must be "
+                f"'grant' or 'revoke', got {record_type!r}"
+            )
+            continue
+
+        # Validate filename matches event_id
+        event_id = value.get("event_id")
+        stem = ev_path.stem
+        if not isinstance(event_id, str) or stem != event_id:
+            reporter.error(
+                f"approval evidence filename must be derived from event_id: "
+                f"{stem}.yaml != {event_id}.yaml"
+            )
+
+        # Validate event_id safe format
+        if not isinstance(event_id, str) or EVENT_ID_RE.fullmatch(event_id) is None:
+            reporter.error(
+                f"approval evidence {logical_path} event_id must match EVT-* pattern"
+            )
+
+        # Track uniqueness
+        if isinstance(event_id, str):
+            seen_event_ids.setdefault(event_id, []).append(logical_path)
+        approval_id = value.get("approval_id")
+        if isinstance(approval_id, str):
+            seen_approval_ids.setdefault(approval_id, []).append(logical_path)
+
+    # ── check global uniqueness ──
+    # approval_id uniqueness: a grant and its revoke share the same
+    # approval_id (that's the relationship).  Multiple grants with the
+    # same approval_id are the real error.
+    # Filter to only count grant-type records for approval_id uniqueness.
+    grant_approval_ids: dict[str, list[str]] = {}
+    for grant in grants:
+        aid = grant["values"].get("approval_id")
+        if isinstance(aid, str):
+            grant_approval_ids.setdefault(aid, []).append(grant["path"])
+    for approval_id, paths_list in grant_approval_ids.items():
+        if len(paths_list) > 1:
+            reporter.error(
+                f"approval_id {approval_id!r} is used by multiple grants: "
+                f"{', '.join(paths_list)}"
+            )
+
+    for event_id, paths in seen_event_ids.items():
+        if len(paths) > 1:
+            reporter.error(
+                f"event_id {event_id!r} is not unique in "
+                f"docs/pm/approvals/: {', '.join(paths)}"
+            )
+
+    # ── validate each grant ──
+    validated_grants: list[dict[str, Any]] = []
+    for grant in grants:
+        values = grant["values"]
+        path = grant["path"]
+        ctx = f"approval grant {path}"
+
+        # scope validation
+        scope = values.get("scope")
+        if not isinstance(scope, str) or scope not in _VALID_APPROVAL_SCOPES:
+            reporter.error(
+                f"{ctx} scope must be one of: "
+                f"{', '.join(sorted(_VALID_APPROVAL_SCOPES))}"
+            )
+            continue
+
+        # subject validation
+        task_id = values.get("task_id")
+        revision = values.get("revision")
+        attempt = values.get("attempt")
+        dispatch_id = values.get("dispatch_id")
+        accepted_commit = values.get("accepted_commit")
+
+        if not isinstance(task_id, str) or TASK_ID_RE.fullmatch(task_id) is None:
+            reporter.error(
+                f"{ctx} task_id must match TC-NNN pattern"
+            )
+
+        if not _is_int(revision) or revision < 1:
+            reporter.error(
+                f"{ctx} revision must be a non-bool integer >= 1"
+            )
+
+        if not _is_int(attempt) or attempt < 1:
+            reporter.error(
+                f"{ctx} attempt must be a non-bool integer >= 1"
+            )
+
+        if not _nonempty_string(dispatch_id):
+            reporter.error(f"{ctx} dispatch_id must be a non-empty string")
+
+        # scope-specific subject rules
+        if scope in ("dispatch", "accept"):
+            if accepted_commit is not None:
+                reporter.error(
+                    f"{ctx} accepted_commit must be null for scope={scope!r}"
+                )
+        elif scope == "integrate":
+            if not isinstance(accepted_commit, str) or len(accepted_commit) != 40 or not all(c in "0123456789abcdef" for c in accepted_commit):
+                reporter.error(
+                    f"{ctx} accepted_commit must be a 40-char lowercase hex SHA "
+                    f"for scope=integrate"
+                )
+
+        # actor_role_id
+        actor = values.get("actor_role_id")
+        if actor != "PM":
+            reporter.error(f"{ctx} actor_role_id must be 'PM'")
+
+        # lease_epoch
+        lease_epoch = values.get("lease_epoch")
+        if not _is_int(lease_epoch) or lease_epoch < 1:
+            reporter.error(
+                f"{ctx} lease_epoch must be a non-bool integer >= 1"
+            )
+
+        # timestamps
+        granted_at = values.get("granted_at")
+        parsed_granted = _parse_rfc3339_utc(granted_at)
+        if parsed_granted is None:
+            reporter.error(f"{ctx} granted_at must be a UTC RFC3339 timestamp")
+
+        expires_at = values.get("expires_at")
+        parsed_expires = None
+        if expires_at is not None:
+            parsed_expires = _parse_rfc3339_utc(expires_at)
+            if parsed_expires is None:
+                reporter.error(
+                    f"{ctx} expires_at must be a UTC RFC3339 timestamp or null"
+                )
+            elif parsed_granted is not None and parsed_expires <= parsed_granted:
+                reporter.error(
+                    f"{ctx} expires_at must be strictly after granted_at"
+                )
+
+        # reason
+        reason = values.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            reporter.error(f"{ctx} reason must be a non-empty string")
+
+        # snapshot_commit
+        snapshot = values.get("snapshot_commit")
+        if not isinstance(snapshot, str) or len(snapshot) != 40 or not all(c in "0123456789abcdef" for c in snapshot):
+            reporter.error(
+                f"{ctx} snapshot_commit must be a 40-char lowercase hex SHA"
+            )
+        elif head_commit is not None:
+            commit_exists = _git_commit_exists(project, snapshot)
+            if commit_exists is True:
+                is_ancestor = _git_is_ancestor(project, snapshot, head_commit)
+                if is_ancestor is False:
+                    reporter.error(
+                        f"{ctx} snapshot_commit is not an ancestor of HEAD"
+                    )
+                elif is_ancestor is True:
+                    pass  # valid ancestry
+                else:
+                    reporter.warn(
+                        f"could not verify snapshot ancestry for {path}"
+                    )
+            elif commit_exists is False:
+                reporter.error(
+                    f"{ctx} snapshot_commit does not resolve to a Git commit"
+                )
+            else:
+                reporter.warn(f"could not verify snapshot_commit for {path}")
+
+        # orphan detection
+        if isinstance(task_id, str) and task_ledger_index is not None:
+            ledger_task = task_ledger_index.get(task_id)
+            if ledger_task is None:
+                reporter.error(
+                    f"{ctx} task_id {task_id} not found in task ledger"
+                )
+            else:
+                if isinstance(revision, int) and revision >= 1:
+                    if ledger_task.get("revision") != revision:
+                        reporter.error(
+                            f"{ctx} revision {revision} does not match "
+                            f"task ledger revision {ledger_task.get('revision')}"
+                        )
+                if isinstance(attempt, int) and attempt >= 1:
+                    if ledger_task.get("attempt") != attempt:
+                        reporter.error(
+                            f"{ctx} attempt {attempt} does not match "
+                            f"task ledger attempt {ledger_task.get('attempt')}"
+                        )
+                if isinstance(dispatch_id, str) and dispatch_id:
+                    ledger_dispatch = ledger_task.get("current_dispatch")
+                    ledger_did = (
+                        ledger_dispatch.get("dispatch_id")
+                        if isinstance(ledger_dispatch, dict)
+                        else None
+                    )
+                    if ledger_did is not None and ledger_did != dispatch_id:
+                        reporter.warn(
+                            f"{ctx} dispatch_id {dispatch_id} does not match "
+                            f"task ledger current_dispatch {ledger_did}"
+                        )
+                if scope == "integrate" and isinstance(accepted_commit, str) and len(accepted_commit) == 40:
+                    ledger_accepted = ledger_task.get("accepted_commit")
+                    if ledger_accepted is not None and ledger_accepted != accepted_commit:
+                        reporter.error(
+                            f"{ctx} accepted_commit {accepted_commit} does not "
+                            f"match task ledger accepted_commit {ledger_accepted}"
+                        )
+
+        validated_grants.append(grant)
+
+    # ── validate each revoke ──
+    grant_by_approval_id: dict[str, dict[str, Any]] = {}
+    for grant in validated_grants:
+        aid = grant["values"].get("approval_id")
+        if isinstance(aid, str):
+            grant_by_approval_id[aid] = grant
+
+    revoke_counts: dict[str, int] = {}
+    for revoke in revokes:
+        values = revoke["values"]
+        path = revoke["path"]
+        ctx = f"approval revoke {path}"
+
+        approval_id = values.get("approval_id")
+        if isinstance(approval_id, str):
+            revoke_counts[approval_id] = revoke_counts.get(approval_id, 0) + 1
+            if approval_id not in grant_by_approval_id:
+                reporter.error(
+                    f"{ctx} approval_id {approval_id!r} does not reference "
+                    f"an existing grant"
+                )
+            elif revoke_counts[approval_id] > 1:
+                reporter.error(
+                    f"approval_id {approval_id!r} has more than one revoke"
+                )
+
+        # actor_role_id
+        actor = values.get("actor_role_id")
+        if actor != "PM":
+            reporter.error(f"{ctx} actor_role_id must be 'PM'")
+
+        # lease_epoch
+        lease_epoch = values.get("lease_epoch")
+        if not _is_int(lease_epoch) or lease_epoch < 1:
+            reporter.error(
+                f"{ctx} lease_epoch must be a non-bool integer >= 1"
+            )
+
+        # revoked_at timestamp
+        revoked_at = values.get("revoked_at")
+        parsed_revoked = _parse_rfc3339_utc(revoked_at)
+        if parsed_revoked is None:
+            reporter.error(f"{ctx} revoked_at must be a UTC RFC3339 timestamp")
+        else:
+            # Check revoke time vs grant time
+            if approval_id in grant_by_approval_id:
+                grant_values = grant_by_approval_id[approval_id]["values"]
+                grant_granted_at = _parse_rfc3339_utc(
+                    grant_values.get("granted_at")
+                )
+                if grant_granted_at is not None and parsed_revoked < grant_granted_at:
+                    reporter.error(
+                        f"{ctx} revoked_at must not precede grant's granted_at"
+                    )
+
+        # reason
+        reason = values.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            reporter.error(f"{ctx} reason must be a non-empty string")
+
+        # snapshot_commit
+        snapshot = values.get("snapshot_commit")
+        if not isinstance(snapshot, str) or len(snapshot) != 40 or not all(c in "0123456789abcdef" for c in snapshot):
+            reporter.error(
+                f"{ctx} snapshot_commit must be a 40-char lowercase hex SHA"
+            )
+
+        # task_id
+        task_id = values.get("task_id")
+        if not isinstance(task_id, str) or TASK_ID_RE.fullmatch(task_id) is None:
+            reporter.error(f"{ctx} task_id must match TC-NNN pattern")
+        elif task_ledger_index is not None and task_id not in task_ledger_index:
+            reporter.error(
+                f"{ctx} task_id {task_id} not found in task ledger"
+            )
+
+        # event_id
+        event_id = values.get("event_id")
+        if not isinstance(event_id, str) or EVENT_ID_RE.fullmatch(event_id) is None:
+            reporter.error(f"{ctx} event_id must match EVT-* pattern")
+
+    # ── active grant conflict detection ──
+    # Build scope+subject keys and check for conflicts
+    active_keys: dict[str, list[dict[str, Any]]] = {}
+    for grant in validated_grants:
+        values = grant["values"]
+        aid = values.get("approval_id")
+
+        # Skip revoked grants
+        if isinstance(aid, str) and revoke_counts.get(aid, 0) > 0:
+            continue
+
+        # Skip expired grants
+        expires_at = values.get("expires_at")
+        if expires_at is not None:
+            parsed_exp = _parse_rfc3339_utc(expires_at)
+            if parsed_exp is not None and validation_now >= parsed_exp:
+                continue
+
+        scope = values.get("scope")
+        if not isinstance(scope, str) or scope not in _VALID_APPROVAL_SCOPES:
+            continue
+
+        task_id = values.get("task_id")
+        revision = values.get("revision")
+        attempt_val = values.get("attempt")
+        dispatch_id = values.get("dispatch_id")
+        accepted_commit = values.get("accepted_commit")
+
+        # Build composite key for scope+subject
+        key_parts = [scope, str(task_id), str(revision), str(attempt_val),
+                     str(dispatch_id)]
+        if scope == "integrate":
+            key_parts.append(str(accepted_commit))
+        key = "|".join(key_parts)
+
+        active_keys.setdefault(key, []).append(grant)
+
+    for key, grant_list in active_keys.items():
+        if len(grant_list) > 1:
+            paths = [g["path"] for g in grant_list]
+            reporter.error(
+                f"multiple active grants for same scope+subject: "
+                f"{', '.join(paths)}"
+            )
+
+
 def validate(
     project: Path,
     require_committed: bool = True,
@@ -4306,6 +4792,7 @@ def validate(
     seen_task_ids: set[str] = set()
     seen_dispatch_ids: set[str] = set()
     frozen_policy_cache: dict[str, Optional[dict[str, Any]]] = {}
+    task_ledger_index: dict[str, dict[str, Any]] = {}
     for index, task in enumerate(tasks):
         _validate_task(
             project,
@@ -4320,6 +4807,13 @@ def validate(
             require_committed,
             reporter,
         )
+        # Build task ledger index for orphan detection
+        if isinstance(task, dict):
+            tid = task.get("task_id")
+            if isinstance(tid, str) and tid not in task_ledger_index:
+                task_ledger_index[tid] = task
+    # Validate approval evidence after all tasks are indexed
+    _validate_approval_evidence(project, task_ledger_index, reporter)
     return reporter
 
 

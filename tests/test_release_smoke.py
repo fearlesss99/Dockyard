@@ -5959,7 +5959,7 @@ class ReleaseSmokeTests(unittest.TestCase):
     # ── Group 0: Existence and status ────────────────────────────────────────
 
     def test_tc1312a_section_exists(self) -> None:
-        """§2.15 must exist with 'Frozen Contract', 'TC-13.12a', >500 chars."""
+        """§2.15 must exist with 'Frozen Contract', 'TC-13.12d', >500 chars."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         m = re.search(
             r"^### 2\.15\s.*$", adr_text, re.MULTILINE,
@@ -5967,19 +5967,19 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIsNotNone(m, "ADR must have a §2.15 heading")
         heading = m.group(0)
         self.assertIn("Frozen Contract", heading)
-        self.assertIn("TC-13.12a", heading)
+        self.assertIn("TC-13.12", heading)
         section = self._tc1312a_section()
         self.assertGreater(len(section), 500)
 
     def test_tc1312a_interface_17_still_target(self) -> None:
-        """Interface #17 must be Target."""
+        """Interface #17 must be Current — TC-13.12d is complete."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         for row in rows:
             num = self._resolve_col(row, "#")
             if num == "17":
                 status = self._resolve_col(row, "Status")
-                self.assertIn("Target", status)
+                self.assertIn("Current", status)
                 return
         self.fail("Interface Status row #17 not found")
 
@@ -6800,13 +6800,13 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_tc1312a_interface_17_and_tc1313_still_target(self) -> None:
-        """Interface #17 and TC-13.13 must still be Target."""
+        """Interface #17 is Current; TC-13.13 must still be Target."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         for row in rows:
             num = self._resolve_col(row, "#")
             if num == "17":
-                self.assertIn("Target",
+                self.assertIn("Current",
                               self._resolve_col(row, "Status"))
             if num == "18":
                 self.assertIn("Target",
