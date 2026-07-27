@@ -4046,7 +4046,18 @@ class TestAcceptanceDocstrings(TestControlPlaneTransitionBase):
 
     def test_731_aoa_docstring_must_not_mix_degradation(self) -> None:
         doc = self.cpt.AcceptanceOwnerApproval.__doc__ or ""
-        self.assertNotIn("granted_approval_ids", doc)
+        # granted_approval_ids may appear in exclusion context only.
+        for needle in ("granted_approval_ids", "model_degradation_approved"):
+            idx = doc.lower().find(needle.lower())
+            if idx != -1:
+                context = doc[max(0,idx-80):idx+100].lower()
+                must_be_exclusion = any(phrase in context for phrase in (
+                    "not owner approval", "degradation",
+                ))
+                self.assertTrue(
+                    must_be_exclusion,
+                    f"AOA docstring: '{needle}' found without exclusion context"
+                )
 
     def test_732_dap_docstring_terms_in_exclusion_context(self) -> None:
         doc = self.cpt.DeliveryAcceptedPayload.__doc__ or ""

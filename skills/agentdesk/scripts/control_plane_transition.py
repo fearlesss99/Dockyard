@@ -750,6 +750,10 @@ class AcceptanceOwnerApproval:
     The ``approval_ids`` field is typed as ``tuple[str, ...]`` for
     forward compatibility with future gate values, but the current
     attested contract requires exactly ``()``.
+
+    ``granted_approval_ids`` and ``MODEL_DEGRADATION_APPROVED`` are
+    NOT owner approval evidence — they belong to model degradation
+    authorization exclusively.
     """
 
     gate: str
@@ -819,9 +823,10 @@ class DeliveryAcceptedPayload:
 
         {"gate": "none", "approval_ids": []}
 
-    ``granted_approval_ids`` and ``MODEL_DEGRADATION_APPROVED`` belong
-    to model-tier degradation authorization exclusively — they must
-    not be copied into acceptance owner approval.
+    ``granted_approval_ids``, ``MODEL_DEGRADATION_APPROVED``,
+    ``MODEL_DEGRADATION_REVOKED``, and ``model_degradation_approval_id``
+    belong to model-tier degradation authorization exclusively — they
+    must not be copied into acceptance owner approval.
     """
 
     accepted_commit: str
