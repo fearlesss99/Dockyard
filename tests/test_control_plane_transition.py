@@ -265,18 +265,18 @@ class TestDataclassFieldExactness(TestControlPlaneTransitionBase):
         self.assertEqual(names, ("implementation_commit", "report_commit"))
         self.assertEqual(len(fields), 2)
 
-    def test_022_delivery_accepted_payload_six_fields(self) -> None:
+    def test_022_delivery_accepted_payload_five_fields(self) -> None:
         fields = dataclasses.fields(self.cpt.DeliveryAcceptedPayload)
         names = tuple(f.name for f in fields)
         self.assertEqual(
             names,
             (
                 "accepted_commit", "acceptance_path",
-                "owner_approval", "residual_risks",
-                "criteria_evidence", "rationale",
+                "residual_risks", "criteria_evidence",
+                "rationale",
             ),
         )
-        self.assertEqual(len(fields), 6)
+        self.assertEqual(len(fields), 5)
 
     def test_023_delivery_returned_payload_zero_fields(self) -> None:
         fields = dataclasses.fields(self.cpt.DeliveryReturnedPayload)
@@ -1084,13 +1084,11 @@ class TestPayloadValidation(TestControlPlaneTransitionBase):
             )
 
     def test_156_delivery_accepted_payload_valid(self) -> None:
-        oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=())
         p = self.cpt.DeliveryAcceptedPayload(
             accepted_commit="a" * 40,
-            acceptance_path="docs/pm/acceptances/TC-001-accept.md",
-            owner_approval=oa,
+            acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
             residual_risks=(),
-            criteria_evidence=(),
+            criteria_evidence=("evidence",),
             rationale="Accepted after review.",
         )
         self.assertEqual(p.accepted_commit, "a" * 40)
@@ -3220,7 +3218,12 @@ class TestAtomicWriteFailureSemantics(unittest.TestCase):
 
 
 class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
-    """AcceptanceOwnerApproval construction-time validation."""
+    """AcceptanceOwnerApproval construction-time validation.
+
+    Only gate='none' is attested by the existing task-card and
+    acceptance templates.  Other values require corresponding
+    validator updates.
+    """
 
     def test_600_valid_owner_approval_none(self) -> None:
         oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=())
@@ -3229,17 +3232,23 @@ class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
 
     def test_601_valid_owner_approval_with_ids(self) -> None:
         oa = self.cpt.AcceptanceOwnerApproval(
-            gate="pm_approval",
+            gate="none",
             approval_ids=("APR-001", "APR-002"),
         )
-        self.assertEqual(oa.gate, "pm_approval")
+        self.assertEqual(oa.gate, "none")
         self.assertEqual(oa.approval_ids, ("APR-001", "APR-002"))
 
-    def test_602_all_gate_values_accepted(self) -> None:
-        for gate in ("none", "pm_approval", "model_approval", "external_approval"):
+    def test_602_only_none_gate_accepted(self) -> None:
+        """Only 'none' is a valid gate — attested by task-card template."""
+        oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=())
+        self.assertEqual(oa.gate, "none")
+
+    def test_602b_invented_gates_rejected(self) -> None:
+        """pm_approval, model_approval, external_approval are not attested."""
+        for gate in ("pm_approval", "model_approval", "external_approval"):
             with self.subTest(gate=gate):
-                oa = self.cpt.AcceptanceOwnerApproval(gate=gate, approval_ids=())
-                self.assertEqual(oa.gate, gate)
+                with self.assertRaises(ValueError):
+                    self.cpt.AcceptanceOwnerApproval(gate=gate, approval_ids=())
 
     def test_603_invalid_gate_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -3264,7 +3273,7 @@ class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
     def test_607_approval_ids_duplicate_raises(self) -> None:
         with self.assertRaises(ValueError):
             self.cpt.AcceptanceOwnerApproval(
-                gate="pm_approval",
+                gate="none",
                 approval_ids=("APR-001", "APR-001"),
             )
 
@@ -3289,6 +3298,33 @@ class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
                 approval_ids=("APR\n001",),
             )
 
+    def test_610b_non_apr_id_rejected_approval_dash(self) -> None:
+        """'approval-1' does not match APR-* regex."""
+        with self.assertRaises(ValueError):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none", approval_ids=("approval-1",))
+
+    def test_610c_non_apr_id_rejected_apr_dash_only(self) -> None:
+        """'APR-' (no digits after dash) rejected."""
+        with self.assertRaises((ValueError, TypeError)):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none", approval_ids=("APR-",))
+
+    def test_610d_bool_as_id_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none", approval_ids=(True,))  # type: ignore[arg-type]
+
+    def test_610e_int_as_id_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none", approval_ids=(1,))  # type: ignore[arg-type]
+
+    def test_610f_none_as_id_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none", approval_ids=(None,))  # type: ignore[arg-type]
+
     def test_611_deep_immutable_frozen(self) -> None:
         oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=())
         with self.assertRaises(dataclasses.FrozenInstanceError):
@@ -3296,7 +3332,7 @@ class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
 
     def test_612_source_list_mutation_does_not_affect_approval_ids(self) -> None:
         src = ["APR-001", "APR-002"]
-        oa = self.cpt.AcceptanceOwnerApproval(gate="pm_approval", approval_ids=tuple(src))
+        oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=tuple(src))
         src.append("APR-003")
         self.assertEqual(oa.approval_ids, ("APR-001", "APR-002"))
         self.assertEqual(len(oa.approval_ids), 2)
@@ -3304,7 +3340,7 @@ class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
     def test_613_defensive_copy_from_non_tuple_iterable(self) -> None:
         """When constructed with a list, it is defensively copied to tuple."""
         oa = self.cpt.AcceptanceOwnerApproval(
-            gate="pm_approval",
+            gate="none",
             approval_ids=["APR-001", "APR-002"],  # type: ignore[arg-type]
         )
         self.assertIsInstance(oa.approval_ids, tuple)
@@ -3321,6 +3357,34 @@ class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
         self.assertTrue(cls.__dataclass_params__.frozen)
         self.assertTrue(cls.__dataclass_params__.slots)
 
+    def test_616_exact_two_fields(self) -> None:
+        """AcceptanceOwnerApproval must have exactly gate, approval_ids."""
+        fields = dataclasses.fields(self.cpt.AcceptanceOwnerApproval)
+        names = tuple(f.name for f in fields)
+        self.assertEqual(names, ("gate", "approval_ids"))
+        self.assertEqual(len(fields), 2)
+
+    def test_617_no_internal_constants_as_fields(self) -> None:
+        """_ALLOWED_GATES and _ALLOWED_GATES_SET must NOT be dataclass fields."""
+        fields = dataclasses.fields(self.cpt.AcceptanceOwnerApproval)
+        names = set(f.name for f in fields)
+        self.assertNotIn("_ALLOWED_GATES", names)
+        self.assertNotIn("_ALLOWED_GATES_SET", names)
+
+    def test_618_no_dict(self) -> None:
+        oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=())
+        self.assertFalse(hasattr(oa, "__dict__"))
+
+    def test_619_error_does_not_include_full_value(self) -> None:
+        """Error messages must not leak full invalid approval ID content."""
+        with self.assertRaises(ValueError) as cm:
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none",
+                approval_ids=("APR-\x00secret",),
+            )
+        # Must not contain the full malicious value.
+        self.assertNotIn("secret", str(cm.exception))
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 42. DeliveryAcceptedPayload expanded validation
@@ -3328,18 +3392,14 @@ class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
 
 
 class TestDeliveryAcceptedPayloadExpanded(TestControlPlaneTransitionBase):
-    """Expanded DeliveryAcceptedPayload with owner_approval, residual_risks,
-    criteria_evidence, and rationale."""
-
-    def _make_oa(self) -> object:
-        return self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=())
+    """DeliveryAcceptedPayload with residual_risks, criteria_evidence,
+    and rationale.  owner_approval is NOT a payload field — it is
+    derived from canonical evidence by the service."""
 
     def test_620_valid_full_payload(self) -> None:
-        oa = self._make_oa()
         p = self.cpt.DeliveryAcceptedPayload(
             accepted_commit="a" * 40,
             acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
-            owner_approval=oa,
             residual_risks=("Risk 1", "Risk 2"),
             criteria_evidence=("Check A passed", "Check B passed"),
             rationale="All checks passed, residual risks are acceptable.",
@@ -3350,171 +3410,142 @@ class TestDeliveryAcceptedPayloadExpanded(TestControlPlaneTransitionBase):
         self.assertEqual(p.rationale, "All checks passed, residual risks are acceptable.")
 
     def test_621_empty_residual_risks_valid(self) -> None:
-        oa = self._make_oa()
         p = self.cpt.DeliveryAcceptedPayload(
             accepted_commit="a" * 40,
-            acceptance_path="p",
-            owner_approval=oa,
+            acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
             residual_risks=(),
             criteria_evidence=("evidence",),
             rationale="Rationale.",
         )
         self.assertEqual(p.residual_risks, ())
 
-    def test_622_empty_criteria_evidence_valid(self) -> None:
-        oa = self._make_oa()
-        p = self.cpt.DeliveryAcceptedPayload(
-            accepted_commit="a" * 40,
-            acceptance_path="p",
-            owner_approval=oa,
-            residual_risks=(),
-            criteria_evidence=(),
-            rationale="Rationale.",
-        )
-        self.assertEqual(p.criteria_evidence, ())
-
-    def test_623_rationale_only_whitespace_raises(self) -> None:
-        oa = self._make_oa()
+    def test_622_empty_criteria_evidence_rejected(self) -> None:
+        """criteria_evidence must not be empty — acceptance template requires
+        per-criterion evidence."""
         with self.assertRaises(ValueError):
             self.cpt.DeliveryAcceptedPayload(
                 accepted_commit="a" * 40,
-                acceptance_path="p",
-                owner_approval=oa,
+                acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
                 residual_risks=(),
                 criteria_evidence=(),
+                rationale="Rationale.",
+            )
+
+    def test_623_rationale_only_whitespace_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.DeliveryAcceptedPayload(
+                accepted_commit="a" * 40,
+                acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
+                residual_risks=(),
+                criteria_evidence=("evidence",),
                 rationale="   ",
             )
 
     def test_624_rationale_empty_raises(self) -> None:
-        oa = self._make_oa()
         with self.assertRaises(TypeError):
             self.cpt.DeliveryAcceptedPayload(
                 accepted_commit="a" * 40,
-                acceptance_path="p",
-                owner_approval=oa,
+                acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
                 residual_risks=(),
-                criteria_evidence=(),
+                criteria_evidence=("evidence",),
                 rationale="",
             )
 
     def test_625_rationale_with_nul_raises(self) -> None:
-        oa = self._make_oa()
         with self.assertRaises(ValueError):
             self.cpt.DeliveryAcceptedPayload(
                 accepted_commit="a" * 40,
-                acceptance_path="p",
-                owner_approval=oa,
+                acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
                 residual_risks=(),
-                criteria_evidence=(),
+                criteria_evidence=("evidence",),
                 rationale="bad\x00char",
             )
 
     def test_626_rationale_with_cr_raises(self) -> None:
-        oa = self._make_oa()
         with self.assertRaises(ValueError):
             self.cpt.DeliveryAcceptedPayload(
                 accepted_commit="a" * 40,
-                acceptance_path="p",
-                owner_approval=oa,
+                acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
                 residual_risks=(),
-                criteria_evidence=(),
+                criteria_evidence=("evidence",),
                 rationale="bad\rchar",
             )
 
     def test_627_rationale_multiline_allowed(self) -> None:
         """Rationale may contain LF — multi-line justification is valid."""
-        oa = self._make_oa()
         p = self.cpt.DeliveryAcceptedPayload(
             accepted_commit="a" * 40,
             acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
-            owner_approval=oa,
             residual_risks=(),
-            criteria_evidence=(),
+            criteria_evidence=("evidence",),
             rationale="Line 1\nLine 2\nLine 3",
         )
         self.assertIn("\n", p.rationale)
 
     def test_628_residual_risks_with_nul_raises(self) -> None:
-        oa = self._make_oa()
         with self.assertRaises(ValueError):
             self.cpt.DeliveryAcceptedPayload(
                 accepted_commit="a" * 40,
-                acceptance_path="p",
-                owner_approval=oa,
+                acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
                 residual_risks=("bad\x00item",),
-                criteria_evidence=(),
+                criteria_evidence=("evidence",),
                 rationale="r",
             )
 
     def test_629_residual_risks_with_cr_raises(self) -> None:
-        oa = self._make_oa()
         with self.assertRaises(ValueError):
             self.cpt.DeliveryAcceptedPayload(
                 accepted_commit="a" * 40,
-                acceptance_path="p",
-                owner_approval=oa,
+                acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
                 residual_risks=("bad\ritem",),
-                criteria_evidence=(),
+                criteria_evidence=("evidence",),
                 rationale="r",
             )
 
     def test_630_residual_risks_whitespace_only_raises(self) -> None:
-        oa = self._make_oa()
         with self.assertRaises(ValueError):
             self.cpt.DeliveryAcceptedPayload(
                 accepted_commit="a" * 40,
-                acceptance_path="p",
-                owner_approval=oa,
+                acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
                 residual_risks=("  ",),
-                criteria_evidence=(),
+                criteria_evidence=("evidence",),
                 rationale="r",
             )
 
     def test_631_criteria_evidence_with_lf_allowed(self) -> None:
         """Multi-line criteria_evidence is allowed."""
-        oa = self._make_oa()
         p = self.cpt.DeliveryAcceptedPayload(
             accepted_commit="a" * 40,
             acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
-            owner_approval=oa,
             residual_risks=(),
             criteria_evidence=("Line 1\nLine 2",),
             rationale="r",
         )
         self.assertIn("\n", p.criteria_evidence[0])
 
-    def test_632_owner_approval_not_acceptance_owner_approval_raises(self) -> None:
-        with self.assertRaises(TypeError):
-            self.cpt.DeliveryAcceptedPayload(
-                accepted_commit="a" * 40,
-                acceptance_path="p",
-                owner_approval={"gate": "none"},  # type: ignore[arg-type]
-                residual_risks=(),
-                criteria_evidence=(),
-                rationale="r",
-            )
+    def test_632_payload_has_no_owner_approval_field(self) -> None:
+        """owner_approval is NOT a DeliveryAcceptedPayload field."""
+        fields = dataclasses.fields(self.cpt.DeliveryAcceptedPayload)
+        names = set(f.name for f in fields)
+        self.assertNotIn("owner_approval", names)
 
     def test_633_source_list_mutation_residual_risks(self) -> None:
-        oa = self._make_oa()
         src = ["risk1", "risk2"]
         p = self.cpt.DeliveryAcceptedPayload(
             accepted_commit="a" * 40,
-            acceptance_path="p",
-            owner_approval=oa,
+            acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
             residual_risks=tuple(src),
-            criteria_evidence=(),
+            criteria_evidence=("evidence",),
             rationale="r",
         )
         src.append("risk3")
         self.assertEqual(p.residual_risks, ("risk1", "risk2"))
 
     def test_634_source_list_mutation_criteria_evidence(self) -> None:
-        oa = self._make_oa()
         src = ["ev1", "ev2"]
         p = self.cpt.DeliveryAcceptedPayload(
             accepted_commit="a" * 40,
-            acceptance_path="p",
-            owner_approval=oa,
+            acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
             residual_risks=(),
             criteria_evidence=tuple(src),
             rationale="r",
@@ -3523,30 +3554,58 @@ class TestDeliveryAcceptedPayloadExpanded(TestControlPlaneTransitionBase):
         self.assertEqual(p.criteria_evidence, ("ev1", "ev2"))
 
     def test_635_frozen_prevents_mutation(self) -> None:
-        oa = self._make_oa()
         p = self.cpt.DeliveryAcceptedPayload(
             accepted_commit="a" * 40,
-            acceptance_path="p",
-            owner_approval=oa,
+            acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
             residual_risks=(),
-            criteria_evidence=(),
+            criteria_evidence=("evidence",),
             rationale="r",
         )
         with self.assertRaises(dataclasses.FrozenInstanceError):
             p.rationale = "new"  # type: ignore[misc]
 
     def test_636_unicode_preserved(self) -> None:
-        oa = self._make_oa()
         p = self.cpt.DeliveryAcceptedPayload(
             accepted_commit="a" * 40,
-            acceptance_path="docs/pm/acceptances/résumé-001.md",
-            owner_approval=oa,
+            acceptance_path="docs/pm/acceptances/résumé-001-r1-a1-review1.md",
             residual_risks=("リスク",),
             criteria_evidence=("証拠",),
             rationale="理由：すべて合格 🎉",
         )
         self.assertEqual(p.residual_risks[0], "リスク")
         self.assertEqual(p.rationale, "理由：すべて合格 🎉")
+
+    def test_637_str_not_accepted_instead_of_tuple(self) -> None:
+        """A bare str must not be silently iterated as chars."""
+        with self.assertRaises(TypeError):
+            self.cpt.DeliveryAcceptedPayload(
+                accepted_commit="a" * 40,
+                acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
+                residual_risks="bare",  # type: ignore[arg-type]
+                criteria_evidence=("evidence",),
+                rationale="r",
+            )
+
+    def test_638_bytes_not_accepted_instead_of_tuple(self) -> None:
+        with self.assertRaises(TypeError):
+            self.cpt.DeliveryAcceptedPayload(
+                accepted_commit="a" * 40,
+                acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
+                residual_risks=(),
+                criteria_evidence=b"bytes",  # type: ignore[arg-type]
+                rationale="r",
+            )
+
+    def test_639_empty_criteria_evidence_raises_not_accepts(self) -> None:
+        """criteria_evidence empty tuple is rejected (not silently accepted)."""
+        with self.assertRaises(ValueError):
+            self.cpt.DeliveryAcceptedPayload(
+                accepted_commit="a" * 40,
+                acceptance_path="docs/pm/acceptances/TC-001-r1-a1-review1.md",
+                residual_risks=(),
+                criteria_evidence=(),
+                rationale="r",
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3647,6 +3706,101 @@ class TestDispatchCASAttemptZero(TestControlPlaneTransitionBase):
     def test_672_expected_attempt_negative_raises(self) -> None:
         with self.assertRaises(ValueError):
             self.cpt.DispatchCAS(expected_dispatch_id="DSP-001", expected_attempt=-1)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 45. Review number parsing (acceptance_path)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestParseReviewN(TestControlPlaneTransitionBase):
+    """_parse_review_n_from_path — deterministic review number from path."""
+
+    def test_700_valid_path_parsed(self) -> None:
+        n = self.cpt._parse_review_n_from_path(
+            "docs/pm/acceptances/TC-001-r1-a1-review1.md",
+            "TC-001", 1, 1,
+        )
+        self.assertEqual(n, 1)
+
+    def test_701_review_42(self) -> None:
+        n = self.cpt._parse_review_n_from_path(
+            "docs/pm/acceptances/TC-001-r5-a3-review42.md",
+            "TC-001", 5, 3,
+        )
+        self.assertEqual(n, 42)
+
+    def test_702_task_id_mismatch_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/TC-001-r1-a1-review1.md",
+                "TC-002", 1, 1,
+            )
+
+    def test_703_revision_mismatch_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/TC-001-r99-a1-review1.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_704_attempt_mismatch_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/TC-001-r1-a99-review1.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_705_invalid_path_format_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/not-matching.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_706_review_zero_rejected(self) -> None:
+        """Review number must be >= 1 (regex enforces [1-9])."""
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/TC-001-r1-a1-review0.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_707_empty_path_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "", "TC-001", 1, 1,
+            )
+
+    def test_708_same_path_same_number(self) -> None:
+        """Idempotent: same path always produces the same review_n."""
+        path = "docs/pm/acceptances/TC-001-r1-a1-review7.md"
+        n1 = self.cpt._parse_review_n_from_path(path, "TC-001", 1, 1)
+        n2 = self.cpt._parse_review_n_from_path(path, "TC-001", 1, 1)
+        self.assertEqual(n1, 7)
+        self.assertEqual(n2, 7)
+        self.assertEqual(n1, n2)
+
+    def test_709_unrelated_file_does_not_change_review_n(self) -> None:
+        """Adding an unrelated acceptance file does not change review_n."""
+        path_a = "docs/pm/acceptances/TC-001-r1-a1-review3.md"
+        n = self.cpt._parse_review_n_from_path(path_a, "TC-001", 1, 1)
+        self.assertEqual(n, 3)
+
+    def test_710_path_escape_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "../acceptances/TC-001-r1-a1-review1.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_711_review_n_not_int_submitted(self) -> None:
+        """Negative assertion: path with non-digit review not parsed as int."""
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/TC-001-r1-a1-reviewX.md",
+                "TC-001", 1, 1,
+            )
 
 
 if __name__ == "__main__":

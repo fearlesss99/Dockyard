@@ -399,6 +399,61 @@ def _validate_sha(value: object, field_name: str) -> str:
     return value
 
 
+_ACCEPTANCE_PATH_RE = re.compile(
+    r"^docs/pm/acceptances/"
+    r"(?P<task_id>.+)-r(?P<revision>[1-9][0-9]*)-a(?P<attempt>[1-9][0-9]*)"
+    r"-review(?P<review_n>[1-9][0-9]*)\.md$"
+)
+
+
+def _parse_review_n_from_path(
+    acceptance_path: str,
+    expected_task_id: str,
+    expected_revision: int,
+    expected_attempt: int,
+) -> int:
+    """Parse the review number from an acceptance path.
+
+    Returns the integer review number parsed from a path matching
+    ``docs/pm/acceptances/{task_id}-r{revision}-a{attempt}-review{N}.md``.
+
+    Raises ``TransitionValidationError`` if:
+    * The path does not match the expected pattern.
+    * The task_id, revision, or attempt embedded in the path do not
+      match the expected CAS-verified values.
+    * The review number is not a positive integer.
+
+    The review number is **deterministic**: it is derived only from the
+    path, not from directory scans or file counts.  Idempotent replay
+    with the same ``acceptance_path`` always produces the same number.
+    """
+    m = _ACCEPTANCE_PATH_RE.match(acceptance_path)
+    if m is None:
+        raise TransitionValidationError(
+            f"acceptance_path must match "
+            f"docs/pm/acceptances/{{task_id}}-r{{revision}}-a{{attempt}}-review{{N}}.md"
+        )
+    if m.group("task_id") != expected_task_id:
+        raise TransitionValidationError(
+            f"acceptance_path task_id mismatch: "
+            f"expected {expected_task_id}, "
+            f"got {m.group('task_id')}"
+        )
+    if int(m.group("revision")) != expected_revision:
+        raise TransitionValidationError(
+            f"acceptance_path revision mismatch: "
+            f"expected {expected_revision}, "
+            f"got {m.group('revision')}"
+        )
+    if int(m.group("attempt")) != expected_attempt:
+        raise TransitionValidationError(
+            f"acceptance_path attempt mismatch: "
+            f"expected {expected_attempt}, "
+            f"got {m.group('attempt')}"
+        )
+    return int(m.group("review_n"))
+
+
 def _validate_rfc3339_utc_str(value: object, field_name: str) -> str:
     """Validate *value* is an RFC 3339 UTC timestamp string."""
     if not isinstance(value, str) or not value:
@@ -566,40 +621,55 @@ class DeliverySubmittedPayload:
         _validate_sha(self.report_commit, "report_commit")
 
 
+# ── AcceptanceOwnerApproval — canonical evidence summary ───────────────────
+#
+# ``AcceptanceOwnerApproval`` is NOT a caller-supplied payload field.
+# It is an immutable summary computed by the service from canonical
+# evidence during ``apply_transition()``:
+#
+#   gate           ← task-card frontmatter ``owner_approval.gate``
+#                     (validated against the immutable task card at the
+#                     task_card_commit referenced in tasks.yaml)
+#
+#   approval_ids   ← task ledger ``granted_approval_ids``, cross-checked
+#                     against immutable ``MODEL_DEGRADATION_APPROVED`` events
+#                     that are un-revoked and committed at or before the
+#                     dispatch commit.
+#
+# The only gate value attested in the existing task-card template and
+# acceptance template is ``"none"``.  Additional gate values require
+# corresponding validator and template updates — they cannot be added
+# by a payload alone.
+#
+# The type is published in ``__all__`` so that ``apply_transition()``
+# (TC-13.11c) can return it as part of the acceptance construction, and
+# so that tests can verify its structure.
+
+_GATE_VALUES: frozenset[str] = frozenset({"none"})
+_APPROVAL_ID_RE = re.compile(r"^APR-.+")
+
+
 @dataclass(frozen=True, slots=True)
 class AcceptanceOwnerApproval:
     """Immutable owner-approval data for an acceptance record.
 
-    Values are frozen at the points of generation — neither the
-    service nor the caller mutates them after construction.
+    Constructed by the service from canonical evidence — never from
+    caller-supplied payload alone.
 
-    ``gate`` values are constrained to the set recognised by the
-    acceptance template / validator contract:
-
-        ``"none"``, ``"pm_approval"``, ``"model_approval"``,
-        ``"external_approval"``
-
-    ``approval_ids`` is a tuple of non-empty approval ID strings
-    (``APR-*``).  Duplicates and empty/blank strings are rejected.
-    From an external list it is defensively copied to a tuple.
+    ``gate`` must be one of the module-level ``_GATE_VALUES``.
+    ``approval_ids`` must be a tuple of non-empty strings matching
+    ``APR-*`` (per ``validate_project.py`` grammar).  Duplicates and
+    empty/blank strings are rejected.
     """
 
     gate: str
     approval_ids: tuple[str, ...]
 
-    _ALLOWED_GATES: tuple[str, ...] = (
-        "none",
-        "pm_approval",
-        "model_approval",
-        "external_approval",
-    )
-    _ALLOWED_GATES_SET: frozenset[str] = frozenset(_ALLOWED_GATES)
-
     def __post_init__(self) -> None:
         _validate_safe_str(self.gate, "gate")
-        if self.gate not in self._ALLOWED_GATES_SET:
+        if self.gate not in _GATE_VALUES:
             raise ValueError(
-                f"gate must be one of {sorted(self._ALLOWED_GATES_SET)}, "
+                f"gate must be one of {sorted(_GATE_VALUES)}, "
                 f"got {_safe_type_name(self.gate)}"
             )
 
@@ -625,21 +695,30 @@ class AcceptanceOwnerApproval:
                 raise ValueError(
                     f"approval_ids[{i}] must not contain NUL, CR, or LF"
                 )
+            if _APPROVAL_ID_RE.fullmatch(aid) is None:
+                raise ValueError(
+                    f"approval_ids[{i}] must match APR-* pattern"
+                )
             if aid in seen:
                 raise ValueError(
-                    f"approval_ids must not contain duplicates: "
-                    f"{_safe_type_name(aid)}"
+                    f"approval_ids must not contain duplicates"
                 )
             seen.add(aid)
 
 
 @dataclass(frozen=True, slots=True)
 class DeliveryAcceptedPayload:
-    """Payload for review_ready → accepted (DELIVERY_ACCEPTED)."""
+    """Payload for review_ready → accepted (DELIVERY_ACCEPTED).
+
+    ``owner_approval`` is NOT carried here — it is derived by the
+    service from canonical evidence (task-card frontmatter
+    ``owner_approval.gate`` and task ledger
+    ``granted_approval_ids``).  The payload must not self-declare
+    authorization facts.
+    """
 
     accepted_commit: str
     acceptance_path: str
-    owner_approval: "AcceptanceOwnerApproval"
     residual_risks: tuple[str, ...]
     criteria_evidence: tuple[str, ...]
     rationale: str
@@ -647,13 +726,6 @@ class DeliveryAcceptedPayload:
     def __post_init__(self) -> None:
         _validate_sha(self.accepted_commit, "accepted_commit")
         _validate_safe_str(self.acceptance_path, "acceptance_path")
-
-        # owner_approval
-        if not isinstance(self.owner_approval, AcceptanceOwnerApproval):
-            raise TypeError(
-                f"owner_approval must be AcceptanceOwnerApproval, "
-                f"got {_safe_type_name(self.owner_approval)}"
-            )
 
         # residual_risks
         if not isinstance(self.residual_risks, tuple):
@@ -675,11 +747,16 @@ class DeliveryAcceptedPayload:
                     f"residual_risks[{i}] must not contain NUL or CR"
                 )
 
-        # criteria_evidence
+        # criteria_evidence — must not be empty.
+        # The acceptance template requires per-criterion evidence.
         if not isinstance(self.criteria_evidence, tuple):
             raise TypeError(
                 f"criteria_evidence must be a tuple, "
                 f"got {_safe_type_name(self.criteria_evidence)}"
+            )
+        if len(self.criteria_evidence) == 0:
+            raise ValueError(
+                "criteria_evidence must not be empty"
             )
         for i, item in enumerate(self.criteria_evidence):
             if not isinstance(item, str) or not item:

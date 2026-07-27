@@ -4015,19 +4015,26 @@ class DeliverySubmittedPayload:
 
 @dataclass(frozen=True, slots=True)
 class AcceptanceOwnerApproval:
-    """Immutable owner-approval data for an acceptance record."""
-    gate: str                           # "none" | "pm_approval" | "model_approval" | "external_approval"
-    approval_ids: tuple[str, ...]        # non-empty APR-* strings; no duplicates
+    """Immutable owner-approval summary computed from canonical evidence
+    by ``apply_transition()`` — NOT a payload field.  gate is read from
+    the committed task-card frontmatter ``owner_approval.gate`` (only
+    ``"none"`` is attested in the current template).  approval_ids are
+    cross-checked against the task ledger ``granted_approval_ids`` and
+    immutable approval events."""
+    gate: str                           # currently only "none" attested
+    approval_ids: tuple[str, ...]        # APR-* strings; no duplicates
 
 
 @dataclass(frozen=True, slots=True)
 class DeliveryAcceptedPayload:
-    """Payload for review_ready → accepted (DELIVERY_ACCEPTED)."""
+    """Payload for review_ready → accepted (DELIVERY_ACCEPTED).
+
+    ``owner_approval`` is NOT carried here — it is derived by the
+    service from canonical evidence."""
     accepted_commit: str                 # 40-char SHA
     acceptance_path: str                 # project-relative
-    owner_approval: AcceptanceOwnerApproval  # frozen gate + approval_ids
     residual_risks: tuple[str, ...]       # may be empty
-    criteria_evidence: tuple[str, ...]    # may be empty
+    criteria_evidence: tuple[str, ...]    # must not be empty
     rationale: str                        # non-empty, not only whitespace
 
 
@@ -4414,48 +4421,47 @@ the following sources — no field is synthesised without an input channel.
 | ``task_id`` | ``TransitionCAS.task_id`` | CAS-verified |
 | ``revision`` | ``TransitionCAS.expected_revision`` | CAS-verified current value from ``tasks.yaml`` |
 | ``decision`` | Service constant | ``"accepted"`` for ``DELIVERY_ACCEPTED`` transitions |
-| ``reviewed_dispatch_id`` | ``DispatchCAS.expected_dispatch_id`` | CAS-verified; the dispatch being accepted |
+| ``reviewed_dispatch_id`` | ``DispatchCAS.expected_dispatch_id`` | CAS-verified; must equal ``current_dispatch.dispatch_id`` from ``tasks.yaml`` |
 | ``attempt`` | ``DispatchCAS.expected_attempt`` | CAS-verified current attempt from ``tasks.yaml`` |
-| ``type`` | Derived from task ledger | ``task_type`` field from ``tasks.yaml`` |
-| ``role_id`` | ``DispatchPayload.role_id`` | The role that executed the accepted dispatch, from the dispatch payload |
+| ``type`` | Task-card frontmatter ``type`` | Immutable; read from the committed task card at ``task_card_commit``; not from ``tasks.yaml`` |
+| ``role_id`` | Task-card frontmatter ``role_id`` | Immutable; read from the committed task card; must equal ``current_dispatch.role_id`` (validator-enforced) |
 | ``reviewer_role_id`` | Service constant | ``"PM"`` for control-plane acceptances |
 | ``reviewer_id`` | ``pm_control.holder_id`` | Current PM holder from ``tasks.yaml`` |
-| ``lease_epoch`` | ``pm_control.lease_epoch`` (PM-only) or ``WorkerSlotLease.lease_epoch`` | From the CAS epoch source |
-| ``base_commit`` | ``tasks.yaml`` task card ``base_commit`` | From the task card referenced by the dispatch |
-| ``implementation_commit`` | ``DeliveryAcceptedPayload.accepted_commit`` | Caller-provided; must also equal ``implementation_commit`` |
-| ``report_commit`` | ``tasks.yaml`` dispatch ``report_commit`` | From the current dispatch ledger |
-| ``accepted_commit`` | ``DeliveryAcceptedPayload.accepted_commit`` | Caller-provided; frozen as ``accepted_commit`` in ``tasks.yaml`` |
-| ``owner_approval`` | ``DeliveryAcceptedPayload.owner_approval`` | Frozen ``AcceptanceOwnerApproval`` dataclass with ``gate`` (``"none"`` / ``"pm_approval"`` / ``"model_approval"`` / ``"external_approval"``) and ``approval_ids`` (tuple of ``APR-*`` strings) |
+| ``lease_epoch`` | ``pm_control.lease_epoch`` (PM-only) or ``WorkerSlotLease.lease_epoch`` (worker-lifecycle) | From the CAS epoch source |
+| ``base_commit`` | Task-card frontmatter ``base_commit`` | Immutable; read from the committed task card; must equal ``current_dispatch.base_commit`` (validator-enforced) |
+| ``implementation_commit`` | ``tasks.yaml`` task-level ``implementation_commit`` | Set by ``DELIVERY_SUBMITTED``; must equal ``DeliveryAcceptedPayload.accepted_commit`` |
+| ``report_commit`` | ``tasks.yaml`` task-level ``report_commit`` | Set by ``DELIVERY_SUBMITTED``; NOT ``current_dispatch.report_commit`` (which does not exist) |
+| ``accepted_commit`` | ``DeliveryAcceptedPayload.accepted_commit`` | Caller-provided; frozen as ``accepted_commit`` in ``tasks.yaml``; must equal ``implementation_commit`` |
+| ``owner_approval`` | Service-derived from canonical evidence | ``gate`` ← task-card frontmatter ``owner_approval.gate`` (currently only ``"none"`` is attested); ``approval_ids`` ← task ledger ``granted_approval_ids`` cross-checked against immutable ``MODEL_DEGRADATION_APPROVED`` events. NOT a payload field; the payload must not self-declare authorization facts. |
 | ``evidence_refs`` | ``TransitionEventContext.evidence_refs`` | Serialised as YAML list |
 | ``residual_risks`` | ``DeliveryAcceptedPayload.residual_risks`` | Caller-supplied tuple of non-empty risk strings; may be empty |
 | ``created_at`` | ``apply_transition(... now=...)`` | Service-formatted RFC 3339 UTC |
-| Body title | Service template | ``# {task_id} · Acceptance · Attempt {attempt} · Review {review_n}`` — ``review_n`` is derived from the number of prior acceptance records for the same task/revision/attempt, determined by scanning the acceptance directory |
+| Body title | Service template + acceptance path | ``# {task_id} · Acceptance · Attempt {attempt} · Review {review_n}`` — ``review_n`` is parsed from ``DeliveryAcceptedPayload.acceptance_path`` (``docs/pm/acceptances/{task_id}-r{revision}-a{attempt}-review{N}.md``). Task/revision/attempt in the path are validated to match CAS. Idempotent replay with the same path always produces the same ``review_n`` — no directory scan |
 | Body decision text | Service constant | ``accepted`` |
 | Body scope review checklist | Service template | Fixed checklist from acceptance template |
-| Body criteria and checks | ``DeliveryAcceptedPayload.criteria_evidence`` | PM-supplied per-criterion evidence; tuple of non-empty strings |
-| Body rationale | ``DeliveryAcceptedPayload.rationale`` | PM-supplied justification text; non-empty |
+| Body criteria and checks | ``DeliveryAcceptedPayload.criteria_evidence`` | PM-supplied per-criterion evidence; tuple of non-empty, non-whitespace strings; must not be empty |
+| Body rationale | ``DeliveryAcceptedPayload.rationale`` | PM-supplied justification text; non-empty, not only whitespace |
 
 **Required ``DeliveryAcceptedPayload`` fields for acceptance record
 construction**:
 
 All fields in the current ``DeliveryAcceptedPayload`` are present
-(``accepted_commit``, ``acceptance_path``, ``owner_approval``,
-``residual_risks``, ``criteria_evidence``, ``rationale``).  Every
-field has a typed, documented input channel:
+(``accepted_commit``, ``acceptance_path``, ``residual_risks``,
+``criteria_evidence``, ``rationale``).  ``owner_approval`` is derived
+by the service from canonical evidence (task-card frontmatter
+``owner_approval.gate`` and task ledger ``granted_approval_ids``) —
+it is NOT a payload field.
 
 | Field | Type | Rule |
 |-------|------|------|
-| ``accepted_commit`` | ``str`` | 40-char lowercase hex SHA |
-| ``acceptance_path`` | ``str`` | Project-relative path to the acceptance record |
-| ``owner_approval`` | ``AcceptanceOwnerApproval`` | Frozen dataclass with ``gate`` (``"none"`` / ``"pm_approval"`` / ``"model_approval"`` / ``"external_approval"``) and ``approval_ids`` (tuple of non-empty ``APR-*`` strings) |
+| ``accepted_commit`` | ``str`` | 40-char lowercase hex SHA; must equal the task-level ``implementation_commit`` |
+| ``acceptance_path`` | ``str`` | Project-relative path ``docs/pm/acceptances/{task_id}-r{revision}-a{attempt}-review{N}.md`` |
 | ``residual_risks`` | ``tuple[str, ...]`` | May be empty; each entry non-empty, no leading/trailing whitespace |
-| ``criteria_evidence`` | ``tuple[str, ...]`` | May be empty; each entry is a PM-supplied statement |
+| ``criteria_evidence`` | ``tuple[str, ...]`` | MUST NOT be empty; each entry non-empty, no leading/trailing whitespace |
 | ``rationale`` | ``str`` | Non-empty; the PM's justification for acceptance |
 
-All fields are frozen/slots, deeply immutable.  Source list mutation
-does not affect the payload after construction.  The acceptance
-record **can** be written once all fields have a documented, typed
-input channel — which is satisfied as of TC-13.11b.2.
+All fields are frozen/slots, deeply immutable.  ``owner_approval`` is
+constructed by the service — the payload carries business content only.
 
 ---
 #### 2.14.16 Acceptance Boundary
