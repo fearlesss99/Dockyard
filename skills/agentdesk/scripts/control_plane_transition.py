@@ -10,6 +10,7 @@ Interface #16 is Current -- TC-13.11c.
 from __future__ import annotations
 
 import copy
+import dataclasses as _dc
 import errno
 import hashlib
 import json
@@ -122,6 +123,13 @@ _OUTBOX_EVENT_TYPES: frozenset[str] = frozenset({
 # Event types that produce an acceptance record.
 _ACCEPTANCE_EVENT_TYPES: frozenset[str] = frozenset({
     "DELIVERY_ACCEPTED",
+})
+
+# Event types that require ApprovalGate.require() — the three gated transitions.
+_GATED_EVENT_TYPES: frozenset[str] = frozenset({
+    "TASK_DISPATCHED",
+    "DELIVERY_ACCEPTED",
+    "CHANGE_INTEGRATED",
 })
 
 # Payload required for event types that need a DispatchCAS.
@@ -3729,6 +3737,285 @@ def _validate_cas(
             )
 
 
+# -- ApprovalGate integration helpers (TC-13.12c) --
+
+_GATED_SCOPE_MAP: dict[str, str] = {
+    "TASK_DISPATCHED": "dispatch",
+    "DELIVERY_ACCEPTED": "accept",
+    "CHANGE_INTEGRATED": "integrate",
+}
+
+
+def _parse_custom_yaml_mapping(raw: str) -> dict[str, object]:
+    """Parse a custom YAML mapping produced by ``_to_yaml_str``.
+
+    Handles nested guard_results with inline and indented child lines.
+    Also converts string values to proper types (int, null, etc.) to
+    satisfy ``_validate_state_event_schema``.
+    Returns a dict suitable for ``_validate_state_event_schema``
+    and ``_extract_approval_guard_from_existing_event``.
+    """
+    lines = raw.split("\n")
+    result: dict[str, object] = {}
+    guard_results_list: list[dict[str, object]] = []
+    result["guard_results"] = guard_results_list
+    current_guard: dict[str, object] | None = None
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line or line.isspace():
+            i += 1
+            continue
+
+        if ":" in line and not line.startswith(" "):
+            key, sep, val = line.partition(":")
+            key = key.strip()
+            val = val.strip()
+            if key == "guard_results":
+                current_guard = {}
+                guard_results_list.append(current_guard)
+                if val:
+                    gk, _, gv = val.partition(":")
+                    gk = gk.strip()
+                    gv = gv.strip()
+                    if gk and current_guard is not None:
+                        current_guard[gk] = _coerce_custom_yaml_value(gv)
+            else:
+                result[key] = _coerce_custom_yaml_value(val) if val else None
+            i += 1
+            continue
+
+        if line.startswith("    "):
+            stripped = line[4:]
+            if stripped.startswith("    "):
+                inner = stripped[4:]
+                if ":" in inner:
+                    ik, _, iv = inner.partition(":")
+                    ik = ik.strip()
+                    iv = iv.strip()
+                    if current_guard is not None:
+                        inputs_list = current_guard.setdefault("inputs", [])
+                        if ik == "key":
+                            current_input: dict[str, object] = {"key": iv}
+                            inputs_list.append(current_input)
+                        elif ik == "value":
+                            if inputs_list:
+                                inputs_list[-1]["value"] = iv
+            elif ":" in stripped:
+                gk, _, gv = stripped.partition(":")
+                gk = gk.strip()
+                gv = gv.strip()
+                if current_guard is not None:
+                    if gk == "inputs":
+                        current_guard.setdefault("inputs", [])
+                        # The inline part after 'inputs:' may contain 'key: value'.
+                        # e.g. 'inputs:         key: scope'
+                        # Parse remaining colon-separated pairs.
+                        if ":" in gv:
+                            sub_k, _, sub_v = gv.partition(":")
+                            sub_k = sub_k.strip()
+                            sub_v = sub_v.strip()
+                            if sub_k == "key":
+                                current_guard["inputs"].append({"key": sub_v})
+                    else:
+                        current_guard[gk] = gv
+            # else: 4-space indent with no colon is continuation of
+            #        a previous line — skip in this parser.
+        i += 1
+
+    return result
+
+
+def _coerce_custom_yaml_value(val: str) -> object:
+    """Coerce a string from custom YAML to a proper Python type."""
+    v = val.strip()
+    if v == "null":
+        return None
+    if v in ("true", "True"):
+        return True
+    if v in ("false", "False"):
+        return False
+    if v.isdigit() or (v.startswith("-") and v[1:].isdigit()):
+        return int(v)
+    if v.startswith('"') and v.endswith('"'):
+        return v[1:-1]
+    if v == "[]":
+        return []
+    if v == "{}":
+        return {}
+    if v.startswith("- "):
+        return [v[2:]]
+    return v
+
+
+def _build_approval_subject(
+    spec: _TransitionSpec,
+    request: TransitionRequest,
+    task: dict[str, Any],
+) -> Any:
+    """Build an ``ApprovalSubject`` from CAS-verified sources.
+
+    All field values come from TransitionCAS, DispatchCAS, payload,
+    or the CAS-verified canonical task — never from caller-supplied
+    free text, prompt, provider, or model.
+    """
+    from approval_gate import ApprovalSubject
+
+    event_type = spec.event_type
+    task_id = request.cas.task_id
+    revision = request.cas.expected_revision
+
+    if event_type == "TASK_DISPATCHED":
+        if not isinstance(request.payload, DispatchPayload):
+            raise TransitionSchemaError(
+                "TASK_DISPATCHED payload must be DispatchPayload"
+            )
+        return ApprovalSubject(
+            task_id=task_id,
+            revision=revision,
+            attempt=request.payload.new_attempt,
+            dispatch_id=request.payload.dispatch_id,
+            accepted_commit=None,
+        )
+
+    if event_type == "DELIVERY_ACCEPTED":
+        dc = request.dispatch_cas
+        if dc is None:
+            raise TransitionCASConflictError(
+                "DELIVERY_ACCEPTED requires DispatchCAS"
+            )
+        return ApprovalSubject(
+            task_id=task_id,
+            revision=revision,
+            attempt=dc.expected_attempt,
+            dispatch_id=dc.expected_dispatch_id,
+            accepted_commit=None,
+        )
+
+    if event_type == "CHANGE_INTEGRATED":
+        if not isinstance(request.payload, IntegrationPayload):
+            raise TransitionSchemaError(
+                "CHANGE_INTEGRATED payload must be IntegrationPayload"
+            )
+        # Attempt and dispatch_id from current task ledger.
+        task_attempt = task.get("attempt")
+        ledger_attempt: int | None = None
+        if isinstance(task_attempt, int) and not isinstance(task_attempt, bool):
+            ledger_attempt = task_attempt
+
+        cd = task.get("current_dispatch")
+        ledger_dispatch_id: str | None = None
+        if isinstance(cd, dict) and isinstance(cd.get("dispatch_id"), str):
+            ledger_dispatch_id = str(cd["dispatch_id"])
+
+        return ApprovalSubject(
+            task_id=task_id,
+            revision=revision,
+            attempt=ledger_attempt if ledger_attempt is not None else 1,
+            dispatch_id=ledger_dispatch_id if ledger_dispatch_id is not None else "N/A",
+            accepted_commit=request.payload.integrated_commit,
+        )
+
+    raise TransitionSchemaError(
+        f"unexpected gated event_type: {event_type}"
+    )
+
+
+def _extract_approval_guard_from_existing_event(
+    event_dict: dict[str, object],
+    expected_scope_value: str,
+) -> GuardResult:
+    """Extract the ``approval_gate`` guard from an existing state-event.
+
+    Returns the extracted ``GuardResult``.
+    Raises ``TransitionSchemaError`` on any structural violation.
+    """
+    guard_results = event_dict.get("guard_results")
+    if not isinstance(guard_results, list):
+        raise TransitionSchemaError(
+            "existing event guard_results is not a list"
+        )
+
+    approval_guards: list[dict[str, object]] = []
+    for gr in guard_results:
+        if not isinstance(gr, dict):
+            raise TransitionSchemaError(
+                "existing event guard_result is not a mapping"
+            )
+        if gr.get("guard") == "approval_gate":
+            approval_guards.append(gr)
+
+    if len(approval_guards) == 0:
+        raise TransitionSchemaError(
+            "existing event missing approval_gate guard"
+        )
+    if len(approval_guards) > 1:
+        raise TransitionSchemaError(
+            "existing event has multiple approval_gate guards"
+        )
+
+    ag = approval_guards[0]
+
+    # Validate scope input.
+    inputs = ag.get("inputs")
+    if not isinstance(inputs, list):
+        raise TransitionSchemaError(
+            "existing approval_gate guard inputs is not a list"
+        )
+    scope_value: str | None = None
+    approval_id: str | None = None
+    for inp in inputs:
+        if not isinstance(inp, dict):
+            continue
+        key = inp.get("key")
+        if key == "scope":
+            scope_value = str(inp.get("value", ""))
+        elif key == "approval_id":
+            approval_id = str(inp.get("value", ""))
+
+    if not scope_value or str(scope_value).strip() != str(expected_scope_value).strip():
+        raise TransitionSchemaError(
+            "existing approval_gate guard scope mismatch"
+        )
+    if not approval_id or not approval_id.startswith("APR-"):
+        raise TransitionSchemaError(
+            "existing approval_gate guard missing or invalid approval_id"
+        )
+
+    # Validate result.
+    if ag.get("result") != "passed":
+        raise TransitionSchemaError(
+            "existing approval_gate guard result is not 'passed'"
+        )
+
+    checked_at = ag.get("checked_at")
+    if not isinstance(checked_at, str) or not checked_at:
+        raise TransitionSchemaError(
+            "existing approval_gate guard missing checked_at"
+        )
+
+    evidence_ref = ag.get("evidence_ref")
+    if not isinstance(evidence_ref, str) or not evidence_ref:
+        raise TransitionSchemaError(
+            "existing approval_gate guard missing evidence_ref"
+        )
+
+    # Reconstruct GuardInput tuple.
+    guard_inputs: tuple[GuardInput, ...] = (
+        GuardInput(key="scope", value=scope_value),
+        GuardInput(key="approval_id", value=approval_id),
+    )
+
+    return GuardResult(
+        guard="approval_gate",
+        inputs=guard_inputs,
+        result="passed",
+        checked_at=checked_at,
+        evidence_ref=evidence_ref,
+    )
+
+
 # -- main transition orchestration --
 
 
@@ -3740,8 +4027,24 @@ def _execute_transition_core(
     lease_epoch: int,
     pm_holder_id: str = "",
 ) -> TransitionResult:
-    """Execute the core transition pipeline (inside locks)."""
+    """Execute the core transition pipeline (inside locks).
+
+    Integrates ApprovalGate for the three gated transitions
+    (TC-13.12c).
+    """
+    from approval_gate import (
+        ApprovalCheckRequest,
+        ApprovalGate,
+        ApprovalScope,
+        ApprovalError,
+    )
+
     occurred_at = _format_rfc3339_utc(now)
+
+    # ── Save original event_context for post-transition verification ─────
+    # The original request and its event_context are never mutated.
+    # All gated modifications use dataclasses.replace() to construct
+    # local effective_request / effective_context copies.
 
     # 1. Read Git HEAD.
     head_commit = _resolve_head_commit(project_root)
@@ -3779,6 +4082,136 @@ def _execute_transition_core(
             request.payload.outbox_message_id, "outbox_message_id"
         )
         outbox_message_id = request.payload.outbox_message_id
+
+    # ── 5b. Reject caller-supplied forged approval guard ─────────────────
+    # Must happen before any replay check or Gate call.
+    for gr in request.event_context.guard_results:
+        if gr.guard == "approval_gate":
+            raise TransitionValidationError(
+                "caller must not supply approval_gate guard result"
+            )
+
+    # ── 5c. Orphan / partial evidence pre-check (before CAS) ─────────────
+    # For ALL transitions: if companion evidence exists without the event,
+    # or the task is anomalously at the target state without the event,
+    # fail immediately.
+    existing_event_bytes_raw = _read_existing_event_bytes(
+        project_root, request.event_id
+    )
+    existing_outbox_bytes_raw: bytes | None = None
+    if outbox_message_id is not None:
+        existing_outbox_bytes_raw = _read_existing_outbox_bytes(
+            project_root, outbox_message_id
+        )
+    existing_acceptance_bytes_raw: bytes | None = None
+    if acceptance_path is not None:
+        existing_acceptance_bytes_raw = _read_existing_acceptance_bytes(
+            project_root, acceptance_path
+        )
+
+    has_event = existing_event_bytes_raw is not None
+    has_outbox = existing_outbox_bytes_raw is not None
+    has_acceptance = existing_acceptance_bytes_raw is not None
+    tasks_at_target = task.get("state") == to_state
+
+    if not has_event:
+        # Orphan checks: companion evidence exists without event.
+        if has_outbox:
+            raise TransitionDuplicateEvidenceError(
+                "outbox message_id already exists but event not found"
+            )
+        if has_acceptance:
+            raise TransitionDuplicateEvidenceError(
+                "acceptance record already exists but event not found"
+            )
+        if tasks_at_target:
+            raise TransitionDuplicateEvidenceError(
+                "task at target state but event file not found"
+            )
+
+    # ── Gated transition: replay check BEFORE building mutated task bytes ──
+    if spec.event_type in _GATED_EVENT_TYPES and has_event:
+        # Extract approval guard from existing event, rebuild bytes,
+        # run full strict byte-exact idempotency check. Gate called 0 times.
+        scope_value = _GATED_SCOPE_MAP[spec.event_type]
+        existing_event_data_raw = existing_event_bytes_raw.decode("utf-8")
+        # Event files use custom YAML format (_to_yaml_str) which is not
+        # standard YAML.  Parse guard_results via line-based extraction.
+        existing_event_data = _parse_custom_yaml_mapping(existing_event_data_raw)
+        _validate_state_event_schema(existing_event_data)
+        approval_guard = _extract_approval_guard_from_existing_event(
+            existing_event_data, scope_value
+        )
+
+        # Build minimum needed for idempotency check — outbox and event bytes
+        # use the approval guard.
+        effective_context = _dc.replace(
+            request.event_context,
+            guard_results=(
+                *request.event_context.guard_results,
+                approval_guard,
+            ),
+        )
+        effective_request = _dc.replace(
+            request,
+            event_context=effective_context,
+        )
+
+        # Build outbox bytes first (needed for payload_digest).
+        _replay_outbox_bytes = _build_outbox_bytes(
+            effective_request, task, to_state, now
+        )
+        _replay_payload_digest: str | None = None
+        if _replay_outbox_bytes is not None:
+            _replay_payload_digest = _compute_payload_digest(_replay_outbox_bytes)
+
+        _replay_event_bytes = _build_event_bytes(
+            effective_request, spec, task, to_state, now,
+            lease_epoch, _replay_payload_digest
+        )
+
+        # Build tasks bytes from post_state (use pre-transition task
+        # since we haven't called _mutate_task_for_transition).
+        _replay_post_state = copy.deepcopy(state)
+        _replay_post_state["tasks"][task_index] = task
+        _replay_post_state["updated_at"] = occurred_at
+        _replay_tasks_bytes = _serialize_tasks_state(_replay_post_state)
+
+        # Build acceptance bytes if needed.
+        _replay_acceptance_bytes: bytes | None = None
+        if spec.produces_acceptance and isinstance(
+            request.payload, DeliveryAcceptedPayload
+        ):
+            task_card_path = task.get("task_card_path")
+            task_card_commit = task.get("task_card_commit")
+            if isinstance(task_card_path, str) and task_card_path:
+                if isinstance(task_card_commit, str) and task_card_commit:
+                    tfm = _read_committed_task_card_frontmatter(
+                        project_root, task_card_path, task_card_commit
+                    )
+                    _replay_acceptance_bytes = _build_acceptance_bytes(
+                        request, task, pm_holder_id, lease_epoch, now,
+                        review_number, tfm
+                    )
+
+        idempotent_result = _check_idempotency_and_duplicates(
+            project_root,
+            effective_request,
+            spec,
+            task,
+            to_state,
+            _replay_event_bytes,
+            _replay_outbox_bytes,
+            _replay_acceptance_bytes,
+            _replay_tasks_bytes,
+        )
+        if idempotent_result is not None:
+            return idempotent_result
+
+        # Bytes differ — duplicate evidence conflict.
+        raise TransitionDuplicateEvidenceError(
+            "event_id already exists with different content"
+        )
 
     # 6. Build proposed bytes from PRE-TRANSITION task (for acceptance)
     #    and from mutated task (for everything else).
@@ -3832,7 +4265,96 @@ def _execute_transition_core(
 
     tasks_bytes = _serialize_tasks_state(post_state)
 
-    # 10. Idempotency / duplicate / orphan check (BEFORE CAS).
+    # ═══════════════════════════════════════════════════════════════════════
+    # 10b. Gated transition — fresh path only (TC-13.12c)
+    # (Replay is already handled above, before _mutate_task_for_transition.)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    if spec.event_type in _GATED_EVENT_TYPES:
+        scope_value = _GATED_SCOPE_MAP[spec.event_type]
+
+        # 11. Validate CAS (revision, state, HEAD, dispatch).
+        _validate_cas(task, request, spec, head_commit)
+
+        # 12. ApprovalGate.require() — inside the state lock.
+        gate_subject = _build_approval_subject(spec, request, task)
+        gate = ApprovalGate(project_root=project_root)
+
+        scope_enum = ApprovalScope(scope_value)
+        gate_request = ApprovalCheckRequest(
+            scope=scope_enum,
+            subject=gate_subject,
+            expected_snapshot_commit=head_commit,
+        )
+
+        try:
+            evidence = gate.require(gate_request, now)
+        except ApprovalError:
+            # ApprovalError propagates directly — no wrapping.
+            raise
+
+        # 13. Build approval GuardResult.
+        approval_guard = GuardResult(
+            guard="approval_gate",
+            inputs=(
+                GuardInput(key="scope", value=scope_value),
+                GuardInput(key="approval_id", value=evidence.approval_id),
+            ),
+            result="passed",
+            checked_at=occurred_at,
+            evidence_ref=f"docs/pm/approvals/{evidence.event_id}.yaml",
+        )
+
+        # 14. Construct local effective_context / effective_request.
+        effective_context = _dc.replace(
+            request.event_context,
+            guard_results=(
+                *request.event_context.guard_results,
+                approval_guard,
+            ),
+        )
+        effective_request = _dc.replace(
+            request,
+            event_context=effective_context,
+        )
+
+        # 15. Rebuild event bytes with approval guard.
+        event_bytes = _build_event_bytes(
+            effective_request, spec, task, to_state, now,
+            lease_epoch, payload_digest
+        )
+
+        # 16. Write canonical files.
+        _write_canonical_files(
+            project_root,
+            request.event_id,
+            event_bytes,
+            outbox_bytes,
+            outbox_message_id,
+            acceptance_bytes,
+            acceptance_path,
+            tasks_bytes,
+        )
+
+        # 17. Render and write derived views.
+        board_md, status_md = _render_derived_views(post_state)
+        _write_derived_views(project_root, board_md, status_md)
+
+        # 18. Return TransitionResult.
+        return TransitionResult(
+            task_id=request.cas.task_id,
+            event_id=request.event_id,
+            from_state=request.cas.expected_state,
+            to_state=to_state,
+            occurred_at=occurred_at,
+            outbox_message_id=outbox_message_id,
+        )
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Non-gated transition path (unchanged from TC-13.11c)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # 11. Idempotency / duplicate / orphan check (BEFORE CAS).
     idempotent_result = _check_idempotency_and_duplicates(
         project_root,
         request,
@@ -3847,10 +4369,10 @@ def _execute_transition_core(
     if idempotent_result is not None:
         return idempotent_result
 
-    # 11. Validate CAS (revision, state, HEAD, dispatch).
+    # 12. Validate CAS (revision, state, HEAD, dispatch).
     _validate_cas(task, request, spec, head_commit)
 
-    # 12. Write canonical files.
+    # 13. Write canonical files.
     _write_canonical_files(
         project_root,
         request.event_id,
@@ -3862,11 +4384,11 @@ def _execute_transition_core(
         tasks_bytes,
     )
 
-    # 13. Render and write derived views.
+    # 14. Render and write derived views.
     board_md, status_md = _render_derived_views(post_state)
     _write_derived_views(project_root, board_md, status_md)
 
-    # 14. Return TransitionResult.
+    # 15. Return TransitionResult.
     from_state = request.cas.expected_state
     return TransitionResult(
         task_id=request.cas.task_id,

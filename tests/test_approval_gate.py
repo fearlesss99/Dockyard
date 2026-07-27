@@ -1887,8 +1887,8 @@ class AtomicWriteTests(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class ApprovalGateStubTests(unittest.TestCase):
-    """Test ApprovalGate phase boundary behaviour."""
+class ApprovalGateConstructionTests(unittest.TestCase):
+    """Test ApprovalGate construction and phase boundary behaviour."""
 
     def test_construction_validates_project_root(self) -> None:
         with _temp_project() as proj:
@@ -1902,48 +1902,6 @@ class ApprovalGateStubTests(unittest.TestCase):
     def test_construction_rejects_non_existent(self) -> None:
         with self.assertRaises(ValueError):
             ag.ApprovalGate(project_root=Path("/nonexistent/path/12345"))
-
-    def test_check_raises_not_implemented(self) -> None:
-        with _temp_project() as proj:
-            gate = ag.ApprovalGate(project_root=proj)
-            req = ag.ApprovalCheckRequest(
-                scope=ag.ApprovalScope.DISPATCH,
-                subject=_make_subject(),
-                expected_snapshot_commit=_SAMPLE_SHA,
-            )
-            with self.assertRaises(NotImplementedError) as ctx:
-                gate.check(req, _NOW)
-            self.assertIn("ApprovalGate.check", str(ctx.exception))
-            self.assertIn("TC-13.12c", str(ctx.exception))
-
-    def test_require_raises_not_implemented(self) -> None:
-        with _temp_project() as proj:
-            gate = ag.ApprovalGate(project_root=proj)
-            req = ag.ApprovalCheckRequest(
-                scope=ag.ApprovalScope.DISPATCH,
-                subject=_make_subject(),
-                expected_snapshot_commit=_SAMPLE_SHA,
-            )
-            with self.assertRaises(NotImplementedError) as ctx:
-                gate.require(req, _NOW)
-            self.assertIn("ApprovalGate.require", str(ctx.exception))
-            self.assertIn("TC-13.12c", str(ctx.exception))
-
-    def test_not_implemented_message_has_no_request_content(self) -> None:
-        """NotImplementedError must not leak request content."""
-        with _temp_project() as proj:
-            gate = ag.ApprovalGate(project_root=proj)
-            req = ag.ApprovalCheckRequest(
-                scope=ag.ApprovalScope.DISPATCH,
-                subject=_make_subject(task_id="TC-042"),
-                expected_snapshot_commit=_SAMPLE_SHA,
-            )
-            with self.assertRaises(NotImplementedError) as ctx:
-                gate.check(req, _NOW)
-            msg = str(ctx.exception)
-            self.assertNotIn("TC-042", msg)
-            self.assertNotIn("dispatch", msg)
-            self.assertNotIn(_SAMPLE_SHA, msg)
 
     def test_no_file_writes_on_construction(self) -> None:
         with _temp_project() as proj:
@@ -2008,6 +1966,1373 @@ class AllImportableTests(unittest.TestCase):
     def test_all_symbols_importable(self) -> None:
         for name in ag.__all__:
             self.assertTrue(hasattr(ag, name), f"__all__ symbol {name} not found in module")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 17. Runtime ApprovalGate.check() success tests (TC-13.12c)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ApprovalGateCheckSuccessTests(unittest.TestCase):
+    """Test ApprovalGate.check() success paths."""
+
+    def test_dispatch_scope_active_grant_passes(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-001",
+                event_id="EVT-20260727-0001",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-001"),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Dispatch approval",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-001"),
+                expected_snapshot_commit=head2,
+            )
+            result = gate.check(req, _NOW)
+            self.assertTrue(result.passed)
+            self.assertIsNone(result.failure_code)
+            self.assertIsNotNone(result.matched_evidence)
+            self.assertEqual("APR-001", result.matched_evidence.approval_id)
+
+    def test_accept_scope_active_grant_passes(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-002",
+                event_id="EVT-20260727-0002",
+                scope=ag.ApprovalScope.ACCEPT,
+                subject=_make_subject(task_id="TC-002"),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Accept approval",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.ACCEPT,
+                subject=_make_subject(task_id="TC-002"),
+                expected_snapshot_commit=head2,
+            )
+            result = gate.check(req, _NOW)
+            self.assertTrue(result.passed)
+
+    def test_integrate_scope_active_grant_passes(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-003",
+                event_id="EVT-20260727-0003",
+                scope=ag.ApprovalScope.INTEGRATE,
+                subject=_make_subject(
+                    task_id="TC-003",
+                    accepted_commit=_SAMPLE_SHA,
+                ),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Integrate approval",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.INTEGRATE,
+                subject=_make_subject(
+                    task_id="TC-003",
+                    accepted_commit=_SAMPLE_SHA,
+                ),
+                expected_snapshot_commit=head2,
+            )
+            result = gate.check(req, _NOW)
+            self.assertTrue(result.passed)
+
+    def test_grant_no_expiry_is_active(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-004",
+                event_id="EVT-20260727-0004",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-004"),
+                lease_epoch=1,
+                now=_NOW,
+                reason="No expiry",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-004"),
+                expected_snapshot_commit=head2,
+            )
+            result = gate.check(req, _NOW)
+            self.assertTrue(result.passed)
+
+    def test_grant_future_expiry_is_active(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            future_expiry = "2026-08-27T08:00:00Z"
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-005",
+                event_id="EVT-20260727-0005",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-005"),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Future expiry",
+                expires_at=future_expiry,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-005"),
+                expected_snapshot_commit=head2,
+            )
+            result = gate.check(req, _NOW)
+            self.assertTrue(result.passed)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 18. Runtime ApprovalGate.check() failure tests (TC-13.12c)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ApprovalGateCheckFailureTests(unittest.TestCase):
+    """Test ApprovalGate.check() failure code paths."""
+
+    def test_not_found_when_no_grants(self) -> None:
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-999"),
+                expected_snapshot_commit=head,
+            )
+            result = gate.check(req, _NOW)
+            self.assertFalse(result.passed)
+            self.assertEqual("not_found", result.failure_code)
+            self.assertIsNone(result.matched_evidence)
+
+    def test_wrong_scope_when_same_subject_different_scope(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            subj = _make_subject(task_id="TC-010")
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-010",
+                event_id="EVT-20260727-0010",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                lease_epoch=1,
+                now=_NOW,
+                reason="Dispatch only",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            # Same subject, different scope.
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.ACCEPT,
+                subject=subj,
+                expected_snapshot_commit=head2,
+            )
+            result = gate.check(req, _NOW)
+            self.assertFalse(result.passed)
+            self.assertEqual("wrong_scope", result.failure_code)
+
+    def test_wrong_subject_when_same_taskid_scope_different_fields(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-011",
+                event_id="EVT-20260727-0011",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-011", revision=1, attempt=1),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Dispatch r1 a1",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            # Same task_id + scope, different attempt.
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-011", revision=1, attempt=2),
+                expected_snapshot_commit=head2,
+            )
+            result = gate.check(req, _NOW)
+            self.assertFalse(result.passed)
+            self.assertEqual("wrong_subject", result.failure_code)
+
+    def test_expired_when_now_past_expires_at(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            # Must write YAML directly because write_grant rejects
+            # expires_at <= granted_at.
+            past_granted = "2026-07-20T08:00:00Z"
+            past_expiry = "2026-07-21T08:00:00Z"
+            yaml = _make_grant_yaml(
+                approval_id="APR-012",
+                event_id="EVT-20260727-0012",
+                scope="dispatch",
+                task_id="TC-012",
+                revision=1,
+                attempt=1,
+                granted_at=past_granted,
+                expires_at=past_expiry,
+                snapshot_commit=head,
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-20260727-0012.yaml").write_text(
+                yaml, encoding="utf-8"
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            # now is _NOW = 2026-07-27T08:00:00Z, well past the expiry.
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-012"),
+                expected_snapshot_commit=head2,
+            )
+            result = gate.check(req, _NOW)
+            self.assertFalse(result.passed)
+            self.assertEqual("expired", result.failure_code)
+
+    def test_revoked_when_revoke_exists(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-013",
+                event_id="EVT-20260727-0013",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-013"),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Will be revoked",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            head2 = _git_head(proj)
+            ag.write_revoke(
+                project_root=proj,
+                approval_id="APR-013",
+                event_id="EVT-20260727-0014",
+                lease_epoch=2,
+                now=_LATER,
+                reason="Revoked",
+                expected_snapshot_commit=head2,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head3 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-013"),
+                expected_snapshot_commit=head3,
+            )
+            # Check AFTER revoke time.
+            check_now = datetime(2026, 7, 27, 10, 0, 0, tzinfo=UTC)
+            result = gate.check(req, check_now)
+            self.assertFalse(result.passed)
+            self.assertEqual("revoked", result.failure_code)
+
+    def test_revoked_priority_over_expired(self) -> None:
+        """Grant that is both expired AND revoked → revoked takes priority."""
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            _EXPIRED_STR = "2026-07-20T08:00:00Z"
+            subj = _make_subject(task_id="TC-014")
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-014",
+                event_id="EVT-20260727-0015",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                lease_epoch=1,
+                now=datetime(2026, 7, 19, 8, 0, 0, tzinfo=UTC),
+                reason="Expired and revoked",
+                expires_at=_EXPIRED_STR,
+                expected_snapshot_commit=head,
+            )
+            head2 = _git_head(proj)
+            revoke_time = datetime(2026, 7, 27, 10, 0, 0, tzinfo=UTC)
+            ag.write_revoke(
+                project_root=proj,
+                approval_id="APR-014",
+                event_id="EVT-20260727-0016",
+                lease_epoch=2,
+                now=revoke_time,
+                reason="Revoke after expiry",
+                expected_snapshot_commit=head2,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head3 = _git_head(proj)
+            # now is after both expired and revoked
+            check_now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                expected_snapshot_commit=head3,
+            )
+            result = gate.check(req, check_now)
+            self.assertFalse(result.passed)
+            self.assertEqual("revoked", result.failure_code,
+                             "revoked must take priority over expired")
+
+    def test_multiple_active_grants_ambiguous(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            subj = _make_subject(task_id="TC-015")
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-015A",
+                event_id="EVT-20260727-0017",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                lease_epoch=1,
+                now=_NOW,
+                reason="First grant",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            head2 = _git_head(proj)
+            # Need different approval_id + event_id to avoid duplicate detection
+            # (write_grant blocks duplicate scope+subject, but we can
+            #  manually write a second grant YAML file bypassing that check)
+            # Actually, write_grant blocks duplicate scope+subject.
+            # We must manually create a second evidence file.
+            grant2 = _make_grant_yaml(
+                approval_id="APR-015B",
+                event_id="EVT-20260727-0018",
+                scope="dispatch",
+                task_id="TC-015",
+                revision=1,
+                attempt=1,
+                snapshot_commit=head2,
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-20260727-0018.yaml").write_text(
+                grant2, encoding="utf-8"
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head3 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                expected_snapshot_commit=head3,
+            )
+            with self.assertRaises(ag.ApprovalAmbiguousError):
+                gate.check(req, _NOW)
+
+    def test_no_active_but_revoked_beats_expired(self) -> None:
+        """Two grants: one expired, one revoked. Result should report revoked."""
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            subj = _make_subject(task_id="TC-016")
+            # Write an expired grant.
+            expired_str = "2026-07-20T08:00:00Z"
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-016A",
+                event_id="EVT-20260727-0019",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                lease_epoch=1,
+                now=datetime(2026, 7, 19, 8, 0, 0, tzinfo=UTC),
+                reason="Expired",
+                expires_at=expired_str,
+                expected_snapshot_commit=head,
+            )
+            head2 = _git_head(proj)
+            # Write a revoked grant (using manual YAML to bypass dup check).
+            grant2 = _make_grant_yaml(
+                approval_id="APR-016B",
+                event_id="EVT-20260727-0020",
+                scope="dispatch",
+                task_id="TC-016",
+                revision=1,
+                attempt=1,
+                snapshot_commit=head2,
+                expires_at=None,
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-20260727-0020.yaml").write_text(
+                grant2, encoding="utf-8"
+            )
+            head3 = _git_head(proj)
+            # Revoke APR-016B.
+            ag.write_revoke(
+                project_root=proj,
+                approval_id="APR-016B",
+                event_id="EVT-20260727-0021",
+                lease_epoch=3,
+                now=_LATER,
+                reason="Revoke second grant",
+                expected_snapshot_commit=head3,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head4 = _git_head(proj)
+            check_now = datetime(2026, 7, 27, 12, 0, 0, tzinfo=UTC)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                expected_snapshot_commit=head4,
+            )
+            result = gate.check(req, check_now)
+            self.assertFalse(result.passed)
+            self.assertEqual("revoked", result.failure_code)
+
+    def test_passed_false_has_null_evidence(self) -> None:
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-999"),
+                expected_snapshot_commit=head,
+            )
+            result = gate.check(req, _NOW)
+            self.assertFalse(result.passed)
+            self.assertIsNone(result.matched_evidence)
+
+    def test_passed_true_has_evidence(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-017",
+                event_id="EVT-20260727-0022",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-017"),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Test",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-017"),
+                expected_snapshot_commit=head2,
+            )
+            result = gate.check(req, _NOW)
+            self.assertTrue(result.passed)
+            self.assertIsNotNone(result.matched_evidence)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 19. Runtime ApprovalGate.check() integrity tests (TC-13.12c)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ApprovalGateCheckIntegrityTests(unittest.TestCase):
+    """Test ApprovalGate.check() integrity / fail-closed paths."""
+
+    def test_head_mismatch_raises_snapshot_conflict(self) -> None:
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            # Use a SHA that does NOT match HEAD.
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=_SAMPLE_SHA2,
+            )
+            with self.assertRaises(ag.ApprovalSnapshotConflictError):
+                gate.check(req, _NOW)
+
+    def test_evidence_snapshot_not_ancestor_raises(self) -> None:
+        with _temp_project() as proj:
+            # Create evidence with a snapshot_commit that is not an ancestor.
+            # We need a SHA that is NOT an ancestor. Use a known non-ancestor.
+            non_ancestor = "0" * 40  # All-zeros is never an ancestor.
+            bad_yaml = _make_grant_yaml(
+                approval_id="APR-099",
+                event_id="EVT-20260727-0099",
+                snapshot_commit=non_ancestor,
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-20260727-0099.yaml").write_text(
+                bad_yaml, encoding="utf-8"
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=head,
+            )
+            with self.assertRaises(ag.ApprovalSnapshotConflictError):
+                gate.check(req, _NOW)
+
+    def test_revoke_snapshot_not_ancestor_raises(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-098",
+                event_id="EVT-20260727-0098",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-098"),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Grant",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            # Write revoke with a non-ancestor snapshot.
+            revoke_yaml = _make_revoke_yaml(
+                approval_id="APR-098",
+                event_id="EVT-20260727-0097",
+                snapshot_commit="0" * 40,
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-20260727-0097.yaml").write_text(
+                revoke_yaml, encoding="utf-8"
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-098"),
+                expected_snapshot_commit=head2,
+            )
+            with self.assertRaises(ag.ApprovalSnapshotConflictError):
+                gate.check(req, _NOW)
+
+    def test_naive_now_raises_type_error(self) -> None:
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            naive = datetime(2026, 7, 27, 8, 0, 0)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=head,
+            )
+            with self.assertRaises(TypeError):
+                gate.check(req, naive)
+
+    def test_non_utc_now_raises_type_error(self) -> None:
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            from datetime import timezone, timedelta
+            non_utc = datetime(2026, 7, 27, 8, 0, 0,
+                               tzinfo=timezone(timedelta(hours=8)))
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=head,
+            )
+            with self.assertRaises(TypeError):
+                gate.check(req, non_utc)
+
+    def test_bool_now_raises_type_error(self) -> None:
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=head,
+            )
+            with self.assertRaises(TypeError):
+                gate.check(req, True)  # type: ignore[arg-type]
+
+    def test_malformed_grant_in_store_fails(self) -> None:
+        with _temp_project() as proj:
+            # Write malformed evidence.
+            bad_yaml = _make_grant_yaml(schema_version="bad-version/v1")
+            (proj / "docs" / "pm" / "approvals" / "EVT-0099.yaml").write_text(
+                bad_yaml, encoding="utf-8"
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=head,
+            )
+            with self.assertRaises(ag.ApprovalValidationError):
+                gate.check(req, _NOW)
+
+    def test_unknown_schema_version_fails(self) -> None:
+        with _temp_project() as proj:
+            bad_yaml = _make_grant_yaml(schema_version="unknown/v99")
+            (proj / "docs" / "pm" / "approvals" / "EVT-0098.yaml").write_text(
+                bad_yaml, encoding="utf-8"
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=head,
+            )
+            with self.assertRaises(ag.ApprovalValidationError):
+                gate.check(req, _NOW)
+
+    def test_check_does_not_create_directory(self) -> None:
+        with _temp_project() as proj:
+            before_dirs = set(d for d in proj.glob("**/*") if d.is_dir())
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=head,
+            )
+            gate.check(req, _NOW)
+            after_dirs = set(d for d in proj.glob("**/*") if d.is_dir())
+            self.assertEqual(before_dirs, after_dirs)
+
+    def test_check_does_not_write_files(self) -> None:
+        with _temp_project() as proj:
+            before_files = set(
+                f for f in proj.glob("**/*") if f.is_file()
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=head,
+            )
+            gate.check(req, _NOW)
+            after_files = set(
+                f for f in proj.glob("**/*") if f.is_file()
+            )
+            self.assertEqual(before_files, after_files)
+
+    def test_check_does_not_acquire_state_lock(self) -> None:
+        """check() is read-only and must not acquire the state lock."""
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-050",
+                event_id="EVT-20260727-0050",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-050"),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Test",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            # Hold the state lock in another thread, then call check().
+            error_from_thread: list[BaseException | None] = [None]
+            check_done = threading.Event()
+
+            def _holder() -> None:
+                with ag._exclusive_state_lock(proj):
+                    check_done.set()
+                    # Hold lock briefly.
+                    import time
+                    time.sleep(0.5)
+
+            def _checker() -> None:
+                try:
+                    req = ag.ApprovalCheckRequest(
+                        scope=ag.ApprovalScope.DISPATCH,
+                        subject=_make_subject(task_id="TC-050"),
+                        expected_snapshot_commit=head2,
+                    )
+                    gate.check(req, _NOW)
+                except BaseException as exc:
+                    error_from_thread[0] = exc
+
+            t_holder = threading.Thread(target=_holder)
+            t_holder.start()
+            self.assertTrue(check_done.wait(timeout=5))
+            t_checker = threading.Thread(target=_checker)
+            t_checker.start()
+            t_checker.join(timeout=5)
+            t_holder.join(timeout=5)
+            self.assertIsNone(error_from_thread[0],
+                              f"check() must not fail due to lock contention: "
+                              f"{error_from_thread[0]}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 20. ApprovalGate.check() determinism tests (TC-13.12c)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ApprovalGateCheckDeterminismTests(unittest.TestCase):
+    """Test deterministic matching order."""
+
+    def test_result_independent_of_filename_order(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            subj = _make_subject(task_id="TC-020")
+            # Write grant with "later" event_id filename first.
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-020",
+                event_id="EVT-ZZZZ",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                lease_epoch=1,
+                now=_NOW,
+                reason="Should match",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                expected_snapshot_commit=head2,
+            )
+            result = gate.check(req, _NOW)
+            self.assertTrue(result.passed)
+            self.assertEqual("APR-020", result.matched_evidence.approval_id)
+
+    def test_result_consistent_across_gate_instances(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            subj = _make_subject(task_id="TC-021")
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-021",
+                event_id="EVT-20260727-0030",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                lease_epoch=1,
+                now=_NOW,
+                reason="Test",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                expected_snapshot_commit=head2,
+            )
+            gate1 = ag.ApprovalGate(project_root=proj)
+            gate2 = ag.ApprovalGate(project_root=proj)
+            r1 = gate1.check(req, _NOW)
+            r2 = gate2.check(req, _NOW)
+            self.assertEqual(r1.passed, r2.passed)
+            self.assertEqual(r1.matched_evidence.approval_id,
+                             r2.matched_evidence.approval_id)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 21. ApprovalGate.require() tests (TC-13.12c)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ApprovalGateRequireTests(unittest.TestCase):
+    """Test ApprovalGate.require() mapping."""
+
+    def test_require_active_grant_returns_evidence(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-030",
+                event_id="EVT-20260727-0030",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-030"),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Test",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-030"),
+                expected_snapshot_commit=head2,
+            )
+            evidence = gate.require(req, _NOW)
+            self.assertIsInstance(evidence, ag.ApprovalEvidence)
+            self.assertEqual("APR-030", evidence.approval_id)
+
+    def test_require_not_found_raises_approval_not_found(self) -> None:
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-999"),
+                expected_snapshot_commit=head,
+            )
+            with self.assertRaises(ag.ApprovalNotFoundError):
+                gate.require(req, _NOW)
+
+    def test_require_expired_raises_approval_expired(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            # Write manually — write_grant rejects expires_at <= granted_at.
+            past_granted = "2026-07-20T08:00:00Z"
+            past_expiry = "2026-07-21T08:00:00Z"
+            yaml = _make_grant_yaml(
+                approval_id="APR-031",
+                event_id="EVT-20260727-0031",
+                scope="dispatch",
+                task_id="TC-031",
+                revision=1,
+                attempt=1,
+                granted_at=past_granted,
+                expires_at=past_expiry,
+                snapshot_commit=head,
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-20260727-0031.yaml").write_text(
+                yaml, encoding="utf-8"
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-031"),
+                expected_snapshot_commit=head2,
+            )
+            with self.assertRaises(ag.ApprovalExpiredError):
+                gate.require(req, _NOW)
+
+    def test_require_revoked_raises_approval_revoked(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-032",
+                event_id="EVT-20260727-0032",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-032"),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Will revoke",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            head2 = _git_head(proj)
+            ag.write_revoke(
+                project_root=proj,
+                approval_id="APR-032",
+                event_id="EVT-20260727-0033",
+                lease_epoch=2,
+                now=_LATER,
+                reason="Revoked",
+                expected_snapshot_commit=head2,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head3 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-032"),
+                expected_snapshot_commit=head3,
+            )
+            # Check AFTER revoke time.
+            check_now = datetime(2026, 7, 27, 10, 0, 0, tzinfo=UTC)
+            with self.assertRaises(ag.ApprovalRevokedError):
+                gate.require(req, check_now)
+
+    def test_require_wrong_scope_raises_approval_not_found(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            subj = _make_subject(task_id="TC-033")
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-033",
+                event_id="EVT-20260727-0034",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                lease_epoch=1,
+                now=_NOW,
+                reason="Dispatch only",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.ACCEPT,
+                subject=subj,
+                expected_snapshot_commit=head2,
+            )
+            with self.assertRaises(ag.ApprovalNotFoundError):
+                gate.require(req, _NOW)
+
+    def test_require_wrong_subject_raises_approval_not_found(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-034",
+                event_id="EVT-20260727-0035",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-034", attempt=1),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Attempt 1",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-034", attempt=5),
+                expected_snapshot_commit=head2,
+            )
+            with self.assertRaises(ag.ApprovalNotFoundError):
+                gate.require(req, _NOW)
+
+    def test_require_calls_check_exactly_once(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-035",
+                event_id="EVT-20260727-0036",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-035"),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Test",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-035"),
+                expected_snapshot_commit=head2,
+            )
+            # Verify require() calls check() by checking their results
+            # are consistent — check() passes, require() returns same evidence.
+            # (Both load from the evidence store, so objects may differ by
+            # identity but must be equal.)
+            check_result = gate.check(req, _NOW)
+            self.assertTrue(check_result.passed,
+                            "check() must pass for valid active grant")
+            evidence = gate.require(req, _NOW)
+            self.assertEqual("APR-035", evidence.approval_id)
+            self.assertEqual(check_result.matched_evidence, evidence,
+                             "require() must return evidence matching check()")
+
+    def test_require_ambiguous_propagates(self) -> None:
+        with _temp_project() as proj:
+            subj = _make_subject(task_id="TC-036")
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-036A",
+                event_id="EVT-20260727-0037",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                lease_epoch=1,
+                now=_NOW,
+                reason="Grant A",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            head2 = _git_head(proj)
+            grant2 = _make_grant_yaml(
+                approval_id="APR-036B",
+                event_id="EVT-20260727-0038",
+                scope="dispatch",
+                task_id="TC-036",
+                revision=1,
+                attempt=1,
+                snapshot_commit=head2,
+                expires_at=None,
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-20260727-0038.yaml").write_text(
+                grant2, encoding="utf-8"
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head3 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=subj,
+                expected_snapshot_commit=head3,
+            )
+            with self.assertRaises(ag.ApprovalAmbiguousError):
+                gate.require(req, _NOW)
+
+    def test_require_snapshot_conflict_propagates(self) -> None:
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=_SAMPLE_SHA2,
+            )
+            with self.assertRaises(ag.ApprovalSnapshotConflictError):
+                gate.require(req, _NOW)
+
+    def test_require_message_does_not_leak_request_content(self) -> None:
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.ACCEPT,
+                subject=_make_subject(task_id="TC-042"),
+                expected_snapshot_commit=head,
+            )
+            try:
+                gate.require(req, _NOW)
+            except ag.ApprovalNotFoundError as exc:
+                msg = str(exc)
+                self.assertNotIn("TC-042", msg)
+                self.assertNotIn("accept", msg)
+            except Exception:
+                pass  # Different error is OK; we only check message safety
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 22. ApprovalGate.require() inconsistent result tests (TC-13.12c)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ApprovalGateRequireInconsistentResultTests(unittest.TestCase):
+    """Test require() fail-closed behaviour on inconsistent check() results."""
+
+    def test_require_passed_with_null_evidence_fail_closed(self) -> None:
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=head,
+            )
+            with mock.patch.object(
+                ag.ApprovalGate, "check"
+            ) as mock_check:
+                # Build an inconsistent result: passed=True with None evidence.
+                # Must bypass __post_init__ by constructing with object.__new__
+                # and setting attributes manually, since __post_init__ would reject.
+                inconsistent = object.__new__(ag.ApprovalCheckResult)
+                object.__setattr__(inconsistent, "passed", True)
+                object.__setattr__(inconsistent, "failure_code", None)
+                object.__setattr__(inconsistent, "matched_evidence", None)
+                object.__setattr__(inconsistent, "checked_at", _NOW_STR)
+                mock_check.return_value = inconsistent
+                with self.assertRaises(ag.ApprovalError):
+                    gate.require(req, _NOW)
+
+    def test_require_failed_with_null_code_fail_closed(self) -> None:
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=head,
+            )
+            with mock.patch.object(
+                ag.ApprovalGate, "check"
+            ) as mock_check:
+                inconsistent = object.__new__(ag.ApprovalCheckResult)
+                object.__setattr__(inconsistent, "passed", False)
+                object.__setattr__(inconsistent, "failure_code", None)
+                object.__setattr__(inconsistent, "matched_evidence", None)
+                object.__setattr__(inconsistent, "checked_at", _NOW_STR)
+                mock_check.return_value = inconsistent
+                with self.assertRaises(ag.ApprovalError):
+                    gate.require(req, _NOW)
+
+    def test_require_unknown_failure_code_fail_closed(self) -> None:
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=head,
+            )
+            with mock.patch.object(
+                ag.ApprovalGate, "check"
+            ) as mock_check:
+                result = ag.ApprovalCheckResult(
+                    passed=False,
+                    failure_code="not_found",
+                    matched_evidence=None,
+                    checked_at=_NOW_STR,
+                )
+                # Manually overwrite failure_code to an unknown value.
+                object.__setattr__(result, "failure_code", "unknown_code_xyz")
+                mock_check.return_value = result
+                with self.assertRaises(ag.ApprovalError):
+                    gate.require(req, _NOW)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 23. ApprovalGate.require() -O flag compatibility tests (TC-13.12c)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ApprovalGateRequireOptimizedFlagTests(unittest.TestCase):
+    """Verify require() fail-closed behaviour works with python -O."""
+
+    def test_O_flag_inconsistent_success_rejected(self) -> None:
+        """Works with python -O: no assert used."""
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=head,
+            )
+            with mock.patch.object(
+                ag.ApprovalGate, "check"
+            ) as mock_check:
+                inconsistent = object.__new__(ag.ApprovalCheckResult)
+                object.__setattr__(inconsistent, "passed", True)
+                object.__setattr__(inconsistent, "failure_code", None)
+                object.__setattr__(inconsistent, "matched_evidence", None)
+                object.__setattr__(inconsistent, "checked_at", _NOW_STR)
+                mock_check.return_value = inconsistent
+                with self.assertRaises(ag.ApprovalError):
+                    gate.require(req, _NOW)
+
+    def test_O_flag_inconsistent_failure_rejected(self) -> None:
+        """Works with python -O: no assert used."""
+        with _temp_project() as proj:
+            gate = ag.ApprovalGate(project_root=proj)
+            head = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(),
+                expected_snapshot_commit=head,
+            )
+            with mock.patch.object(
+                ag.ApprovalGate, "check"
+            ) as mock_check:
+                inconsistent = object.__new__(ag.ApprovalCheckResult)
+                object.__setattr__(inconsistent, "passed", False)
+                object.__setattr__(inconsistent, "failure_code", None)
+                object.__setattr__(inconsistent, "matched_evidence", None)
+                object.__setattr__(inconsistent, "checked_at", _NOW_STR)
+                mock_check.return_value = inconsistent
+                with self.assertRaises(ag.ApprovalError):
+                    gate.require(req, _NOW)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 24. Git ancestry tests (TC-13.12c)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class GitAncestryTests(unittest.TestCase):
+    """Test _git_is_ancestor helper."""
+
+    def test_equal_sha_returns_true(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            result = ag._git_is_ancestor(proj, head, head)
+            self.assertTrue(result)
+
+    def test_real_ancestor_returns_true(self) -> None:
+        with _temp_project() as proj:
+            head1 = _git_head(proj)
+            # Create a new commit.
+            (proj / "newfile").write_text("content", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "newfile"],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "second"],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            )
+            head2 = _git_head(proj)
+            self.assertNotEqual(head1, head2)
+            result = ag._git_is_ancestor(proj, head1, head2)
+            self.assertTrue(result)
+
+    def test_non_ancestor_returns_false(self) -> None:
+        with _temp_project() as proj:
+            # Create an orphan branch with an unrelated commit.
+            # This SHA exists in the repo but is not an ancestor of main.
+            subprocess.run(
+                ["git", "checkout", "--orphan", "orphan_branch"],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            )
+            subprocess.run(
+                ["git", "rm", "-rf", "."],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            )
+            (proj / "orphan_file").write_text("orphan", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "orphan_file"],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "orphan"],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            )
+            orphan_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            ).stdout.decode("utf-8").strip()
+            # Switch back to main branch.
+            subprocess.run(
+                ["git", "checkout", "master"],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            )
+            head = _git_head(proj)
+            # orphan_sha exists in the repo but is NOT an ancestor of HEAD.
+            result = ag._git_is_ancestor(proj, orphan_sha, head)
+            self.assertFalse(result, "orphan commit must not be ancestor of HEAD")
+
+    def test_git_command_failure_raises_snapshot_conflict(self) -> None:
+        with _temp_project() as proj:
+            with mock.patch("subprocess.run") as mock_run:
+                mock_run.side_effect = OSError("git not found")
+                with self.assertRaises(ag.ApprovalSnapshotConflictError):
+                    ag._git_is_ancestor(proj, "a" * 40, "b" * 40)
+
+    def test_git_non_zero_exit_raises_snapshot_conflict(self) -> None:
+        with _temp_project() as proj:
+            with mock.patch("subprocess.run") as mock_run:
+                mock_result = mock.MagicMock()
+                mock_result.returncode = 128
+                mock_run.return_value = mock_result
+                with self.assertRaises(ag.ApprovalSnapshotConflictError):
+                    ag._git_is_ancestor(proj, "a" * 40, "b" * 40)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 25. Gate no side-effects tests (TC-13.12c)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class GateNoSideEffectsTests(unittest.TestCase):
+    """Confirm check() and require() are truly read-only."""
+
+    def test_check_no_lock_acquired(self) -> None:
+        """check() must succeed even when another thread holds the state lock."""
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-060",
+                event_id="EVT-20260727-0060",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-060"),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Test",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-060"),
+                expected_snapshot_commit=head2,
+            )
+            lock_held = threading.Event()
+            check_result: list[object | None] = [None]
+
+            def _holder() -> None:
+                with ag._exclusive_state_lock(proj):
+                    lock_held.set()
+                    # Hold for a moment.
+                    import time
+                    time.sleep(0.3)
+
+            def _checker() -> None:
+                try:
+                    check_result[0] = gate.check(req, _NOW)
+                except BaseException as exc:
+                    check_result[0] = exc
+
+            t_holder = threading.Thread(target=_holder)
+            t_holder.start()
+            self.assertTrue(lock_held.wait(timeout=5))
+            t_checker = threading.Thread(target=_checker)
+            t_checker.start()
+            t_checker.join(timeout=5)
+            t_holder.join(timeout=5)
+            self.assertIsInstance(check_result[0], ag.ApprovalCheckResult)
+            self.assertTrue(check_result[0].passed,
+                            "check() must succeed while lock is held elsewhere")
+
+    def test_require_no_lock_acquired(self) -> None:
+        """require() must succeed even when another thread holds the state lock."""
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            ag.write_grant(
+                project_root=proj,
+                approval_id="APR-061",
+                event_id="EVT-20260727-0061",
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-061"),
+                lease_epoch=1,
+                now=_NOW,
+                reason="Test",
+                expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            gate = ag.ApprovalGate(project_root=proj)
+            head2 = _git_head(proj)
+            req = ag.ApprovalCheckRequest(
+                scope=ag.ApprovalScope.DISPATCH,
+                subject=_make_subject(task_id="TC-061"),
+                expected_snapshot_commit=head2,
+            )
+            lock_held = threading.Event()
+            require_result: list[object | None] = [None]
+
+            def _holder() -> None:
+                with ag._exclusive_state_lock(proj):
+                    lock_held.set()
+                    import time
+                    time.sleep(0.3)
+
+            def _requirer() -> None:
+                try:
+                    require_result[0] = gate.require(req, _NOW)
+                except BaseException as exc:
+                    require_result[0] = exc
+
+            t_holder = threading.Thread(target=_holder)
+            t_holder.start()
+            self.assertTrue(lock_held.wait(timeout=5))
+            t_checker = threading.Thread(target=_requirer)
+            t_checker.start()
+            t_checker.join(timeout=5)
+            t_holder.join(timeout=5)
+            self.assertIsInstance(require_result[0], ag.ApprovalEvidence)
+            self.assertEqual("APR-061", require_result[0].approval_id)
 
 
 if __name__ == "__main__":

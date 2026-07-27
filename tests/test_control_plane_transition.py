@@ -44,19 +44,13 @@ from typing import Union, get_args, get_origin
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SKILL_SCRIPTS = _REPO_ROOT / "skills" / "agentdesk" / "scripts"
 
-_SYS_PATH_BEFORE = list(_sys.path)
-
-# Ensure scripts directory is on the path (restored after import).
-_sys_path_changed = False
+# The scripts directory must be importable for the entire test session.
+# _execute_transition_core() does `from approval_gate import ...` at
+# call time, so sys.path must include the scripts dir throughout.
 if str(_SKILL_SCRIPTS) not in _sys.path:
     _sys.path.insert(0, str(_SKILL_SCRIPTS))
-    _sys_path_changed = True
 
 import control_plane_transition as _cpt_module
-
-# Restore sys.path to its original state.
-if _sys_path_changed:
-    _sys.path.pop(0)
 
 
 # ── test base ──────────────────────────────────────────────────────────────
@@ -4270,10 +4264,17 @@ class _TransitionTestHarness:
         attempt: int | None = None,
         current_dispatch: dict | None = None,
         extra_task_fields: dict | None = None,
+        setup_approval_grant: bool = True,
+        # Override integrate grant's accepted_commit for CHANGE_INTEGRATED tests
+        integrate_accepted_commit: str = "a" * 40,
     ) -> tuple:
         """Create a temp project with git repo and tasks.yaml.
 
         Returns (tmpdir, project_root, head_commit, service, task_dict).
+
+        If *setup_approval_grant* is True, also writes an approval grant
+        evidence file for the three gated transitions, so existing tests
+        continue to pass after TC-13.12c integration.
         """
         import json as _json
 
@@ -4376,6 +4377,93 @@ class _TransitionTestHarness:
             check=True, timeout=10, capture_output=True, text=True,
         )
         head_commit = r.stdout.strip()
+
+        # ── Write approval grant for gated transitions (TC-13.12c) ──
+        if setup_approval_grant:
+            approvals_dir = root / "docs" / "pm" / "approvals"
+            approvals_dir.mkdir(parents=True, exist_ok=True)
+            resolved_attempt = max(1, attempt if attempt is not None else 1)
+            resolved_dispatch_id = (
+                current_dispatch["dispatch_id"]
+                if isinstance(current_dispatch, dict)
+                and isinstance(current_dispatch.get("dispatch_id"), str)
+                else "N/A"  # Match _build_approval_subject fallback for CHANGE_INTEGRATED
+            )
+            # Write three grants: dispatch, accept, integrate
+            for scope_val, acc_commit in [
+                ("dispatch", None),
+                ("accept", None),
+                ("integrate", integrate_accepted_commit),
+            ]:
+                grant: dict[str, object] = {
+                    "schema_version": "agentdesk.task-approval/v1",
+                    "record_type": "grant",
+                    "approval_id": f"APR-HARNESS-{scope_val.upper()}",
+                    "event_id": f"EVT-HARNESS-{scope_val.upper()}",
+                    "scope": scope_val,
+                    "task_id": task_id,
+                    "revision": revision,
+                    "attempt": resolved_attempt,
+                    "dispatch_id": resolved_dispatch_id,
+                    "accepted_commit": acc_commit,
+                    "actor_role_id": "PM",
+                    "lease_epoch": 1,
+                    "granted_at": "2026-07-27T00:00:00Z",
+                    "expires_at": None,
+                    "reason": "Harness grant",
+                    "snapshot_commit": head_commit,
+                }
+                (approvals_dir / f"EVT-HARNESS-{scope_val.upper()}.yaml").write_text(
+                    _json.dumps(grant, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            # Commit grants.
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "grants"],
+                check=True, timeout=10, capture_output=True,
+            )
+            r2 = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head_commit = r2.stdout.strip()
+
+            # ── Write worker slot lease store (runtime, NOT committed) ──
+            runtime_dir = root / ".agentdesk" / "runtime"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            lease_store_path = runtime_dir / "worker-slot-lease.yaml"
+            holder_did = resolved_dispatch_id if resolved_dispatch_id != "N/A" else "DSP-001"
+            lease_store_path.write_text(
+                _json.dumps({
+                    "schema_version": "agentdesk.worker-slot-lease/v1",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "slot_epochs": {
+                        "basic_agent-1": 1, "basic_agent-2": 0,
+                        "standard_agent-1": 0, "standard_agent-2": 0,
+                        "advanced_agent-1": 0, "advanced_agent-2": 0,
+                        "expert_agent-1": 0, "expert_agent-2": 0,
+                    },
+                    "leases": {
+                        "basic_agent-1": {
+                            "lease_id": "WSL-" + "a" * 32,
+                            "lease_epoch": 1,
+                            "slot_id": "basic_agent-1",
+                            "worker_kind": "basic_agent",
+                            "holder_dispatch_id": holder_did,
+                            "holder_instance_id": "worker-inst-1",
+                            "canonical_worktree": str(root).replace("\\", "/"),
+                            "acquired_at": "2026-07-27T00:30:00Z",
+                            "heartbeat_at": "2026-07-27T00:30:00Z",
+                            "expires_at": "2026-07-27T02:00:00Z",
+                        },
+                    },
+                }, ensure_ascii=False), encoding="utf-8",
+            )
+            # Lease store is runtime state — never committed.
 
         svc = cpt.ControlPlaneTransitionService(project_root=root)
         return tmpdir, root, head_commit, svc, task
@@ -4637,12 +4725,12 @@ class TestTransitionReadyToDispatched(TestControlPlaneTransitionBase):
             from dispatcher_gateway import ModelSelectionSnapshot
             from worker_slot_lease import WorkerSlotLease, WorkerKind
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir, root, head, svc, task = self._harness._setup_project(
             self.cpt, task_state="ready", task_id="TC-001", revision=1,
             attempt=None,
+            setup_approval_grant=True,
         )
         try:
             ms = ModelSelectionSnapshot.from_mapping({
@@ -4712,6 +4800,7 @@ class TestTransitionReadyToDispatched(TestControlPlaneTransitionBase):
         tmpdir, root, head, svc, task = self._harness._setup_project(
             self.cpt, task_state="ready", task_id="TC-001", revision=1,
             attempt=None,
+            setup_approval_grant=True,
         )
         try:
             ms = ModelSelectionSnapshot.from_mapping({
@@ -5314,8 +5403,7 @@ class TestDeliverySubmitted(TestControlPlaneTransitionBase):
                 WorkerSlotLease, WorkerKind,
             )
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir, root, head, svc, task = self._harness._setup_project(
             self.cpt, task_state="in_progress", task_id="TC-001", revision=1,
@@ -5427,8 +5515,7 @@ class TestDeliveryReturned(TestControlPlaneTransitionBase):
         try:
             from worker_slot_lease import WorkerSlotLease, WorkerKind
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir, root, head, svc, task = self._harness._setup_project(
             self.cpt, task_state="review_ready", task_id="TC-001", revision=1,
@@ -5579,6 +5666,8 @@ class TestChangeIntegrated(TestControlPlaneTransitionBase):
 
         tmpdir, root, head, svc, task = self._harness._setup_project(
             self.cpt, task_state="accepted", task_id="TC-001", revision=1,
+            setup_approval_grant=True,
+            integrate_accepted_commit="e" * 40,
             extra_task_fields={
                 "accepted_commit": "d" * 40,
                 "implementation_commit": "b" * 40,
@@ -5814,11 +5903,11 @@ class TestSequentialDispatchAttempt(TestControlPlaneTransitionBase):
             )
             from dispatcher_gateway import ModelSelectionSnapshot
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir, root, head, svc, task = self._harness._setup_project(
             self.cpt, task_state="ready", task_id="TC-001", revision=1,
+            setup_approval_grant=True,
         )
         try:
             # Init worker slot lease store.
@@ -6035,6 +6124,45 @@ class TestSequentialDispatchAttempt(TestControlPlaneTransitionBase):
             lease_store_path.write_text(
                 json.dumps(store2, ensure_ascii=False), encoding="utf-8"
             )
+
+            # TC-13.12c: Write approval grant for attempt 2 dispatch.
+            approvals_dir = root / "docs" / "pm" / "approvals"
+            import json as _seq_json2
+            grant_att2 = {
+                "schema_version": "agentdesk.task-approval/v1",
+                "record_type": "grant",
+                "approval_id": "APR-SEQ-A2",
+                "event_id": "EVT-SEQ-A2",
+                "scope": "dispatch",
+                "task_id": "TC-001",
+                "revision": 1,
+                "attempt": 2,
+                "dispatch_id": "DSP-002",
+                "accepted_commit": None,
+                "actor_role_id": "PM",
+                "lease_epoch": 1,
+                "granted_at": "2026-07-27T09:00:00Z",
+                "expires_at": None,
+                "reason": "Sequential test attempt 2",
+                "snapshot_commit": head4,
+            }
+            (approvals_dir / "EVT-SEQ-A2.yaml").write_text(
+                _seq_json2.dumps(grant_att2, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "grant-att2"],
+                check=True, timeout=10, capture_output=True,
+            )
+            r_g2 = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head4 = r_g2.stdout.strip()
 
             # Dispatch attempt 2: ready -> dispatched.
             cas4 = self.cpt.TransitionCAS(
@@ -6475,6 +6603,78 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             ["git", "-C", str(root), "config", "user.name", "Test"],
             check=True, timeout=10, capture_output=True,
         )
+        # Write approval grants for gated transitions (TC-13.12c).
+        # Only if no grants already exist on disk (caller may have written own).
+        approvals_dir = root / "docs" / "pm" / "approvals"
+        if not approvals_dir.is_dir() or not any(
+            f.name.startswith("EVT-") and f.name.endswith(".yaml")
+            for f in approvals_dir.iterdir()
+        ):
+            approvals_dir.mkdir(parents=True, exist_ok=True)
+            for scope_val, acc_commit in [
+                ("dispatch", None),
+                ("accept", None),
+                ("integrate", "a" * 40),
+            ]:
+                grant = {
+                    "schema_version": "agentdesk.task-approval/v1",
+                    "record_type": "grant",
+                    "approval_id": f"APR-WFM-{scope_val.upper()}",
+                    "event_id": f"EVT-WFM-{scope_val.upper()}",
+                    "scope": scope_val,
+                    "task_id": "TC-001",
+                    "revision": 1,
+                    "attempt": 1,
+                    "dispatch_id": "DSP-001",
+                    "accepted_commit": acc_commit,
+                    "actor_role_id": "PM",
+                    "lease_epoch": 1,
+                    "granted_at": "2026-07-27T00:00:00Z",
+                    "expires_at": None,
+                    "reason": "WFM test grant",
+                    "snapshot_commit": "0" * 40,
+                }
+                (approvals_dir / f"EVT-WFM-{scope_val.upper()}.yaml").write_text(
+                    self._json.dumps(grant, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "init"],
+                check=True, timeout=10, capture_output=True,
+            )
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+            # Fix grant snapshot_commits.
+            for scope_val in ["dispatch", "accept", "integrate"]:
+                grant_path = approvals_dir / f"EVT-WFM-{scope_val}.yaml"
+                g = self._json.loads(grant_path.read_text(encoding="utf-8"))
+                g["snapshot_commit"] = head
+                grant_path.write_text(
+                    self._json.dumps(g, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "fix-grant-shas"],
+                check=True, timeout=10, capture_output=True,
+            )
+            r2 = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            return r2.stdout.strip()
+
+        # Grants already exist — just do a normal commit+add.
         subprocess.run(
             ["git", "-C", str(root), "add", "-A"],
             check=True, timeout=10, capture_output=True,
@@ -6602,8 +6802,9 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             from worker_slot_lease import WorkerSlotLease, WorkerKind
             from dispatcher_gateway import ModelSelectionSnapshot
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            # Do NOT pop — _execute_transition_core needs the path for
+            # lazy import of approval_gate.
+            pass
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -6742,8 +6943,9 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             from worker_slot_lease import WorkerSlotLease, WorkerKind
             from dispatcher_gateway import ModelSelectionSnapshot
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            # Do NOT pop — _execute_transition_core needs the path for
+            # lazy import of approval_gate.
+            pass
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -6882,6 +7084,52 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             )
             head = r.stdout.strip()
 
+            # TC-13.12c: Write approval grant for DELIVERY_ACCEPTED.
+            acc_approvals_dir = root / "docs" / "pm" / "approvals"
+            acc_approvals_dir.mkdir(parents=True, exist_ok=True)
+            acc_grant = {
+                "schema_version": "agentdesk.task-approval/v1",
+                "record_type": "grant",
+                "approval_id": "APR-ACC-FAIL",
+                "event_id": "EVT-ACC-FAIL",
+                "scope": "accept",
+                "task_id": "TC-001",
+                "revision": 1,
+                "attempt": 1,
+                "dispatch_id": "DSP-001",
+                "accepted_commit": None,
+                "actor_role_id": "PM",
+                "lease_epoch": 1,
+                "granted_at": "2026-07-27T00:00:00Z",
+                "expires_at": None,
+                "reason": "Acceptance failure test grant",
+                "snapshot_commit": head,
+            }
+            (acc_approvals_dir / "EVT-ACC-FAIL.yaml").write_text(
+                self._json.dumps(acc_grant, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "approval-grant"],
+                check=True, timeout=10, capture_output=True,
+            )
+            r2 = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r2.stdout.strip()
+            # Rebuild service with updated HEAD.
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            # Rebuild CAS with updated HEAD.
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+
             lease = WorkerSlotLease(
                 lease_id="WSL-" + "a" * 32,
                 lease_epoch=1,
@@ -6960,8 +7208,9 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             from worker_slot_lease import WorkerSlotLease, WorkerKind
             from dispatcher_gateway import ModelSelectionSnapshot
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            # Do NOT pop — _execute_transition_core needs the path for
+            # lazy import of approval_gate.
+            pass
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -7197,8 +7446,9 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             from worker_slot_lease import WorkerSlotLease, WorkerKind
             from dispatcher_gateway import ModelSelectionSnapshot
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            # Do NOT pop — _execute_transition_core needs the path for
+            # lazy import of approval_gate.
+            pass
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -7323,8 +7573,9 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             from worker_slot_lease import WorkerSlotLease, WorkerKind
             from dispatcher_gateway import ModelSelectionSnapshot
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            # Do NOT pop — _execute_transition_core needs the path for
+            # lazy import of approval_gate.
+            pass
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -7483,6 +7734,46 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             )
             head = r_head.stdout.strip()
 
+            # TC-13.12c: Add approval grant for DELIVERY_ACCEPTED.
+            approvals_dir = root / "docs" / "pm" / "approvals"
+            approvals_dir.mkdir(parents=True, exist_ok=True)
+            import json as _wodap_json
+            accept_grant = {
+                "schema_version": "agentdesk.task-approval/v1",
+                "record_type": "grant",
+                "approval_id": "APR-WODAP",
+                "event_id": "EVT-WODAP",
+                "scope": "accept",
+                "task_id": "TC-001",
+                "revision": 1,
+                "attempt": 1,
+                "dispatch_id": "DSP-001",
+                "accepted_commit": None,
+                "actor_role_id": "PM",
+                "lease_epoch": 1,
+                "granted_at": "2026-07-27T00:00:00Z",
+                "expires_at": None,
+                "reason": "Write order delivery accepted grant",
+                "snapshot_commit": head,
+            }
+            (approvals_dir / "EVT-WODAP.yaml").write_text(
+                _wodap_json.dumps(accept_grant, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "approval-grant"],
+                check=True, timeout=10, capture_output=True,
+            )
+            r_head2 = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r_head2.stdout.strip()
+
             lease = WorkerSlotLease(
                 lease_id="WSL-" + "a" * 32, lease_epoch=1,
                 slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
@@ -7571,8 +7862,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from worker_slot_lease import WorkerSlotLease, WorkerKind
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -7754,6 +8044,46 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
             )
             head = r.stdout.strip()
 
+            # ── Write approval grant for DELIVERY_ACCEPTED (TC-13.12c) ──
+            approvals_dir = root / "docs" / "pm" / "approvals"
+            approvals_dir.mkdir(parents=True, exist_ok=True)
+            import json as _json2
+            grant = {
+                "schema_version": "agentdesk.task-approval/v1",
+                "record_type": "grant",
+                "approval_id": "APR-E2E-ACCEPT",
+                "event_id": "EVT-E2E-ACCEPT-GRANT",
+                "scope": "accept",
+                "task_id": "TC-001",
+                "revision": 1,
+                "attempt": 1,
+                "dispatch_id": "DSP-001",
+                "accepted_commit": None,
+                "actor_role_id": "PM",
+                "lease_epoch": 1,
+                "granted_at": "2026-07-27T00:00:00Z",
+                "expires_at": None,
+                "reason": "E2E test grant",
+                "snapshot_commit": head,
+            }
+            (approvals_dir / "EVT-E2E-ACCEPT-GRANT.yaml").write_text(
+                _json2.dumps(grant, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "add-approval-grant"],
+                check=True, timeout=10, capture_output=True,
+            )
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+
             # ── Execute DELIVERY_ACCEPTED ──
             lease = WorkerSlotLease(
                 lease_id="WSL-" + "a" * 32, lease_epoch=1,
@@ -7900,8 +8230,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
                 _read_frontmatter_scalars,
             )
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         # Read the canonical task from tasks.yaml.
         import json as _validator_json
@@ -7951,8 +8280,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from worker_slot_lease import WorkerSlotLease, WorkerKind
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -8008,8 +8336,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from worker_slot_lease import WorkerSlotLease, WorkerKind
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -8062,8 +8389,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from worker_slot_lease import WorkerSlotLease, WorkerKind
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -8116,8 +8442,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from worker_slot_lease import WorkerSlotLease, WorkerKind
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -8179,8 +8504,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from worker_slot_lease import WorkerSlotLease, WorkerKind
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -8238,8 +8562,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -8312,8 +8635,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -8385,8 +8707,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -8459,8 +8780,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -8534,8 +8854,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -8605,8 +8924,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -8677,8 +8995,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -8751,8 +9068,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -8969,6 +9285,45 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
             check=True, timeout=10, capture_output=True,
         )
 
+        # ── Write approval grant for DELIVERY_ACCEPTED (TC-13.12c) ──
+        approvals_dir = root / "docs" / "pm" / "approvals"
+        approvals_dir.mkdir(parents=True, exist_ok=True)
+        r_head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        cur_head = r_head.stdout.strip()
+        grant = {
+            "schema_version": "agentdesk.task-approval/v1",
+            "record_type": "grant",
+            "approval_id": "APR-ACC-SETUP",
+            "event_id": "EVT-ACC-SETUP",
+            "scope": "accept",
+            "task_id": "TC-001",
+            "revision": 1,
+            "attempt": 1,
+            "dispatch_id": "DSP-001",
+            "accepted_commit": None,
+            "actor_role_id": "PM",
+            "lease_epoch": 1,
+            "granted_at": "2026-07-27T00:00:00Z",
+            "expires_at": None,
+            "reason": "Acceptance project grant",
+            "snapshot_commit": cur_head,
+        }
+        (approvals_dir / "EVT-ACC-SETUP.yaml").write_text(
+            _setup_json.dumps(grant, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "add", "-A"],
+            check=True, timeout=10, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-m", "add-approval-grant"],
+            check=True, timeout=10, capture_output=True,
+        )
+
     def _make_acceptance_lease(self, root: Path):
         import sys as _sys
         _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
@@ -8977,8 +9332,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         try:
             from worker_slot_lease import WorkerSlotLease, WorkerKind
         finally:
-            if _scripts in _sys.path:
-                _sys.path.remove(_scripts)
+            pass  # keep scripts path for approval_gate lazy import
         return WorkerSlotLease(
             lease_id="WSL-" + "a" * 32, lease_epoch=1,
             slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
@@ -9060,6 +9414,853 @@ class TestWeakTestPrevention(unittest.TestCase):
             len(violations), 0,
             f"Weak exception assertions: {', '.join(violations)}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TC-13.12c ApprovalGate integration tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
+    """TC-13.12c: ApprovalGate integration with ControlPlaneTransitionService."""
+
+    def _setup_grant(self, root: Path, head: str,
+                     scope: str = "dispatch",
+                     task_id: str = "TC-001",
+                     revision: int = 1,
+                     attempt: int = 1,
+                     dispatch_id: str = "DSP-001",
+                     accepted_commit: str | None = None,
+                     ) -> tuple[str, str]:
+        """Write an approval grant evidence file and return (approval_id, event_id)."""
+        import json as _json
+        approvals_dir = root / "docs" / "pm" / "approvals"
+        approvals_dir.mkdir(parents=True, exist_ok=True)
+
+        approval_id = "APR-TEST-001"
+        event_id = "EVT-20260727-GT01"
+
+        grant: dict[str, object] = {
+            "schema_version": "agentdesk.task-approval/v1",
+            "record_type": "grant",
+            "approval_id": approval_id,
+            "event_id": event_id,
+            "scope": scope,
+            "task_id": task_id,
+            "revision": revision,
+            "attempt": attempt,
+            "dispatch_id": dispatch_id,
+            "accepted_commit": accepted_commit,
+            "actor_role_id": "PM",
+            "lease_epoch": 1,
+            "granted_at": "2026-07-27T00:00:00Z",
+            "expires_at": None,
+            "reason": "Integration test grant",
+            "snapshot_commit": head,
+        }
+        grant_path = approvals_dir / f"{event_id}.yaml"
+        grant_path.write_text(_json.dumps(grant, ensure_ascii=False, indent=2) + "\n",
+                              encoding="utf-8")
+
+        # Commit the grant file so it becomes part of HEAD.
+        import subprocess as _sp
+        _sp.run(
+            ["git", "-C", str(root), "add", "-A"],
+            check=True, timeout=10, capture_output=True,
+        )
+        _sp.run(
+            ["git", "-C", str(root), "commit", "-m", "add grant"],
+            check=True, timeout=10, capture_output=True,
+        )
+
+        return approval_id, event_id
+
+    def _get_head(self, root: Path) -> str:
+        import subprocess as _sp
+        r = _sp.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        return r.stdout.strip()
+
+    # ── Gated transition — forged guard rejection ──
+
+    def test_forged_approval_guard_rejected(self) -> None:
+        """Caller-supplied guard=='approval_gate' GuuardResult must be rejected."""
+        import tempfile as _tf
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from dispatcher_gateway import ModelSelectionSnapshot
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            pass  # keep scripts path for approval_gate lazy import
+
+        harness = _TransitionTestHarness()
+        tmpdir, root, head, svc, task = harness._setup_project(
+            self.cpt, task_state="ready", task_id="TC-001", revision=1,
+            attempt=None,
+            setup_approval_grant=True,  # TC-13.12c: forged guard test still needs grant to reach the check
+        )
+        try:
+            from dispatcher_gateway import ModelSelectionSnapshot
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            pass  # keep scripts path for approval_gate lazy import
+        try:
+            ms = ModelSelectionSnapshot.from_mapping({
+                "required_model_tier": "standard",
+                "required_model_capabilities": ["read"],
+                "model_binding_id": "bind-1",
+                "selected_model_provider": "test",
+                "selected_model_id": "claude-sonnet",
+                "selected_model_tier": "standard",
+                "selected_deliberation_tier": "balanced",
+                "selected_context_window_tokens": 200000,
+                "selected_model_capabilities": ["read"],
+                "model_degradation_approval_id": None,
+            })
+            payload = self.cpt.DispatchPayload(
+                dispatch_id="DSP-001", role_id="worker-basic",
+                model_selection=ms,
+                task_card_path="docs/pm/tasks/TC-001.md",
+                task_card_commit="0" * 40,
+                base_commit=head, branch="main",
+                report_path="docs/pm/reports/TC-001-r1.md",
+                outbox_message_id="MSG-20260727-FORGED",
+                new_attempt=1,
+            )
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="ready", expected_snapshot_commit=head,
+            )
+            # Forged approval guard.
+            forged_guard = self.cpt.GuardResult(
+                guard="approval_gate",
+                inputs=(self.cpt.GuardInput(key="scope", value="dispatch"),
+                        self.cpt.GuardInput(key="approval_id", value="APR-FAKE")),
+                result="passed",
+                checked_at="2026-07-27T00:00:00Z",
+                evidence_ref="docs/pm/approvals/EVT-FAKE.yaml",
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(),
+                guard_results=(forged_guard,),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-FORGED",
+                event_type="TASK_DISPATCHED",
+                payload=payload, event_context=ctx,
+            )
+            # Init worker slot lease store so the fence passes.
+            runtime_dir = root / ".agentdesk" / "runtime"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            import json as _forge_json
+            _forge_json.dumps({"test": 1})  # no-op just to have import
+            lease_store_path = runtime_dir / "worker-slot-lease.yaml"
+            lease_store_path.write_text(_forge_json.dumps({
+                "schema_version": "agentdesk.worker-slot-lease/v1",
+                "updated_at": "1970-01-01T00:00:00Z",
+                "slot_epochs": {
+                    "basic_agent-1": 1, "basic_agent-2": 0,
+                    "standard_agent-1": 0, "standard_agent-2": 0,
+                    "advanced_agent-1": 0, "advanced_agent-2": 0,
+                    "expert_agent-1": 0, "expert_agent-2": 0,
+                },
+                "leases": {
+                    "basic_agent-1": {
+                        "lease_id": "WSL-" + "a" * 32,
+                        "lease_epoch": 1,
+                        "slot_id": "basic_agent-1",
+                        "worker_kind": "basic_agent",
+                        "holder_dispatch_id": "DSP-001",
+                        "holder_instance_id": "worker-inst-1",
+                        "canonical_worktree": str(root).replace("\\", "/"),
+                        "acquired_at": "2026-07-27T00:30:00Z",
+                        "heartbeat_at": "2026-07-27T00:30:00Z",
+                        "expires_at": "2026-07-27T02:00:00Z",
+                    },
+                },
+            }, ensure_ascii=False), encoding="utf-8")
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r_lease = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r_lease.stdout.strip()
+            # Rebuild request with updated head
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="ready", expected_snapshot_commit=head,
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-FORGED",
+                event_type="TASK_DISPATCHED",
+                payload=payload, event_context=ctx,
+            )
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32,
+                lease_epoch=1,
+                slot_id="basic_agent-1",
+                worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-001",
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-27T00:30:00Z",
+                heartbeat_at="2026-07-27T00:30:00Z",
+                expires_at="2026-07-27T02:00:00Z",
+            )
+            now = datetime(2026, 7, 27, 1, 0, 0, tzinfo=UTC)
+            with self.assertRaises(self.cpt.TransitionValidationError) as ctx_exc:
+                svc.apply_transition(req, lease, now)
+            self.assertIn("approval_gate", str(ctx_exc.exception).lower())
+        finally:
+            tmpdir.cleanup()
+
+    # ── Gated transition — missing approval → zero writes ──
+
+    def test_dispatch_missing_approval_zero_writes(self) -> None:
+        """TASK_DISPATCHED without approval → zero authoritative files written."""
+        import tempfile as _tf
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from dispatcher_gateway import ModelSelectionSnapshot
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            pass  # keep scripts path for approval_gate lazy import
+
+        harness = _TransitionTestHarness()
+        tmpdir, root, head, svc, task = harness._setup_project(
+            self.cpt, task_state="ready", task_id="TC-997", revision=1,
+            attempt=None,
+        )
+        try:
+            # Init worker slot lease store as runtime file (never committed).
+            runtime_dir = root / ".agentdesk" / "runtime"
+            import json as _noapr_json
+            lease_store_path = runtime_dir / "worker-slot-lease.yaml"
+            lease_store_path.write_text(_noapr_json.dumps({
+                "schema_version": "agentdesk.worker-slot-lease/v1",
+                "updated_at": "1970-01-01T00:00:00Z",
+                "slot_epochs": {
+                    "basic_agent-1": 1, "basic_agent-2": 0,
+                    "standard_agent-1": 0, "standard_agent-2": 0,
+                    "advanced_agent-1": 0, "advanced_agent-2": 0,
+                    "expert_agent-1": 0, "expert_agent-2": 0,
+                },
+                "leases": {
+                    "basic_agent-1": {
+                        "lease_id": "WSL-" + "b" * 32,
+                        "lease_epoch": 1,
+                        "slot_id": "basic_agent-1",
+                        "worker_kind": "basic_agent",
+                        "holder_dispatch_id": "DSP-997",
+                        "holder_instance_id": "worker-inst-1",
+                        "canonical_worktree": str(root).replace("\\", "/"),
+                        "acquired_at": "2026-07-27T00:30:00Z",
+                        "heartbeat_at": "2026-07-27T00:30:00Z",
+                        "expires_at": "2026-07-27T02:00:00Z",
+                    },
+                },
+            }, ensure_ascii=False), encoding="utf-8")
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r_head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r_head.stdout.strip()
+            ms = ModelSelectionSnapshot.from_mapping({
+                "required_model_tier": "standard",
+                "required_model_capabilities": ["read"],
+                "model_binding_id": "bind-1",
+                "selected_model_provider": "test",
+                "selected_model_id": "claude-sonnet",
+                "selected_model_tier": "standard",
+                "selected_deliberation_tier": "balanced",
+                "selected_context_window_tokens": 200000,
+                "selected_model_capabilities": ["read"],
+                "model_degradation_approval_id": None,
+            })
+            payload = self.cpt.DispatchPayload(
+                dispatch_id="DSP-NOAPR", role_id="worker-basic",
+                model_selection=ms,
+                task_card_path="docs/pm/tasks/TC-997.md",
+                task_card_commit="0" * 40,
+                base_commit=head, branch="main",
+                report_path="docs/pm/reports/TC-997-r1.md",
+                outbox_message_id="MSG-20260727-NOAPR",
+                new_attempt=1,
+            )
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-997", expected_revision=1,
+                expected_state="ready", expected_snapshot_commit=head,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-NOAPR",
+                event_type="TASK_DISPATCHED",
+                payload=payload, event_context=ctx,
+            )
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "b" * 32,
+                lease_epoch=1,
+                slot_id="basic_agent-1",
+                worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-997",
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-27T00:30:00Z",
+                heartbeat_at="2026-07-27T00:30:00Z",
+                expires_at="2026-07-27T02:00:00Z",
+            )
+            now = datetime(2026, 7, 27, 1, 0, 0, tzinfo=UTC)
+            import sys as _sys3
+            _add_scripts3 = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+            _was_there3 = _add_scripts3 in _sys3.path
+            if not _was_there3:
+                _sys3.path.insert(0, _add_scripts3)
+            try:
+                from approval_gate import ApprovalNotFoundError
+            finally:
+                if not _was_there3:
+                    _sys3.path.remove(_add_scripts3)
+            with self.assertRaises(ApprovalNotFoundError):
+                svc.apply_transition(req, lease, now)
+
+            # Zero writes: event file must not exist.
+            event_path = root / "docs" / "pm" / "events" / "EVT-20260727-NOAPR.yaml"
+            self.assertFalse(event_path.exists(),
+                             "Event file must not be written on gate failure")
+        finally:
+            tmpdir.cleanup()
+
+    # ── Gated transition — success with valid approval ──
+
+    def test_dispatch_with_approval_succeeds_and_writes_guard(self) -> None:
+        """TASK_DISPATCHED with valid grant → success with approval guard."""
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from dispatcher_gateway import ModelSelectionSnapshot
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            pass  # keep scripts path for approval_gate lazy import
+
+        harness = _TransitionTestHarness()
+        tmpdir, root, head, svc, task = harness._setup_project(
+            self.cpt, task_state="ready", task_id="TC-001", revision=1,
+            attempt=None,
+        )
+        try:
+            # Write approval grant.
+            approval_id, event_id = self._setup_grant(
+                root, head, scope="dispatch", task_id="TC-001",
+                revision=1, attempt=1, dispatch_id="DSP-001",
+            )
+            head2 = self._get_head(root)
+
+            # Write worker slot lease store as runtime file (NOT committed —
+            # .agentdesk/runtime/ is gitignored at project root).
+            runtime_dir = root / ".agentdesk" / "runtime"
+            import json as _ds_json
+            lease_store_path = runtime_dir / "worker-slot-lease.yaml"
+            lease_store_path.write_text(
+                _ds_json.dumps({
+                    "schema_version": "agentdesk.worker-slot-lease/v1",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "slot_epochs": {
+                        "basic_agent-1": 1, "basic_agent-2": 0,
+                        "standard_agent-1": 0, "standard_agent-2": 0,
+                        "advanced_agent-1": 0, "advanced_agent-2": 0,
+                        "expert_agent-1": 0, "expert_agent-2": 0,
+                    },
+                    "leases": {
+                        "basic_agent-1": {
+                            "lease_id": "WSL-" + "a" * 32,
+                            "lease_epoch": 1,
+                            "slot_id": "basic_agent-1",
+                            "worker_kind": "basic_agent",
+                            "holder_dispatch_id": "DSP-001",
+                            "holder_instance_id": "worker-inst-1",
+                            "canonical_worktree": str(root).replace("\\", "/"),
+                            "acquired_at": "2026-07-27T00:30:00Z",
+                            "heartbeat_at": "2026-07-27T00:30:00Z",
+                            "expires_at": "2026-07-27T02:00:00Z",
+                        },
+                    },
+                }, ensure_ascii=False), encoding="utf-8",
+            )
+            svc2 = self.cpt.ControlPlaneTransitionService(project_root=root)
+
+            ms = ModelSelectionSnapshot.from_mapping({
+                "required_model_tier": "standard",
+                "required_model_capabilities": ["read"],
+                "model_binding_id": "bind-1",
+                "selected_model_provider": "test",
+                "selected_model_id": "claude-sonnet",
+                "selected_model_tier": "standard",
+                "selected_deliberation_tier": "balanced",
+                "selected_context_window_tokens": 200000,
+                "selected_model_capabilities": ["read"],
+                "model_degradation_approval_id": None,
+            })
+            payload = self.cpt.DispatchPayload(
+                dispatch_id="DSP-001", role_id="worker-basic",
+                model_selection=ms,
+                task_card_path="docs/pm/tasks/TC-001.md",
+                task_card_commit="0" * 40,
+                base_commit=head2, branch="main",
+                report_path="docs/pm/reports/TC-001-r1.md",
+                outbox_message_id="MSG-20260727-GT01",
+                new_attempt=1,
+            )
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="ready", expected_snapshot_commit=head2,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-GT02",
+                event_type="TASK_DISPATCHED",
+                payload=payload, event_context=ctx,
+            )
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32,
+                lease_epoch=1,
+                slot_id="basic_agent-1",
+                worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-001",
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-27T00:30:00Z",
+                heartbeat_at="2026-07-27T00:30:00Z",
+                expires_at="2026-07-27T02:00:00Z",
+            )
+            now = datetime(2026, 7, 27, 1, 0, 0, tzinfo=UTC)
+            result = svc2.apply_transition(req, lease, now)
+
+            self.assertEqual("dispatched", result.to_state)
+
+            # Verify event file contains approval guard.
+            event_path = root / "docs" / "pm" / "events" / "EVT-20260727-GT02.yaml"
+            self.assertTrue(event_path.exists())
+            raw_yaml = event_path.read_text(encoding="utf-8")
+            self.assertIn("approval_gate", raw_yaml,
+                          "Event must contain approval_gate guard")
+            self.assertIn("APR-TEST-001", raw_yaml,
+                          "Guard must reference the grant approval_id")
+
+            # Verify request not mutated.
+            self.assertEqual((), ctx.guard_results,
+                             "Original event_context guard_results must be unchanged")
+            self.assertIs(ctx, req.event_context,
+                          "Original event_context identity must be preserved")
+        finally:
+            tmpdir.cleanup()
+
+    # ── Non-gated transitions — Gate must not be called ──
+
+    def test_specify_transition_no_gate_called(self) -> None:
+        """TASK_SPECIFIED (draft→ready) must not call ApprovalGate."""
+        harness = _TransitionTestHarness()
+        tmpdir, root, head, svc, task = harness._setup_project(
+            self.cpt, task_state="draft", task_id="TC-001", revision=1,
+        )
+        try:
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="draft", expected_snapshot_commit=head,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=("docs/pm/tasks/TC-001.md",),
+                guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-NONGATED",
+                event_type="TASK_SPECIFIED",
+                payload=self.cpt.SpecifyPayload(),
+                event_context=ctx,
+            )
+            now = datetime(2026, 7, 27, 1, 0, 0, tzinfo=UTC)
+            result = svc.apply_transition(req, None, now)
+            self.assertEqual("ready", result.to_state)
+
+            # Event file must NOT contain approval_gate guard.
+            # Event file must NOT contain approval_gate guard.
+            event_path = root / "docs" / "pm" / "events" / "EVT-20260727-NONGATED.yaml"
+            self.assertTrue(event_path.exists())
+            raw_yaml = event_path.read_text(encoding="utf-8")
+            # The guard field appears as "approval_gate" in the serialized YAML.
+            # For non-gated transitions, this must not appear.
+            self.assertNotIn("approval_gate", raw_yaml,
+                             "Non-gated transition must not have approval_gate guard")
+        finally:
+            tmpdir.cleanup()
+
+    # ── Request immutability after transition ──
+
+    def test_request_not_mutated_after_transition(self) -> None:
+        """Original request and event_context must be unchanged after transition."""
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from dispatcher_gateway import ModelSelectionSnapshot
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            pass  # keep scripts path for approval_gate lazy import
+
+        harness = _TransitionTestHarness()
+        tmpdir, root, head, svc, task = harness._setup_project(
+            self.cpt, task_state="ready", task_id="TC-001", revision=1,
+            attempt=None,
+        )
+        try:
+            approval_id, event_id = self._setup_grant(
+                root, head, scope="dispatch", task_id="TC-001",
+                revision=1, attempt=1, dispatch_id="DSP-001",
+            )
+            head2 = self._get_head(root)
+            svc2 = self.cpt.ControlPlaneTransitionService(project_root=root)
+
+            ms = ModelSelectionSnapshot.from_mapping({
+                "required_model_tier": "standard",
+                "required_model_capabilities": ["read"],
+                "model_binding_id": "bind-1",
+                "selected_model_provider": "test",
+                "selected_model_id": "claude-sonnet",
+                "selected_model_tier": "standard",
+                "selected_deliberation_tier": "balanced",
+                "selected_context_window_tokens": 200000,
+                "selected_model_capabilities": ["read"],
+                "model_degradation_approval_id": None,
+            })
+            payload = self.cpt.DispatchPayload(
+                dispatch_id="DSP-001", role_id="worker-basic",
+                model_selection=ms,
+                task_card_path="docs/pm/tasks/TC-001.md",
+                task_card_commit="0" * 40,
+                base_commit=head2, branch="main",
+                report_path="docs/pm/reports/TC-001-r1.md",
+                outbox_message_id="MSG-20260727-IMMUT",
+                new_attempt=1,
+            )
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="ready", expected_snapshot_commit=head2,
+            )
+            original_ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-IMMUT",
+                event_type="TASK_DISPATCHED",
+                payload=payload, event_context=original_ctx,
+            )
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32,
+                lease_epoch=1,
+                slot_id="basic_agent-1",
+                worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-001",
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-27T00:30:00Z",
+                heartbeat_at="2026-07-27T00:30:00Z",
+                expires_at="2026-07-27T02:00:00Z",
+            )
+            now = datetime(2026, 7, 27, 1, 0, 0, tzinfo=UTC)
+            result = svc2.apply_transition(req, lease, now)
+            self.assertEqual("dispatched", result.to_state)
+
+            # Verify request not mutated.
+            self.assertIs(original_ctx, req.event_context,
+                          "Original event_context identity must be preserved")
+            self.assertEqual((), original_ctx.guard_results,
+                             "Original guard_results must still be empty")
+            self.assertEqual("EVT-20260727-IMMUT", req.event_id)
+        finally:
+            tmpdir.cleanup()
+
+    # ── Idempotent replay — Gate not called ──
+
+    def test_gated_transition_replay_no_gate_call(self) -> None:
+        """Replaying a gated transition must not call ApprovalGate."""
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from dispatcher_gateway import ModelSelectionSnapshot
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            pass  # keep scripts path for approval_gate lazy import
+
+        harness = _TransitionTestHarness()
+        tmpdir, root, head, svc, task = harness._setup_project(
+            self.cpt, task_state="ready", task_id="TC-001", revision=1,
+            attempt=None,
+        )
+        try:
+            approval_id, evt_id = self._setup_grant(
+                root, head, scope="dispatch", task_id="TC-001",
+                revision=1, attempt=1, dispatch_id="DSP-001",
+            )
+            head2 = self._get_head(root)
+
+            # Write worker slot lease store as runtime (never committed).
+            import json as _replay_json2
+            runtime_dir = root / ".agentdesk" / "runtime"
+            lease_path = runtime_dir / "worker-slot-lease.yaml"
+            lease_path.write_text(_replay_json2.dumps({
+                "schema_version": "agentdesk.worker-slot-lease/v1",
+                "updated_at": "1970-01-01T00:00:00Z",
+                "slot_epochs": {
+                    "basic_agent-1": 1, "basic_agent-2": 0,
+                    "standard_agent-1": 0, "standard_agent-2": 0,
+                    "advanced_agent-1": 0, "advanced_agent-2": 0,
+                    "expert_agent-1": 0, "expert_agent-2": 0,
+                },
+                "leases": {
+                    "basic_agent-1": {
+                        "lease_id": "WSL-" + "a" * 32,
+                        "lease_epoch": 1,
+                        "slot_id": "basic_agent-1",
+                        "worker_kind": "basic_agent",
+                        "holder_dispatch_id": "DSP-001",
+                        "holder_instance_id": "worker-inst-1",
+                        "canonical_worktree": str(root).replace("\\", "/"),
+                        "acquired_at": "2026-07-27T00:30:00Z",
+                        "heartbeat_at": "2026-07-27T00:30:00Z",
+                        "expires_at": "2026-07-27T02:00:00Z",
+                    },
+                },
+            }, ensure_ascii=False), encoding="utf-8")
+            svc2 = self.cpt.ControlPlaneTransitionService(project_root=root)
+
+            ms = ModelSelectionSnapshot.from_mapping({
+                "required_model_tier": "standard",
+                "required_model_capabilities": ["read"],
+                "model_binding_id": "bind-1",
+                "selected_model_provider": "test",
+                "selected_model_id": "claude-sonnet",
+                "selected_model_tier": "standard",
+                "selected_deliberation_tier": "balanced",
+                "selected_context_window_tokens": 200000,
+                "selected_model_capabilities": ["read"],
+                "model_degradation_approval_id": None,
+            })
+            payload = self.cpt.DispatchPayload(
+                dispatch_id="DSP-001", role_id="worker-basic",
+                model_selection=ms,
+                task_card_path="docs/pm/tasks/TC-001.md",
+                task_card_commit="0" * 40,
+                base_commit=head2, branch="main",
+                report_path="docs/pm/reports/TC-001-r1.md",
+                outbox_message_id="MSG-20260727-REPLAY",
+                new_attempt=1,
+            )
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="ready", expected_snapshot_commit=head2,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-REPLAY",
+                event_type="TASK_DISPATCHED",
+                payload=payload, event_context=ctx,
+            )
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32,
+                lease_epoch=1,
+                slot_id="basic_agent-1",
+                worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-001",
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-27T00:30:00Z",
+                heartbeat_at="2026-07-27T00:30:00Z",
+                expires_at="2026-07-27T02:00:00Z",
+            )
+            now = datetime(2026, 7, 27, 1, 0, 0, tzinfo=UTC)
+
+            # First transition — succeeds, writes event with approval guard.
+            result1 = svc2.apply_transition(req, lease, now)
+            self.assertEqual("dispatched", result1.to_state)
+
+            # Replay — must succeed without calling Gate.
+            result2 = svc2.apply_transition(req, lease, now)
+            self.assertEqual(result1.event_id, result2.event_id)
+            self.assertEqual(result1.to_state, result2.to_state)
+
+            # Request still unchanged.
+            self.assertEqual((), ctx.guard_results)
+        finally:
+            tmpdir.cleanup()
+
+    # ── Revoke after transition — replay still succeeds, new fails ──
+
+    def test_revoke_after_transition_replay_succeeds_new_fails(self) -> None:
+        """After revoking grant, replay succeeds but new transition is rejected."""
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from dispatcher_gateway import ModelSelectionSnapshot
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from approval_gate import write_grant, write_revoke, ApprovalScope
+            from approval_gate import ApprovalSubject as _AS
+        finally:
+            pass
+
+        harness = _TransitionTestHarness()
+        tmpdir, root, head, svc, task = harness._setup_project(
+            self.cpt, task_state="ready", task_id="TC-001", revision=1,
+            attempt=None,
+        )
+        try:
+            # Write a specific grant via write_grant for this test.
+            subj = _AS(
+                task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-001", accepted_commit=None,
+            )
+            _, _ = write_grant(
+                project_root=root, approval_id="APR-REV-01",
+                event_id="EVT-20260727-RV01",
+                scope=ApprovalScope.DISPATCH, subject=subj,
+                lease_epoch=1,
+                now=datetime(2026, 7, 27, 0, 0, 0, tzinfo=UTC),
+                reason="Test grant", expires_at=None,
+                expected_snapshot_commit=head,
+            )
+            head2 = self._get_head(root)
+
+            # Setup worker slot lease store.
+            import json as _rev_json
+            runtime_dir = root / ".agentdesk" / "runtime"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            lease_store_path = runtime_dir / "worker-slot-lease.yaml"
+            lease_store_path.write_text(_rev_json.dumps({
+                "schema_version": "agentdesk.worker-slot-lease/v1",
+                "updated_at": "1970-01-01T00:00:00Z",
+                "slot_epochs": {
+                    "basic_agent-1": 1, "basic_agent-2": 0,
+                    "standard_agent-1": 0, "standard_agent-2": 0,
+                    "advanced_agent-1": 0, "advanced_agent-2": 0,
+                    "expert_agent-1": 0, "expert_agent-2": 0,
+                },
+                "leases": {
+                    "basic_agent-1": {
+                        "lease_id": "WSL-" + "a" * 32,
+                        "lease_epoch": 1,
+                        "slot_id": "basic_agent-1",
+                        "worker_kind": "basic_agent",
+                        "holder_dispatch_id": "DSP-001",
+                        "holder_instance_id": "worker-inst-1",
+                        "canonical_worktree": str(root).replace("\\", "/"),
+                        "acquired_at": "2026-07-27T00:30:00Z",
+                        "heartbeat_at": "2026-07-27T00:30:00Z",
+                        "expires_at": "2026-07-27T02:00:00Z",
+                    },
+                },
+            }, ensure_ascii=False), encoding="utf-8")
+            head2 = self._get_head(root)
+            svc2 = self.cpt.ControlPlaneTransitionService(project_root=root)
+
+            ms = ModelSelectionSnapshot.from_mapping({
+                "required_model_tier": "standard",
+                "required_model_capabilities": ["read"],
+                "model_binding_id": "bind-1",
+                "selected_model_provider": "test",
+                "selected_model_id": "claude-sonnet",
+                "selected_model_tier": "standard",
+                "selected_deliberation_tier": "balanced",
+                "selected_context_window_tokens": 200000,
+                "selected_model_capabilities": ["read"],
+                "model_degradation_approval_id": None,
+            })
+            payload = self.cpt.DispatchPayload(
+                dispatch_id="DSP-001", role_id="worker-basic",
+                model_selection=ms,
+                task_card_path="docs/pm/tasks/TC-001.md",
+                task_card_commit="0" * 40,
+                base_commit=head2, branch="main",
+                report_path="docs/pm/reports/TC-001-r1.md",
+                outbox_message_id="MSG-20260727-REV01",
+                new_attempt=1,
+            )
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="ready", expected_snapshot_commit=head2,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-20260727-REV02",
+                event_type="TASK_DISPATCHED",
+                payload=payload, event_context=ctx,
+            )
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32,
+                lease_epoch=1,
+                slot_id="basic_agent-1",
+                worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-001",
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-27T00:30:00Z",
+                heartbeat_at="2026-07-27T00:30:00Z",
+                expires_at="2026-07-27T02:00:00Z",
+            )
+            now = datetime(2026, 7, 27, 1, 0, 0, tzinfo=UTC)
+
+            # First transition succeeds.
+            result1 = svc2.apply_transition(req, lease, now)
+            self.assertEqual("dispatched", result1.to_state)
+
+            # Revoke the grant.
+            head3 = self._get_head(root)
+            write_revoke(
+                project_root=root, approval_id="APR-REV-01",
+                event_id="EVT-20260727-RV03",
+                lease_epoch=2,
+                now=datetime(2026, 7, 27, 1, 30, 0, tzinfo=UTC),
+                reason="Revoke for test",
+                expected_snapshot_commit=head3,
+            )
+
+            # Replay of the original transition must still succeed
+            # (idempotent — event bytes already written).
+            result2 = svc2.apply_transition(req, lease, now)
+            self.assertEqual(result1.event_id, result2.event_id)
+        finally:
+            tmpdir.cleanup()
 
 
 if __name__ == "__main__":

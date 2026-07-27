@@ -27,7 +27,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 14 | AgentDesk WorkerAdapter — four-tier Worker execution orchestration | **Current** | TC-13.9b | Basic/Standard/Advanced/Expert; WorkerKind + TaskDifficulty as independent inputs; provider/model from bindings only; budget computed, not enforced; concurrency slots deferred to TC-13.10 |
 | 15 | AgentDesk WorkerSlotLease | **Current** | TC-13.10c | `agentdesk.worker-slot-lease/v1`; frozen contract §2.5; implemented by TC-13.10a (frozen contract), TC-13.10b (data model, store, atomic I/O), TC-13.10c (acquire/release/renew/hold fence) |
 | 16 | AgentDesk ControlPlaneTransitionService | **Current** | TC-13.11c | CAS-write tasks, immutable events, replayable outbox |
-| 17 | AgentDesk ApprovalGate | **Target** | TC-13.12 | TASK_APPROVAL with structured scope (dispatch/accept/integrate) |
+| 17 | AgentDesk ApprovalGate | **Target** | TC-13.12c | TASK_APPROVAL with structured scope (dispatch/accept/integrate); runtime gate + ControlPlaneTransitionService integration implemented |
 | 18 | AgentDesk EscalationService | **Target** | TC-13.13 | Difficulty escalation independent of rate-limit |
 | 19 | AgentDesk RateLimit service | **Target** | TC-13.14 | Provider rate-limit handling independent of escalation |
 | 20 | AgentDesk MadAuditGateway | **Target** | TC-13.16 | Subprocess invocation of `mad audit` with worktree validation |

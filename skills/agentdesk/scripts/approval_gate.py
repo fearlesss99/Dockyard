@@ -606,9 +606,7 @@ class ApprovalGate:
     Takes a ``project_root`` and does NOT store mutable state.
     Every ``check`` / ``require`` call is self-contained.
 
-    **TC-13.12b boundary**: construction validates project_root only.
-    ``check()`` and ``require()`` are stubs — implemented by TC-13.12c.
-    Interface #17 remains Target.
+    **TC-13.12c**: ``check()`` and ``require()`` are fully implemented.
     """
 
     project_root: Path
@@ -634,9 +632,170 @@ class ApprovalGate:
         request: ApprovalCheckRequest,
         now: datetime,
     ) -> ApprovalCheckResult:
-        """Validate approval for *request*.  (Stub — TC-13.12c)."""
-        raise NotImplementedError(
-            "ApprovalGate.check is implemented by TC-13.12c"
+        """Validate approval for *request* against the evidence store.
+
+        Execution order:
+        1. Validate request type.
+        2. Validate *now* is timezone-aware UTC.
+        3. Validate project root.
+        4. Read current Git HEAD — must exactly equal
+           ``request.expected_snapshot_commit``.
+        5. Load and validate all Grant / Revoke evidence.
+        6. Verify each evidence ``snapshot_commit`` is an ancestor of HEAD.
+        7. Perform deterministic scope + subject matching.
+        8. Return structured result, or raise on integrity errors.
+
+        Does NOT: acquire locks, create directories, write files,
+        modify evidence, cache state, read env vars, or call
+        network / model / API.
+        """
+        # ── 1. Validate request type ─────────────────────────────────────
+        if not isinstance(request, ApprovalCheckRequest):
+            raise TypeError(
+                "request must be ApprovalCheckRequest, "
+                f"got {_safe_type_name(request)}"
+            )
+
+        # ── 2. Validate now ──────────────────────────────────────────────
+        _validate_utc_now(now)
+
+        # ── 3. Validate project root ─────────────────────────────────────
+        _validate_project_root(self.project_root)
+
+        # ── 4. Read current Git HEAD ─────────────────────────────────────
+        head_sha = _git_rev_parse_head(self.project_root)
+
+        # ── 5. HEAD must equal expected_snapshot_commit ───────────────────
+        if head_sha != request.expected_snapshot_commit:
+            raise ApprovalSnapshotConflictError(
+                "expected_snapshot_commit does not match current HEAD"
+            )
+
+        # ── 6. Load all evidence ─────────────────────────────────────────
+        grants, revokes = _load_evidence_store(self.project_root)
+
+        # ── 7. Verify evidence ancestry ──────────────────────────────────
+        for ev in grants.values():
+            if not _git_is_ancestor(
+                self.project_root, ev.snapshot_commit, head_sha
+            ):
+                raise ApprovalSnapshotConflictError(
+                    "evidence snapshot_commit is not an ancestor of HEAD"
+                )
+
+        for rd in revokes.values():
+            sc = str(rd["snapshot_commit"])
+            if not _git_is_ancestor(self.project_root, sc, head_sha):
+                raise ApprovalSnapshotConflictError(
+                    "revoke snapshot_commit is not an ancestor of HEAD"
+                )
+
+        # ── 8. Deterministic matching ────────────────────────────────────
+        now_str = _dt_to_utc_str(now)
+        scope = request.scope
+        subject = request.subject
+
+        # Sort for deterministic ordering — same result regardless of
+        # file creation order, directory enumeration order, or filename.
+        sorted_grants = sorted(
+            grants.values(),
+            key=lambda item: (item.event_id, item.approval_id),
+        )
+
+        # Step 8a: Find exact scope + subject matches.
+        exact_grants: list[ApprovalEvidence] = []
+        for ev in sorted_grants:
+            if ev.scope == scope and ev.subject == subject:
+                exact_grants.append(ev)
+
+        if exact_grants:
+            # Step 8b: Determine active / expired / revoked independently.
+            active: list[ApprovalEvidence] = []
+            revoked_list: list[ApprovalEvidence] = []
+            expired_list: list[ApprovalEvidence] = []
+
+            for ev in exact_grants:
+                # ── Check expiry ─────────────────────────────────────────
+                is_expired = False
+                if ev.expires_at is not None:
+                    expires_dt = _parse_rfc3339_utc(ev.expires_at)
+                    if expires_dt is not None and now >= expires_dt:
+                        is_expired = True
+
+                # ── Check revoke ─────────────────────────────────────────
+                is_revoked = False
+                rd = revokes.get(ev.approval_id)
+                if rd is not None:
+                    revoked_at_str = str(rd["revoked_at"])
+                    revoked_dt = _parse_rfc3339_utc(revoked_at_str)
+                    if revoked_dt is not None and now >= revoked_dt:
+                        is_revoked = True
+
+                # ── Classify — revoked takes priority ────────────────────
+                if is_revoked:
+                    revoked_list.append(ev)
+                elif is_expired:
+                    expired_list.append(ev)
+                else:
+                    active.append(ev)
+
+            # Step 8c: Resolve.
+            if len(active) == 1:
+                return ApprovalCheckResult(
+                    passed=True,
+                    failure_code=None,
+                    matched_evidence=active[0],
+                    checked_at=now_str,
+                )
+            if len(active) > 1:
+                raise ApprovalAmbiguousError(
+                    "multiple active grants for same scope + subject"
+                )
+
+            # No active — determine failure code.
+            if revoked_list:
+                return ApprovalCheckResult(
+                    passed=False,
+                    failure_code="revoked",
+                    matched_evidence=None,
+                    checked_at=now_str,
+                )
+            if expired_list:
+                return ApprovalCheckResult(
+                    passed=False,
+                    failure_code="expired",
+                    matched_evidence=None,
+                    checked_at=now_str,
+                )
+
+        # Step 8d: No exact grant — determine most specific failure.
+        # Same subject, different scope?
+        for ev in sorted_grants:
+            if ev.subject == subject and ev.scope != scope:
+                return ApprovalCheckResult(
+                    passed=False,
+                    failure_code="wrong_scope",
+                    matched_evidence=None,
+                    checked_at=now_str,
+                )
+
+        # Same task_id + scope, different subject fields?
+        for ev in sorted_grants:
+            if ev.subject.task_id == subject.task_id and ev.scope == scope:
+                if ev.subject != subject:
+                    return ApprovalCheckResult(
+                        passed=False,
+                        failure_code="wrong_subject",
+                        matched_evidence=None,
+                        checked_at=now_str,
+                    )
+
+        # Otherwise: not_found.
+        return ApprovalCheckResult(
+            passed=False,
+            failure_code="not_found",
+            matched_evidence=None,
+            checked_at=now_str,
         )
 
     def require(
@@ -644,10 +803,46 @@ class ApprovalGate:
         request: ApprovalCheckRequest,
         now: datetime,
     ) -> ApprovalEvidence:
-        """Require a valid approval for *request*.  (Stub — TC-13.12c)."""
-        raise NotImplementedError(
-            "ApprovalGate.require is implemented by TC-13.12c"
-        )
+        """Require a valid approval for *request*.
+
+        Delegates to :meth:`check` — does NOT duplicate matching logic.
+
+        * ``passed`` → returns ``matched_evidence``.
+        * ``"expired"`` → ``ApprovalExpiredError``.
+        * ``"revoked"`` → ``ApprovalRevokedError``.
+        * ``"not_found"`` / ``"wrong_scope"`` / ``"wrong_subject"``
+          → ``ApprovalNotFoundError``.
+        * Integrity / snapshot / ambiguity exceptions propagate as-is.
+
+        Error messages do NOT leak request, paths, reason, or
+        untrusted object values.
+        """
+        result = self.check(request, now)
+
+        if result.passed:
+            if result.matched_evidence is None:
+                raise ApprovalError(
+                    "ApprovalGate.check returned an inconsistent"
+                    " success result"
+                )
+            return result.matched_evidence
+
+        # ── Not passed — map failure code ────────────────────────────────
+        code = result.failure_code
+        if code is None:
+            raise ApprovalError(
+                "ApprovalGate.check returned an inconsistent"
+                " failure result"
+            )
+        if code == "expired":
+            raise ApprovalExpiredError("approval has expired")
+        if code == "revoked":
+            raise ApprovalRevokedError("approval has been revoked")
+        if code in ("not_found", "wrong_scope", "wrong_subject"):
+            raise ApprovalNotFoundError("no valid approval found")
+
+        # Unknown failure code — fail-closed.
+        raise ApprovalError("unexpected failure code")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -716,6 +911,43 @@ def _git_rev_parse_head(project_root: Path) -> str:
         )
 
     return sha
+
+
+def _git_is_ancestor(
+    project_root: Path,
+    ancestor_sha: str,
+    descendant_sha: str,
+) -> bool:
+    """Check if *ancestor_sha* is an ancestor of (or equal to) *descendant_sha*.
+
+    Uses ``git merge-base --is-ancestor`` with ``shell=False``.
+    Return code 0 → True, 1 → False.
+    Any other error → ``ApprovalSnapshotConflictError`` (fail-closed).
+    """
+    if ancestor_sha == descendant_sha:
+        return True
+
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor_sha, descendant_sha],
+            cwd=str(project_root),
+            capture_output=True,
+            timeout=10,
+            shell=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise ApprovalSnapshotConflictError(
+            "git merge-base failed"
+        ) from exc
+
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+
+    raise ApprovalSnapshotConflictError(
+        "git merge-base returned non-zero exit"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
