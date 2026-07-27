@@ -4432,7 +4432,7 @@ the following sources — no field is synthesised without an input channel.
 | ``implementation_commit`` | ``tasks.yaml`` task-level ``implementation_commit`` | Set by ``DELIVERY_SUBMITTED``; must equal ``DeliveryAcceptedPayload.accepted_commit`` |
 | ``report_commit`` | ``tasks.yaml`` task-level ``report_commit`` | Set by ``DELIVERY_SUBMITTED``; NOT ``current_dispatch.report_commit`` (which does not exist) |
 | ``accepted_commit`` | ``DeliveryAcceptedPayload.accepted_commit`` | Caller-provided; frozen as ``accepted_commit`` in ``tasks.yaml``; must equal ``implementation_commit`` |
-| ``owner_approval`` | Service constant derived from committed task card | ``gate`` ← task-card frontmatter ``owner_approval.gate`` (only ``"none"`` is attested). When gate is ``"none"``, ``approval_ids`` is always ``[]``. NOT a payload field; NOT derived from ``granted_approval_ids``; NOT related to ``MODEL_DEGRADATION_APPROVED`` events — those are model-tier degradation authorization, NOT owner approval. |
+| ``owner_approval`` | Service constant derived from committed task card | ``gate`` ← task-card frontmatter ``owner_approval.gate``, validated as exactly ``"none"`` (the only value attested). ``approval_ids`` ← service constant: empty list ``[]``. Output is always ``{"gate": "none", "approval_ids": []}``. NOT a payload field. NOT derived from ``granted_approval_ids``. NOT related to ``MODEL_DEGRADATION_APPROVED``, ``MODEL_DEGRADATION_REVOKED``, or ``model_degradation_approval_id`` — those belong to model-tier degradation authorization exclusively. |
 | ``evidence_refs`` | ``TransitionEventContext.evidence_refs`` | Serialised as YAML list |
 | ``residual_risks`` | ``DeliveryAcceptedPayload.residual_risks`` | Caller-supplied tuple of non-empty risk strings; may be empty |
 | ``created_at`` | ``apply_transition(... now=...)`` | Service-formatted RFC 3339 UTC |
@@ -4449,8 +4449,10 @@ All fields in the current ``DeliveryAcceptedPayload`` are present
 (``accepted_commit``, ``acceptance_path``, ``residual_risks``,
 ``criteria_evidence``, ``rationale``).  ``owner_approval`` is derived
 by the service from the committed task card's ``owner_approval.gate``
-— it is NOT a payload field and NOT derived from
-``granted_approval_ids`` or ``MODEL_DEGRADATION_APPROVED`` events.
+(validated as exactly ``"none"``), emitting ``{"gate": "none",
+"approval_ids": []}``.  It is NOT a payload field and NOT derived from
+``granted_approval_ids``, ``MODEL_DEGRADATION_APPROVED``,
+``MODEL_DEGRADATION_REVOKED``, or ``model_degradation_approval_id``.
 
 | Field | Type | Rule |
 |-------|------|------|

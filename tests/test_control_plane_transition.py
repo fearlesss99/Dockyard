@@ -4029,5 +4029,186 @@ class TestParseReviewN(TestControlPlaneTransitionBase):
             self.assertEqual(n, 5)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 46. Docstring and ADR regression — acceptance authority
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestAcceptanceDocstrings(TestControlPlaneTransitionBase):
+    """Production docstrings must be consistent with the current attested
+    contract: gate='none', approval_ids empty, NOT derived from
+    granted_approval_ids or MODEL_DEGRADATION_APPROVED."""
+
+    def test_730_aoa_docstring_must_mention_empty_approval_ids(self) -> None:
+        doc = self.cpt.AcceptanceOwnerApproval.__doc__ or ""
+        self.assertIn('approval_ids=()', doc)
+        self.assertIn('"none"', doc.lower())
+
+    def test_731_aoa_docstring_must_not_mix_degradation(self) -> None:
+        doc = self.cpt.AcceptanceOwnerApproval.__doc__ or ""
+        self.assertNotIn("granted_approval_ids", doc)
+
+    def test_732_dap_docstring_terms_in_exclusion_context(self) -> None:
+        doc = self.cpt.DeliveryAcceptedPayload.__doc__ or ""
+        # The docstring may mention granted_approval_ids /
+        # MODEL_DEGRADATION_APPROVED only in exclusion context —
+        # not as derivation sources.
+        for needle in ("granted_approval_ids", "model_degradation_approved"):
+            idx = doc.lower().find(needle.lower())
+            if idx != -1:
+                context = doc[max(0,idx-120):idx+100].lower()
+                must_be_exclusion = any(phrase in context for phrase in (
+                    "not be copied", "degradation", "exclusively",
+                    "not derived from",
+                ))
+                self.assertTrue(
+                    must_be_exclusion,
+                    f"'{needle}' found without exclusion context: ...{context}..."
+                )
+
+    def test_733_dap_docstring_must_state_owner_approval_not_payload(self) -> None:
+        doc = self.cpt.DeliveryAcceptedPayload.__doc__ or ""
+        self.assertIn("NOT a payload field", doc)
+
+    def test_734_dap_docstring_must_state_gate_none(self) -> None:
+        doc = self.cpt.DeliveryAcceptedPayload.__doc__ or ""
+        self.assertIn('"none"', doc.lower())
+
+    def test_735_runtime_empty_ids_still_valid(self) -> None:
+        oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=())
+        self.assertEqual(oa.gate, "none")
+        self.assertEqual(oa.approval_ids, ())
+
+    def test_736_runtime_non_empty_ids_still_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none",
+                approval_ids=("APR-001",),
+            )
+
+    def test_737_apply_transition_still_not_implemented(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            svc = self.cpt.ControlPlaneTransitionService(project_root=Path(td))
+            req = self.cpt.TransitionRequest(
+                cas=self.cpt.TransitionCAS(
+                    task_id="TC-001", expected_revision=1,
+                    expected_state="draft",
+                    expected_snapshot_commit="0" * 40,
+                ),
+                dispatch_cas=None,
+                event_id="EVT-20260727-0001",
+                event_type="TASK_SPECIFIED",
+                payload=self.cpt.SpecifyPayload(),
+                event_context=self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+            now = __import__('datetime').datetime(2026, 7, 27, tzinfo=__import__('datetime').timezone.utc)
+            with self.assertRaises(NotImplementedError):
+                svc.apply_transition(req, None, now)
+
+
+class TestAdrAcceptanceSourceText(unittest.TestCase):
+    """ADR §2.14 acceptance source table must not conflate owner approval
+    with model degradation approval fields."""
+
+    _ADR_PATH = (
+        Path(__file__).resolve().parents[1]
+        / "skills" / "agentdesk" / "references" / "adr"
+        / "001-mad-agentdesk-integration.md"
+    )
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._adr_text = cls._ADR_PATH.read_text(encoding="utf-8")
+
+    def _acceptance_section(self) -> str:
+        """Extract §2.14.15 Acceptance Record Field Source Table section."""
+        text = self._adr_text
+        start = text.find("#### 2.14.15")
+        if start == -1:
+            self.fail("§2.14.15 not found in ADR")
+        # Find end: next #### at same level, or EOF.
+        rest = text[start:]
+        # Find the next "#### " after the first line
+        lines = rest.splitlines()
+        end_line = len(lines)
+        for i in range(1, len(lines)):
+            if lines[i].startswith("#### "):
+                end_line = i
+                break
+        return "\n".join(lines[:end_line])
+
+    def test_740_adr_owner_approval_source_not_from_granted_approval_ids(self) -> None:
+        section = self._acceptance_section()
+        # The owner_approval row must NOT contain the pattern
+        # "approval_ids ←" pointing to granted_approval_ids.
+        self.assertNotIn("approval_ids ← task ledger", section.lower())
+        self.assertNotIn("approval_ids ← granted_approval_ids", section.lower())
+
+    def test_741_adr_owner_approval_not_related_to_model_degradation_approved(self) -> None:
+        section = self._acceptance_section()
+        # The owner_approval row must NOT say cross-checked against
+        # MODEL_DEGRADATION_APPROVED.
+        self.assertNotIn(
+            "cross-checked against immutable `MODEL_DEGRADATION_APPROVED",
+            section,
+        )
+        self.assertNotIn(
+            "cross-checked against MODEL_DEGRADATION_APPROVED",
+            section.lower(),
+        )
+
+    def test_742_adr_dap_section_must_not_claim_derivation(self) -> None:
+        """The DAP requirements section must not claim owner_approval IS
+        derived from granted_approval_ids.  It may mention them in
+        exclusion text ('NOT derived from ...') which is correct."""
+        text = self._adr_text
+        start = text.find("Required ``DeliveryAcceptedPayload`` fields")
+        if start == -1:
+            self.fail("DeliveryAcceptedPayload requirements section not found")
+        end = text.find("---", start + 100)
+        if end == -1:
+            end = start + 3000
+        section = text[start:end]
+        idx = section.lower().find("granted_approval_ids")
+        if idx != -1:
+            context = section[max(0,idx-120):idx+100].lower()
+            must_be_exclusion = any(phrase in context for phrase in (
+                "not derived from", "not related to", "not belong",
+            ))
+            self.assertTrue(
+                must_be_exclusion,
+                f"granted_approval_ids found without exclusion context: ...{context}..."
+            )
+
+    def test_743_adr_dap_section_must_not_claim_derivation_deg(self) -> None:
+        """MODEL_DEGRADATION_APPROVED may appear only in exclusion context."""
+        text = self._adr_text
+        start = text.find("Required ``DeliveryAcceptedPayload`` fields")
+        if start == -1:
+            self.fail("DeliveryAcceptedPayload requirements section not found")
+        end = text.find("---", start + 100)
+        if end == -1:
+            end = start + 3000
+        section = text[start:end]
+        idx = section.find("MODEL_DEGRADATION_APPROVED")
+        if idx != -1:
+            context = section[max(0,idx-120):idx+100].lower()
+            must_be_exclusion = any(phrase in context for phrase in (
+                "not derived from", "not related to", "not belong",
+            ))
+            self.assertTrue(
+                must_be_exclusion,
+                f"MODEL_DEGRADATION_APPROVED found without exclusion context"
+            )
+
+    def test_744_adr_owner_approval_empty_array(self) -> None:
+        """Owner approval output must be documented as empty array."""
+        section = self._acceptance_section()
+        self.assertIn('"approval_ids": []', section)
+
+
 if __name__ == "__main__":
     unittest.main()

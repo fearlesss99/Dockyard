@@ -699,24 +699,30 @@ class DeliverySubmittedPayload:
 # ── AcceptanceOwnerApproval — canonical evidence summary ───────────────────
 #
 # ``AcceptanceOwnerApproval`` is NOT a caller-supplied payload field.
-# It is an immutable summary computed by the service from canonical
-# evidence during ``apply_transition()``:
+# It is a service-derived summary computed from canonical evidence
+# during ``apply_transition()``:
 #
-#   gate           ← task-card frontmatter ``owner_approval.gate``
-#                     (validated against the immutable task card at the
-#                     task_card_commit referenced in tasks.yaml)
+#   gate            ← committed task-card frontmatter
+#                     ``owner_approval.gate``, validated as exactly
+#                     ``"none"`` (the only value attested in the current
+#                     task-card and acceptance templates).  Any other
+#                     value is fail-closed.
 #
-#   approval_ids   ← empty tuple (())
+#   approval_ids    ← service constant: empty tuple ``()``.
 #
-# The only gate value attested in the existing task-card template and
-# acceptance template is ``"none"``.  When gate is ``"none"``,
-# ``approval_ids`` MUST be empty.
+# When gate is ``"none"``, ``approval_ids`` MUST be empty — non-empty
+# approval IDs are immediately rejected.
 #
-# ``granted_approval_ids`` and ``MODEL_DEGRADATION_APPROVED`` events
-# are for model-tier degradation authorization ONLY — they are NOT
-# owner approval evidence and must not be written into the acceptance
-# record's ``owner_approval`` block.  Owner approval and model
-# degradation approval are distinct authorization domains.
+# The current acceptance owner approval output is therefore:
+#
+#   {"gate": "none", "approval_ids": []}
+#
+# ``granted_approval_ids``, ``MODEL_DEGRADATION_APPROVED``,
+# ``MODEL_DEGRADATION_REVOKED``, and ``model_degradation_approval_id``
+# belong exclusively to model-tier degradation authorization.  They
+# are NOT owner approval evidence and MUST NOT be written into the
+# acceptance record's ``owner_approval`` block.  Owner approval and
+# model degradation approval are distinct authorization domains.
 #
 # The type is published in ``__all__`` so that ``apply_transition()``
 # (TC-13.11c) can return it as part of the acceptance construction,
@@ -733,10 +739,17 @@ class AcceptanceOwnerApproval:
     Constructed by the service from canonical evidence — never from
     caller-supplied payload alone.
 
-    ``gate`` must be one of the module-level ``_GATE_VALUES``.
-    ``approval_ids`` must be a tuple of non-empty strings matching
-    ``APR-*`` (per ``validate_project.py`` grammar).  Duplicates and
-    empty/blank strings are rejected.
+    For the currently attested contract, the only valid value is::
+
+        AcceptanceOwnerApproval(gate="none", approval_ids=())
+
+    ``gate`` must be ``"none"`` (the only value in ``_GATE_VALUES``).
+    When gate is ``"none"``, ``approval_ids`` MUST be empty.
+    Non-empty ``approval_ids`` are rejected immediately.
+
+    The ``approval_ids`` field is typed as ``tuple[str, ...]`` for
+    forward compatibility with future gate values, but the current
+    attested contract requires exactly ``()``.
     """
 
     gate: str
@@ -800,11 +813,15 @@ class AcceptanceOwnerApproval:
 class DeliveryAcceptedPayload:
     """Payload for review_ready → accepted (DELIVERY_ACCEPTED).
 
-    ``owner_approval`` is NOT carried here — it is derived by the
-    service from canonical evidence (task-card frontmatter
-    ``owner_approval.gate`` and task ledger
-    ``granted_approval_ids``).  The payload must not self-declare
-    authorization facts.
+    ``owner_approval`` is NOT a payload field.  The service derives it
+    from the committed task-card ``owner_approval.gate`` (currently
+    only ``"none"`` is attested) and emits::
+
+        {"gate": "none", "approval_ids": []}
+
+    ``granted_approval_ids`` and ``MODEL_DEGRADATION_APPROVED`` belong
+    to model-tier degradation authorization exclusively — they must
+    not be copied into acceptance owner approval.
     """
 
     accepted_commit: str
