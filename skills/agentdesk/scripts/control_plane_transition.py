@@ -1008,69 +1008,88 @@ def _exclusive_state_lock(
     runtime_dir = project_root / _RUNTIME_RELATIVE
     lock_path = runtime_dir / _STATE_LOCK_NAME
 
-    # Ensure the runtime directory exists (failures here are IOError, not ours).
-    # We do NOT create it here if it doesn't exist — that's the caller's
-    # responsibility or the lock fails naturally.
+    token = secrets.token_hex(16)  # 32 lowercase hex chars
 
-    token = secrets.token_hex(16)
-    lock_fd: int | None = None
+    # ── acquire ────────────────────────────────────────────────────────
     try:
-        try:
-            lock_fd = os.open(
-                str(lock_path),
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-            )
-        except FileExistsError:
-            raise TransitionLockContentionError(
-                "control-plane state lock is currently held"
-            ) from None
-        except OSError as exc:
-            raise TransitionLockContentionError(
-                "cannot acquire control-plane state lock"
-            ) from exc
-
-        # Write ownership token.
-        os.write(lock_fd, token.encode("utf-8"))
-        os.fsync(lock_fd)
-        os.close(lock_fd)
-        lock_fd = None
-
-        try:
-            yield
-        except BaseException:
-            raise
-        finally:
-            # Release: read token, compare, delete.
-            _release_state_lock(lock_path, token)
-
-    finally:
-        if lock_fd is not None:
-            try:
-                os.close(lock_fd)
-            except OSError:
-                pass
-        # Clean up temp file if something failed before the lock was written.
-        # In the normal case the finally block in yield already cleaned up.
-
-
-def _release_state_lock(lock_path: Path, token: str) -> None:
-    """Release the state lock file after verifying ownership token."""
-    try:
-        current = lock_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        # File missing or can't read — nothing to release.
-        return
-
-    if current.strip() != token:
-        # Token mismatch — someone else's lock.
-        raise TransitionLockContentionError(
-            "cannot release state lock: ownership token mismatch"
+        fd = os.open(
+            str(lock_path),
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
         )
+    except FileExistsError:
+        raise TransitionLockContentionError(
+            "control-plane state lock is currently held"
+        ) from None
+    except OSError as exc:
+        raise TransitionLockContentionError(
+            "cannot acquire control-plane state lock"
+        ) from exc
 
+    # Write ownership token with proper cleanup on failure.
     try:
-        lock_path.unlink()
-    except OSError:
-        pass
+        os.write(fd, token.encode("ascii"))
+        os.fsync(fd)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+        raise TransitionLockContentionError(
+            "failed to write control-plane state lock token"
+        ) from None
+
+    os.close(fd)
+
+    # ── yield to caller ────────────────────────────────────────────────
+    body_exception: BaseException | None = None
+    try:
+        yield
+    except BaseException as _exc:
+        body_exception = _exc
+    finally:
+        # ── release (with token verification) ─────────────────────────
+        release_error: str | None = None
+        try:
+            stored_bytes = lock_path.read_bytes()
+        except FileNotFoundError:
+            release_error = (
+                "control-plane state lock file disappeared while held"
+            )
+        except OSError:
+            release_error = (
+                "control-plane state lock file is unreadable while held"
+            )
+        else:
+            try:
+                stored = stored_bytes.decode("ascii")
+            except (ValueError, UnicodeDecodeError):
+                release_error = (
+                    "control-plane state lock file token is corrupted"
+                )
+            else:
+                if stored == token:
+                    try:
+                        lock_path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        release_error = (
+                            "control-plane state lock file could not"
+                            " be removed"
+                        )
+                else:
+                    release_error = (
+                        "control-plane state lock file token mismatch"
+                    )
+
+        if body_exception is not None:
+            raise body_exception
+        if release_error is not None:
+            raise TransitionLockContentionError(release_error)
 
 
 # ── lock-order tracking ────────────────────────────────────────────────────
@@ -1089,6 +1108,10 @@ class _LockOrderTracker:
 
     Reverse order is immediately rejected with
     ``TransitionLockOrderError``.
+
+    Enter/exit methods auto-validate — the caller does not need to
+    call separate ``validate_*`` functions.  Duplicate enter or exit
+    of an unheld lock is fail-closed.
     """
 
     __slots__ = ("_worker_fence_held", "_state_lock_held")
@@ -1098,52 +1121,59 @@ class _LockOrderTracker:
         self._state_lock_held: bool = False
 
     def enter_worker_fence(self) -> None:
-        """Mark that the worker-slot fence is now held."""
-        self._worker_fence_held = True
+        """Mark worker-slot fence as held.
 
-    def exit_worker_fence(self) -> None:
-        """Mark that the worker-slot fence is released."""
-        self._worker_fence_held = False
-
-    def enter_state_lock(self) -> None:
-        """Mark that the state lock is now held, after validating order."""
-        if self._state_lock_held:
-            return
-        self._state_lock_held = True
-
-    def exit_state_lock(self) -> None:
-        """Mark that the state lock is released."""
-        self._state_lock_held = False
-
-    def validate_state_lock_entry(self) -> None:
-        """Validate that entering the state lock IS allowed from the
-        current lock-held context.
-
-        Raises ``TransitionLockOrderError`` if the caller holds the
-        state lock first and THEN tries to acquire the worker-slot
-        fence — that is: we are already in the state lock but being
-        told a worker fence is being entered.
-
-        When entering the state lock while the worker fence IS held:
-        legal.  When entering the state lock without the worker fence:
-        legal (PM-only).  The violation is: already in the state lock
-        and then entering the worker fence, which this method does NOT
-        check directly — the violation check happens in
-        ``validate_worker_fence_entry``.
-        """
-        pass  # state lock entry is always allowed from tracker pov
-
-    def validate_worker_fence_entry(self) -> None:
-        """Reject entering the worker-slot fence when the state lock
-        is already held.  This is the reverse-order violation:
-
-        state lock → worker fence  → TransitionLockOrderError.
+        Raises ``TransitionLockOrderError`` if:
+        * the state lock is already held (reverse order violation).
+        * the worker fence is already held (duplicate enter).
         """
         if self._state_lock_held:
             raise TransitionLockOrderError(
-                "cannot acquire worker-slot fence while state lock is held; "
-                "the frozen order is: worker-slot lock → state lock"
+                "cannot acquire worker-slot fence while state lock"
+                " is held; the frozen order is: worker-slot lock"
+                " → state lock"
             )
+        if self._worker_fence_held:
+            raise TransitionLockOrderError(
+                "worker-slot fence is already held"
+            )
+        self._worker_fence_held = True
+
+    def exit_worker_fence(self) -> None:
+        """Mark worker-slot fence as released.
+
+        Raises ``TransitionLockOrderError`` if the worker fence is
+        not currently held.
+        """
+        if not self._worker_fence_held:
+            raise TransitionLockOrderError(
+                "cannot exit worker-slot fence: not held"
+            )
+        self._worker_fence_held = False
+
+    def enter_state_lock(self) -> None:
+        """Mark state lock as held.
+
+        Raises ``TransitionLockOrderError`` if the state lock is
+        already held (duplicate enter).
+        """
+        if self._state_lock_held:
+            raise TransitionLockOrderError(
+                "control-plane state lock is already held"
+            )
+        self._state_lock_held = True
+
+    def exit_state_lock(self) -> None:
+        """Mark state lock as released.
+
+        Raises ``TransitionLockOrderError`` if the state lock is
+        not currently held.
+        """
+        if not self._state_lock_held:
+            raise TransitionLockOrderError(
+                "cannot exit state lock: not held"
+            )
+        self._state_lock_held = False
 
 
 # ── model_selection snapshot validation ────────────────────────────────────
@@ -1580,9 +1610,16 @@ def _atomic_write_bytes(
     """Atomically write *content* to *path*.
 
     Uses ``tempfile.mkstemp → write → flush/fsync → os.replace → directory
-    fsync``.  The original file is never modified on failure — only
-    ``os.replace`` mutates the target path, and the temp file is discarded
-    on any exception before replacement.
+    fsync``.
+
+    **Pre-replace failures** leave the original file byte-for-byte
+    unchanged — only ``os.replace`` mutates the target path, and the
+    temp file is cleaned up in the ``except`` handler.
+
+    **Post-replace (directory fsync) failures** may have already
+    replaced the target file via ``os.replace``.  The error message
+    includes a safe stage identifier (``"directory_open"`` or
+    ``"directory_fsync"``) — never the full path or content.
 
     Assumes the caller has already validated the serialized content
     through the schema helpers.  The parent directory must exist.
@@ -1604,22 +1641,29 @@ def _atomic_write_bytes(
 
         os.replace(tmp_path, str(path))
 
-        # Best-effort directory fsync.
+        # Directory fsync with proper platform semantics.
         try:
-            fd = os.open(str(dir_path), os.O_RDONLY)
+            dir_fd = os.open(str(dir_path), os.O_RDONLY)
+        except OSError as exc:
+            if not _is_dir_fsync_allowed_error(exc):
+                raise TransitionWriteError(
+                    "directory fsync failed at directory_open"
+                ) from exc
+            # Windows allowlist: safe to skip.
+        else:
             try:
-                os.fsync(fd)
+                os.fsync(dir_fd)
             except OSError as exc:
                 if not _is_dir_fsync_allowed_error(exc):
-                    raise
+                    raise TransitionWriteError(
+                        "directory fsync failed at directory_fsync"
+                    ) from exc
+                # Windows allowlist: safe to skip.
             finally:
-                os.close(fd)
-        except OSError:
-            # Directory open failure — ignore.
-            pass
+                os.close(dir_fd)
 
     except BaseException:
-        # Cleanup temp file before re-raising.
+        # Pre-replace: original file untouched, clean up temp.
         if tmp_fd is not None:
             try:
                 os.close(tmp_fd)
