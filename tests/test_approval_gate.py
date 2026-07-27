@@ -54,6 +54,7 @@ _path_was_already_there = _SCRIPTS_STR in sys.path
 sys.path.insert(0, _SCRIPTS_STR)
 try:
     import approval_gate as ag
+    import control_plane_transition as cpt
 finally:
     if not _path_was_already_there:
         sys.path.remove(_SCRIPTS_STR)
@@ -1575,33 +1576,205 @@ class StateLockTests(unittest.TestCase):
             self.assertIsNotNone(error_from_thread[0])
             self.assertIsInstance(error_from_thread[0], ag.ApprovalSnapshotConflictError)
 
-    def test_cross_module_lock_contention(self) -> None:
-        """The state lock must be the same file as TC-13.11 uses."""
+    # ── Cross-module lock contention tests ─────────────────────────────────
+    #
+    # These tests verify that the lock protocol in approval_gate.py and
+    # control_plane_transition.py use the same lock file
+    # (.agentdesk/runtime/.state-transition.lock) and the same non-blocking
+    # advisory lock mechanism.  Both modules independently own their lock
+    # helpers (_exclusive_state_lock), but they target the same file, so
+    # holding the lock in one module must block the other.
+    #
+    # Direction A: TC-13.11 holds the lock → ApprovalGate writer is rejected.
+    # Direction B: ApprovalGate holds the lock → TC-13.11 is rejected,
+    #             and TC-13.11 succeeds after ApprovalGate releases.
+
+    def test_direction_a_cpt_locks_ag_writer_blocked(self) -> None:
+        """Direction A: cpt._exclusive_state_lock held → ag.write_grant fails.
+
+        TC-13.11 holds the state lock; ApprovalGate's write_grant() must
+        fail immediately with ApprovalSnapshotConflictError (the frozen
+        exception layer for lock contention in ApprovalGate)."""
         with _temp_project() as proj:
             head = _git_head(proj)
-            lock_path = proj / ".agentdesk" / "runtime" / ".state-transition.lock"
 
-            # Acquire lock directly.
-            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
-            try:
-                ag._acquire_os_lock(fd)
-                # Now try to write — must fail.
-                with self.assertRaises(ag.ApprovalSnapshotConflictError):
+            # TC-13.11 holds the state lock.
+            with cpt._exclusive_state_lock(proj):
+                # Now ApprovalGate's writer must be blocked.
+                with self.assertRaises(ag.ApprovalSnapshotConflictError) as ctx:
                     ag.write_grant(
                         project_root=proj,
-                        approval_id="APR-001",
-                        event_id="EVT-001",
+                        approval_id="APR-DA",
+                        event_id="EVT-DA-001",
                         scope=ag.ApprovalScope.DISPATCH,
-                        subject=_make_subject(),
+                        subject=_make_subject(task_id="TC-901"),
                         lease_epoch=1,
                         now=_NOW,
-                        reason="Should fail",
+                        reason="Direction A grant",
                         expires_at=None,
                         expected_snapshot_commit=head,
                     )
-            finally:
-                ag._release_os_lock(fd)
-                os.close(fd)
+                self.assertIn("lock", str(ctx.exception).lower())
+
+            # Verify: grant file was NOT created.
+            target = proj / "docs" / "pm" / "approvals" / "EVT-DA-001.yaml"
+            self.assertFalse(target.exists(), "Grant file must not be created on lock contention")
+
+            # Verify: approvals dir has no temp files.
+            approvals_dir = proj / "docs" / "pm" / "approvals"
+            for entry in approvals_dir.iterdir():
+                self.assertFalse(
+                    entry.name.startswith(".EVT-"),
+                    f"Temp file residue: {entry.name}",
+                )
+
+            # Verify: lock file still exists (never deleted).
+            lock_path = proj / ".agentdesk" / "runtime" / ".state-transition.lock"
+            self.assertTrue(lock_path.exists(), "Lock file must persist")
+
+    def test_direction_b_ag_locks_cpt_blocked_then_cpt_succeeds(self) -> None:
+        """Direction B: ag._exclusive_state_lock held → cpt throws, then succeeds.
+
+        ApprovalGate holds the state lock.  TC-13.11's
+        _exclusive_state_lock must raise TransitionLockContentionError
+        immediately.  After ApprovalGate releases the lock, TC-13.11
+        must be able to acquire it successfully."""
+        with _temp_project() as proj:
+            # ApprovalGate holds the state lock.
+            with ag._exclusive_state_lock(proj):
+                # TC-13.11 must fail with TransitionLockContentionError.
+                with self.assertRaises(cpt.TransitionLockContentionError) as ctx:
+                    with cpt._exclusive_state_lock(proj):
+                        self.fail("inner body must not execute")
+                self.assertIn("lock", str(ctx.exception).lower())
+
+            # After ApprovalGate releases the lock, TC-13.11 must succeed.
+            inner_executed = False
+            with cpt._exclusive_state_lock(proj):
+                inner_executed = True
+            self.assertTrue(inner_executed, "TC-13.11 must acquire lock after ApprovalGate releases")
+
+            # Lock file persists.
+            lock_path = proj / ".agentdesk" / "runtime" / ".state-transition.lock"
+            self.assertTrue(lock_path.exists(), "Lock file must persist after all releases")
+
+    def test_direction_a_thread_cpt_locks_ag_writer_blocked(self) -> None:
+        """Thread-based Direction A: cpt._exclusive_state_lock in another thread.
+
+        When the same-process advisory lock behavior prevents blocking
+        across threads on the same fd, this test uses a dedicated event
+        to synchronise and verifies that write_grant() still sees
+        contention (or the platform's equivalent failure)."""
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            lock_held = threading.Event()
+            error_from_thread: list[BaseException | None] = [None]
+            thread_done = threading.Event()
+
+            def _writer() -> None:
+                try:
+                    ag.write_grant(
+                        project_root=proj,
+                        approval_id="APR-DAT",
+                        event_id="EVT-DAT-001",
+                        scope=ag.ApprovalScope.DISPATCH,
+                        subject=_make_subject(task_id="TC-902"),
+                        lease_epoch=1,
+                        now=_NOW,
+                        reason="Thread Direction A",
+                        expires_at=None,
+                        expected_snapshot_commit=head,
+                    )
+                except BaseException as exc:
+                    error_from_thread[0] = exc
+                finally:
+                    thread_done.set()
+
+            def _holder() -> None:
+                with cpt._exclusive_state_lock(proj):
+                    lock_held.set()
+                    # Hold the lock until the writer thread finishes.
+                    thread_done.wait(timeout=10)
+
+            t_holder = threading.Thread(target=_holder, name="cpt-lock-holder")
+            t_writer = threading.Thread(target=_writer, name="ag-writer")
+
+            t_holder.start()
+            self.assertTrue(lock_held.wait(timeout=5), "Lock holder must acquire lock within timeout")
+            t_writer.start()
+            t_writer.join(timeout=5)
+            t_holder.join(timeout=5)
+
+            self.assertIsNot(thread_done.is_set(), False, "Writer thread must complete")
+            self.assertIsNotNone(error_from_thread[0], "Writer must fail with lock contention")
+            self.assertIsInstance(
+                error_from_thread[0],
+                ag.ApprovalSnapshotConflictError,
+                f"Expected ApprovalSnapshotConflictError, got {type(error_from_thread[0]).__name__}",
+            )
+            self.assertIn("lock", str(error_from_thread[0]).lower())
+
+            # Verify no grant file.
+            target = proj / "docs" / "pm" / "approvals" / "EVT-DAT-001.yaml"
+            self.assertFalse(target.exists(), "Grant file must not be created")
+
+            # Threads must have exited.
+            self.assertFalse(t_holder.is_alive(), "Lock holder thread must exit")
+            self.assertFalse(t_writer.is_alive(), "Writer thread must exit")
+
+            # Lock file persists.
+            lock_path = proj / ".agentdesk" / "runtime" / ".state-transition.lock"
+            self.assertTrue(lock_path.exists(), "Lock file must persist")
+
+    def test_direction_b_thread_ag_locks_cpt_blocked(self) -> None:
+        """Thread-based Direction B: ag._exclusive_state_lock held → cpt throws.
+
+        ApprovalGate holds the lock in another thread; TC-13.11
+        must raise TransitionLockContentionError."""
+        with _temp_project() as proj:
+            lock_held = threading.Event()
+            error_from_thread: list[BaseException | None] = [None]
+            thread_done = threading.Event()
+
+            def _cpt_acquirer() -> None:
+                try:
+                    with cpt._exclusive_state_lock(proj):
+                        error_from_thread[0] = AssertionError("inner body must not execute")
+                except BaseException as exc:
+                    error_from_thread[0] = exc
+                finally:
+                    thread_done.set()
+
+            def _holder() -> None:
+                with ag._exclusive_state_lock(proj):
+                    lock_held.set()
+                    thread_done.wait(timeout=10)
+
+            t_holder = threading.Thread(target=_holder, name="ag-lock-holder")
+            t_cpt = threading.Thread(target=_cpt_acquirer, name="cpt-acquirer")
+
+            t_holder.start()
+            self.assertTrue(lock_held.wait(timeout=5), "Lock holder must acquire lock within timeout")
+            t_cpt.start()
+            t_cpt.join(timeout=5)
+            t_holder.join(timeout=5)
+
+            self.assertIsNot(thread_done.is_set(), False, "CPT acquirer thread must complete")
+            self.assertIsNotNone(error_from_thread[0], "CPT must fail with lock contention")
+            self.assertIsInstance(
+                error_from_thread[0],
+                cpt.TransitionLockContentionError,
+                f"Expected TransitionLockContentionError, got {type(error_from_thread[0]).__name__}",
+            )
+            self.assertIn("lock", str(error_from_thread[0]).lower())
+
+            # Threads must have exited.
+            self.assertFalse(t_holder.is_alive(), "Lock holder thread must exit")
+            self.assertFalse(t_cpt.is_alive(), "CPT acquirer thread must exit")
+
+            # Lock file persists.
+            lock_path = proj / ".agentdesk" / "runtime" / ".state-transition.lock"
+            self.assertTrue(lock_path.exists(), "Lock file must persist")
 
     def test_lock_file_persists(self) -> None:
         """The lock file must persist after the lock is released."""
