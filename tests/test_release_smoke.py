@@ -5995,11 +5995,11 @@ class ReleaseSmokeTests(unittest.TestCase):
                 return
         self.fail("Interface Status row #18 not found")
 
-    def test_tc1312a_approval_gate_py_does_not_exist(self) -> None:
-        """approval_gate.py must NOT exist yet."""
-        self.assertFalse(
+    def test_tc1312b_approval_gate_py_exists(self) -> None:
+        """approval_gate.py must exist after TC-13.12b."""
+        self.assertTrue(
             self._APPROVAL_GATE_PY.exists(),
-            "approval_gate.py must not exist in TC-13.12a",
+            "approval_gate.py must exist in TC-13.12b",
         )
 
     def test_tc1312a_future_task_cards_tc1313_unchanged(self) -> None:
@@ -6792,11 +6792,11 @@ class ReleaseSmokeTests(unittest.TestCase):
                 f"ADR must not contain deferred ApprovalEvidence text: {pat}",
             )
 
-    def test_tc1312a_approval_gate_py_still_absent(self) -> None:
-        """approval_gate.py must still NOT exist."""
-        self.assertFalse(
+    def test_tc1312b_approval_gate_py_present(self) -> None:
+        """approval_gate.py must exist after TC-13.12b implementation."""
+        self.assertTrue(
             self._APPROVAL_GATE_PY.exists(),
-            "approval_gate.py must not exist in TC-13.12a",
+            "approval_gate.py must exist after TC-13.12b",
         )
 
     def test_tc1312a_interface_17_and_tc1313_still_target(self) -> None:

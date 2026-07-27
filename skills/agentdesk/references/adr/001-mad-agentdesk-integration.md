@@ -5360,7 +5360,7 @@ TC-13.12d — offline validator integration (validate_project.py),
 | Card | Depends on | Scope | Interface #17 status after completion |
 |------|-----------|-------|--------------------------------------|
 | TC-13.12a | TC-13.11c | This contract only | **Target** |
-| TC-13.12b | TC-13.12a | Data models, writer, schema validation | Target |
+| TC-13.12b | TC-13.12a | Data models, writer, schema validation | Target (implemented) |
 | TC-13.12c | TC-13.12b, TC-13.11 | Runtime gate + integration | Target |
 | TC-13.12d | TC-13.12c | Offline validator + replay hardening | Target → **Current** |
 
@@ -5392,10 +5392,19 @@ TC-13.12a must **not** implement, freeze, or assume responsibility for:
 * ADR Interface Status row #17 "AgentDesk ApprovalGate"
   remains **Target**.
 * This section (§2.15) is the Frozen Contract for TC-13.12a.
-* The production module ``skills/agentdesk/scripts/approval_gate.py``
-  does **not** exist.
-* TC-13.12b, TC-13.12c, and TC-13.12d are deferred to future task
-  cards.
+* **TC-13.12b is implemented**: the production module
+  ``skills/agentdesk/scripts/approval_gate.py`` exists and exports
+  the frozen 15-symbol ``__all__``.  Five typed models
+  (``ApprovalScope``, ``ApprovalSubject``, ``ApprovalCheckRequest``,
+  ``ApprovalEvidence``, ``ApprovalCheckResult``), seven exception
+  types, the private evidence store loader, ``write_grant()``, and
+  ``write_revoke()`` are all committed.  ``ApprovalGate`` is a
+  frozen/slots stub — ``check()`` and ``require()`` raise
+  ``NotImplementedError`` (pending TC-13.12c).
+* Interface #17 remains **Target**.
+* TC-13.12c (read-only runtime gate + ControlPlaneTransitionService
+  integration) and TC-13.12d (offline validator + replay hardening)
+  remain **Target**.
 * TC-13.13 and all subsequent Target interfaces remain **Target**.
 
 ---
