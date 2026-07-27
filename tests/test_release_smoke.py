@@ -5653,20 +5653,19 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("TC-13.9c", section,
                       "TC-13.9c must remain in Future Task Cards")
 
-    def test_tc1310a_tc1311_still_target(self) -> None:
-        """TC-13.11 must still be Target."""
+    def test_tc1310a_tc1311c_current(self) -> None:
+        """TC-13.11 must be Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         tc1311_row = None
         for row in rows:
             impl = self._resolve_col(row, "Implemented by", "Impl", "Notes")
-            if "TC-13.11" in re.findall(r"\b(TC-\d+(?:\.\d+)*)\b", impl):
+            if "TC-13.11" in impl:
                 tc1311_row = row
                 break
         self.assertIsNotNone(tc1311_row, "ADR must contain TC-13.11 row")
         status = self._resolve_col(tc1311_row, "Status")
-        self.assertIn("Target", status)
-        self.assertNotIn("Current", status)
+        self.assertIn("Current", status)
 
     def test_tc1310a_tc1318_depends_on_tc1310c(self) -> None:
         """ADR §5: TC-13.18 must depend on TC-13.10c."""
@@ -5839,8 +5838,8 @@ class ReleaseSmokeTests(unittest.TestCase):
                 return
         self.fail("Interface Status row #15 not found")
 
-    def test_interface_status_16_target(self) -> None:
-        """Interface Status row #16 must still be Target."""
+    def test_interface_status_16_current(self) -> None:
+        """Interface Status row #16 must be Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         for row in rows:
@@ -5848,14 +5847,9 @@ class ReleaseSmokeTests(unittest.TestCase):
             if num == "16":
                 status = self._resolve_col(row, "Status")
                 self.assertIn(
-                    "Target",
-                    status,
-                    f"Interface Status #16 must be Target, got {status!r}",
-                )
-                self.assertNotIn(
                     "Current",
                     status,
-                    f"Interface Status #16 must NOT be Current, got {status!r}",
+                    f"Interface Status #16 must be Current, got {status!r}",
                 )
                 return
         self.fail("Interface Status row #16 not found")
@@ -5970,24 +5964,23 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     # ── existence / basic structure ──────────────────────────────────────────
 
-    def test_tc1311a_section_exists(self) -> None:
-        """§2.14 Contract section must exist with frozen marker."""
+    def test_tc1311c_section_exists(self) -> None:
+        """SS2.14 Contract section must exist with Current marker."""
         heading = self._tc1311a_heading()
         self.assertIn("Frozen Contract", heading)
-        self.assertIn("TC-13.11a", heading)
+        self.assertIn("TC-13.11c", heading)
         section = self._tc1311a_section()
         self.assertGreater(len(section), 500)
 
-    def test_tc1311a_interface_16_still_target(self) -> None:
-        """Interface #16 must still be Target."""
+    def test_tc1311c_interface_16_current(self) -> None:
+        """Interface #16 must be Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         for row in rows:
             num = self._resolve_col(row, "#")
             if num == "16":
                 status = self._resolve_col(row, "Status")
-                self.assertIn("Target", status)
-                self.assertNotIn("Current", status)
+                self.assertIn("Current", status)
                 return
         self.fail("Interface Status row #16 not found")
 
@@ -5997,9 +5990,8 @@ class ReleaseSmokeTests(unittest.TestCase):
         test_file = REPO_ROOT / "tests" / "test_control_plane_transition.py"
         self.assertTrue(test_file.exists())
 
-    def test_tc1311b_apply_transition_not_yet_current(self) -> None:
-        """apply_transition must raise NotImplementedError — TC-13.11c
-        is still Target."""
+    def test_tc1311c_apply_transition_no_longer_not_implemented(self) -> None:
+        """apply_transition is now implemented — TC-13.11c is Current."""
         import importlib, sys
         mod_name = "control_plane_transition"
         if mod_name in sys.modules:
@@ -6036,9 +6028,15 @@ class ReleaseSmokeTests(unittest.TestCase):
                 event_context=ctx,
             )
             now = datetime(2026, 7, 27, 0, 0, 0, tzinfo=UTC)
-            with self.assertRaises(NotImplementedError) as cm:
-                svc.apply_transition(req, None, now)
-            self.assertIn("TC-13.11c", str(cm.exception))
+            try:
+                result = svc.apply_transition(req, None, now)
+            except NotImplementedError:
+                self.fail(
+                    "apply_transition must not raise NotImplementedError "
+                    "in TC-13.11c"
+                )
+            except Exception:
+                pass  # expected -- no tasks.yaml in empty dir
 
     def test_tc1311a_section_25_still_current(self) -> None:
         adr_text = self._adr_path().read_text(encoding="utf-8")

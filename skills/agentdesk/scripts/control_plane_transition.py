@@ -1,36 +1,21 @@
-"""AgentDesk ControlPlaneTransitionService — TC-13.11b.
+"""AgentDesk ControlPlaneTransitionService -- TC-13.11c.
 
-Typed frozen/slots models, construction-time fail-closed validation,
-project-level state lock, lock-order tracking infrastructure, pure
-serialization and schema validation helpers, and single-file atomic
-write infrastructure.
+Typed frozen/slots models, project-level state lock, lock-order tracking,
+pure serialization and schema validation helpers, single-file atomic
+write infrastructure, and full CAS-write state transition execution.
 
-TC-13.11b does NOT implement ``apply_transition()`` — that is deferred
-to TC-13.11c.  The method exists but immediately raises
-``NotImplementedError``.
-
-Interface #16 remains Target until TC-13.11c is complete.
-
-Non-goals (explicitly excluded from TC-13.11b):
-* CAS read / comparison
-* Git HEAD query or Git commit
-* Event / outbox / tasks / acceptance actual writes
-* Derived view rendering
-* Duplicate / orphan detection
-* Complete idempotent replay
-* WorkerSlotLease fence execution
-* State transitions
-* ApprovalGate
-* Retry / escalation / rate-limit
-* CLI, model, API, network calls
+Interface #16 is Current -- TC-13.11c.
 """
 
 from __future__ import annotations
 
+import copy
 import errno
 import hashlib
+import json
 import os
 import re
+import subprocess
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, fields as dc_fields
@@ -41,7 +26,12 @@ from typing import Any, Iterator, Optional, Union
 if os.name != "nt":
     import fcntl
 
-# ── constants (frozen from validate_project.py) ────────────────────────────
+
+# -- sentinel for unset defaults --
+
+_UNSET: Any = object()
+
+# -- constants (frozen from validate_project.py) --
 
 _STATES: tuple[str, ...] = (
     "draft",
@@ -2047,7 +2037,1284 @@ def _validate_outbox_schema(
         raise TransitionSchemaError("outbox revision must be a non-bool int")
 
 
-# ── single-file atomic write helper ────────────────────────────────────────
+# -- transition spec registry --
+
+
+@dataclass(frozen=True, slots=True)
+class _TransitionSpec:
+    """Internal registry entry for a single transition type.
+
+    Encodes static facts only -- never stores runtime path, request,
+    task, or mutable state.
+    """
+
+    event_type: str
+    payload_type: type
+    from_states: frozenset[str]  # empty = wildcard (any non-terminal)
+    to_state: str | None  # None = variable (caller-specified)
+    needs_worker_lease: bool
+    needs_dispatch_cas: bool
+    produces_outbox: bool
+    produces_acceptance: bool
+
+
+# -- terminal states (no further transitions allowed) --
+
+_TERMINAL_STATES: frozenset[str] = frozenset({
+    "integrated", "cancelled", "superseded",
+})
+
+# -- wildcard-eligible non-terminal states --
+
+_NON_TERMINAL_STATES: frozenset[str] = _STATES_FROZEN - _TERMINAL_STATES
+
+# -- transition registry -- exactly 15 entries --
+
+_TRANSITION_SPECS: dict[str, _TransitionSpec] = {
+    # 1. draft -> ready
+    "TASK_SPECIFIED": _TransitionSpec(
+        event_type="TASK_SPECIFIED",
+        payload_type=SpecifyPayload,
+        from_states=frozenset({"draft"}),
+        to_state="ready",
+        needs_worker_lease=False,
+        needs_dispatch_cas=False,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+    # 2. ready -> dispatched
+    "TASK_DISPATCHED": _TransitionSpec(
+        event_type="TASK_DISPATCHED",
+        payload_type=DispatchPayload,
+        from_states=frozenset({"ready"}),
+        to_state="dispatched",
+        needs_worker_lease=True,
+        needs_dispatch_cas=False,
+        produces_outbox=True,
+        produces_acceptance=False,
+    ),
+    # 3. dispatched -> in_progress
+    "DISPATCH_ACKNOWLEDGED": _TransitionSpec(
+        event_type="DISPATCH_ACKNOWLEDGED",
+        payload_type=AcknowledgePayload,
+        from_states=frozenset({"dispatched"}),
+        to_state="in_progress",
+        needs_worker_lease=True,
+        needs_dispatch_cas=True,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+    # 4. in_progress -> review_ready
+    "DELIVERY_SUBMITTED": _TransitionSpec(
+        event_type="DELIVERY_SUBMITTED",
+        payload_type=DeliverySubmittedPayload,
+        from_states=frozenset({"in_progress"}),
+        to_state="review_ready",
+        needs_worker_lease=True,
+        needs_dispatch_cas=True,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+    # 5. review_ready -> accepted
+    "DELIVERY_ACCEPTED": _TransitionSpec(
+        event_type="DELIVERY_ACCEPTED",
+        payload_type=DeliveryAcceptedPayload,
+        from_states=frozenset({"review_ready"}),
+        to_state="accepted",
+        needs_worker_lease=True,
+        needs_dispatch_cas=True,
+        produces_outbox=False,
+        produces_acceptance=True,
+    ),
+    # 6. review_ready -> returned
+    "DELIVERY_RETURNED": _TransitionSpec(
+        event_type="DELIVERY_RETURNED",
+        payload_type=DeliveryReturnedPayload,
+        from_states=frozenset({"review_ready"}),
+        to_state="returned",
+        needs_worker_lease=True,
+        needs_dispatch_cas=True,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+    # 7. returned -> ready
+    "TASK_REQUEUED": _TransitionSpec(
+        event_type="TASK_REQUEUED",
+        payload_type=RequeuePayload,
+        from_states=frozenset({"returned"}),
+        to_state="ready",
+        needs_worker_lease=False,
+        needs_dispatch_cas=False,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+    # 8. accepted -> integrated
+    "CHANGE_INTEGRATED": _TransitionSpec(
+        event_type="CHANGE_INTEGRATED",
+        payload_type=IntegrationPayload,
+        from_states=frozenset({"accepted"}),
+        to_state="integrated",
+        needs_worker_lease=False,
+        needs_dispatch_cas=False,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+    # 9. accepted -> blocked (INTEGRATION_FAILED)
+    "INTEGRATION_FAILED": _TransitionSpec(
+        event_type="INTEGRATION_FAILED",
+        payload_type=BlockedPayload,
+        from_states=frozenset({"accepted"}),
+        to_state="blocked",
+        needs_worker_lease=False,
+        needs_dispatch_cas=False,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+    # 10. * -> blocked (TASK_BLOCKED)
+    "TASK_BLOCKED": _TransitionSpec(
+        event_type="TASK_BLOCKED",
+        payload_type=BlockedPayload,
+        from_states=frozenset(),
+        to_state="blocked",
+        needs_worker_lease=False,
+        needs_dispatch_cas=False,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+    # 11. blocked -> resume (BLOCKER_RESOLVED)
+    "BLOCKER_RESOLVED": _TransitionSpec(
+        event_type="BLOCKER_RESOLVED",
+        payload_type=BlockerResolvedPayload,
+        from_states=frozenset({"blocked"}),
+        to_state=None,
+        needs_worker_lease=False,
+        needs_dispatch_cas=False,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+    # 12. blocked -> draft (BLOCKER_RESCOPED)
+    "BLOCKER_RESCOPED": _TransitionSpec(
+        event_type="BLOCKER_RESCOPED",
+        payload_type=BlockerRescopedPayload,
+        from_states=frozenset({"blocked"}),
+        to_state="draft",
+        needs_worker_lease=False,
+        needs_dispatch_cas=False,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+    # 13. blocked -> cancelled (BLOCKER_CANCELLED)
+    "BLOCKER_CANCELLED": _TransitionSpec(
+        event_type="BLOCKER_CANCELLED",
+        payload_type=BlockerCancelledPayload,
+        from_states=frozenset({"blocked"}),
+        to_state="cancelled",
+        needs_worker_lease=False,
+        needs_dispatch_cas=False,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+    # 14. * -> cancelled (TASK_CANCELLED)
+    "TASK_CANCELLED": _TransitionSpec(
+        event_type="TASK_CANCELLED",
+        payload_type=CancelledPayload,
+        from_states=frozenset(),
+        to_state="cancelled",
+        needs_worker_lease=False,
+        needs_dispatch_cas=False,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+    # 15. * -> superseded (TASK_SUPERSEDED)
+    "TASK_SUPERSEDED": _TransitionSpec(
+        event_type="TASK_SUPERSEDED",
+        payload_type=SupersededPayload,
+        from_states=frozenset(),
+        to_state="superseded",
+        needs_worker_lease=False,
+        needs_dispatch_cas=False,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+}
+
+
+# -- canonical path helpers --
+
+_CANONICAL_DIRS = {
+    "state": Path("docs") / "pm" / "state",
+    "events": Path("docs") / "pm" / "events",
+    "outbox": Path("docs") / "pm" / "outbox",
+    "acceptances": Path("docs") / "pm" / "acceptances",
+}
+_BOARD_PATH = Path("docs") / "pm" / "BOARD.md"
+_STATUS_PATH = Path("docs") / "pm" / "STATUS.md"
+_ACCEPTANCE_SCHEMA = "agentdesk.acceptance/v2"
+_REVIEW_NUMBER_RE = re.compile(r"-review([1-9][0-9]*)\.md$")
+
+
+def _derive_to_state(
+    spec: _TransitionSpec,
+    payload: Any,
+) -> str:
+    """Return the to_state for this transition."""
+    if spec.to_state is not None:
+        return spec.to_state
+    return payload.resume_to_state  # type: ignore[union-attr]
+
+
+# -- validate now --
+
+
+def _validate_now(now: datetime) -> None:
+    """Validate now is a timezone-aware UTC datetime, not bool, not naive."""
+    if isinstance(now, bool) or not isinstance(now, datetime):
+        raise TypeError(
+            f"now must be a datetime, got {_safe_type_name(now)}"
+        )
+    if now.tzinfo is None:
+        raise TypeError("now must be timezone-aware")
+    if now.utcoffset() is None:
+        raise TypeError("now must have a UTC offset")
+    if now.utcoffset().total_seconds() != 0:
+        raise TypeError("now must be UTC")
+
+
+# -- Git HEAD query --
+
+
+def _resolve_head_commit(project_root: Path) -> str:
+    """Read the current Git HEAD via git rev-parse HEAD.
+
+    Uses argv array, shell=False.  Raises TransitionCASConflictError
+    on any failure -- the error message never leaks stderr or paths.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        raise TransitionCASConflictError(
+            "cannot read Git HEAD -- git command failed"
+        ) from None
+    if result.returncode != 0:
+        raise TransitionCASConflictError(
+            "cannot read Git HEAD -- git returned non-zero"
+        )
+    sha = result.stdout.strip()
+    if not _SHA_RE.fullmatch(sha):
+        raise TransitionCASConflictError(
+            "cannot read Git HEAD -- output is not a valid SHA"
+        )
+    return sha
+
+
+# -- canonical state reader --
+
+
+def _read_tasks_yaml(project_root: Path) -> dict[str, Any]:
+    """Read and validate docs/pm/state/tasks.yaml.
+
+    Returns the parsed state dict.  Raises TransitionSchemaError on
+    any structural or schema violation.
+    """
+    state_path = project_root / _CANONICAL_DIRS["state"] / "tasks.yaml"
+    try:
+        raw = state_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise TransitionSchemaError(
+            "cannot read canonical tasks state"
+        ) from exc
+
+    try:
+        state = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise TransitionSchemaError(
+            "canonical tasks state is not JSON-compatible YAML"
+        ) from exc
+
+    if not isinstance(state, dict):
+        raise TransitionSchemaError(
+            "canonical tasks state root must be an object"
+        )
+    if state.get("schema_version") != "agentdesk.tasks/v2":
+        raise TransitionSchemaError(
+            "canonical tasks state schema_version must be agentdesk.tasks/v2"
+        )
+    if not isinstance(state.get("project_id"), str) or not state["project_id"]:
+        raise TransitionSchemaError(
+            "canonical tasks state project_id must be a non-empty str"
+        )
+
+    pm_control = state.get("pm_control")
+    if not isinstance(pm_control, dict):
+        raise TransitionSchemaError(
+            "canonical tasks state pm_control must be an object"
+        )
+    for req in ("holder_id", "lease_epoch", "mode"):
+        if req not in pm_control:
+            raise TransitionSchemaError(
+                f"canonical tasks state pm_control missing key: {req}"
+            )
+    if not isinstance(pm_control.get("holder_id"), str) or not pm_control["holder_id"]:
+        raise TransitionSchemaError(
+            "canonical tasks state pm_control.holder_id must be a non-empty str"
+        )
+    if isinstance(pm_control.get("lease_epoch"), bool) or not isinstance(
+        pm_control.get("lease_epoch"), int
+    ):
+        raise TransitionSchemaError(
+            "canonical tasks state pm_control.lease_epoch must be a non-bool int"
+        )
+
+    tasks = state.get("tasks")
+    if not isinstance(tasks, list):
+        raise TransitionSchemaError(
+            "canonical tasks state tasks must be a list"
+        )
+    seen_ids: set[str] = set()
+    for i, t in enumerate(tasks):
+        if not isinstance(t, dict):
+            raise TransitionSchemaError(
+                f"canonical tasks state tasks[{i}] must be an object"
+            )
+        tid = t.get("task_id")
+        if not isinstance(tid, str) or not tid:
+            raise TransitionSchemaError(
+                f"canonical tasks state tasks[{i}].task_id must be a non-empty str"
+            )
+        if tid in seen_ids:
+            raise TransitionSchemaError(
+                f"canonical tasks state duplicate task_id: {tid!r}"
+            )
+        seen_ids.add(tid)
+    return state
+
+
+def _find_task(state: dict[str, Any], task_id: str) -> tuple[dict[str, Any], int]:
+    """Find a task in canonical state by task_id.
+
+    Returns (task_dict, index).  Raises TransitionCASConflictError
+    if the task is not found.
+    """
+    tasks: list[dict[str, Any]] = state["tasks"]
+    for i, t in enumerate(tasks):
+        if t.get("task_id") == task_id:
+            return t, i
+    raise TransitionCASConflictError(
+        "task not found in canonical state"
+    )
+
+
+# -- existing evidence scanner --
+
+
+def _read_existing_event_bytes(
+    project_root: Path, event_id: str
+) -> bytes | None:
+    """Read existing event file as raw bytes, or None if missing."""
+    event_path = (
+        project_root
+        / _CANONICAL_DIRS["events"]
+        / f"{event_id}.yaml"
+    )
+    try:
+        return event_path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+
+def _read_existing_outbox_bytes(
+    project_root: Path, message_id: str
+) -> bytes | None:
+    """Read existing outbox file as raw bytes, or None if missing."""
+    outbox_path = (
+        project_root
+        / _CANONICAL_DIRS["outbox"]
+        / f"{message_id}.yaml"
+    )
+    try:
+        return outbox_path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+
+def _read_existing_acceptance_bytes(
+    project_root: Path, acceptance_path: str
+) -> bytes | None:
+    """Read existing acceptance record as raw bytes, or None if missing."""
+    abs_path = project_root / acceptance_path
+    try:
+        return abs_path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+
+# -- idempotency / duplicate / orphan detection --
+
+
+def _check_idempotency_and_duplicates(
+    project_root: Path,
+    request: TransitionRequest,
+    spec: _TransitionSpec,
+    task: dict[str, Any],
+    to_state: str,
+    proposed_event_bytes: bytes,
+    proposed_outbox_bytes: bytes | None,
+    proposed_acceptance_bytes: bytes | None,
+    proposed_tasks_bytes: bytes,
+) -> TransitionResult | None:
+    """Check for idempotent replay, duplicate evidence, or orphan state.
+
+    Returns a TransitionResult on full idempotent success (zero writes).
+    Raises TransitionDuplicateEvidenceError on duplicate / orphan.
+
+    Must be called BEFORE any authoritative writes.
+    """
+    event_id = request.event_id
+    existing_event_bytes = _read_existing_event_bytes(project_root, event_id)
+
+    expects_outbox = spec.produces_outbox
+    expects_acceptance = spec.produces_acceptance
+    outbox_message_id: str | None = None
+    if expects_outbox and isinstance(request.payload, DispatchPayload):
+        outbox_message_id = request.payload.outbox_message_id
+    acceptance_path: str | None = None
+    if expects_acceptance and isinstance(request.payload, DeliveryAcceptedPayload):
+        acceptance_path = request.payload.acceptance_path
+
+    existing_outbox_bytes: bytes | None = None
+    if outbox_message_id is not None:
+        existing_outbox_bytes = _read_existing_outbox_bytes(
+            project_root, outbox_message_id
+        )
+
+    existing_acceptance_bytes: bytes | None = None
+    if acceptance_path is not None:
+        existing_acceptance_bytes = _read_existing_acceptance_bytes(
+            project_root, acceptance_path
+        )
+
+    has_event = existing_event_bytes is not None
+    has_outbox = existing_outbox_bytes is not None
+    has_acceptance = existing_acceptance_bytes is not None
+    tasks_at_target = task.get("state") == to_state
+
+    any_present = has_event or has_outbox or has_acceptance
+    if not any_present and not tasks_at_target:
+        return None
+
+    # Event exists -- check byte equality.
+    # Only raise if content differs AND tasks are NOT at target state.
+    # If tasks ARE at target, different content may be from a prior
+    # genuine transition (not a retry collision), so we defer to
+    # the full-idempotent check below.
+    if has_event and existing_event_bytes != proposed_event_bytes:
+        if not tasks_at_target:
+            raise TransitionDuplicateEvidenceError(
+                "event_id already exists with different content"
+            )
+
+    # Outbox exists -- check byte equality.
+    if has_outbox and proposed_outbox_bytes is not None:
+        if existing_outbox_bytes != proposed_outbox_bytes:
+            raise TransitionDuplicateEvidenceError(
+                "outbox message_id already exists with different content"
+            )
+
+    # Acceptance exists -- check byte equality.
+    if has_acceptance and proposed_acceptance_bytes is not None:
+        if existing_acceptance_bytes != proposed_acceptance_bytes:
+            raise TransitionDuplicateEvidenceError(
+                "acceptance record already exists with different content"
+            )
+
+    # Full idempotent replay: all expected files present AND tasks at target.
+    all_expected_present = (
+        has_event
+        and (not expects_outbox or has_outbox)
+        and (not expects_acceptance or has_acceptance)
+    )
+    if all_expected_present and tasks_at_target:
+        occurred_at = task.get("timestamps", {}).get(
+            "updated_at", "1970-01-01T00:00:00Z"
+        )
+        return TransitionResult(
+            task_id=request.cas.task_id,
+            event_id=event_id,
+            from_state=request.cas.expected_state,
+            to_state=to_state,
+            occurred_at=occurred_at,
+            outbox_message_id=outbox_message_id,
+        )
+
+    # Simple transitions without companion files: event + tasks -> idempotent.
+    if (
+        has_event
+        and tasks_at_target
+        and not expects_outbox
+        and not expects_acceptance
+        and not has_outbox
+        and not has_acceptance
+    ):
+        occurred_at = task.get("timestamps", {}).get(
+            "updated_at", "1970-01-01T00:00:00Z"
+        )
+        return TransitionResult(
+            task_id=request.cas.task_id,
+            event_id=event_id,
+            from_state=request.cas.expected_state,
+            to_state=to_state,
+            occurred_at=occurred_at,
+            outbox_message_id=None,
+        )
+
+    # Partial / orphan: some evidence present but not complete.
+    missing: list[str] = []
+    if has_event and not tasks_at_target:
+        missing.append("tasks.yaml not at target state")
+    if expects_outbox and not has_outbox and has_event:
+        missing.append("outbox not found")
+    if expects_acceptance and not has_acceptance and has_event:
+        missing.append("acceptance not found")
+    if tasks_at_target and not has_event and (has_outbox or has_acceptance):
+        missing.append("event not found but companion evidence exists")
+
+    if missing:
+        raise TransitionDuplicateEvidenceError(
+            "partial evidence detected: " + "; ".join(missing)
+        )
+
+    return None
+
+
+# -- dedupe key --
+
+
+def _derive_dedupe_key(
+    task_id: str,
+    revision: int,
+    attempt: int,
+    dispatch_id: str,
+    message_type: str,
+) -> str:
+    """Derive deterministic outbox dedupe key."""
+    return f"{task_id}/r{revision}/a{attempt}/{dispatch_id}/{message_type}"
+
+
+# -- payload digest --
+
+
+def _compute_payload_digest(outbox_bytes: bytes) -> str:
+    """Compute sha256:<64 hex> of outbox bytes."""
+    h = hashlib.sha256(outbox_bytes).hexdigest()
+    return f"sha256:{h}"
+
+
+# -- review number parser --
+
+
+def _parse_review_number(acceptance_path: str) -> int:
+    """Extract review number from acceptance_path."""
+    m = _REVIEW_NUMBER_RE.search(acceptance_path)
+    if m is None:
+        raise TransitionValidationError(
+            "acceptance_path must end with -reviewN.md (N >= 1)"
+        )
+    return int(m.group(1))
+
+
+# -- task field mutation --
+
+
+def _mutate_task_for_transition(
+    task: dict[str, Any],
+    request: TransitionRequest,
+    spec: _TransitionSpec,
+    to_state: str,
+    now_str: str,
+    lease_epoch: int,
+) -> dict[str, Any]:
+    """Return a mutated deep copy of task for the transition."""
+    new_task = copy.deepcopy(task)
+    new_task["state"] = to_state
+
+    if not isinstance(new_task.get("timestamps"), dict):
+        new_task["timestamps"] = {}
+    timestamps: dict[str, Any] = new_task["timestamps"]
+    timestamps["updated_at"] = now_str
+
+    event_type = spec.event_type
+
+    if event_type == "TASK_SPECIFIED":
+        timestamps["ready_at"] = now_str
+
+    elif event_type == "TASK_DISPATCHED":
+        payload = request.payload
+        assert isinstance(payload, DispatchPayload)
+        new_task["attempt"] = 1
+        new_task["current_dispatch"] = {
+            "dispatch_id": payload.dispatch_id,
+            "role_id": payload.role_id,
+            "base_commit": payload.base_commit,
+            "branch": payload.branch,
+            "model_selection": _serialize_model_selection(payload.model_selection),
+        }
+        new_task["model_selection"] = _serialize_model_selection(
+            payload.model_selection
+        )
+        new_task["report_path"] = payload.report_path
+        timestamps["dispatched_at"] = now_str
+
+    elif event_type == "DISPATCH_ACKNOWLEDGED":
+        timestamps["started_at"] = now_str
+
+    elif event_type == "DELIVERY_SUBMITTED":
+        payload = request.payload
+        assert isinstance(payload, DeliverySubmittedPayload)
+        new_task["implementation_commit"] = payload.implementation_commit
+        new_task["report_commit"] = payload.report_commit
+        new_task["delivery_state"] = "submitted"
+        timestamps["delivered_at"] = now_str
+
+    elif event_type == "DELIVERY_ACCEPTED":
+        payload = request.payload
+        assert isinstance(payload, DeliveryAcceptedPayload)
+        new_task["accepted_commit"] = payload.accepted_commit
+        new_task["acceptance_path"] = payload.acceptance_path
+        new_task["delivery_state"] = "accepted"
+        timestamps["accepted_at"] = now_str
+        new_task["current_dispatch"] = None
+
+    elif event_type == "DELIVERY_RETURNED":
+        new_task["delivery_state"] = "rejected"
+        new_task["current_dispatch"] = None
+
+    elif event_type == "TASK_REQUEUED":
+        new_task["current_dispatch"] = None
+
+    elif event_type == "CHANGE_INTEGRATED":
+        payload = request.payload
+        assert isinstance(payload, IntegrationPayload)
+        new_task["integrated_commit"] = payload.integrated_commit
+        timestamps["integrated_at"] = now_str
+
+    elif event_type in ("TASK_BLOCKED", "INTEGRATION_FAILED"):
+        payload = request.payload
+        assert isinstance(payload, BlockedPayload)
+        new_task["blocked_reason"] = payload.blocked_reason
+        new_task["blocked_kind"] = payload.blocked_kind
+        new_task["blocked_owner"] = payload.blocked_owner
+        new_task["unblock_condition"] = payload.unblock_condition
+        new_task["resume_state"] = payload.resume_state
+        new_task["blocked_attempt_valid"] = payload.blocked_attempt_valid
+        timestamps["blocked_at"] = now_str
+        if payload.blocked_attempt_valid is not True:
+            new_task["current_dispatch"] = None
+
+    elif event_type == "BLOCKER_RESOLVED":
+        payload = request.payload
+        assert isinstance(payload, BlockerResolvedPayload)
+        new_task["state"] = payload.resume_to_state
+        new_task["blocked_reason"] = None
+        new_task["blocked_kind"] = None
+        new_task["blocked_owner"] = None
+        new_task["unblock_condition"] = None
+        new_task["resume_state"] = None
+        new_task["blocked_attempt_valid"] = None
+        new_task["review_after"] = None
+
+    elif event_type == "BLOCKER_RESCOPED":
+        payload = request.payload
+        assert isinstance(payload, BlockerRescopedPayload)
+        new_task["revision"] = payload.new_revision
+        new_task["blocked_reason"] = None
+        new_task["blocked_kind"] = None
+        new_task["blocked_owner"] = None
+        new_task["unblock_condition"] = None
+        new_task["resume_state"] = None
+        new_task["blocked_attempt_valid"] = None
+        new_task["review_after"] = None
+        new_task["current_dispatch"] = None
+        new_task["delivery_state"] = None
+        new_task["implementation_commit"] = None
+        new_task["report_commit"] = None
+        new_task["accepted_commit"] = None
+        new_task["acceptance_path"] = None
+        new_task["report_path"] = None
+
+    elif event_type == "BLOCKER_CANCELLED":
+        new_task["blocked_reason"] = None
+        new_task["blocked_kind"] = None
+        new_task["blocked_owner"] = None
+        new_task["unblock_condition"] = None
+        new_task["resume_state"] = None
+        new_task["blocked_attempt_valid"] = None
+        new_task["review_after"] = None
+        new_task["current_dispatch"] = None
+        timestamps["cancelled_at"] = now_str
+
+    elif event_type == "TASK_CANCELLED":
+        new_task["current_dispatch"] = None
+        timestamps["cancelled_at"] = now_str
+
+    elif event_type == "TASK_SUPERSEDED":
+        payload = request.payload
+        assert isinstance(payload, SupersededPayload)
+        new_task["superseded_by"] = payload.superseded_by
+        new_task["current_dispatch"] = None
+        timestamps["superseded_at"] = now_str
+
+    return new_task
+
+
+# -- event bytes builder --
+
+
+def _build_event_bytes(
+    request: TransitionRequest,
+    spec: _TransitionSpec,
+    task: dict[str, Any],
+    to_state: str,
+    now: datetime,
+    lease_epoch: int,
+    payload_digest: str | None,
+) -> bytes:
+    """Build the state-event YAML bytes."""
+    occurred_at = _format_rfc3339_utc(now)
+
+    task_revision = task.get("revision", request.cas.expected_revision)
+    task_attempt = task.get("attempt")
+    task_dispatch_id = None
+    cd = task.get("current_dispatch")
+    if isinstance(cd, dict) and isinstance(cd.get("dispatch_id"), str):
+        task_dispatch_id = cd["dispatch_id"]
+
+    extra: dict[str, object] = {}
+    if spec.event_type == "TASK_DISPATCHED" and payload_digest is not None:
+        extra["payload_digest"] = payload_digest
+    if spec.event_type == "CHANGE_INTEGRATED":
+        payload = request.payload
+        if isinstance(payload, IntegrationPayload):
+            extra["integrated_commit"] = payload.integrated_commit
+            if payload.equivalence_method is not None:
+                extra["equivalence_method"] = payload.equivalence_method
+                extra["equivalence_result"] = "passed"
+                if payload.equivalence_evidence_ref is not None:
+                    extra["equivalence_evidence_ref"] = (
+                        payload.equivalence_evidence_ref
+                    )
+
+    event_ctx = request.event_context
+    mapping = _serialize_state_event_mapping(
+        schema_version=_STATE_EVENT_SCHEMA,
+        event_id=request.event_id,
+        event_type=spec.event_type,
+        task_id=request.cas.task_id,
+        revision=task_revision,
+        attempt=task_attempt,
+        dispatch_id=task_dispatch_id,
+        from_state=request.cas.expected_state,
+        to_state=to_state,
+        lease_epoch=lease_epoch,
+        occurred_at=occurred_at,
+        source_message_id=event_ctx.source_message_id,
+        evidence_refs=event_ctx.evidence_refs,
+        guard_results=event_ctx.guard_results,
+        extra=extra if extra else None,
+    )
+
+    _validate_state_event_schema(mapping)
+
+    yaml_str = _to_yaml_str(mapping)
+    return yaml_str.encode("utf-8")
+
+
+# -- outbox bytes builder --
+
+
+def _build_outbox_bytes(
+    request: TransitionRequest,
+    task: dict[str, Any],
+    to_state: str,
+    now: datetime,
+) -> bytes | None:
+    """Build outbox YAML bytes for TASK_DISPATCHED, or None."""
+    if not isinstance(request.payload, DispatchPayload):
+        return None
+
+    payload = request.payload
+    created_at = _format_rfc3339_utc(now)
+    new_attempt = task.get("attempt", 1)
+    dedupe_key = _derive_dedupe_key(
+        task_id=request.cas.task_id,
+        revision=request.cas.expected_revision,
+        attempt=new_attempt,
+        dispatch_id=payload.dispatch_id,
+        message_type="task.dispatch",
+    )
+
+    model_sel = _serialize_model_selection(payload.model_selection)
+    outbox_payload = {
+        "task_path": payload.task_card_path,
+        "task_card_commit": payload.task_card_commit,
+        "base_commit": payload.base_commit,
+        "branch": payload.branch,
+        "report_path": payload.report_path,
+    }
+
+    mapping = _serialize_outbox_mapping(
+        schema_version=_OUTBOX_SCHEMA,
+        message_id=payload.outbox_message_id,
+        event_id=request.event_id,
+        message_type="task.dispatch",
+        dedupe_key=dedupe_key,
+        task_id=request.cas.task_id,
+        revision=request.cas.expected_revision,
+        attempt=new_attempt,
+        dispatch_id=payload.dispatch_id,
+        destination_role_id=payload.role_id,
+        created_at=created_at,
+        model_selection=model_sel,
+        payload=outbox_payload,
+    )
+
+    _validate_outbox_schema(mapping)
+
+    yaml_str = _to_yaml_str(mapping)
+    return yaml_str.encode("utf-8")
+
+
+# -- acceptance record builder --
+
+
+def _build_acceptance_bytes(
+    request: TransitionRequest,
+    task: dict[str, Any],
+    now: datetime,
+) -> bytes | None:
+    """Build acceptance markdown bytes for DELIVERY_ACCEPTED, or None."""
+    if not isinstance(request.payload, DeliveryAcceptedPayload):
+        return None
+
+    payload = request.payload
+    dc = request.dispatch_cas
+    cd = task.get("current_dispatch")
+    reviewed_dispatch_id = (
+        dc.expected_dispatch_id
+        if dc is not None
+        else (cd["dispatch_id"] if isinstance(cd, dict) else None)
+    )
+
+    occurrence = _format_rfc3339_utc(now)
+
+    lines: list[str] = []
+    lines.append("---")
+    lines.append(f"schema_version: {_ACCEPTANCE_SCHEMA}")
+    lines.append(f"task_id: {request.cas.task_id}")
+    lines.append(f"revision: {request.cas.expected_revision}")
+    attempt = task.get("attempt")
+    lines.append(f"attempt: {attempt if attempt is not None else 'null'}")
+    impl_commit = task.get("implementation_commit")
+    lines.append(
+        f"implementation_commit: {impl_commit if impl_commit else 'null'}"
+    )
+    report_commit = task.get("report_commit")
+    lines.append(
+        f"report_commit: {report_commit if report_commit else 'null'}"
+    )
+    base_commit = (
+        cd.get("base_commit")
+        if isinstance(cd, dict)
+        else task.get("task_card_commit")
+    )
+    lines.append(
+        f"base_commit: {base_commit if base_commit else 'null'}"
+    )
+    lines.append("decision: accepted")
+    lines.append(f"accepted_commit: {payload.accepted_commit}")
+    lines.append(
+        f"reviewed_dispatch_id: {reviewed_dispatch_id if reviewed_dispatch_id else 'null'}"
+    )
+    lines.append(f"occurred_at: {occurrence}")
+    lines.append("gate: none")
+    lines.append("approval_ids: []")
+    lines.append("---")
+    lines.append("")
+    lines.append("# Acceptance Record")
+    lines.append("")
+
+    content = "\n".join(lines)
+    return content.encode("utf-8")
+
+
+# -- tasks.yaml serializer --
+
+
+def _serialize_tasks_state(state: dict[str, Any]) -> bytes:
+    """Serialize the full tasks.yaml state dict to JSON bytes.
+
+    Uses json.dumps to produce JSON-compatible YAML (RFC 7159 JSON
+    is valid YAML 1.2). The existing render_views._load_state uses
+    json.loads, so the round-trip is verified.
+    """
+    json_str = json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True)
+    return (json_str + "\n").encode("utf-8")
+
+
+# -- derived view renderer --
+
+
+def _render_derived_views(
+    state: dict[str, Any],
+) -> tuple[str, str]:
+    """Render BOARD.md and STATUS.md from canonical state."""
+    import sys as _sys
+    _scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    _already = _scripts_dir in _sys.path
+    if not _already:
+        _sys.path.insert(0, _scripts_dir)
+    try:
+        from render_views import _render_board, _render_status
+    finally:
+        if not _already:
+            _sys.path.pop(0)
+
+    board = _render_board(state)
+    status = _render_status(state)
+    return board, status
+
+
+# -- canonical file writing --
+
+
+def _write_canonical_files(
+    project_root: Path,
+    event_id: str,
+    event_bytes: bytes,
+    outbox_bytes: bytes | None,
+    outbox_message_id: str | None,
+    acceptance_bytes: bytes | None,
+    acceptance_path: str | None,
+    tasks_bytes: bytes,
+) -> None:
+    """Write all canonical files in fixed order.
+
+    Order: event -> outbox -> acceptance -> tasks.yaml
+    """
+    events_dir = project_root / _CANONICAL_DIRS["events"]
+    outbox_dir = project_root / _CANONICAL_DIRS["outbox"]
+    acceptances_dir = project_root / _CANONICAL_DIRS["acceptances"]
+    state_dir = project_root / _CANONICAL_DIRS["state"]
+
+    events_dir.mkdir(parents=True, exist_ok=True)
+    if outbox_bytes is not None:
+        outbox_dir.mkdir(parents=True, exist_ok=True)
+    if acceptance_bytes is not None:
+        acceptances_dir.mkdir(parents=True, exist_ok=True)
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        event_path = events_dir / f"{event_id}.yaml"
+        _atomic_write_bytes(event_path, event_bytes)
+    except TransitionWriteError:
+        raise
+    except Exception as exc:
+        raise TransitionWriteError("write failed at stage: event") from exc
+
+    try:
+        if outbox_bytes is not None and outbox_message_id is not None:
+            outbox_path = outbox_dir / f"{outbox_message_id}.yaml"
+            _atomic_write_bytes(outbox_path, outbox_bytes)
+    except TransitionWriteError:
+        raise
+    except Exception as exc:
+        raise TransitionWriteError("write failed at stage: outbox") from exc
+
+    try:
+        if acceptance_bytes is not None and acceptance_path is not None:
+            abs_accept_path = project_root / acceptance_path
+            abs_accept_path.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_bytes(abs_accept_path, acceptance_bytes)
+    except TransitionWriteError:
+        raise
+    except Exception as exc:
+        raise TransitionWriteError("write failed at stage: acceptance") from exc
+
+    try:
+        tasks_path = state_dir / "tasks.yaml"
+        _atomic_write_bytes(tasks_path, tasks_bytes)
+    except TransitionWriteError:
+        raise
+    except Exception as exc:
+        raise TransitionWriteError("write failed at stage: tasks.yaml") from exc
+
+
+def _write_derived_views(
+    project_root: Path,
+    board_md: str,
+    status_md: str,
+) -> None:
+    """Write BOARD.md and STATUS.md via atomic replacement."""
+    board_path = project_root / _BOARD_PATH
+    status_path = project_root / _STATUS_PATH
+    board_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        _atomic_write_bytes(board_path, board_md.encode("utf-8"))
+    except Exception as exc:
+        raise TransitionWriteError("write failed at stage: BOARD.md") from exc
+
+    try:
+        _atomic_write_bytes(status_path, status_md.encode("utf-8"))
+    except Exception as exc:
+        raise TransitionWriteError("write failed at stage: STATUS.md") from exc
+
+
+# -- CAS validation --
+
+
+def _validate_cas(
+    task: dict[str, Any],
+    request: TransitionRequest,
+    spec: _TransitionSpec,
+    expected_head: str,
+) -> None:
+    """Validate all CAS preconditions against the canonical state.
+
+    Raises TransitionCASConflictError on any mismatch.  Zero writes.
+    """
+    # 1. Git HEAD CAS.
+    if request.cas.expected_snapshot_commit != expected_head:
+        raise TransitionCASConflictError(
+            "CAS conflict: expected_snapshot_commit does not match HEAD"
+        )
+
+    # 2. Revision CAS.
+    task_revision = task.get("revision")
+    if task_revision != request.cas.expected_revision:
+        raise TransitionCASConflictError(
+            "CAS conflict: expected_revision does not match task revision"
+        )
+
+    # 3. State CAS.
+    current_state = task.get("state")
+    if not isinstance(current_state, str) or not current_state:
+        raise TransitionCASConflictError(
+            "CAS conflict: task state is invalid or missing"
+        )
+
+    if spec.from_states:
+        if current_state not in spec.from_states:
+            raise TransitionCASConflictError(
+                "CAS conflict: task state is not a valid from_state"
+            )
+    else:
+        if current_state in _TERMINAL_STATES:
+            raise TransitionCASConflictError(
+                "CAS conflict: cannot transition from a terminal state"
+            )
+
+    if request.cas.expected_state != current_state:
+        raise TransitionCASConflictError(
+            "CAS conflict: expected_state does not match task state"
+        )
+
+    # 4. Dispatch CAS.
+    cd = task.get("current_dispatch")
+    if spec.needs_dispatch_cas:
+        if request.dispatch_cas is None:
+            raise TransitionCASConflictError(
+                "CAS conflict: DispatchCAS is required for this transition"
+            )
+        if not isinstance(cd, dict):
+            raise TransitionCASConflictError(
+                "CAS conflict: no active dispatch on task"
+            )
+        if cd.get("dispatch_id") != request.dispatch_cas.expected_dispatch_id:
+            raise TransitionCASConflictError(
+                "CAS conflict: expected_dispatch_id does not match"
+            )
+        task_attempt = task.get("attempt")
+        if task_attempt != request.dispatch_cas.expected_attempt:
+            raise TransitionCASConflictError(
+                "CAS conflict: expected_attempt does not match task attempt"
+            )
+
+    if spec.event_type == "TASK_DISPATCHED" and isinstance(
+        request.payload, DispatchPayload
+    ):
+        if isinstance(cd, dict):
+            raise TransitionCASConflictError(
+                "CAS conflict: task already has an active dispatch"
+            )
+
+    if spec.event_type in ("TASK_CANCELLED", "TASK_SUPERSEDED"):
+        if request.dispatch_cas is not None:
+            if not isinstance(cd, dict):
+                raise TransitionCASConflictError(
+                    "CAS conflict: DispatchCAS provided but no active dispatch"
+                )
+            if cd.get("dispatch_id") != request.dispatch_cas.expected_dispatch_id:
+                raise TransitionCASConflictError(
+                    "CAS conflict: expected_dispatch_id does not match"
+                )
+            task_attempt = task.get("attempt")
+            if task_attempt != request.dispatch_cas.expected_attempt:
+                raise TransitionCASConflictError(
+                    "CAS conflict: expected_attempt does not match task attempt"
+                )
+
+    # 5. BLOCKER_RESCOPED: new_revision == expected_revision + 1.
+    if spec.event_type == "BLOCKER_RESCOPED" and isinstance(
+        request.payload, BlockerRescopedPayload
+    ):
+        expected_new = request.cas.expected_revision + 1
+        if request.payload.new_revision != expected_new:
+            raise TransitionCASConflictError(
+                "CAS conflict: new_revision must equal expected_revision + 1"
+            )
+
+
+# -- main transition orchestration --
+
+
+def _execute_transition_core(
+    project_root: Path,
+    request: TransitionRequest,
+    spec: _TransitionSpec,
+    now: datetime,
+    lease_epoch: int,
+) -> TransitionResult:
+    """Execute the core transition pipeline (inside locks)."""
+    occurred_at = _format_rfc3339_utc(now)
+
+    # 1. Read Git HEAD.
+    head_commit = _resolve_head_commit(project_root)
+
+    # 2. Read canonical state.
+    state = _read_tasks_yaml(project_root)
+    task, task_index = _find_task(state, request.cas.task_id)
+
+    # 3. Derive to_state.
+    to_state = _derive_to_state(spec, request.payload)
+
+    # 4. Build proposed bytes BEFORE CAS to enable idempotency check.
+    # (CAS may fail for already-transitioned tasks; idempotency
+    #  must be checked first.)
+    new_task = _mutate_task_for_transition(
+        task, request, spec, to_state, occurred_at, lease_epoch
+    )
+
+    post_state = copy.deepcopy(state)
+    post_state["tasks"][task_index] = new_task
+    post_state["updated_at"] = occurred_at
+
+    outbox_bytes = _build_outbox_bytes(request, new_task, to_state, now)
+    payload_digest: str | None = None
+    if outbox_bytes is not None:
+        payload_digest = _compute_payload_digest(outbox_bytes)
+
+    event_bytes = _build_event_bytes(
+        request, spec, new_task, to_state, now, lease_epoch, payload_digest
+    )
+
+    acceptance_bytes = _build_acceptance_bytes(request, new_task, now)
+    acceptance_path: str | None = None
+    if isinstance(request.payload, DeliveryAcceptedPayload):
+        acceptance_path = request.payload.acceptance_path
+
+    tasks_bytes = _serialize_tasks_state(post_state)
+
+    outbox_message_id: str | None = None
+    if isinstance(request.payload, DispatchPayload):
+        outbox_message_id = request.payload.outbox_message_id
+
+    # 5. Idempotency / duplicate / orphan check (BEFORE CAS).
+    #    If the task is already at target state and all files match,
+    #    return early with zero writes.
+    idempotent_result = _check_idempotency_and_duplicates(
+        project_root,
+        request,
+        spec,
+        task,
+        to_state,
+        event_bytes,
+        outbox_bytes,
+        acceptance_bytes,
+        tasks_bytes,
+    )
+    if idempotent_result is not None:
+        return idempotent_result
+
+    # 6. Validate CAS (revision, state, HEAD, dispatch).
+    _validate_cas(task, request, spec, head_commit)
+
+    # 7. Write canonical files.
+    _write_canonical_files(
+        project_root,
+        request.event_id,
+        event_bytes,
+        outbox_bytes,
+        outbox_message_id,
+        acceptance_bytes,
+        acceptance_path,
+        tasks_bytes,
+    )
+
+    # 8. Render and write derived views.
+    board_md, status_md = _render_derived_views(post_state)
+    _write_derived_views(project_root, board_md, status_md)
+
+    # 9. Return TransitionResult.
+    from_state = request.cas.expected_state
+    return TransitionResult(
+        task_id=request.cas.task_id,
+        event_id=request.event_id,
+        from_state=from_state,
+        to_state=to_state,
+        occurred_at=occurred_at,
+        outbox_message_id=outbox_message_id,
+    )
+
+
+# -- validate lease requirement --
+
+
+def _validate_lease_requirement(
+    spec: _TransitionSpec,
+    lease: Any,
+    event_type: str,
+) -> None:
+    """Validate that lease is present/absent according to spec."""
+    if spec.needs_worker_lease:
+        if lease is None:
+            raise TransitionValidationError(
+                f"worker-lifecycle transition {event_type} requires a lease"
+            )
+        from worker_slot_lease import WorkerSlotLease
+
+        if type(lease) is not WorkerSlotLease:
+            raise TransitionValidationError(
+                f"lease must be a WorkerSlotLease, got {_safe_type_name(lease)}"
+            )
+    else:
+        if lease is not None:
+            raise TransitionValidationError(
+                f"PM-only transition {event_type} must not carry a lease"
+            )
+
+
+# -- single-file atomic write helper --
 
 
 def _atomic_write_bytes(
@@ -2124,7 +3391,7 @@ def _atomic_write_bytes(
         raise
 
 
-# ── ControlPlaneTransitionService ──────────────────────────────────────────
+# -- ControlPlaneTransitionService --
 
 
 @dataclass(frozen=True, slots=True)
@@ -2133,9 +3400,6 @@ class ControlPlaneTransitionService:
 
     Takes a ``project_root`` and does NOT store mutable state.
     Every ``apply_transition`` call is self-contained.
-
-    TC-13.11b: ``apply_transition()`` raises ``NotImplementedError`` —
-    full implementation is deferred to TC-13.11c.
     """
 
     project_root: Path
@@ -2183,15 +3447,106 @@ class ControlPlaneTransitionService:
         for PM-only transitions.
 
         *now* must be a timezone-aware UTC ``datetime``.
-
-        **TC-13.11b**: This method is not yet implemented.  It raises
-        ``NotImplementedError`` before any lock acquisition, directory
-        creation, Git operation, file read, or file write.
         """
-        raise NotImplementedError(
-            "apply_transition() is not yet implemented; "
-            "full CAS-write execution is deferred to TC-13.11c"
-        )
+        # 1. Validate now.
+        _validate_now(now)
+
+        # 2. Validate project_root still exists.
+        if not self.project_root.is_dir():
+            raise ValueError(
+                "project_root is no longer a directory"
+            )
+
+        # 3. Look up transition spec.
+        spec = _TRANSITION_SPECS.get(request.event_type)
+        if spec is None:
+            raise TransitionValidationError(
+                f"unknown event_type: {_safe_type_name(request.event_type)}"
+            )
+
+        # 4. Validate lease requirement.
+        _validate_lease_requirement(spec, lease, request.event_type)
+
+        # 5. Execute via worker-fence or PM-only path.
+        if spec.needs_worker_lease:
+            from worker_slot_lease import (
+                WorkerSlotLease,
+                hold_worker_slot_fence,
+            )
+
+            tracker = _LockOrderTracker()
+            tracker.enter_worker_fence()
+
+            body_exception: BaseException | None = None
+            result: TransitionResult | None = None
+
+            try:
+                with hold_worker_slot_fence(
+                    self.project_root, lease, now
+                ):
+                    tracker.enter_state_lock()
+                    try:
+                        with _exclusive_state_lock(self.project_root):
+                            result = _execute_transition_core(
+                                self.project_root,
+                                request,
+                                spec,
+                                now,
+                                lease.lease_epoch,
+                            )
+                    finally:
+                        tracker.exit_state_lock()
+            except BaseException as _exc:
+                body_exception = _exc
+            finally:
+                try:
+                    tracker.exit_worker_fence()
+                except TransitionLockOrderError:
+                    if body_exception is None:
+                        raise
+
+            if body_exception is not None:
+                raise body_exception
+
+            assert result is not None
+            return result
+
+        else:
+            # PM-only path -- no worker fence.
+            result = None
+            body_exception = None
+
+            try:
+                with _exclusive_state_lock(self.project_root):
+                    state = _read_tasks_yaml(self.project_root)
+                    pm = state.get("pm_control")
+                    if not isinstance(pm, dict):
+                        raise TransitionCASConflictError(
+                            "pm_control is missing from canonical state"
+                        )
+                    lease_epoch = pm.get("lease_epoch")
+                    if isinstance(lease_epoch, bool) or not isinstance(
+                        lease_epoch, int
+                    ):
+                        raise TransitionCASConflictError(
+                            "pm_control.lease_epoch is invalid"
+                        )
+
+                    result = _execute_transition_core(
+                        self.project_root,
+                        request,
+                        spec,
+                        now,
+                        lease_epoch,
+                    )
+            except BaseException as _exc:
+                body_exception = _exc
+
+            if body_exception is not None:
+                raise body_exception
+
+            assert result is not None
+            return result
 
 
 # ── __all__ — exactly 32 frozen public symbols ────────────────────────────

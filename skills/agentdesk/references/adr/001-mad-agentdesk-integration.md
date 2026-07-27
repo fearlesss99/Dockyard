@@ -26,7 +26,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 13 | AgentDesk MAD Decision Gateway | **Current** | TC-13.6 | Config-driven subprocess invocation of `mad` for planning/deliberation |
 | 14 | AgentDesk WorkerAdapter — four-tier Worker execution orchestration | **Current** | TC-13.9b | Basic/Standard/Advanced/Expert; WorkerKind + TaskDifficulty as independent inputs; provider/model from bindings only; budget computed, not enforced; concurrency slots deferred to TC-13.10 |
 | 15 | AgentDesk WorkerSlotLease | **Current** | TC-13.10c | `agentdesk.worker-slot-lease/v1`; frozen contract §2.5; implemented by TC-13.10a (frozen contract), TC-13.10b (data model, store, atomic I/O), TC-13.10c (acquire/release/renew/hold fence) |
-| 16 | AgentDesk ControlPlaneTransitionService | **Target** | TC-13.11 | CAS-write tasks, immutable events, replayable outbox |
+| 16 | AgentDesk ControlPlaneTransitionService | **Current** | TC-13.11c | CAS-write tasks, immutable events, replayable outbox |
 | 17 | AgentDesk ApprovalGate | **Target** | TC-13.12 | TASK_APPROVAL with structured scope (dispatch/accept/integrate) |
 | 18 | AgentDesk EscalationService | **Target** | TC-13.13 | Difficulty escalation independent of rate-limit |
 | 19 | AgentDesk RateLimit service | **Target** | TC-13.14 | Provider rate-limit handling independent of escalation |
@@ -3455,7 +3455,7 @@ Concurrency fencing must not be blocked by output-decoding work.
 
 ---
 
-### 2.14 ControlPlaneTransitionService — Frozen Contract (Target — TC-13.11a)
+### 2.14 ControlPlaneTransitionService -- Frozen Contract (Current -- TC-13.11c)
 
 TC-13.11a freezes the **authoritative state-transition contract** for
 ``ControlPlaneTransitionService``.  It defines the CAS preconditions,
@@ -4538,23 +4538,19 @@ intermediate "Current (contract frozen)" sub-status is permitted.
 #### 2.14.16 Status
 
 * ADR Interface Status row #16 "AgentDesk ControlPlaneTransitionService"
-  is **Target**.
-* This section (§2.14) is the Frozen Contract for TC-13.11a.
+  is **Current** -- TC-13.11c.
+* This section (SS2.14) is the Frozen Contract for TC-13.11a.
 * TC-13.11b (typed models, validation, state lock, serialisation helpers,
-  single-file atomic write infrastructure) is **committed** — the
-  production module (``control_plane_transition.py``) and matching test
-  suite (``test_control_plane_transition.py``) exist with 31 frozen
-  public symbols.  ``apply_transition()`` raises ``NotImplementedError``
-  referencing TC-13.11c.
-* TC-13.11c remains **Target** — ``apply_transition()`` is not yet
-  executable.
-* Interface #16 remains **Target** until TC-13.11c is complete.
-* §2.5 (WorkerSlotLease) is **Current**.
+  single-file atomic write infrastructure) is **committed**.
+* TC-13.11c (CAS transition execution, event/outbox writes, view
+  regeneration, all 15 transition types, complete test suite) is
+  **committed** -- ``apply_transition()`` is fully implemented and
+  the production module is callable.
+* Interface #16 is **Current**.
+* SS2.5 (WorkerSlotLease) is **Current**.
 * TC-13.10a/b/c are all **Current**.
 * TC-13.12, TC-13.13, TC-13.14, TC-13.17, TC-13.18, and all subsequent
   Target interfaces remain **Target**.
-* TC-13.11c remains **Target** — the production entry point is not yet
-  callable.
 
 ---
 
