@@ -6489,32 +6489,56 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
         )
         return r.stdout.strip()
 
-    # ── Helper: inject failure on Nth call to _atomic_write_bytes ──────
+    # ── Helper: path-based fault injection ──────────────────────────
 
-    def _inject_atomic_write_failure(self, fail_on_call: int):
-        """Replace _atomic_write_bytes with a version that fails
-        on the `fail_on_call`-th invocation (1-indexed)."""
-        import control_plane_transition as cpt
-        original = cpt._atomic_write_bytes
-        call_count = [0]
+    @staticmethod
+    def _classify_path(path) -> str | None:
+        """Classify a write path to a canonical stage name.
 
-        def failing_write(path, content):
-            call_count[0] += 1
-            if call_count[0] == fail_on_call:
-                raise OSError(f"simulated write failure at call {fail_on_call}")
-            return original(path, content)
+        Returns one of: 'event', 'outbox', 'acceptance', 'tasks.yaml',
+        'BOARD.md', 'STATUS.md', or None.
+        """
+        p = str(path).replace("\\", "/")
+        if "/pm/events/" in p and p.endswith(".yaml"):
+            return "event"
+        if "/pm/outbox/" in p and p.endswith(".yaml"):
+            return "outbox"
+        if "/pm/acceptances/" in p and p.endswith(".md"):
+            return "acceptance"
+        if p.endswith("/pm/state/tasks.yaml") or p.endswith("\\pm\\state\\tasks.yaml"):
+            return "tasks.yaml"
+        if p.endswith("/pm/BOARD.md") or p.endswith("\\pm\\BOARD.md"):
+            return "BOARD.md"
+        if p.endswith("/pm/STATUS.md") or p.endswith("\\pm\\STATUS.md"):
+            return "STATUS.md"
+        return None
 
-        cpt._atomic_write_bytes = failing_write
-        return call_count
+    def _fail_when_target_matches(self, target_name: str, original_write):
+        """Return a wrapper that raises OSError when the classified path
+        matches *target_name*, otherwise delegates to *original_write*."""
+        classify = self._classify_path
 
-    def _restore_atomic_write(self):
-        import control_plane_transition as cpt
-        # Restore by re-importing... actually, we need to save the original.
-        # The test harness saves original before injection.
-        pass
+        def wrapper(path, content):
+            stage = classify(path)
+            if stage == target_name:
+                raise OSError(f"simulated {stage} write failure")
+            return original_write(path, content)
+
+        return wrapper
+
+    def _assert_no_temp_residue(self, root: Path):
+        """Fail if any .tmp-* files linger under docs/pm/."""
+        tmp_files = list(root.glob("docs/pm/**/.tmp-*"))
+        if tmp_files:
+            self.fail(f"Temporary files left behind: {tmp_files}")
+
+    # ── Dispatch path: event → outbox → tasks.yaml → BOARD.md → STATUS.md ──
+
+    # ── event stage ───────────────────────────────────────────────────
 
     def test_event_write_failure_zero_files(self):
-        """Failure at event write (call 1) — zero canonical files mutated."""
+        """Failure at event write — zero canonical files mutated,
+        tasks.yaml unchanged, no temp residue."""
         tmpdir = tempfile.TemporaryDirectory()
         try:
             root = Path(tmpdir.name)
@@ -6540,24 +6564,17 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             )
             now = datetime(2026, 7, 27, 10, 0, 0, tzinfo=UTC)
 
-            # Save original.
             import control_plane_transition as cpt
             TransitionWriteError = cpt.TransitionWriteError
             original_write = cpt._atomic_write_bytes
-            call_count = [0]
 
-            def fail_call1(path, content):
-                call_count[0] += 1
-                if call_count[0] == 1:
-                    raise OSError("simulated event write failure")
-                return original_write(path, content)
-
-            cpt._atomic_write_bytes = fail_call1
+            cpt._atomic_write_bytes = self._fail_when_target_matches(
+                "event", original_write
+            )
             try:
                 with self.assertRaises(TransitionWriteError) as cm:
                     svc.apply_transition(req, None, now)
                 self.assertIn("event", str(cm.exception))
-                # Exception chain preserves root cause.
                 self.assertIsInstance(cm.exception.__cause__, OSError)
             finally:
                 cpt._atomic_write_bytes = original_write
@@ -6567,15 +6584,16 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
                 len(list(events_dir.glob("*.yaml"))), 0,
                 "No event files should exist after event write failure"
             )
-            # tasks.yaml unchanged.
             tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
             state = self._json.loads(tasks_path.read_text(encoding="utf-8"))
             self.assertEqual(state["tasks"][0]["state"], "draft")
+            self._assert_no_temp_residue(root)
         finally:
             tmpdir.cleanup()
 
     def test_outbox_write_failure_event_written(self):
-        """Failure at outbox write (call 2) — event exists, outbox not."""
+        """Failure at outbox write — event exists, outbox not,
+        tasks.yaml unchanged, no temp residue."""
         import sys as _sys
         _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
         if _scripts not in _sys.path:
@@ -6596,7 +6614,6 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             outbox_dir.mkdir(parents=True, exist_ok=True)
             acc_dir = root / "docs" / "pm" / "acceptances"
             acc_dir.mkdir(parents=True, exist_ok=True)
-            # Worker slot store.
             runtime_dir = root / ".agentdesk" / "runtime"
             runtime_dir.mkdir(parents=True, exist_ok=True)
             lease_store_path = runtime_dir / "worker-slot-lease.yaml"
@@ -6684,15 +6701,10 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             import control_plane_transition as cpt
             TransitionWriteError = cpt.TransitionWriteError
             original_write = cpt._atomic_write_bytes
-            call_count = [0]
 
-            def fail_call2(path, content):
-                call_count[0] += 1
-                if call_count[0] == 2:
-                    raise OSError("simulated outbox write failure")
-                return original_write(path, content)
-
-            cpt._atomic_write_bytes = fail_call2
+            cpt._atomic_write_bytes = self._fail_when_target_matches(
+                "outbox", original_write
+            )
             try:
                 with self.assertRaises(TransitionWriteError) as cm:
                     svc.apply_transition(req, lease, now)
@@ -6701,7 +6713,7 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             finally:
                 cpt._atomic_write_bytes = original_write
 
-            # Event exists (call 1 succeeded before call 2 failed).
+            # Event exists (wrote before outbox).
             event_files = list(events_dir.glob("*.yaml"))
             self.assertEqual(len(event_files), 1,
                              "Event file should exist after event write success")
@@ -6715,13 +6727,13 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             state = self._json.loads(tasks_path.read_text(encoding="utf-8"))
             self.assertEqual(state["tasks"][0]["state"], "ready",
                              "tasks.yaml must not be mutated on outbox write failure")
+            self._assert_no_temp_residue(root)
         finally:
             tmpdir.cleanup()
 
-    def test_acceptance_write_failure_event_outbox_written(self):
-        """Failure at acceptance write (call 2 for DELIVERY_ACCEPTED
-        which has no outbox) — event exists, acceptance not,
-        tasks.yaml unchanged."""
+    def test_acceptance_write_failure_event_written(self):
+        """Failure at acceptance write (DELIVERY_ACCEPTED path) —
+        event exists, acceptance not, tasks.yaml unchanged, no temp residue."""
         import sys as _sys
         _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
         if _scripts not in _sys.path:
@@ -6912,15 +6924,10 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             import control_plane_transition as cpt
             TransitionWriteError = cpt.TransitionWriteError
             original_write = cpt._atomic_write_bytes
-            call_count = [0]
 
-            def fail_call2_acc(path, content):
-                call_count[0] += 1
-                if call_count[0] == 2:
-                    raise OSError("simulated acceptance write failure")
-                return original_write(path, content)
-
-            cpt._atomic_write_bytes = fail_call2_acc
+            cpt._atomic_write_bytes = self._fail_when_target_matches(
+                "acceptance", original_write
+            )
             try:
                 with self.assertRaises(TransitionWriteError) as cm:
                     svc.apply_transition(req, lease, now)
@@ -6938,13 +6945,13 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
             state = self._json.loads(tasks_path.read_text(encoding="utf-8"))
             self.assertEqual(state["tasks"][0]["state"], "review_ready")
+            self._assert_no_temp_residue(root)
         finally:
             tmpdir.cleanup()
 
-    def test_tasks_write_failure_canonical_partial(self):
-        """Failure at tasks.yaml write (call 3 for DISPATCH which has
-        event+outbox before tasks) — event+outbox exist,
-        tasks.yaml unchanged.  Documents actual partial state."""
+    def test_tasks_write_failure_prior_evidence_written(self):
+        """Failure at tasks.yaml write — prior canonical evidence written,
+        tasks.yaml bytes unchanged, no temp residue."""
         import sys as _sys
         _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
         if _scripts not in _sys.path:
@@ -7046,15 +7053,10 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             import control_plane_transition as cpt
             TransitionWriteError = cpt.TransitionWriteError
             original_write = cpt._atomic_write_bytes
-            call_count = [0]
 
-            def fail_call3_tasks(path, content):
-                call_count[0] += 1
-                if call_count[0] == 3:
-                    raise OSError("simulated tasks.yaml write failure")
-                return original_write(path, content)
-
-            cpt._atomic_write_bytes = fail_call3_tasks
+            cpt._atomic_write_bytes = self._fail_when_target_matches(
+                "tasks.yaml", original_write
+            )
             try:
                 with self.assertRaises(TransitionWriteError) as cm:
                     svc.apply_transition(req, lease, now)
@@ -7063,7 +7065,7 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             finally:
                 cpt._atomic_write_bytes = original_write
 
-            # Event and outbox exist (writes 1+2 succeeded).
+            # Event and outbox exist (prior evidence written).
             self.assertEqual(len(list(events_dir.glob("*.yaml"))), 1)
             self.assertEqual(len(list(outbox_dir.glob("*.yaml"))), 1)
             # tasks.yaml unchanged.
@@ -7071,12 +7073,14 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             state = self._json.loads(tasks_path.read_text(encoding="utf-8"))
             self.assertEqual(state["tasks"][0]["state"], "ready",
                              "tasks.yaml must not be mutated")
+            self._assert_no_temp_residue(root)
         finally:
             tmpdir.cleanup()
 
     def test_board_write_failure_canonical_consistent(self):
-        """Failure at BOARD.md write — canonical state is consistent,
-        view is stale.  This does not roll back canonical files."""
+        """Failure at BOARD.md write — canonical state is consistent
+        (event + tasks written), BOARD.md may be missing or stale,
+        no temp residue."""
         tmpdir = tempfile.TemporaryDirectory()
         try:
             root = Path(tmpdir.name)
@@ -7105,19 +7109,15 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             import control_plane_transition as cpt
             TransitionWriteError = cpt.TransitionWriteError
             original_write = cpt._atomic_write_bytes
-            call_count = [0]
 
-            def fail_call3_board(path, content):
-                call_count[0] += 1
-                if call_count[0] == 3:
-                    raise OSError("simulated BOARD.md write failure")
-                return original_write(path, content)
-
-            cpt._atomic_write_bytes = fail_call3_board
+            cpt._atomic_write_bytes = self._fail_when_target_matches(
+                "BOARD.md", original_write
+            )
             try:
                 with self.assertRaises(TransitionWriteError) as cm:
                     svc.apply_transition(req, None, now)
                 self.assertIn("BOARD.md", str(cm.exception))
+                self.assertIsInstance(cm.exception.__cause__, OSError)
             finally:
                 cpt._atomic_write_bytes = original_write
 
@@ -7127,13 +7127,13 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             state = self._json.loads(tasks_path.read_text(encoding="utf-8"))
             self.assertEqual(state["tasks"][0]["state"], "ready",
                              "Canonical state must be consistent")
-            # BOARD.md may or may not exist (depends on timing of failure).
+            self._assert_no_temp_residue(root)
         finally:
             tmpdir.cleanup()
 
-    def test_status_write_failure_canonical_consistent(self):
-        """Failure at STATUS.md write — canonical state is consistent,
-        view may be stale."""
+    def test_status_write_failure_canonical_board_written(self):
+        """Failure at STATUS.md write — canonical + BOARD written,
+        STATUS.md may be stale or missing, no temp residue."""
         tmpdir = tempfile.TemporaryDirectory()
         try:
             root = Path(tmpdir.name)
@@ -7162,19 +7162,15 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             import control_plane_transition as cpt
             TransitionWriteError = cpt.TransitionWriteError
             original_write = cpt._atomic_write_bytes
-            call_count = [0]
 
-            def fail_call4_status(path, content):
-                call_count[0] += 1
-                if call_count[0] == 4:
-                    raise OSError("simulated STATUS.md write failure")
-                return original_write(path, content)
-
-            cpt._atomic_write_bytes = fail_call4_status
+            cpt._atomic_write_bytes = self._fail_when_target_matches(
+                "STATUS.md", original_write
+            )
             try:
                 with self.assertRaises(TransitionWriteError) as cm:
                     svc.apply_transition(req, None, now)
                 self.assertIn("STATUS.md", str(cm.exception))
+                self.assertIsInstance(cm.exception.__cause__, OSError)
             finally:
                 cpt._atomic_write_bytes = original_write
 
@@ -7182,12 +7178,17 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
             state = self._json.loads(tasks_path.read_text(encoding="utf-8"))
             self.assertEqual(state["tasks"][0]["state"], "ready")
+            # BOARD.md should be written (canonical + BOARD, only STATUS failed).
+            board_path = root / "docs" / "pm" / "BOARD.md"
+            self.assertTrue(board_path.exists(),
+                            "BOARD.md must be written before STATUS.md failure")
+            self._assert_no_temp_residue(root)
         finally:
             tmpdir.cleanup()
 
-    def test_write_order_enforced(self):
-        """Fixed write order: event → outbox → acceptance → tasks.yaml
-        → BOARD.md → STATUS.md.  Verified via call trace."""
+    def test_write_order_dispatch_path(self):
+        """Dispatch path write order:
+        event → outbox → tasks.yaml → BOARD.md → STATUS.md."""
         import sys as _sys
         _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
         if _scripts not in _sys.path:
@@ -7270,7 +7271,7 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             )
             req = self.cpt.TransitionRequest(
                 cas=cas, dispatch_cas=None,
-                event_id="EVT-20260727-ORDER",
+                event_id="EVT-20260727-DISPORDER",
                 event_type="TASK_DISPATCHED",
                 payload=self.cpt.DispatchPayload(
                     dispatch_id="DSP-001", role_id="worker",
@@ -7279,7 +7280,7 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
                     task_card_commit="a" * 40,
                     base_commit="0" * 40, branch="main",
                     report_path="docs/pm/reports/TC-001-r1-a1.md",
-                    outbox_message_id="MSG-20260727-ORDER",
+                    outbox_message_id="MSG-20260727-DISPORDER",
                     new_attempt=1,
                 ),
                 event_context=ctx,
@@ -7287,13 +7288,14 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
 
             import control_plane_transition as cpt
-            TransitionWriteError = cpt.TransitionWriteError
             original_write = cpt._atomic_write_bytes
+            classify = self._classify_path
             trace: list[str] = []
 
             def tracing_write(path, content):
-                rel = str(path).replace(str(root), "").replace("\\", "/")
-                trace.append(rel)
+                stage = classify(path)
+                if stage is not None:
+                    trace.append(stage)
                 return original_write(path, content)
 
             cpt._atomic_write_bytes = tracing_write
@@ -7302,26 +7304,245 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             finally:
                 cpt._atomic_write_bytes = original_write
 
-            # Verify order: event, outbox, tasks.yaml, BOARD.md, STATUS.md.
-            event_idx = next(i for i, p in enumerate(trace)
-                             if "docs/pm/events/" in p)
-            outbox_idx = next(i for i, p in enumerate(trace)
-                              if "docs/pm/outbox/" in p)
-            tasks_idx = next(i for i, p in enumerate(trace)
-                             if "tasks.yaml" in p)
-            board_idx = next(i for i, p in enumerate(trace)
-                             if "BOARD.md" in p)
-            status_idx = next(i for i, p in enumerate(trace)
-                              if "STATUS.md" in p)
+            expected = ["event", "outbox", "tasks.yaml", "BOARD.md", "STATUS.md"]
+            self.assertEqual(
+                trace, expected,
+                f"Dispatch write order must be {expected}, got {trace}"
+            )
+        finally:
+            tmpdir.cleanup()
 
-            self.assertLess(event_idx, outbox_idx,
-                            "event must be written before outbox")
-            self.assertLess(outbox_idx, tasks_idx,
-                            "outbox must be written before tasks.yaml")
-            self.assertLess(tasks_idx, board_idx,
-                            "tasks.yaml must be written before BOARD.md")
-            self.assertLess(board_idx, status_idx,
-                            "BOARD.md must be written before STATUS.md")
+    def test_write_order_delivery_accepted_path(self):
+        """Delivery Accepted path write order:
+        event → acceptance → tasks.yaml → BOARD.md → STATUS.md."""
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from dispatcher_gateway import ModelSelectionSnapshot
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            events_dir = root / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            outbox_dir = root / "docs" / "pm" / "outbox"
+            outbox_dir.mkdir(parents=True, exist_ok=True)
+            acc_dir = root / "docs" / "pm" / "acceptances"
+            acc_dir.mkdir(parents=True, exist_ok=True)
+            runtime_dir = root / ".agentdesk" / "runtime"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            lease_store_path = runtime_dir / "worker-slot-lease.yaml"
+            lease_store_path.write_text(
+                self._json.dumps({
+                    "schema_version": "agentdesk.worker-slot-lease/v1",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "slot_epochs": {
+                        "basic_agent-1": 1, "basic_agent-2": 0,
+                        "standard_agent-1": 0, "standard_agent-2": 0,
+                        "advanced_agent-1": 0, "advanced_agent-2": 0,
+                        "expert_agent-1": 0, "expert_agent-2": 0,
+                    },
+                    "leases": {
+                        "basic_agent-1": {
+                            "lease_id": "WSL-" + "a" * 32,
+                            "lease_epoch": 1,
+                            "slot_id": "basic_agent-1",
+                            "worker_kind": "basic_agent",
+                            "holder_dispatch_id": "DSP-001",
+                            "holder_instance_id": "worker-inst-1",
+                            "canonical_worktree": str(root).replace("\\", "/"),
+                            "acquired_at": "2026-07-27T09:00:00Z",
+                            "heartbeat_at": "2026-07-27T09:00:00Z",
+                            "expires_at": "2026-08-27T09:00:00Z",
+                        },
+                    },
+                }, ensure_ascii=False), encoding="utf-8"
+            )
+            # Task card committed to git.
+            task_card_dir = root / "docs" / "pm" / "tasks"
+            task_card_dir.mkdir(parents=True, exist_ok=True)
+            task_card = task_card_dir / "TC-001.md"
+            task_card.write_text(
+                "---\n"
+                "type: implementation\n"
+                "role_id: worker-basic\n"
+                "base_commit: " + "b" * 40 + "\n"
+                "owner_approval:\n"
+                "  gate: none\n"
+                "  approval_ids: []\n"
+                "---\n\n# TC-001\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "init", "-q"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.email", "test@test"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.name", "Test"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "add-task-card"],
+                check=True, timeout=10, capture_output=True,
+            )
+            r_tc = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            task_card_commit = r_tc.stdout.strip()
+
+            # Delivery report in git.
+            reports_dir = root / "docs" / "pm" / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            report = reports_dir / "TC-001-r1-a1.md"
+            report.write_text(
+                "---\n"
+                "schema_version: agentdesk.delivery-report/v2\n"
+                "dispatch_id: DSP-001\n"
+                "task_id: TC-001\n"
+                "revision: 1\n"
+                "attempt: 1\n"
+                "implementation_commit: " + "a" * 40 + "\n"
+                "report_commit: " + "b" * 40 + "\n"
+                "---\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "add-report"],
+                check=True, timeout=10, capture_output=True,
+            )
+
+            state_dir = root / "docs" / "pm" / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            task_data = {
+                "task_id": "TC-001", "revision": 1, "state": "review_ready",
+                "attempt": 1,
+                "task_card_path": "docs/pm/tasks/TC-001.md",
+                "task_card_commit": task_card_commit,
+                "current_dispatch": {
+                    "dispatch_id": "DSP-001", "role_id": "worker-basic",
+                    "base_commit": "b" * 40, "branch": "main",
+                    "model_selection": {},
+                },
+                "report_path": "docs/pm/reports/TC-001-r1-a1.md",
+                "implementation_commit": "a" * 40,
+                "report_commit": "b" * 40,
+                "accepted_commit": None, "acceptance_path": None,
+                "integrated_commit": None, "delivery_state": "submitted",
+                "blocked_reason": None, "blocked_kind": None,
+                "blocked_owner": None, "unblock_condition": None,
+                "review_after": None, "blocked_attempt_valid": None,
+                "resume_state": None, "superseded_by": None,
+                "timestamps": {
+                    "created_at": "2026-07-27T00:00:00Z",
+                    "updated_at": "2026-07-27T00:00:00Z",
+                },
+            }
+            state = {
+                "schema_version": "agentdesk.tasks/v2",
+                "project_id": "test-project",
+                "updated_at": "2026-07-27T00:00:00Z",
+                "pm_control": {
+                    "holder_id": "pm-test-001", "lease_epoch": 1, "mode": "timed",
+                },
+                "tasks": [task_data],
+            }
+            tasks_path = state_dir / "tasks.yaml"
+            tasks_path.write_text(
+                self._json.dumps(state, ensure_ascii=False), encoding="utf-8"
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True, timeout=10, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "add-tasks"],
+                check=True, timeout=10, capture_output=True,
+            )
+            r_head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r_head.stdout.strip()
+
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32, lease_epoch=1,
+                slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-001",
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-27T09:00:00Z",
+                heartbeat_at="2026-07-27T09:00:00Z",
+                expires_at="2026-08-27T09:00:00Z",
+            )
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review7.md"
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-ACCEPTORDER",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path=acc_path,
+                    residual_risks=("Low risk",),
+                    criteria_evidence=("Check A",),
+                    rationale="Accepted.",
+                ),
+                event_context=ctx,
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+
+            import control_plane_transition as cpt
+            original_write = cpt._atomic_write_bytes
+            classify = self._classify_path
+            trace: list[str] = []
+
+            def tracing_write(path, content):
+                stage = classify(path)
+                if stage is not None:
+                    trace.append(stage)
+                return original_write(path, content)
+
+            cpt._atomic_write_bytes = tracing_write
+            try:
+                svc.apply_transition(req, lease, now)
+            finally:
+                cpt._atomic_write_bytes = original_write
+
+            expected = ["event", "acceptance", "tasks.yaml", "BOARD.md", "STATUS.md"]
+            self.assertEqual(
+                trace, expected,
+                f"Delivery Accepted write order must be {expected}, got {trace}"
+            )
         finally:
             tmpdir.cleanup()
 
@@ -8006,10 +8227,10 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
             tmpdir.cleanup()
 
     def test_type_null_fails_real_validator(self):
-        """When type is changed to null in acceptance, real validator
-        reports errors."""
+        """When 'schema_version: agentdesk.acceptance/v2' is changed to
+        'agentdesk.acceptance/v1' in the generated acceptance, real
+        validator reports errors."""
         import json as _json
-        import json
         import sys as _sys
         _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
         if _scripts not in _sys.path:
@@ -8041,7 +8262,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
             )
             req = self.cpt.TransitionRequest(
                 cas=cas, dispatch_cas=dc,
-                event_id="EVT-20260727-TYPENULL",
+                event_id="EVT-20260727-BADSCHEMA",
                 event_type="DELIVERY_ACCEPTED",
                 payload=self.cpt.DeliveryAcceptedPayload(
                     accepted_commit="a" * 40,
@@ -8057,13 +8278,15 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
             now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
             svc.apply_transition(req, lease, now)
 
-            # Corrupt acceptance: delete required frontmatter field.
+            # Change 'schema_version: agentdesk.acceptance/v2' to 'v1'.
             acc_file = root / acc_path
             acc_text = acc_file.read_text(encoding="utf-8")
-            lines = acc_text.splitlines()
-            filtered = [l for l in lines if not l.startswith("decision:")]
-            corrupted = "\n".join(filtered)
+            corrupted = acc_text.replace(
+                "schema_version: agentdesk.acceptance/v2",
+                "schema_version: agentdesk.acceptance/v1",
+            )
             acc_file.write_text(corrupted, encoding="utf-8")
+
             state_data = _json.loads(
                 (root / "docs" / "pm" / "state" / "tasks.yaml").read_text(encoding="utf-8")
             )
@@ -8071,10 +8294,231 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
             reporter = Reporter()
             _validate_acceptance_record(
                 acc_file, root, task, None, None,
-                "test:corrupted", "accepted", False, reporter,
+                "test:corrupted-schema-version", "accepted", False, reporter,
             )
             self.assertGreater(reporter.errors, 0,
-                               "Real validator must report errors when type is null")
+                               "Real validator must report errors when schema_version is wrong")
+        finally:
+            tmpdir.cleanup()
+
+    def test_delete_decision_fails_real_validator(self):
+        """When required 'decision' field is deleted from the generated
+        acceptance, real validator reports errors."""
+        import json as _json
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            self._setup_acceptance_project(root)
+            lease = self._make_acceptance_lease(root)
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review7.md"
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-NODECISION",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path=acc_path,
+                    residual_risks=(),
+                    criteria_evidence=("evidence",),
+                    rationale="Accepted.",
+                ),
+                event_context=self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            svc.apply_transition(req, lease, now)
+
+            # Delete the required 'decision' field.
+            acc_file = root / acc_path
+            acc_text = acc_file.read_text(encoding="utf-8")
+            lines = acc_text.splitlines()
+            filtered = [l for l in lines if not l.startswith("decision:")]
+            corrupted = "\n".join(filtered)
+            acc_file.write_text(corrupted, encoding="utf-8")
+
+            state_data = _json.loads(
+                (root / "docs" / "pm" / "state" / "tasks.yaml").read_text(encoding="utf-8")
+            )
+            task = state_data["tasks"][0]
+            reporter = Reporter()
+            _validate_acceptance_record(
+                acc_file, root, task, None, None,
+                "test:corrupted-missing-decision", "accepted", False, reporter,
+            )
+            self.assertGreater(reporter.errors, 0,
+                               "Real validator must report errors when decision is missing")
+        finally:
+            tmpdir.cleanup()
+
+    def test_wrong_implementation_commit_fails_real_validator(self):
+        """When 'implementation_commit' in the generated acceptance is
+        changed to a different 40-char SHA, real validator reports errors."""
+        import json as _json
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            self._setup_acceptance_project(root)
+            lease = self._make_acceptance_lease(root)
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review7.md"
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-BADIMPL",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path=acc_path,
+                    residual_risks=(),
+                    criteria_evidence=("evidence",),
+                    rationale="Accepted.",
+                ),
+                event_context=self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            svc.apply_transition(req, lease, now)
+
+            # Replace implementation_commit with a different valid SHA.
+            acc_file = root / acc_path
+            acc_text = acc_file.read_text(encoding="utf-8")
+            corrupted = acc_text.replace(
+                "implementation_commit: " + "a" * 40,
+                "implementation_commit: " + "d" * 40,
+            )
+            acc_file.write_text(corrupted, encoding="utf-8")
+
+            state_data = _json.loads(
+                (root / "docs" / "pm" / "state" / "tasks.yaml").read_text(encoding="utf-8")
+            )
+            task = state_data["tasks"][0]
+            reporter = Reporter()
+            _validate_acceptance_record(
+                acc_file, root, task, None, None,
+                "test:corrupted-wrong-impl-commit", "accepted", False, reporter,
+            )
+            self.assertGreater(reporter.errors, 0,
+                               "Real validator must report errors when implementation_commit is wrong")
+        finally:
+            tmpdir.cleanup()
+
+    def test_empty_reviewed_dispatch_id_fails_real_validator(self):
+        """When 'reviewed_dispatch_id' is emptied in the generated
+        acceptance, real validator reports errors."""
+        import json as _json
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            self._setup_acceptance_project(root)
+            lease = self._make_acceptance_lease(root)
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review7.md"
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-EMPTYREV",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path=acc_path,
+                    residual_risks=(),
+                    criteria_evidence=("evidence",),
+                    rationale="Accepted.",
+                ),
+                event_context=self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            svc.apply_transition(req, lease, now)
+
+            # Empty the reviewed_dispatch_id field.
+            acc_file = root / acc_path
+            acc_text = acc_file.read_text(encoding="utf-8")
+            corrupted = acc_text.replace(
+                "reviewed_dispatch_id: DSP-001",
+                "reviewed_dispatch_id:",
+            )
+            acc_file.write_text(corrupted, encoding="utf-8")
+
+            state_data = _json.loads(
+                (root / "docs" / "pm" / "state" / "tasks.yaml").read_text(encoding="utf-8")
+            )
+            task = state_data["tasks"][0]
+            reporter = Reporter()
+            _validate_acceptance_record(
+                acc_file, root, task, None, None,
+                "test:corrupted-empty-reviewed-dispatch-id", "accepted", False, reporter,
+            )
+            self.assertGreater(reporter.errors, 0,
+                               "Real validator must report errors when reviewed_dispatch_id is empty")
         finally:
             tmpdir.cleanup()
 
