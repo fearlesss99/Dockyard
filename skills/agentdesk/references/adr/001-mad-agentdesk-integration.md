@@ -4701,7 +4701,108 @@ match the same scope + subject, the Gate must fail-closed with
 ``ApprovalAmbiguousError`` rather than silently picking one.
 
 ---
-#### 2.15.5 Approval Evidence Schema — ``agentdesk.task-approval/v1``
+#### 2.15.5 ApprovalEvidence
+
+``ApprovalEvidence`` is a frozen, immutable ten-field typed model
+representing a validated grant evidence record.  It carries **only** the
+fields an ``ApprovalGate.require()`` caller needs after a successful
+check -- it does **not** carry storage-envelope fields
+(``schema_version``, ``record_type``) and must **never** wrap a revoke
+record.
+
+```python
+@dataclass(frozen=True, slots=True)
+class ApprovalEvidence:
+    approval_id: str
+    event_id: str
+    scope: ApprovalScope
+    subject: ApprovalSubject
+    actor_role_id: str
+    lease_epoch: int
+    granted_at: str
+    expires_at: str | None
+    reason: str
+    snapshot_commit: str
+```
+
+Exactly **ten** fields -- no more, no less.
+
+| # | Field | Type | Rule |
+|---|-------|------|------|
+| 1 | ``approval_id`` | ``str`` | Non-empty, ``APR-*`` pattern |
+| 2 | ``event_id`` | ``str`` | Non-empty, ``EVT-*`` pattern |
+| 3 | ``scope`` | ``ApprovalScope`` | Must be an ``ApprovalScope`` member; bare strings rejected |
+| 4 | ``subject`` | ``ApprovalSubject`` | Five-field typed model (see §2.15.3) |
+| 5 | ``actor_role_id`` | ``str`` | Fixed: ``"PM"`` |
+| 6 | ``lease_epoch`` | ``int`` | Non-bool, ``>= 1`` |
+| 7 | ``granted_at`` | ``str`` | RFC 3339 UTC |
+| 8 | ``expires_at`` | ``str`` or ``None`` | ``None`` = never expires; otherwise RFC 3339 UTC strictly after ``granted_at`` |
+| 9 | ``reason`` | ``str`` | Non-empty, no leading/trailing whitespace, no NUL/CR/LF |
+| 10 | ``snapshot_commit`` | ``str`` | 40-char lowercase hex Git SHA |
+
+Frozen rules:
+
+* ``frozen=True, slots=True`` -- the type carries no ``__dict__``.
+* Zero mutable fields: no ``list``, ``dict``, or ``set``.
+* ``scope`` is typed ``ApprovalScope`` (not ``str``) -- serialised
+  values are lowercase strings but the type boundary rejects bare
+  strings.  The same rule applies to ``subject``: callers must pass
+  an ``ApprovalSubject`` instance, not a plain ``dict``.
+* ``actor_role_id`` is always ``"PM"`` -- any other value is rejected.
+* ``lease_epoch`` must be a non-bool integer ``>= 1``.  ``True``,
+  ``False``, ``0``, and negative values are rejected.
+* ``granted_at`` is RFC 3339 UTC (e.g. ``"2026-07-27T08:00:00Z"``).
+* ``expires_at`` is ``None`` (never expires) or an RFC 3339 UTC string
+  that is **strictly after** ``granted_at``.  ``expires_at ==
+  granted_at`` is rejected.
+* ``reason`` is non-empty with no leading/trailing whitespace and no
+  NUL, CR, or LF characters.
+* ``snapshot_commit`` is exactly 40 lowercase hex characters -- the
+  Git HEAD at grant creation time.
+
+**Fields permanently excluded from ``ApprovalEvidence``:**
+
+```text
+schema_version     — storage envelope; not a business field
+record_type        — storage envelope; not a business field
+revoke state       — revoke is a separate record type
+path               — never stored
+prompt             — never stored
+secret             — never stored
+provider           — model-tier concern
+model_id            — model-tier concern
+workspace          — runtime concern
+```
+
+**Grant 16-key record → ApprovalEvidence 10-field mapping:**
+
+| ApprovalEvidence field | Source in Grant record |
+|------------------------|------------------------|
+| ``approval_id`` | Grant ``approval_id`` |
+| ``event_id`` | Grant ``event_id`` |
+| ``scope`` | ``ApprovalScope(Grant["scope"])`` |
+| ``subject`` | Constructed from Grant ``task_id``, ``revision``, ``attempt``, ``dispatch_id``, ``accepted_commit`` |
+| ``actor_role_id`` | Grant ``actor_role_id`` |
+| ``lease_epoch`` | Grant ``lease_epoch`` |
+| ``granted_at`` | Grant ``granted_at`` |
+| ``expires_at`` | Grant ``expires_at`` |
+| ``reason`` | Grant ``reason`` |
+| ``snapshot_commit`` | Grant ``snapshot_commit`` |
+
+``schema_version`` and ``record_type`` are storage-envelope fields
+present in the on-disk record; they are **not** carried into
+``ApprovalEvidence``.  The six fields ``actor_role_id``, ``lease_epoch``,
+``granted_at``, ``expires_at``, ``reason``, and ``snapshot_commit`` are
+copied directly from the identically-named Grant record fields.
+
+**Revoke records must never be constructed as ``ApprovalEvidence``.**
+A revoke record has a different key set (10 keys vs 16), different field
+names (``revoked_at`` vs ``granted_at``), and lacks ``scope``, ``subject``,
+and ``expires_at``.  The type system must refuse to build an
+``ApprovalEvidence`` from a revoke dictionary.
+
+---
+#### 2.15.6 Approval Evidence Schema — ``agentdesk.task-approval/v1``
 
 Approval evidence lives in a **new** canonical directory,
 ``docs/pm/approvals/``, separate from ``docs/pm/events/``.
@@ -4713,7 +4814,7 @@ derived from ``event_id`` only.  ``approval_id`` must never be used
 directly as a path component.
 
 ---
-##### 2.15.5.1 Grant Evidence — Exact 16 Root Keys
+##### 2.15.6.1 Grant Evidence — Exact 16 Root Keys
 
 ```yaml
 schema_version: agentdesk.task-approval/v1
@@ -4757,7 +4858,7 @@ Extra or missing root keys → fail-closed (``ApprovalValidationError``).
 The key set is frozen -- no optional keys beyond ``accepted_commit`` and
 ``expires_at``.
 
-##### 2.15.5.2 Revoke Evidence — Exact 10 Root Keys
+##### 2.15.6.2 Revoke Evidence — Exact 10 Root Keys
 
 ```yaml
 schema_version: agentdesk.task-approval/v1
@@ -4789,7 +4890,7 @@ Each grant may have **at most one** revoke.  Revocation does not modify
 the grant file.  Extra or missing root keys → fail-closed.
 
 ---
-#### 2.15.6 Evidence Creation Ownership
+#### 2.15.7 Evidence Creation Ownership
 
 **ApprovalGate** (read-only):
 
@@ -4867,7 +4968,7 @@ Frozen writer rules:
   ``__all__``.
 
 ---
-#### 2.15.7 Runtime Public API
+#### 2.15.8 Runtime Public API
 
 Production module: ``skills/agentdesk/scripts/approval_gate.py``
 (does **not** exist as of TC-13.12a).
@@ -4897,7 +4998,7 @@ __all__ = [
 Exactly **15** public symbols -- no more, no less.
 
 ---
-##### 2.15.7.1 ``ApprovalGate`` Service
+##### 2.15.8.1 ``ApprovalGate`` Service
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -4955,7 +5056,7 @@ Frozen API rules:
    secrets, ``holder_instance_id``, ``canonical_worktree``.
 
 ---
-#### 2.15.8 ApprovalCheckResult
+#### 2.15.9 ApprovalCheckResult
 
 Immutable four-field result from ``ApprovalGate.check()``:
 
@@ -4996,7 +5097,7 @@ No free-text ``reason`` field -- the ``failure_code`` is sufficient for
 machine-readable decisions.
 
 ---
-#### 2.15.9 Fail-Closed Matching
+#### 2.15.10 Fail-Closed Matching
 
 A grant is **valid** for a given ``ApprovalCheckRequest`` when **all** of
 the following hold:
@@ -5028,7 +5129,7 @@ extra/missing keys, and snapshot-commit mismatches always raise
 exceptions -- never downgraded to a ``failure_code``.
 
 ---
-#### 2.15.10 Git Snapshot Rules
+#### 2.15.11 Git Snapshot Rules
 
 Frozen rules for ``expected_snapshot_commit``:
 
@@ -5067,7 +5168,7 @@ Frozen rules for ``expected_snapshot_commit``:
    no fetch, no network access.
 
 ---
-#### 2.15.11 Locking and TOCTOU
+#### 2.15.12 Locking and TOCTOU
 
 **ApprovalGate itself acquires no locks** -- neither the worker-slot
 lock nor the control-plane state lock.  It reads immutable evidence
@@ -5098,7 +5199,7 @@ transitions but does **not** retroactively invalidate transitions
 whose ``guard_results`` recorded ``passed`` at the time of execution.
 
 ---
-#### 2.15.12 GuardResult Mapping
+#### 2.15.13 GuardResult Mapping
 
 On a successful approval check, the caller constructs a ``GuardResult``:
 
@@ -5130,7 +5231,7 @@ Frozen rules:
   regenerate ``checked_at``.
 
 ---
-#### 2.15.13 Three-Scope Integration
+#### 2.15.14 Three-Scope Integration
 
 Each ``ApprovalScope`` maps to a specific transition type and subject
 binding:
@@ -5145,7 +5246,7 @@ All three scopes are checked after CAS validation and before canonical
 writes, while the state lock is held.
 
 ---
-#### 2.15.14 Exception Hierarchy
+#### 2.15.15 Exception Hierarchy
 
 Independent root -- **not** a subclass of ``ControlPlaneTransitionError``:
 
@@ -5186,7 +5287,7 @@ Error message safety:
   ``str()``, or ``{!r}``.
 
 ---
-#### 2.15.15 Validator Responsibilities
+#### 2.15.16 Validator Responsibilities
 
 The offline project validator (``validate_project.py``, TC-13.12d)
 must validate the following for ``agentdesk.task-approval/v1``
@@ -5219,7 +5320,7 @@ run.  It must still perform fail-closed validation of every evidence
 record it reads.
 
 ---
-#### 2.15.16 Security Boundary
+#### 2.15.17 Security Boundary
 
 Frozen security rules for the ``approval_gate`` module:
 
@@ -5241,7 +5342,7 @@ Frozen security rules for the ``approval_gate`` module:
   statements for security checks).
 
 ---
-#### 2.15.17 Task-Card Split
+#### 2.15.18 Task-Card Split
 
 ```text
 TC-13.12a — this frozen contract (§2.15)
@@ -5268,7 +5369,7 @@ and the production module and full test suite are committed.  No
 intermediate "Current (contract frozen)" sub-status is permitted.
 
 ---
-#### 2.15.18 Explicit Non-Goals
+#### 2.15.19 Explicit Non-Goals
 
 TC-13.12a must **not** implement, freeze, or assume responsibility for:
 
@@ -5286,7 +5387,7 @@ TC-13.12a must **not** implement, freeze, or assume responsibility for:
   or logged.
 
 ---
-#### 2.15.19 Status
+#### 2.15.20 Status
 
 * ADR Interface Status row #17 "AgentDesk ApprovalGate"
   remains **Target**.

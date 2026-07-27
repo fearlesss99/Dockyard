@@ -6179,12 +6179,12 @@ class ReleaseSmokeTests(unittest.TestCase):
             "accepted_commit", "actor_role_id", "lease_epoch",
             "granted_at", "expires_at", "reason", "snapshot_commit",
         ]
-        # Parse the grant field table: find the table after "##### 2.15.5.1"
+        # Parse the grant field table: find the table after "##### 2.15.6.1"
         subsection = _extract_markdown_section(
-            section, "##### 2.15.5.1"
+            section, "##### 2.15.6.1"
         )
         self.assertIsNotNone(subsection,
-                             "ADR must contain §2.15.5.1 Grant Evidence")
+                             "ADR must contain §2.15.6.1 Grant Evidence")
         # Extract field names from the table rows
         field_names = []
         in_table = False
@@ -6235,10 +6235,10 @@ class ReleaseSmokeTests(unittest.TestCase):
             "revoked_at", "reason", "snapshot_commit",
         ]
         subsection = _extract_markdown_section(
-            section, "##### 2.15.5.2"
+            section, "##### 2.15.6.2"
         )
         self.assertIsNotNone(subsection,
-                             "ADR must contain §2.15.5.2 Revoke Evidence")
+                             "ADR must contain §2.15.6.2 Revoke Evidence")
         field_names = []
         in_table = False
         for line in subsection.splitlines():
@@ -6606,6 +6606,211 @@ class ReleaseSmokeTests(unittest.TestCase):
             or "no api" in lower,
             "§2.15.16 must forbid env/network/model access",
         )
+
+    # ── Group 19: ApprovalEvidence typed model ──────────────────────────────
+
+    def test_tc1312a_approval_evidence_exact_ten_fields(self) -> None:
+        """§2.15.5 ApprovalEvidence must have exactly 10 fields."""
+        section = self._tc1312a_section()
+        # Parse the ApprovalEvidence dataclass block
+        ev_block = re.search(
+            r'class ApprovalEvidence:(.*?)(?=\n\S|\Z)', section, re.DOTALL,
+        )
+        self.assertIsNotNone(
+            ev_block, "§2.15.5 must contain class ApprovalEvidence",
+        )
+        body = ev_block.group(1)
+        expected = [
+            "approval_id",
+            "event_id",
+            "scope",
+            "subject",
+            "actor_role_id",
+            "lease_epoch",
+            "granted_at",
+            "expires_at",
+            "reason",
+            "snapshot_commit",
+        ]
+        for field in expected:
+            self.assertIn(field, body,
+                          f"ApprovalEvidence must have field '{field}'")
+        # Count field annotations (lines with ': str' or ': int' etc.)
+        field_count = len(
+            [l for l in body.split('\n')
+             if ':' in l and not l.strip().startswith('#')
+                and not l.strip().startswith('@')]
+        )
+        self.assertEqual(
+            field_count, 10,
+            f"ApprovalEvidence must have exactly 10 fields, got ~{field_count}",
+        )
+
+    def test_tc1312a_approval_evidence_frozen_slots_no_dict(self) -> None:
+        """§2.15.5 ApprovalEvidence must be frozen=True, slots=True, no
+        __dict__."""
+        section = self._tc1312a_section()
+        self.assertIn("@dataclass(frozen=True, slots=True)", section,
+                      "§2.15.5 must declare @dataclass(frozen=True, slots=True)")
+        self.assertIn("no ``__dict__``", section)
+        # Must forbid mutable containers
+        lower = section.lower()
+        self.assertTrue(
+            "no ``list``" in lower or "no list" in lower
+            or "no ``dict``" in lower,
+            "§2.15.5 must forbid mutable containers",
+        )
+
+    def test_tc1312a_approval_evidence_scope_typed(self) -> None:
+        """§2.15.5 scope and subject must use typed model, not bare str."""
+        section = self._tc1312a_section()
+        ev_block = re.search(
+            r'class ApprovalEvidence:(.*?)(?=\n\S|\Z)', section, re.DOTALL,
+        )
+        self.assertIsNotNone(ev_block)
+        body = ev_block.group(1)
+        # scope must be ApprovalScope, not str
+        self.assertIn("scope: ApprovalScope", body,
+                      "scope must be typed ApprovalScope")
+        self.assertIn("subject: ApprovalSubject", body,
+                      "subject must be typed ApprovalSubject")
+
+    def test_tc1312a_approval_evidence_actor_role_id_pm(self) -> None:
+        """§2.15.5 actor_role_id must be fixed to 'PM'."""
+        section = self._tc1312a_section()
+        self.assertIn('actor_role_id', section)
+        self.assertIn('"PM"', section)
+        lower = section.lower()
+        self.assertTrue(
+            "any other value is rejected" in lower,
+            "§2.15.5 must state non-PM actor_role_id is rejected",
+        )
+
+    def test_tc1312a_approval_evidence_lease_epoch_rejects_bool(self) -> None:
+        """§2.15.5 lease_epoch must reject bool, 0, negatives."""
+        section = self._tc1312a_section()
+        self.assertIn("Non-bool", section)
+        self.assertIn(">= 1", section)
+        lower = section.lower()
+        self.assertTrue(
+            "true" in lower and "false" in lower,
+            "§2.15.5 must explicitly reject True/False for lease_epoch",
+        )
+        self.assertIn("0", section)
+        self.assertIn("negative", lower)
+
+    def test_tc1312a_approval_evidence_time_fields_rules(self) -> None:
+        """§2.15.5 granted_at RFC 3339 UTC; expires_at None or strictly
+        after."""
+        section = self._tc1312a_section()
+        self.assertIn("RFC 3339 UTC", section)
+        self.assertIn("strictly after", section)
+        lower = section.lower()
+        self.assertTrue(
+            "expires_at ==" in lower or "expires_at ==" in section.lower(),
+            "§2.15.5 must reject expires_at == granted_at",
+        )
+
+    def test_tc1312a_approval_evidence_snapshot_commit_40_hex(self) -> None:
+        """§2.15.5 snapshot_commit must be 40-char lowercase hex SHA."""
+        section = self._tc1312a_section()
+        self.assertIn("snapshot_commit", section)
+        self.assertIn("40-char lowercase hex", section.lower())
+
+    def test_tc1312a_approval_evidence_reason_clean(self) -> None:
+        """§2.15.5 reason must have no NUL, CR, LF, leading/trailing ws."""
+        section = self._tc1312a_section()
+        self.assertIn("no NUL", section)
+        self.assertIn("no leading/trailing", section.lower())
+
+    def test_tc1312a_grant_to_evidence_mapping(self) -> None:
+        """§2.15.5 must contain the Grant 16-key → ApprovalEvidence mapping
+        table."""
+        section = self._tc1312a_section()
+        # Mapping table headings
+        self.assertIn("Grant 16-key", section)
+        self.assertIn("ApprovalEvidence 10-field", section)
+        self.assertIn("Source in Grant record", section)
+        # Check at least some mapping rows
+        for field in ("approval_id", "event_id", "scope", "subject",
+                       "actor_role_id", "lease_epoch", "granted_at",
+                       "expires_at", "reason", "snapshot_commit"):
+            self.assertIn(field, section)
+
+    def test_tc1312a_revoke_not_approval_evidence(self) -> None:
+        """§2.15.5 must state revoke records are NEVER ApprovalEvidence."""
+        section = self._tc1312a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "never be constructed" in lower
+            or "never** be constructed" in lower,
+            "§2.15.5 must ban constructing ApprovalEvidence from revoke",
+        )
+
+    def test_tc1312a_schema_version_not_in_evidence(self) -> None:
+        """§2.15.5 schema_version and record_type must NOT be dataclass
+        fields."""
+        section = self._tc1312a_section()
+        ev_block = re.search(
+            r'class ApprovalEvidence:(.*?)(?=\n\S|\Z)', section, re.DOTALL,
+        )
+        self.assertIsNotNone(ev_block)
+        body = ev_block.group(1)
+        self.assertNotIn("schema_version", body,
+                         "schema_version must not be an ApprovalEvidence field")
+        self.assertNotIn("record_type", body,
+                         "record_type must not be an ApprovalEvidence field")
+
+    def test_tc1312a_approval_gate_require_returns_evidence(self) -> None:
+        """§2.15.8.1 ApprovalGate.require() must return ApprovalEvidence."""
+        section = self._tc1312a_section()
+        # require() signature must return ApprovalEvidence
+        # Find the require method
+        self.assertIn("def require(", section)
+        self.assertIn("ApprovalEvidence", section)
+        # The frozen API rules in the contract must reference the return type
+        lower = section.lower()
+        self.assertTrue(
+            "matching" in lower and "approvalevidence" in lower,
+            "§2.15.8.1 require() must return ApprovalEvidence",
+        )
+
+    def test_tc1312a_no_evidence_deferred_text(self) -> None:
+        """ADR must no longer contain 'ApprovalEvidence 字段留待 TC-13.12b 定义'
+        or similar deferred semantics."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        # Check for Chinese "留待" or English "deferred" re ApprovalEvidence
+        deferred_patterns = [
+            r"ApprovalEvidence.*留待",
+            r"ApprovalEvidence.*deferred",
+            r"字段留待.*TC-13\.12b",
+            r"field.*deferred.*TC-13\.12b",
+        ]
+        for pat in deferred_patterns:
+            self.assertIsNone(
+                re.search(pat, adr_text),
+                f"ADR must not contain deferred ApprovalEvidence text: {pat}",
+            )
+
+    def test_tc1312a_approval_gate_py_still_absent(self) -> None:
+        """approval_gate.py must still NOT exist."""
+        self.assertFalse(
+            self._APPROVAL_GATE_PY.exists(),
+            "approval_gate.py must not exist in TC-13.12a",
+        )
+
+    def test_tc1312a_interface_17_and_tc1313_still_target(self) -> None:
+        """Interface #17 and TC-13.13 must still be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        for row in rows:
+            num = self._resolve_col(row, "#")
+            if num == "17":
+                self.assertIn("Target",
+                              self._resolve_col(row, "Status"))
+            if num == "18":
+                self.assertIn("Target",
+                              self._resolve_col(row, "Status"))
 
     # ── TC-13.11a ControlPlaneTransitionService frozen contract tests ───────
 
