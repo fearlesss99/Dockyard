@@ -5094,15 +5094,15 @@ class ReleaseSmokeTests(unittest.TestCase):
     })
 
     def test_tc1310a_section_25_heading_is_frozen_contract(self) -> None:
-        """§2.5 heading must mention Frozen Contract — TC-13.10a."""
+        """§2.5 heading must mention Frozen Contract — TC-13.10c."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         heading_m = re.search(
             r"^### 2\.5\s.*$", adr_text, re.MULTILINE,
         )
         self.assertIsNotNone(heading_m, "ADR must have a §2.5 heading")
         heading = heading_m.group(0)
-        self.assertIn("Target", heading,
-                      "§2.5 heading must still say Target")
+        self.assertIn("Current", heading,
+                      "§2.5 heading must now say Current")
         self.assertIn("TC-13.10", heading,
                       "§2.5 heading must reference TC-13.10")
 
@@ -5715,19 +5715,19 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("Current", heading_m.group(0))
 
     def test_tc139a_tc1310_still_target(self) -> None:
-        """Interface Status row for TC-13.10a must still be Target."""
+        """Interface Status row for WorkerSlotLease (#15) must now be Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
-        tc1310a_row = None
+        tc1310_row = None
         for row in rows:
             impl = self._resolve_col(row, "Implemented by", "Impl", "Notes")
-            if "TC-13.10a" in re.findall(r"\b(TC-\d+(?:\.\d+)*[a-z]?)\b", impl):
-                tc1310a_row = row
+            task_ids = re.findall(r"\b(TC-\d+(?:\.\d+)*[a-z]?)\b", impl)
+            if "TC-13.10c" in task_ids or "TC-13.10a" in task_ids:
+                tc1310_row = row
                 break
-        self.assertIsNotNone(tc1310a_row, "ADR must contain TC-13.10a row")
-        status = self._resolve_col(tc1310a_row, "Status")
-        self.assertIn("Target", status)
-        self.assertNotIn("Current", status)
+        self.assertIsNotNone(tc1310_row, "ADR must contain WorkerSlotLease row")
+        status = self._resolve_col(tc1310_row, "Status")
+        self.assertIn("Current", status, "WorkerSlotLease row must be Current now")
 
     def test_tc139a_section_281_budget_semantics_fixed(self) -> None:
         """§2.8.1 must no longer claim TaskDifficulty does not dictate
@@ -5744,6 +5744,22 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertNotIn("which percentage budget to apply",
                          section,
                          "§2.8.1 must not claim TaskDifficulty does not dictate budget percentage")
+
+    # ── Time monotonicity safety rule ──────────────────────────────────────
+
+    def test_adr_documents_time_monotonicity_safety_rule(self) -> None:
+        """ADR must document the time monotonicity fail-closed rule from
+        TC-13.10c: all writes must have now >= store updated_at."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        # The monotonicity rule should be documented in §2.5 (WorkerSlotLease).
+        section = _extract_markdown_section(adr_text, "### 2.5")
+        self.assertIsNotNone(section,
+                             "ADR must contain §2.5 WorkerSlotLease")
+        # Must mention monotonicity.
+        self.assertTrue(
+            "monotonic" in section.lower() or "monotonicity" in section.lower(),
+            "ADR §2.5 must document time monotonicity rule",
+        )
 
 
 if __name__ == "__main__":

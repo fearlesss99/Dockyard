@@ -1,17 +1,17 @@
-"""AgentDesk WorkerSlotLease store — agentdesk.worker-slot-lease/v1 (TC-13.10b).
+"""AgentDesk WorkerSlotLease store — agentdesk.worker-slot-lease/v1 (TC-13.10b/c).
 
 Data model, pure validation, immutable store schema, read-only load,
-exclusive file‑lock infrastructure, and atomic write helpers.
+exclusive file‑lock infrastructure, atomic write helpers, acquire,
+release, renew, fence context, stale‑lease cleanup, capacity
+allocation, epoch increment, lease ID generation, and workspace
+normalisation.
 
-Non‑goals (deferred to TC-13.10c):
-* ``acquire_worker_slot``, ``release_worker_slot``, ``renew_worker_slot``
-* ``hold_worker_slot_fence``
-* Stale‑lease cleanup
-* Capacity allocation
-* Lease ID generation
-* Epoch increment operations
-* Workspace normalisation
+Non‑goals:
 * State writes (tasks.yaml, events, outbox, reports)
+* WorkerAdapter or DispatcherGateway imports
+* Subprocess invocation or Git operations
+* Network access
+* Retry/escalation/rate‑limit logic
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import secrets
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -41,6 +41,10 @@ __all__ = [
     "WorkerSlotFencingError",
     "validate_worker_slot_store",
     "read_worker_slot_leases",
+    "acquire_worker_slot",
+    "release_worker_slot",
+    "renew_worker_slot",
+    "hold_worker_slot_fence",
 ]
 
 # ── constants ───────────────────────────────────────────────────────────────
@@ -1083,3 +1087,726 @@ def _atomic_write_store(project_root: Path, data: object) -> None:
         except OSError:
             pass
         raise
+
+
+# ── TC-13.10c: lifecycle operations ──────────────────────────────────────────
+
+
+# ── workspace normalisation ───────────────────────────────────────────────────
+
+
+def _normalize_workspace(workspace: Path) -> str:
+    """Normalise *workspace* into a canonical absolute path string.
+
+    Rules (fail-closed):
+
+    1. Must be a :class:`Path` instance.
+    2. Must be absolute.
+    3. Must exist on the filesystem.
+    4. Must be a directory.
+    5. Must not be a symlink (the workspace itself).
+    6. On Windows: must not be a reparse point, junction, or mount point.
+    7. Uses ``resolve(strict=True)`` for real‑path resolution.
+    8. On Windows: applies ``os.path.normcase`` for case‑insensitive
+       canonicalisation.
+    9. On POSIX: preserves original case.
+    10. Returns the absolute path as a string.
+    11. Never uses bare ``.lower()``.
+    12. Must not change the current working directory.
+
+    Raises :exc:`TypeError` / :exc:`ValueError` on violation.
+    """
+    if not isinstance(workspace, Path):
+        raise TypeError(
+            "workspace must be a Path, "
+            f"got {_safe_type_name(workspace)}"
+        )
+    if not workspace.is_absolute():
+        raise ValueError(
+            "workspace must be absolute, "
+            f"got {_safe_type_name(workspace)}"
+        )
+    if not workspace.exists():
+        raise ValueError(
+            "workspace does not exist"
+        )
+    if not workspace.is_dir():
+        raise ValueError(
+            "workspace must be a directory"
+        )
+    if workspace.is_symlink():
+        raise ValueError(
+            "workspace must not be a symlink"
+        )
+    # Windows reparse-point / junction / mount-point rejection.
+    if os.name == "nt":
+        try:
+            resolved = workspace.resolve(strict=True)
+        except OSError:
+            raise ValueError(
+                "workspace could not be resolved"
+            ) from None
+        # Compare the original and resolved paths: if resolving changed
+        # the path significantly (beyond normcase), treat as a reparse
+        # point / junction / mount point that must be rejected.
+        orig_norm = os.path.normcase(str(workspace))
+        res_norm = os.path.normcase(str(resolved))
+        if orig_norm != res_norm:
+            raise ValueError(
+                "workspace must not be a reparse point, junction, or mount point"
+            )
+        return res_norm
+    else:
+        # POSIX: resolve but preserve case.
+        resolved = workspace.resolve(strict=True)
+        return str(resolved)
+
+
+# ── private input validation helpers ──────────────────────────────────────────
+
+
+def _validate_project_root(project_root: Path) -> None:
+    """Validate *project_root*: absolute, existing directory."""
+    if not isinstance(project_root, Path):
+        raise TypeError(
+            "project_root must be a Path, "
+            f"got {_safe_type_name(project_root)}"
+        )
+    if not project_root.is_absolute():
+        raise ValueError(
+            "project_root must be absolute, "
+            f"got {_safe_type_name(project_root)}"
+        )
+    if not project_root.is_dir():
+        raise ValueError(
+            "project_root does not exist or is not a directory"
+        )
+
+
+def _validate_worker_kind(value: object) -> None:
+    """Validate *value* is a :class:`WorkerKind` member."""
+    if not isinstance(value, WorkerKind):
+        raise TypeError(
+            "worker_kind must be a WorkerKind, "
+            f"got {_safe_type_name(value)}"
+        )
+
+
+def _validate_holder_id(value: str, field_name: str) -> None:
+    """Validate *value* is a safe non‑empty holder identifier string."""
+    if not isinstance(value, str) or not value:
+        raise TypeError(
+            f"{field_name} must be a non-empty str, "
+            f"got {_safe_type_name(value)}"
+        )
+    if value != value.strip():
+        raise ValueError(
+            f"{field_name} must not have leading or trailing whitespace"
+        )
+    if "\0" in value or "\r" in value or "\n" in value:
+        raise ValueError(
+            f"{field_name} must not contain NUL, CR, or LF"
+        )
+
+
+def _validate_utc_now(now: datetime) -> None:
+    """Validate *now* is a timezone‑aware UTC :class:`datetime`.
+
+    Rejects booleans, strings, naive datetimes, and non‑UTC offsets.
+    """
+    if isinstance(now, bool) or not isinstance(now, datetime):
+        raise TypeError(
+            "now must be a datetime, "
+            f"got {_safe_type_name(now)}"
+        )
+    if now.tzinfo is None:
+        raise TypeError(
+            "now must be timezone-aware UTC, got naive datetime"
+        )
+    offset = now.utcoffset()
+    if offset is None or offset.total_seconds() != 0:
+        raise TypeError(
+            "now must be UTC (Z or +00:00), "
+            f"got {_safe_type_name(now)}"
+        )
+
+
+def _validate_lease_module_origin(lease: WorkerSlotLease) -> None:
+    """Validate *lease* is a :class:`WorkerSlotLease` from this module.
+
+    Rejects look‑alike objects and cross‑module instances.
+    """
+    if type(lease) is not WorkerSlotLease:
+        raise TypeError(
+            "lease must be a WorkerSlotLease, "
+            f"got {_safe_type_name(lease)}"
+        )
+
+
+def _dt_to_utc_str(dt: datetime) -> str:
+    """Convert a UTC :class:`datetime` to an RFC 3339 string."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ── private store read (locked) ───────────────────────────────────────────────
+
+
+def _read_store_unlocked(project_root: Path) -> dict[str, object]:
+    """Read and validate the worker‑slot‑lease store.
+
+    **Caller must already hold** :func:`_exclusive_store_lock`.
+
+    Returns the parsed canonical data dict.  When the file does not exist,
+    returns a fresh canonical empty store (no file or directory is
+    created).
+
+    Does **not** acquire a nested lock, clean stale leases, or write the
+    file.
+    """
+    path = project_root / _RUNTIME_RELATIVE
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _canonical_empty_store()
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise WorkerSlotValidationError(
+            f"worker-slot-lease.yaml is not valid JSON: {exc}"
+        ) from exc
+
+    errors = validate_worker_slot_store(data)
+    if errors:
+        raise WorkerSlotValidationError(
+            "worker-slot-lease.yaml validation failed:\n"
+            + "\n".join(f"  - {e}" for e in errors)
+        )
+    return data
+
+
+# ── private identity verification helper ──────────────────────────────────────
+
+
+def _verify_lease_identity(
+    stored_lease: dict[str, object],
+    lease: WorkerSlotLease,
+    slot_id: str,
+) -> None:
+    """Verify all six identity fields match between *stored_lease* and *lease*.
+
+    Checks: slot_id, lease_id, lease_epoch, worker_kind,
+    holder_dispatch_id, holder_instance_id.
+
+    All errors use safe type names — never the actual values.
+    """
+    # lease_id
+    stored_lid = stored_lease.get("lease_id")
+    if stored_lid != lease.lease_id:
+        raise WorkerSlotFencingError(
+            "lease_id mismatch for slot "
+            + slot_id
+        )
+
+    # lease_epoch
+    stored_epoch = stored_lease.get("lease_epoch")
+    if not isinstance(stored_epoch, int) or isinstance(
+        stored_epoch, bool
+    ):
+        raise WorkerSlotFencingError(
+            "lease_epoch is invalid in store for slot "
+            + slot_id
+        )
+    if stored_epoch != lease.lease_epoch:
+        raise WorkerSlotFencingError(
+            "lease_epoch mismatch for slot "
+            + slot_id
+        )
+
+    # worker_kind
+    stored_wk = stored_lease.get("worker_kind")
+    if not isinstance(stored_wk, str):
+        raise WorkerSlotFencingError(
+            "worker_kind is invalid in store for slot "
+            + slot_id
+        )
+    if stored_wk != lease.worker_kind.value:
+        raise WorkerSlotFencingError(
+            "worker_kind mismatch for slot "
+            + slot_id
+        )
+
+    # holder_dispatch_id
+    stored_hdi = stored_lease.get("holder_dispatch_id")
+    if stored_hdi != lease.holder_dispatch_id:
+        raise WorkerSlotFencingError(
+            "holder_dispatch_id mismatch for slot "
+            + slot_id
+        )
+
+    # holder_instance_id
+    stored_hii = stored_lease.get("holder_instance_id")
+    if stored_hii != lease.holder_instance_id:
+        raise WorkerSlotFencingError(
+            "holder_instance_id mismatch for slot "
+            + slot_id
+        )
+
+
+# ── private monotonicity guard ────────────────────────────────────────────────
+
+
+def _check_now_monotonic(
+    now: datetime,
+    store_timestamp_str: str,
+    *,
+    sentinel: str = _CANONICAL_SENTINEL_UPDATED_AT,
+) -> None:
+    """Verify *now* is not earlier than the store's ``updated_at``.
+
+    The sentinel ``updated_at`` (``1970-01-01T00:00:00Z``) signals that
+    no real write has occurred yet — it places no restriction on *now*.
+    """
+    if store_timestamp_str == sentinel:
+        return
+    store_ts = _parse_rfc3339_utc(store_timestamp_str)
+    if store_ts is None:
+        # Malformed store timestamp — validation should have caught this.
+        return
+    if now < store_ts:
+        raise WorkerSlotFencingError(
+            "now must not be earlier than the store updated_at"
+        )
+
+
+# ── private: generate unique lease ID ─────────────────────────────────────────
+
+
+def _generate_unique_lease_id(existing_ids: set[str]) -> str:
+    """Generate a unique WSL‑<32 hex> lease ID not present in *existing_ids*.
+
+    Uses ``secrets.token_hex(16)``.  Retries up to 16 times on collision.
+    Raises :exc:`WorkerSlotLeaseError` if 16 consecutive attempts collide.
+    """
+    for _ in range(16):
+        lid = f"WSL-{secrets.token_hex(16)}"
+        if lid not in existing_ids:
+            return lid
+    raise WorkerSlotLeaseError(
+        "failed to generate a unique lease ID after 16 attempts"
+    )
+
+
+# ── public lifecycle API ──────────────────────────────────────────────────────
+
+
+def acquire_worker_slot(
+    project_root: Path,
+    worker_kind: WorkerKind,
+    holder_dispatch_id: str,
+    holder_instance_id: str,
+    workspace: Path,
+    now: datetime,
+) -> WorkerSlotLease:
+    """Acquire a Worker slot lease.
+
+    The entire operation executes inside one exclusive lock.
+
+    Returns the constructed :class:`WorkerSlotLease`.
+
+    Raises:
+        :exc:`WorkerSlotCapacityError` — no free slot or duplicate active
+            pair.
+        :exc:`WorkerSlotFencingError` — *now* is earlier than the store
+            ``updated_at``.
+        :exc:`WorkerSlotValidationError` — corrupt store.
+        :exc:`WorkerSlotLeaseError` — lease ID collision after 16 attempts.
+        :exc:`TypeError` / :exc:`ValueError` — invalid input.
+    """
+    # ── input validation (before lock) ──────────────────────────────────
+    _validate_project_root(project_root)
+    _validate_worker_kind(worker_kind)
+    _validate_holder_id(holder_dispatch_id, "holder_dispatch_id")
+    _validate_holder_id(holder_instance_id, "holder_instance_id")
+    _validate_utc_now(now)
+    canonical = _normalize_workspace(workspace)
+
+    with _exclusive_store_lock(project_root):
+        # Read store.
+        store = _read_store_unlocked(project_root)
+
+        # Validate updated_at for monotonicity.
+        _check_now_monotonic(
+            now, str(store["updated_at"]),
+        )
+
+        # Build in‑memory copy.
+        leases: dict[str, object] = dict(store["leases"])  # type: ignore[arg-type]
+        slot_epochs: dict[str, int] = dict(
+            store["slot_epochs"]  # type: ignore[arg-type]
+        )
+
+        # Collect existing lease IDs.
+        existing_ids: set[str] = set()
+        for raw_lease in leases.values():
+            if isinstance(raw_lease, dict):
+                lid = raw_lease.get("lease_id")
+                if isinstance(lid, str):
+                    existing_ids.add(lid)
+
+        # Remove expired active leases (all WorkerKinds).
+        now_str = _dt_to_utc_str(now)
+        expired_slots: list[str] = []
+        for sid, raw in leases.items():
+            if not isinstance(raw, dict):
+                continue
+            et = raw.get("expires_at")
+            if isinstance(et, str):
+                et_dt = _parse_rfc3339_utc(et)
+                if et_dt is not None and now >= et_dt:
+                    expired_slots.append(sid)
+        for sid in expired_slots:
+            del leases[sid]
+
+        # Check for duplicate active (worker_kind, canonical_worktree).
+        for raw in leases.values():
+            if not isinstance(raw, dict):
+                continue
+            wk_val = raw.get("worker_kind")
+            cw = raw.get("canonical_worktree")
+            if isinstance(wk_val, str) and isinstance(cw, str):
+                if wk_val == worker_kind.value and cw == canonical:
+                    raise WorkerSlotCapacityError(
+                        "duplicate active (worker_kind, worktree) pair"
+                    )
+
+        # Select the lowest-numbered free stable slot for this WorkerKind.
+        candidate_slots = [
+            sid for sid in _STABLE_SLOT_IDS
+            if _SLOT_KIND.get(sid) is worker_kind and sid not in leases
+        ]
+        if not candidate_slots:
+            raise WorkerSlotCapacityError(
+                "no free slot available for worker_kind "
+                + worker_kind.value
+            )
+        chosen_slot = candidate_slots[0]  # lowest in stable order
+
+        # Increment slot epoch.
+        old_epoch = slot_epochs.get(chosen_slot, 0)
+        new_epoch = old_epoch + 1
+        # Guard against overflow.
+        if new_epoch < 1:
+            raise WorkerSlotLeaseError(
+                "slot_epoch overflow for "
+                + chosen_slot
+            )
+        slot_epochs[chosen_slot] = new_epoch
+
+        # Generate unique lease ID.
+        lease_id = _generate_unique_lease_id(existing_ids)
+
+        # Construct lease.
+        expires_dt = now + timedelta(seconds=_LEASE_TTL_SECONDS)
+        expires_at = _dt_to_utc_str(expires_dt)
+
+        lease = WorkerSlotLease(
+            lease_id=lease_id,
+            lease_epoch=new_epoch,
+            slot_id=chosen_slot,
+            worker_kind=worker_kind,
+            holder_dispatch_id=holder_dispatch_id,
+            holder_instance_id=holder_instance_id,
+            canonical_worktree=canonical,
+            acquired_at=now_str,
+            heartbeat_at=now_str,
+            expires_at=expires_at,
+        )
+
+        # Insert lease into store.
+        leases[chosen_slot] = _lease_to_dict(lease)
+
+        # Update updated_at.
+        store["updated_at"] = now_str
+        store["leases"] = leases
+        store["slot_epochs"] = slot_epochs
+
+        # Atomic write.
+        _atomic_write_store(project_root, store)
+
+    return lease
+
+
+def release_worker_slot(
+    project_root: Path,
+    lease: WorkerSlotLease,
+    now: datetime,
+) -> None:
+    """Release a previously acquired Worker slot lease.
+
+    The entire operation executes inside one exclusive lock.
+
+    Rules:
+    * Unknown slot → :exc:`WorkerSlotNotHeldError`.
+    * Identity mismatch (any of six fields) → :exc:`WorkerSlotFencingError`.
+    * Expired leases may still be explicitly released.
+    * Duplicate release → fail-closed.
+    * Release preserves the slot epoch.
+    * On failure, the original file bytes are unchanged.
+    """
+    # ── input validation (before lock) ──────────────────────────────────
+    _validate_project_root(project_root)
+    _validate_lease_module_origin(lease)
+    _validate_utc_now(now)
+
+    with _exclusive_store_lock(project_root):
+        store = _read_store_unlocked(project_root)
+
+        # Validate now monotonic.
+        _check_now_monotonic(
+            now, str(store["updated_at"]),
+        )
+
+        leases: dict[str, object] = store["leases"]  # type: ignore[arg-type]
+
+        # Find the lease by slot_id.
+        slot_id = lease.slot_id
+        stored_raw = leases.get(slot_id)
+        if stored_raw is None or not isinstance(stored_raw, dict):
+            raise WorkerSlotNotHeldError(
+                "slot not held: " + slot_id
+            )
+
+        # Verify all six identity fields.
+        _verify_lease_identity(stored_raw, lease, slot_id)
+
+        # Release: now >= current acquired_at.
+        at_raw = stored_raw.get("acquired_at")
+        if isinstance(at_raw, str):
+            at_dt = _parse_rfc3339_utc(at_raw)
+            if at_dt is not None and now < at_dt:
+                raise WorkerSlotFencingError(
+                    "now must be >= acquired_at for slot "
+                    + slot_id
+                )
+
+        # Remove the active lease.
+        del leases[slot_id]
+
+        # Update updated_at.
+        now_str = _dt_to_utc_str(now)
+        store["updated_at"] = now_str
+
+        # Atomic write.
+        _atomic_write_store(project_root, store)
+
+
+def renew_worker_slot(
+    project_root: Path,
+    lease: WorkerSlotLease,
+    now: datetime,
+) -> WorkerSlotLease:
+    """Renew an existing Worker slot lease.
+
+    The entire operation executes inside one exclusive lock.
+
+    Rules:
+    * Only ``heartbeat_at`` and ``expires_at`` are updated.
+    * All other eight fields are preserved.
+    * Expired leases are rejected.
+    * Epoch is NOT incremented.
+    * The original input *lease* is NOT modified — a new object is returned.
+    * ``now`` must be >= the store ``updated_at`` and >= the lease
+      ``heartbeat_at``.
+
+    Returns a **new** :class:`WorkerSlotLease` with the updated timestamps.
+    """
+    # ── input validation (before lock) ──────────────────────────────────
+    _validate_project_root(project_root)
+    _validate_lease_module_origin(lease)
+    _validate_utc_now(now)
+
+    with _exclusive_store_lock(project_root):
+        store = _read_store_unlocked(project_root)
+
+        # Validate now monotonic against store updated_at.
+        _check_now_monotonic(
+            now, str(store["updated_at"]),
+        )
+
+        leases: dict[str, object] = store["leases"]  # type: ignore[arg-type]
+
+        slot_id = lease.slot_id
+        stored_raw = leases.get(slot_id)
+        if stored_raw is None or not isinstance(stored_raw, dict):
+            raise WorkerSlotNotHeldError(
+                "slot not held: " + slot_id
+            )
+
+        # Verify all six identity fields.
+        _verify_lease_identity(stored_raw, lease, slot_id)
+
+        # Check: now >= current heartbeat_at.
+        ht_raw = stored_raw.get("heartbeat_at")
+        if not isinstance(ht_raw, str):
+            raise WorkerSlotFencingError(
+                "store heartbeat_at is invalid for slot "
+                + slot_id
+            )
+        ht_dt = _parse_rfc3339_utc(ht_raw)
+        if ht_dt is None:
+            raise WorkerSlotFencingError(
+                "store heartbeat_at is not RFC 3339 UTC for slot "
+                + slot_id
+            )
+        if now < ht_dt:
+            raise WorkerSlotFencingError(
+                "now must be >= current heartbeat_at for slot "
+                + slot_id
+            )
+
+        # Check: now < expires_at (not expired).
+        et_raw = stored_raw.get("expires_at")
+        if not isinstance(et_raw, str):
+            raise WorkerSlotFencingError(
+                "store expires_at is invalid for slot "
+                + slot_id
+            )
+        et_dt = _parse_rfc3339_utc(et_raw)
+        if et_dt is None:
+            raise WorkerSlotFencingError(
+                "store expires_at is not RFC 3339 UTC for slot "
+                + slot_id
+            )
+        if now >= et_dt:
+            raise WorkerSlotFencingError(
+                "lease is expired — cannot renew, must re-acquire for slot "
+                + slot_id
+            )
+
+        # Create new lease with updated timestamps.
+        now_str = _dt_to_utc_str(now)
+        new_expires_dt = now + timedelta(seconds=_LEASE_TTL_SECONDS)
+        new_expires_at = _dt_to_utc_str(new_expires_dt)
+
+        new_lease = WorkerSlotLease(
+            lease_id=lease.lease_id,
+            lease_epoch=lease.lease_epoch,
+            slot_id=lease.slot_id,
+            worker_kind=lease.worker_kind,
+            holder_dispatch_id=lease.holder_dispatch_id,
+            holder_instance_id=lease.holder_instance_id,
+            canonical_worktree=lease.canonical_worktree,
+            acquired_at=lease.acquired_at,
+            heartbeat_at=now_str,
+            expires_at=new_expires_at,
+        )
+
+        # Replace in store.
+        leases[slot_id] = _lease_to_dict(new_lease)
+        store["updated_at"] = now_str
+
+        # Atomic write.
+        _atomic_write_store(project_root, store)
+
+    return new_lease
+
+
+@contextmanager
+def hold_worker_slot_fence(
+    project_root: Path,
+    lease: WorkerSlotLease,
+    now: datetime,
+) -> Iterator[None]:
+    """Context manager: verify the lease is valid and hold the exclusive lock.
+
+    Enters the exclusive store lock, verifies the lease is still valid
+    (present, not expired, identity matches), then yields.  The lock is
+    held for the duration of the ``with`` block.
+
+    Rules:
+    * Does NOT write the store.
+    * Does NOT renew the lease.
+    * Does NOT update ``updated_at``.
+    * Does NOT clean stale leases.
+    * Body exceptions propagate unchanged.
+    * Lock‑release errors do NOT swallow body exceptions.
+    * Expired / missing / identity‑mismatch → :exc:`WorkerSlotFencingError`
+      or :exc:`WorkerSlotNotHeldError`.
+    """
+    # ── input validation (before lock) ──────────────────────────────────
+    _validate_project_root(project_root)
+    _validate_lease_module_origin(lease)
+    _validate_utc_now(now)
+
+    body_exception: BaseException | None = None
+    with _exclusive_store_lock(project_root):
+        try:
+            # Read and validate store.
+            store = _read_store_unlocked(project_root)
+
+            # Validate now monotonic.
+            _check_now_monotonic(
+                now, str(store["updated_at"]),
+            )
+
+            leases: dict[str, object] = store["leases"]  # type: ignore[arg-type]
+
+            slot_id = lease.slot_id
+            stored_raw = leases.get(slot_id)
+            if stored_raw is None or not isinstance(stored_raw, dict):
+                raise WorkerSlotNotHeldError(
+                    "slot not held: " + slot_id
+                )
+
+            # Verify all six identity fields.
+            _verify_lease_identity(stored_raw, lease, slot_id)
+
+            # Check: now >= current heartbeat_at.
+            ht_raw = stored_raw.get("heartbeat_at")
+            if not isinstance(ht_raw, str):
+                raise WorkerSlotFencingError(
+                    "store heartbeat_at is invalid for slot "
+                    + slot_id
+                )
+            ht_dt = _parse_rfc3339_utc(ht_raw)
+            if ht_dt is None:
+                raise WorkerSlotFencingError(
+                    "store heartbeat_at is not RFC 3339 UTC for slot "
+                    + slot_id
+                )
+            if now < ht_dt:
+                raise WorkerSlotFencingError(
+                    "now must be >= current heartbeat_at"
+                )
+
+            # Check: now < expires_at.
+            et_raw = stored_raw.get("expires_at")
+            if not isinstance(et_raw, str):
+                raise WorkerSlotFencingError(
+                    "store expires_at is invalid for slot "
+                    + slot_id
+                )
+            et_dt = _parse_rfc3339_utc(et_raw)
+            if et_dt is None:
+                raise WorkerSlotFencingError(
+                    "store expires_at is not RFC 3339 UTC for slot "
+                    + slot_id
+                )
+            if now >= et_dt:
+                raise WorkerSlotFencingError(
+                    "lease is expired for slot "
+                    + slot_id
+                )
+
+            # All checks passed — yield while holding the lock.
+            yield
+
+        except BaseException as _exc:
+            body_exception = _exc
+            raise
+        finally:
+            # If the body raised, propagate that exception — the lock
+            # release is handled by the context manager's own finally
+            # block.  We just propagate the original exception here.
+            pass

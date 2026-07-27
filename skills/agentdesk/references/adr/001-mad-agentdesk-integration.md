@@ -25,7 +25,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 12 | AgentDesk double-commit protocol | **Current** | N/A (existing) | `implementation_commit` → `report_commit` |
 | 13 | AgentDesk MAD Decision Gateway | **Current** | TC-13.6 | Config-driven subprocess invocation of `mad` for planning/deliberation |
 | 14 | AgentDesk WorkerAdapter — four-tier Worker execution orchestration | **Current** | TC-13.9b | Basic/Standard/Advanced/Expert; WorkerKind + TaskDifficulty as independent inputs; provider/model from bindings only; budget computed, not enforced; concurrency slots deferred to TC-13.10 |
-| 15 | AgentDesk WorkerSlotLease | **Target** | TC-13.10a | `agentdesk.worker-slot-lease/v1`; frozen contract §2.5; TC-13.10b/c remain Target |
+| 15 | AgentDesk WorkerSlotLease | **Current** | TC-13.10c | `agentdesk.worker-slot-lease/v1`; frozen contract §2.5; implemented by TC-13.10a (frozen contract), TC-13.10b (data model, store, atomic I/O), TC-13.10c (acquire/release/renew/hold fence) |
 | 16 | AgentDesk ControlPlaneTransitionService | **Target** | TC-13.11 | CAS-write tasks, immutable events, replayable outbox |
 | 17 | AgentDesk ApprovalGate | **Target** | TC-13.12 | TASK_APPROVAL with structured scope (dispatch/accept/integrate) |
 | 18 | AgentDesk EscalationService | **Target** | TC-13.13 | Difficulty escalation independent of rate-limit |
@@ -437,14 +437,15 @@ The budget percentages and the ≥35 % reserved rule are computed by
 consumes the policy's `BudgetResult`; this section describes the
 *Worker-tier behaviours* that use that budget, not the arithmetic itself.
 
-### 2.5 Worker Slot Lease (Target — TC-13.10)
+### 2.5 Worker Slot Lease (Current — TC-13.10c)
 
 > **Frozen Contract — TC-13.10a.**  Subsections §2.5.1–§2.5.16 below are
 > the frozen contract for ``agentdesk.worker-slot-lease/v1``.  The
-> production implementation is split across TC-13.10b (data model,
+> production implementation is now complete: TC-13.10b (data model,
 > validation, runtime store, atomic I/O) and TC-13.10c (acquire / release
-> / renew / hold fence).  The overall interface remains **Target** until
-> TC-13.10c is committed.
+> / renew / hold fence, stale‑lease cleanup, capacity allocation,
+> workspace normalisation, time monotonicity fencing).  TC-13.10a/b/c are
+> all **Current** as of this commit.
 
 Each Worker slot lease is independent of the PM lease.  A **provider
 request permit** is independent of the Worker lifecycle slot: rate-limiting
@@ -953,20 +954,24 @@ TC-13.11  → TC-13.10c
 TC-13.18  → TC-13.10c + TC-13.11 + …
 ```
 
-TC-13.10b and TC-13.10c are both **Target**.  TC-13.10 overall remains
-**Target** until TC-13.10c is committed.
+TC-13.10a, TC-13.10b, and TC-13.10c are all **Current** as of this commit.
+The overall WorkerSlotLease interface is fully implemented.
 
 ---
 
 #### 2.5.16 Status
 
-* ADR Interface Status row #15 remains **Target** — TC-13.10.
+* ADR Interface Status row #15 is now **Current** — TC-13.10c.
 * The Notes column references ``agentdesk.worker-slot-lease/v1``; frozen
   contract in §2.5 (TC-13.10a).
+* **TC-13.10a** — frozen contract section (§2.5) — committed and stable.
 * **TC-13.10b** — data model (``WorkerSlotLease``), validation, runtime
-  store, read-only load, file lock, atomic write — is committed
+  store, read-only load, file lock, atomic write — committed
   (``worker_slot_lease.py`` + ``test_worker_slot_lease.py``).
-* TC-13.10c (acquire / release / renew / hold fence) remains **Target**.
+* **TC-13.10c** — acquire / release / renew / hold fence, stale‑lease
+  cleanup, capacity allocation, workspace normalisation, time monotonicity
+  fencing — committed (same module + tests).
+* TC-13.10a, TC-13.10b, and TC-13.10c are all **Current**.
 * TC-13.9c remains **Target** — not blocked by this contract.
 * TC-13.11 and all subsequent interfaces remain **Target**.
 
