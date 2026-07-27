@@ -35,7 +35,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, fields as dc_fields
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Optional, Union
 
 if os.name != "nt":
@@ -315,6 +315,39 @@ def _validate_safe_str(value: object, field_name: str) -> str:
     return _validate_nonempty_str(value, field_name)
 
 
+_TASK_ID_RE = re.compile(r"^TC-[0-9]{3,}$")
+
+
+def _validate_task_id_str(value: object, field_name: str) -> str:
+    """Validate *value* is a task ID matching ``TC-NNN`` (min 3 digits).
+
+    Rejects short IDs, non-TC prefixes, path escape attempts,
+    and any value containing NUL/CR/LF or whitespace.
+    """
+    if not isinstance(value, str) or not value:
+        raise TypeError(
+            f"{field_name} must be a non-empty str, "
+            f"got {_safe_type_name(value)}"
+        )
+    if value.strip() != value:
+        raise ValueError(
+            f"{field_name} must not have leading or trailing whitespace"
+        )
+    if "\0" in value or "\r" in value or "\n" in value:
+        raise ValueError(
+            f"{field_name} must not contain NUL, CR, or LF"
+        )
+    if value != value.rstrip():
+        raise ValueError(
+            f"{field_name} must not have trailing whitespace"
+        )
+    if _TASK_ID_RE.fullmatch(value) is None:
+        raise ValueError(
+            f"task_id must match TC-NNN (min 3 digits)"
+        )
+    return value
+
+
 def _validate_non_bool_int(value: object, field_name: str, min_val: int = 1) -> int:
     """Validate *value* is a non-bool int >= *min_val*."""
     if isinstance(value, bool) or not isinstance(value, int):
@@ -401,9 +434,11 @@ def _validate_sha(value: object, field_name: str) -> str:
 
 _ACCEPTANCE_PATH_RE = re.compile(
     r"^docs/pm/acceptances/"
-    r"(?P<task_id>.+)-r(?P<revision>[1-9][0-9]*)-a(?P<attempt>[1-9][0-9]*)"
+    r"(?P<task_id>TC-[0-9]{3,})-r(?P<revision>[1-9][0-9]*)-a(?P<attempt>[1-9][0-9]*)"
     r"-review(?P<review_n>[1-9][0-9]*)\.md$"
 )
+
+_ACCEPTANCE_DIR_PARTS = ("docs", "pm", "acceptances")
 
 
 def _parse_review_n_from_path(
@@ -418,7 +453,12 @@ def _parse_review_n_from_path(
     ``docs/pm/acceptances/{task_id}-r{revision}-a{attempt}-review{N}.md``.
 
     Raises ``TransitionValidationError`` if:
-    * The path does not match the expected pattern.
+    * The path does not match the expected pattern (exact task ID
+      syntax ``TC-NNN``, revision ≥ 1, attempt ≥ 1, review ≥ 1).
+    * The path contains escape attempts (``..``, ``//``, backslashes,
+      absolute paths, drive prefixes, query/fragment).
+    * The structural ``PurePosixPath`` parts are not exactly
+      ``("docs", "pm", "acceptances", filename)``.
     * The task_id, revision, or attempt embedded in the path do not
       match the expected CAS-verified values.
     * The review number is not a positive integer.
@@ -427,29 +467,64 @@ def _parse_review_n_from_path(
     path, not from directory scans or file counts.  Idempotent replay
     with the same ``acceptance_path`` always produces the same number.
     """
-    m = _ACCEPTANCE_PATH_RE.match(acceptance_path)
+    # ── structural escape check (before regex) ──────────────────────────
+    if not isinstance(acceptance_path, str) or not acceptance_path:
+        raise TransitionValidationError(
+            "acceptance_path must be a non-empty str"
+        )
+    # Reject absolute paths, backslashes, drive prefixes, query/fragment.
+    if acceptance_path.startswith("/"):
+        raise TransitionValidationError(
+            "acceptance_path must not start with /"
+        )
+    if "\\" in acceptance_path:
+        raise TransitionValidationError(
+            "acceptance_path must use forward slashes"
+        )
+    if "://" in acceptance_path or ":" in acceptance_path:
+        raise TransitionValidationError(
+            "acceptance_path must not contain colon or scheme"
+        )
+    if "?" in acceptance_path or "#" in acceptance_path:
+        raise TransitionValidationError(
+            "acceptance_path must not contain query or fragment"
+        )
+    if "//" in acceptance_path:
+        raise TransitionValidationError(
+            "acceptance_path must not contain consecutive slashes"
+        )
+    # PurePosixPath structural check.
+    parts = PurePosixPath(acceptance_path).parts
+    if len(parts) != 4:
+        raise TransitionValidationError(
+            "acceptance_path must have exactly 4 path segments"
+        )
+    if parts[:3] != _ACCEPTANCE_DIR_PARTS:
+        raise TransitionValidationError(
+            "acceptance_path must be under docs/pm/acceptances/"
+        )
+    filename = parts[3]
+
+    # ── regex match against filename only ───────────────────────────────
+    m = _ACCEPTANCE_PATH_RE.match(
+        "docs/pm/acceptances/" + filename
+    )
     if m is None:
         raise TransitionValidationError(
-            f"acceptance_path must match "
-            f"docs/pm/acceptances/{{task_id}}-r{{revision}}-a{{attempt}}-review{{N}}.md"
+            "acceptance_path filename must match "
+            "{task_id}-r{revision}-a{attempt}-review{N}.md"
         )
     if m.group("task_id") != expected_task_id:
         raise TransitionValidationError(
-            f"acceptance_path task_id mismatch: "
-            f"expected {expected_task_id}, "
-            f"got {m.group('task_id')}"
+            "acceptance_path task_id mismatch"
         )
     if int(m.group("revision")) != expected_revision:
         raise TransitionValidationError(
-            f"acceptance_path revision mismatch: "
-            f"expected {expected_revision}, "
-            f"got {m.group('revision')}"
+            "acceptance_path revision mismatch"
         )
     if int(m.group("attempt")) != expected_attempt:
         raise TransitionValidationError(
-            f"acceptance_path attempt mismatch: "
-            f"expected {expected_attempt}, "
-            f"got {m.group('attempt')}"
+            "acceptance_path attempt mismatch"
         )
     return int(m.group("review_n"))
 
@@ -517,7 +592,7 @@ class TransitionCAS:
     expected_snapshot_commit: str
 
     def __post_init__(self) -> None:
-        _validate_safe_str(self.task_id, "task_id")
+        _validate_task_id_str(self.task_id, "task_id")
         _validate_non_bool_int(self.expected_revision, "expected_revision", min_val=1)
         if not isinstance(self.expected_state, str) or not self.expected_state:
             raise TypeError(
@@ -631,19 +706,21 @@ class DeliverySubmittedPayload:
 #                     (validated against the immutable task card at the
 #                     task_card_commit referenced in tasks.yaml)
 #
-#   approval_ids   ← task ledger ``granted_approval_ids``, cross-checked
-#                     against immutable ``MODEL_DEGRADATION_APPROVED`` events
-#                     that are un-revoked and committed at or before the
-#                     dispatch commit.
+#   approval_ids   ← empty tuple (())
 #
 # The only gate value attested in the existing task-card template and
-# acceptance template is ``"none"``.  Additional gate values require
-# corresponding validator and template updates — they cannot be added
-# by a payload alone.
+# acceptance template is ``"none"``.  When gate is ``"none"``,
+# ``approval_ids`` MUST be empty.
+#
+# ``granted_approval_ids`` and ``MODEL_DEGRADATION_APPROVED`` events
+# are for model-tier degradation authorization ONLY — they are NOT
+# owner approval evidence and must not be written into the acceptance
+# record's ``owner_approval`` block.  Owner approval and model
+# degradation approval are distinct authorization domains.
 #
 # The type is published in ``__all__`` so that ``apply_transition()``
-# (TC-13.11c) can return it as part of the acceptance construction, and
-# so that tests can verify its structure.
+# (TC-13.11c) can return it as part of the acceptance construction,
+# and so that tests can verify its structure.
 
 _GATE_VALUES: frozenset[str] = frozenset({"none"})
 _APPROVAL_ID_RE = re.compile(r"^APR-.+")
@@ -673,12 +750,25 @@ class AcceptanceOwnerApproval:
                 f"got {_safe_type_name(self.gate)}"
             )
 
-        # Deep-immutable: defensively copy to tuple from any iterable.
-        if not isinstance(self.approval_ids, tuple):
+        # Defensive copy from list/tuple only — reject str, bytes,
+        # dict, set, generator, and any other iterable.
+        if not isinstance(self.approval_ids, (tuple, list)):
+            raise TypeError(
+                f"approval_ids must be a tuple or list, "
+                f"got {_safe_type_name(self.approval_ids)}"
+            )
+        # Freeze to tuple.
+        if type(self.approval_ids) is not tuple:
             object.__setattr__(
                 self,
                 "approval_ids",
                 tuple(self.approval_ids),
+            )
+
+        # When gate is "none", approval_ids MUST be empty.
+        if self.gate == "none" and len(self.approval_ids) != 0:
+            raise ValueError(
+                "approval_ids must be empty when gate is 'none'"
             )
 
         seen: set[str] = set()

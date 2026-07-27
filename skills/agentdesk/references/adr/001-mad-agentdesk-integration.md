@@ -4432,11 +4432,11 @@ the following sources — no field is synthesised without an input channel.
 | ``implementation_commit`` | ``tasks.yaml`` task-level ``implementation_commit`` | Set by ``DELIVERY_SUBMITTED``; must equal ``DeliveryAcceptedPayload.accepted_commit`` |
 | ``report_commit`` | ``tasks.yaml`` task-level ``report_commit`` | Set by ``DELIVERY_SUBMITTED``; NOT ``current_dispatch.report_commit`` (which does not exist) |
 | ``accepted_commit`` | ``DeliveryAcceptedPayload.accepted_commit`` | Caller-provided; frozen as ``accepted_commit`` in ``tasks.yaml``; must equal ``implementation_commit`` |
-| ``owner_approval`` | Service-derived from canonical evidence | ``gate`` ← task-card frontmatter ``owner_approval.gate`` (currently only ``"none"`` is attested); ``approval_ids`` ← task ledger ``granted_approval_ids`` cross-checked against immutable ``MODEL_DEGRADATION_APPROVED`` events. NOT a payload field; the payload must not self-declare authorization facts. |
+| ``owner_approval`` | Service constant derived from committed task card | ``gate`` ← task-card frontmatter ``owner_approval.gate`` (only ``"none"`` is attested). When gate is ``"none"``, ``approval_ids`` is always ``[]``. NOT a payload field; NOT derived from ``granted_approval_ids``; NOT related to ``MODEL_DEGRADATION_APPROVED`` events — those are model-tier degradation authorization, NOT owner approval. |
 | ``evidence_refs`` | ``TransitionEventContext.evidence_refs`` | Serialised as YAML list |
 | ``residual_risks`` | ``DeliveryAcceptedPayload.residual_risks`` | Caller-supplied tuple of non-empty risk strings; may be empty |
 | ``created_at`` | ``apply_transition(... now=...)`` | Service-formatted RFC 3339 UTC |
-| Body title | Service template + acceptance path | ``# {task_id} · Acceptance · Attempt {attempt} · Review {review_n}`` — ``review_n`` is parsed from ``DeliveryAcceptedPayload.acceptance_path`` (``docs/pm/acceptances/{task_id}-r{revision}-a{attempt}-review{N}.md``). Task/revision/attempt in the path are validated to match CAS. Idempotent replay with the same path always produces the same ``review_n`` — no directory scan |
+| Body title | Service template + acceptance path | ``# {task_id} · Acceptance · Attempt {attempt} · Review {review_n}`` — ``review_n`` is parsed from ``DeliveryAcceptedPayload.acceptance_path`` (``docs/pm/acceptances/{task_id}-r{revision}-a{attempt}-review{N}.md``). Task ID must match ``TC-[0-9]{3,}``. Revision ≥ 1, attempt ≥ 1, review N ≥ 1. Path is structurally validated (exactly 4 PurePosixPath segments). Task/revision/attempt in the path are validated to match CAS. Idempotent replay with the same path always produces the same ``review_n`` — no directory scan |
 | Body decision text | Service constant | ``accepted`` |
 | Body scope review checklist | Service template | Fixed checklist from acceptance template |
 | Body criteria and checks | ``DeliveryAcceptedPayload.criteria_evidence`` | PM-supplied per-criterion evidence; tuple of non-empty, non-whitespace strings; must not be empty |
@@ -4448,9 +4448,9 @@ construction**:
 All fields in the current ``DeliveryAcceptedPayload`` are present
 (``accepted_commit``, ``acceptance_path``, ``residual_risks``,
 ``criteria_evidence``, ``rationale``).  ``owner_approval`` is derived
-by the service from canonical evidence (task-card frontmatter
-``owner_approval.gate`` and task ledger ``granted_approval_ids``) —
-it is NOT a payload field.
+by the service from the committed task card's ``owner_approval.gate``
+— it is NOT a payload field and NOT derived from
+``granted_approval_ids`` or ``MODEL_DEGRADATION_APPROVED`` events.
 
 | Field | Type | Rule |
 |-------|------|------|

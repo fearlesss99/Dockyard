@@ -131,7 +131,7 @@ class TestAllSymbols(TestControlPlaneTransitionBase):
         """Module should not have extra public symbols beyond __all__."""
         _STDLIB_REEXPORTS = {
             "Any", "Optional", "Union", "Iterator", "Path",
-            "datetime", "timedelta", "os", "re", "errno",
+            "PurePosixPath", "datetime", "timedelta", "os", "re", "errno",
             "secrets", "tempfile", "hashlib", "contextmanager",
             "dataclass", "dc_fields",
         }
@@ -544,6 +544,81 @@ class TestTransitionCASValidation(TestControlPlaneTransitionBase):
                 expected_revision=1,
                 expected_state="draft",
                 expected_snapshot_commit="a" * 40,
+            )
+
+    def test_067b_task_id_short_rejected(self) -> None:
+        """TC-1 rejected — min 3 digits."""
+        with self.assertRaises(ValueError):
+            self.cpt.TransitionCAS(
+                task_id="TC-1",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="0" * 40,
+            )
+
+    def test_067c_task_id_two_digits_rejected(self) -> None:
+        """TC-01 rejected — min 3 digits."""
+        with self.assertRaises(ValueError):
+            self.cpt.TransitionCAS(
+                task_id="TC-01",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="0" * 40,
+            )
+
+    def test_067d_task_id_leading_dot_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.TransitionCAS(
+                task_id=".TC-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="0" * 40,
+            )
+
+    def test_067e_task_id_slash_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.TransitionCAS(
+                task_id="TC-001/extra",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="0" * 40,
+            )
+
+    def test_067f_task_id_backslash_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.TransitionCAS(
+                task_id="TC-001\\extra",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="0" * 40,
+            )
+
+    def test_067g_task_id_revision_suffix_rejected(self) -> None:
+        """TC-001-r1 rejected — extra text after digits."""
+        with self.assertRaises(ValueError):
+            self.cpt.TransitionCAS(
+                task_id="TC-001-r1",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="0" * 40,
+            )
+
+    def test_067h_task_id_trailing_ws_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.TransitionCAS(
+                task_id="TC-001 ",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="0" * 40,
+            )
+
+    def test_067i_task_id_dotdot_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.TransitionCAS(
+                task_id="../TC-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="0" * 40,
             )
 
     def test_068_expected_revision_bool_raises(self) -> None:
@@ -2392,15 +2467,26 @@ class TestImportZeroSideEffects(unittest.TestCase):
 class TestUnicode(TestControlPlaneTransitionBase):
     """Unicode handling throughout the module."""
 
-    def test_320_unicode_task_id(self) -> None:
-        """Task ID with Unicode chars — should be fine as it's a str."""
+    def test_320_task_id_must_match_project_syntax(self) -> None:
+        """Task ID must match TC-NNN (min 3 digits) — Unicode and other
+        non-matching values are rejected."""
         cas = self.cpt.TransitionCAS(
-            task_id="TC-カスタム-001",
+            task_id="TC-001",
             expected_revision=1,
             expected_state="draft",
             expected_snapshot_commit="0" * 40,
         )
-        self.assertEqual(cas.task_id, "TC-カスタム-001")
+        self.assertEqual(cas.task_id, "TC-001")
+
+    def test_320b_unicode_task_id_rejected(self) -> None:
+        """Unicode in task ID must be rejected — does not match TC-NNN."""
+        with self.assertRaises(ValueError):
+            self.cpt.TransitionCAS(
+                task_id="TC-カスタム-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="0" * 40,
+            )
 
     def test_321_unicode_guard_key(self) -> None:
         gi = self.cpt.GuardInput(key="チェック", value="合格")
@@ -3231,12 +3317,12 @@ class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
         self.assertEqual(oa.approval_ids, ())
 
     def test_601_valid_owner_approval_with_ids(self) -> None:
-        oa = self.cpt.AcceptanceOwnerApproval(
-            gate="none",
-            approval_ids=("APR-001", "APR-002"),
-        )
-        self.assertEqual(oa.gate, "none")
-        self.assertEqual(oa.approval_ids, ("APR-001", "APR-002"))
+        """non-empty approval_ids rejected when gate='none'."""
+        with self.assertRaises(ValueError):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none",
+                approval_ids=("APR-001", "APR-002"),
+            )
 
     def test_602_only_none_gate_accepted(self) -> None:
         """Only 'none' is a valid gate — attested by task-card template."""
@@ -3263,14 +3349,25 @@ class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
             )
 
     def test_605_approval_ids_empty_string_raises(self) -> None:
-        with self.assertRaises(TypeError):
+        # gate='none' rejects non-empty approval_ids; the empty-string
+        # in the tuple makes it non-empty.
+        with self.assertRaises(ValueError):
             self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=("",))
 
     def test_606_approval_ids_whitespace_raises(self) -> None:
+        """Whitespace in ID is rejected for non-empty approval_ids.
+        But gate='none' requires empty — this test is for structural
+        validation of a non-empty case against other gates.  Since no
+        non-'none' gate is attested, this whitespace scenario is tested
+        at the structural level by rejecting non-empty entirely."""
+        # When gate='none', non-empty approval_ids is rejected first.
         with self.assertRaises(ValueError):
             self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=(" APR-001",))
 
     def test_607_approval_ids_duplicate_raises(self) -> None:
+        """Duplicate approval_ids: rejected because non-empty not allowed
+        with gate='none'.  The duplicate check is still present for
+        future gate values."""
         with self.assertRaises(ValueError):
             self.cpt.AcceptanceOwnerApproval(
                 gate="none",
@@ -3311,19 +3408,46 @@ class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
                 gate="none", approval_ids=("APR-",))
 
     def test_610d_bool_as_id_rejected(self) -> None:
-        with self.assertRaises(TypeError):
+        # gate='none': non-empty → ValueError before type check
+        with self.assertRaises(ValueError):
             self.cpt.AcceptanceOwnerApproval(
                 gate="none", approval_ids=(True,))  # type: ignore[arg-type]
 
     def test_610e_int_as_id_rejected(self) -> None:
-        with self.assertRaises(TypeError):
+        # gate='none': non-empty → ValueError before type check
+        with self.assertRaises(ValueError):
             self.cpt.AcceptanceOwnerApproval(
                 gate="none", approval_ids=(1,))  # type: ignore[arg-type]
 
     def test_610f_none_as_id_rejected(self) -> None:
-        with self.assertRaises(TypeError):
+        # gate='none': non-empty → ValueError before type check
+        with self.assertRaises(ValueError):
             self.cpt.AcceptanceOwnerApproval(
                 gate="none", approval_ids=(None,))  # type: ignore[arg-type]
+
+    def test_610g_list_empty_ok(self) -> None:
+        """Empty list is accepted and converted to empty tuple."""
+        oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=[])  # type: ignore[arg-type]
+        self.assertEqual(oa.approval_ids, ())
+
+    def test_610h_dict_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids={})  # type: ignore[arg-type]
+
+    def test_610i_set_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=set())  # type: ignore[arg-type]
+
+    def test_610j_generator_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none", approval_ids=(x for x in []))  # type: ignore[arg-type]
+
+    def test_610k_non_empty_list_rejected(self) -> None:
+        """Non-empty list with gate='none' must be rejected."""
+        with self.assertRaises(ValueError):
+            self.cpt.AcceptanceOwnerApproval(
+                gate="none", approval_ids=["APR-001"])  # type: ignore[arg-type]
 
     def test_611_deep_immutable_frozen(self) -> None:
         oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=())
@@ -3331,20 +3455,21 @@ class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
             oa.gate = "other"  # type: ignore[misc]
 
     def test_612_source_list_mutation_does_not_affect_approval_ids(self) -> None:
-        src = ["APR-001", "APR-002"]
-        oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=tuple(src))
+        """An empty list converted to tuple is not affected by source mutation."""
+        src: list[str] = []
+        oa = self.cpt.AcceptanceOwnerApproval(gate="none", approval_ids=src)  # type: ignore[arg-type]
         src.append("APR-003")
-        self.assertEqual(oa.approval_ids, ("APR-001", "APR-002"))
-        self.assertEqual(len(oa.approval_ids), 2)
+        self.assertEqual(oa.approval_ids, ())
+        self.assertEqual(len(oa.approval_ids), 0)
 
     def test_613_defensive_copy_from_non_tuple_iterable(self) -> None:
         """When constructed with a list, it is defensively copied to tuple."""
         oa = self.cpt.AcceptanceOwnerApproval(
             gate="none",
-            approval_ids=["APR-001", "APR-002"],  # type: ignore[arg-type]
+            approval_ids=[],  # type: ignore[arg-type]
         )
         self.assertIsInstance(oa.approval_ids, tuple)
-        self.assertEqual(oa.approval_ids, ("APR-001", "APR-002"))
+        self.assertEqual(oa.approval_ids, ())
 
     def test_614_malicious_repr_not_invoked(self) -> None:
         """Error messages must not call __repr__ on gate value."""
@@ -3801,6 +3926,107 @@ class TestParseReviewN(TestControlPlaneTransitionBase):
                 "docs/pm/acceptances/TC-001-r1-a1-reviewX.md",
                 "TC-001", 1, 1,
             )
+
+    def test_712_path_escape_dotdot_midpath(self) -> None:
+        """../ in middle of path rejected."""
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/../evil-r1-a1-review1.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_713_path_escape_task_id_as_dotdot(self) -> None:
+        """TC-001/../../ in path rejected."""
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/TC-001/../../evil-r1-a1-review1.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_714_double_slash_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances//TC-001-r1-a1-review1.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_715_backslash_in_path_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs\\pm\\acceptances\\TC-001-r1-a1-review1.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_716_absolute_path_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "/docs/pm/acceptances/TC-001-r1-a1-review1.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_717_drive_prefix_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "C:/docs/pm/acceptances/TC-001-r1-a1-review1.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_718_revision_zero_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/TC-001-r0-a1-review1.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_719_attempt_zero_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/TC-001-r1-a0-review1.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_720_leading_zero_review_rejected(self) -> None:
+        """review01 rejected — no leading zeros in review number."""
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/TC-001-r1-a1-review01.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_721_query_string_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/TC-001-r1-a1-review1.md?v=1",
+                "TC-001", 1, 1,
+            )
+
+    def test_722_fragment_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/TC-001-r1-a1-review1.md#section",
+                "TC-001", 1, 1,
+            )
+
+    def test_723_too_many_parts_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/acceptances/extra/TC-001-r1-a1-review1.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_724_too_few_parts_rejected(self) -> None:
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt._parse_review_n_from_path(
+                "docs/pm/TC-001-r1-a1-review1.md",
+                "TC-001", 1, 1,
+            )
+
+    def test_725_valid_path_review_n_stable(self) -> None:
+        """Same valid path always produces same review_n — idempotent."""
+        path = "docs/pm/acceptances/TC-001-r1-a1-review5.md"
+        for _ in range(5):
+            n = self.cpt._parse_review_n_from_path(path, "TC-001", 1, 1)
+            self.assertEqual(n, 5)
 
 
 if __name__ == "__main__":
