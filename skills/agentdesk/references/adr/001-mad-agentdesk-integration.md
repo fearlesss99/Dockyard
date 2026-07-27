@@ -3452,6 +3452,589 @@ Concurrency fencing must not be blocked by output-decoding work.
 * TC-13.11, TC-13.13, TC-13.14, and TC-13.18 remain **Target**.
 * All Current interfaces remain **Current**.
 
+
+---
+
+### 2.14 ControlPlaneTransitionService — Frozen Contract (Target — TC-13.11a)
+
+TC-13.11a freezes the **authoritative state-transition contract** for
+``ControlPlaneTransitionService``.  It defines the CAS preconditions,
+lock ordering, event/outbox immutability rules, public API, exception
+hierarchy, and explicit non-goals.  No production code is shipped under
+TC-13.11a — the contract itself is the deliverable and must be
+implemented by TC-13.11b/c.
+
+---
+#### 2.14.1 Authoritative Write Scope
+
+The service owns all writes to the following canonical control-plane
+files:
+
+| File | Schema | Rule |
+|------|--------|------|
+| ``docs/pm/state/tasks.yaml`` | ``agentdesk.tasks/v2`` | Updated atomically on every transition |
+| ``docs/pm/events/EVT-YYYYMMDD-NNNN.yaml`` | ``agentdesk.state-event/v2`` | Append-only; one new file per transition |
+| ``docs/pm/outbox/MSG-YYYYMMDD-NNNN.yaml`` | ``agentdesk.outbox-message/v2`` | Immutable; created once during dispatch |
+| ``docs/pm/acceptances/TC-*-rN-aN-reviewN.md`` | ``agentdesk.acceptance/v2`` | Immutable; created during acceptance |
+| ``docs/pm/BOARD.md`` | *(derived)* | Regenerated from ``tasks.yaml`` |
+| ``docs/pm/STATUS.md`` | *(derived)* | Regenerated from ``tasks.yaml`` |
+
+**Canonical vs derived**:
+
+* ``tasks.yaml``, ``events/*.yaml``, ``outbox/*.yaml``, and
+  ``acceptances/*.yaml`` are canonical authority.
+* ``BOARD.md`` and ``STATUS.md`` are derived views.  They are
+  regenerated synchronously on every transition from the post-transition
+  canonical state.  A derived-view render failure **must** roll back all
+  canonical file writes.  Derived views must **never** serve as CAS input.
+* Event and outbox files are immutable after creation — they are never
+  modified or overwritten.  Transport state (sent / acknowledged) is
+  recorded in gitignored ``transport-receipts.yaml`` only, never in the
+  immutable outbox file.
+
+---
+#### 2.14.2 CAS Preconditions
+
+Every transition must satisfy a compare-and-swap guard before any file
+is written.  The CAS input is a frozen ``TransitionCAS``:
+
+```python
+@dataclass(frozen=True, slots=True)
+class TransitionCAS:
+    task_id: str                            # non-empty
+    expected_revision: int                  # non-bool, >= 1
+    expected_state: str                     # from frozen STATES tuple
+    expected_snapshot_commit: str           # 40-char hex SHA
+```
+
+**Field semantics**:
+
+| Field | Source | Compared against |
+|-------|--------|-----------------|
+| ``task_id`` | Caller | Looked up in ``tasks.yaml`` |
+| ``expected_revision`` | Caller | ``tasks.yaml`` task ``revision`` field |
+| ``expected_state`` | Caller | ``tasks.yaml`` task ``state`` field |
+| ``expected_snapshot_commit`` | Caller (observed ``git rev-parse HEAD`` before constructing the request) | ``git rev-parse HEAD`` at service entry |
+
+``expected_snapshot_commit`` is an **opaque observation** supplied by
+the caller — the service does not derive or guess it.  Before any file
+write, the service reads the current repository HEAD via ``git
+rev-parse HEAD`` and compares it to ``expected_snapshot_commit``.
+When the values differ, a concurrent writer has modified the repository
+since the caller's observation, and the transition must be rejected
+with ``TransitionCASConflictError``.  **Zero canonical files are
+written on CAS failure.**
+
+**Dispatch-specific CAS extensions**.  Transitions that reference an
+active dispatch must additionally supply:
+
+```python
+@dataclass(frozen=True, slots=True)
+class DispatchCAS:
+    expected_dispatch_id: str               # non-empty; matches current_dispatch.dispatch_id
+    expected_attempt: int                   # non-bool, >= 1
+```
+
+These are compared against the task's ``current_dispatch`` and
+``attempt`` fields.  Only transitions whose ``from_state`` is in
+``{"dispatched", "in_progress", "review_ready"}`` (or ``"blocked"``
+with ``blocked_attempt_valid: true``) require a ``DispatchCAS``.
+
+---
+#### 2.14.3 Lease Epoch — Single Authority
+
+Each transition category has exactly **one** authoritative lease-epoch
+source:
+
+| Transition category | Lease source | Epoch field |
+|---------------------|-------------|-------------|
+| Worker-lifecycle transitions (dispatched → in_progress → review_ready → accepted / returned) | ``WorkerSlotLease`` object supplied by caller | ``lease.lease_epoch`` |
+| PM-only transitions (draft → ready, accepted → integrated, → blocked / cancelled / superseded) | ``pm_control.lease_epoch`` read from ``tasks.yaml`` at service entry | current ``pm_control.lease_epoch`` |
+
+The service never accepts a bare epoch integer from the caller alongside
+a ``WorkerSlotLease`` — the epoch is read exclusively from the supplied
+lease object.  ``WorkerSlotLeaseError`` subclasses (including
+``WorkerSlotFencingError`` and ``WorkerSlotNotHeldError``) are
+propagated unchanged to the caller; the service does not introduce
+semantically-duplicate fencing exception types.
+
+For PM-only transitions, ``pm_control`` is validated as a side-car CAS
+check: the store's ``holder_id`` and ``lease_epoch`` must match the
+current ``tasks.yaml`` before the transition proceeds.
+
+---
+#### 2.14.4 Lock Ordering — Frozen
+
+**Worker-lifecycle transitions** must execute inside
+``hold_worker_slot_fence()`` (TC-13.10c §2.5.9) and additionally
+acquire a project-level control-plane state lock.  The frozen lock
+order is:
+
+```text
+1. acquire  worker-slot lease lock       (.agentdesk/runtime/.worker-slot-lease.lock)
+2. acquire  control-plane state lock     (.agentdesk/runtime/.state-transition.lock)
+3. validate CAS, lease epoch, task identity
+4. prepare and write authoritative files (event, outbox if dispatch,
+   updated tasks.yaml, acceptance if applicable, derived views)
+5. release  control-plane state lock
+6. release  worker-slot lease lock
+```
+
+**PM-only transitions** acquire only the control-plane state lock
+(steps 2–5).  No component may acquire the control-plane state lock
+before the worker-slot lock when a Worker lease is held.  A call that
+enters the state lock while already holding the worker-slot lock is
+valid; the reverse order is an immediate ``TransitionLockOrderError``
+(fail-closed, zero writes).
+
+The control-plane state lock follows the same ``os.open(O_CREAT |
+O_EXCL | O_WRONLY)`` ownership-token pattern defined for the
+worker-slot lease lock (ADR §2.5.10).  Contention raises
+``TransitionLockContentionError`` immediately — no sleeping, waiting,
+or retry.
+
+**Granularity**: the control-plane state lock is a single project-level
+lock.  Concurrent transitions for different tasks are serialised at
+the lock boundary.  Per-task locking is not yet supported; there is
+insufficient evidence in the existing protocol or validator to safely
+define a per-task key space.
+
+---
+#### 2.14.5 ID Generation Responsibility
+
+Every identity used in canonical files has exactly one responsible
+party:
+
+| Identity | Generated by | Rationale |
+|----------|-------------|-----------|
+| ``event_id`` | Caller | Must be globally unique before the transition begins; service validates uniqueness |
+| ``message_id`` (outbox) | Caller | Must be globally unique; service validates uniqueness |
+| ``dispatch_id`` | Caller | Generated pre-dispatch; service writes it into ``current_dispatch`` and outbox |
+| ``dedupe_key`` | **Service** | Deterministically derived: ``{task_id}/r{revision}/a{attempt}/{dispatch_id}/{message_type}`` |
+
+The service must **never** generate any of the first three IDs.
+The ``dedupe_key`` is derived by the service from the outbox fields;
+the caller cannot supply an alternative.
+
+---
+#### 2.14.6 Duplicate and Replay Semantics — Fail-Closed
+
+All duplicate detection is fail-closed.  The service must **never**
+overwrite an existing event, outbox, or acceptance record.
+
+| Scenario | Behaviour |
+|----------|----------|
+| Same ``event_id``, identical content | **Idempotent success** — return the existing result, no file write |
+| Same ``event_id``, different content | ``TransitionDuplicateEvidenceError`` — zero writes |
+| Same ``message_id``, identical content | **Idempotent success** — no file write |
+| Same ``message_id``, different content | ``TransitionDuplicateEvidenceError`` — zero writes |
+| Same ``dedupe_key``, different ``message_id`` | ``TransitionDuplicateEvidenceError`` — zero writes |
+| Same ``dispatch_id``, different ``message_id`` | ``TransitionDuplicateEvidenceError`` — zero writes |
+
+**On every error path, all managed canonical files must remain
+byte-for-byte unchanged from their pre-transaction state.**
+
+Equality is determined by full structural comparison (deep equality of
+parsed YAML content and exact byte equality of raw file content).
+
+---
+#### 2.14.7 Multi-File Writes and Crash Recovery
+
+The service writes canonical files using the single-file atomic pattern
+(``tempfile.mkstemp`` → write/fsync → ``os.replace`` → directory
+fsync) already established by ``worker_slot_lease.py`` and
+``render_views.py``.  **This guarantees per-file atomic replacement,
+not cross-file atomicity.**
+
+The service writes files in a fixed order:
+
+```text
+1. event file        (os.replace)
+2. outbox file       (os.replace — dispatch transitions only)
+3. acceptance record (os.replace — acceptance transitions only)
+4. tasks.yaml        (os.replace — LAST authoritative write)
+5. BOARD.md          (os.replace — derived)
+6. STATUS.md         (os.replace — derived)
+```
+
+``tasks.yaml`` is written **last** among the canonical files.  A crash
+before step 4 leaves ``tasks.yaml`` unchanged — the service's own CAS
+guard on the next attempt will observe the pre-transition state and
+reject stale-epoch/stale-state calls, or a validator will detect
+orphaned event/outbox files.
+
+The service does **not** create a Git commit.  The caller must commit
+canonical files as a single Git commit after the service returns
+successfully.  The protocol's rule that "event + outbox + tasks.yaml
++ views must be in the same Git commit" is the caller's responsibility.
+
+**Crash scenarios**:
+
+| Crash point | Outcome | Recovery |
+|------------|---------|----------|
+| Before any ``os.replace`` | No files written | Retry with same request (idempotent) |
+| After event, before outbox | Event orphaned; ``tasks.yaml`` unchanged | Validator detects orphan; caller removes orphan event and retries, or completes remaining writes |
+| After event+outbox, before ``tasks.yaml`` | Event+outbox exist; ``tasks.yaml`` unchanged | Same CAS as above — ``tasks.yaml`` is the atomic guard |
+| After ``tasks.yaml``, before views | Canonical state consistent; views stale | ``render_views.py --check`` detects drift; caller re-renders |
+
+The event/outbox digest parity (``payload_digest`` linking event to
+outbox blob) provides **detection** of partial writes, not automatic
+recovery.  The protocol does not claim that the event/outbox pair alone
+constitutes a complete write-ahead log for all transition types.
+
+---
+#### 2.14.8 Transition Types and Required Payloads
+
+All state names are taken from the frozen ``STATES`` tuple in
+``validate_project.py``.  Event-type names match the protocol
+(§2.6 of the core protocol reference).
+
+| # | Transition | ``from_state`` | ``to_state`` | Worker lease required | Produces outbox | Produces acceptance |
+|---|-----------|---------------|-------------|----------------------|-----------------|---------------------|
+| 1 | ``draft → ready`` | ``draft`` | ``ready`` | No | No | No |
+| 2 | ``ready → dispatched`` | ``ready`` | ``dispatched`` | **Yes** | **Yes** (``task.dispatch``) | No |
+| 3 | ``dispatched → in_progress`` | ``dispatched`` | ``in_progress`` | **Yes** | No | No |
+| 4 | ``in_progress → review_ready`` | ``in_progress`` | ``review_ready`` | **Yes** | No | No |
+| 5 | ``review_ready → accepted`` | ``review_ready`` | ``accepted`` | **Yes** | No | **Yes** |
+| 6 | ``review_ready → returned`` | ``review_ready`` | ``returned`` | **Yes** | No | No |
+| 7 | ``returned → ready`` | ``returned`` | ``ready`` | No | No | No |
+| 8 | ``accepted → integrated`` | ``accepted`` | ``integrated`` | No | No | No |
+| 9 | ``accepted → blocked`` (INTEGRATION_FAILED) | ``accepted`` | ``blocked`` | No | No | No |
+| 10 | ``* → blocked`` (TASK_BLOCKED) | any non-terminal | ``blocked`` | No | No | No |
+| 11 | ``blocked → (resume)`` (BLOCKER_RESOLVED) | ``blocked`` | caller-specified | No | No | No |
+| 12 | ``blocked → draft`` (BLOCKER_RESCOPED) | ``blocked`` | ``draft`` | No | No | No |
+| 13 | ``blocked → cancelled`` (BLOCKER_CANCELLED) | ``blocked`` | ``cancelled`` | No | No | No |
+| 14 | ``* → cancelled`` (TASK_CANCELLED) | any non-terminal | ``cancelled`` | Depends on active dispatch | No | No |
+| 15 | ``* → superseded`` (TASK_SUPERSEDED) | any non-terminal | ``superseded`` | Depends on active dispatch | No | No |
+
+**Field modifications per transition** (canonical fields in
+``tasks.yaml``):
+
+| Transition | Fields set / modified | Fields cleared |
+|-----------|----------------------|---------------|
+| draft → ready | ``revision`` frozen; ``ready_at`` | — |
+| ready → dispatched | ``attempt``; ``current_dispatch`` (all sub-fields); ``dispatched_at``; ``model_selection``; ``report_path`` | — |
+| dispatched → in_progress | ``started_at`` | — |
+| in_progress → review_ready | ``implementation_commit``; ``report_commit``; ``delivered_at``; ``delivery_state: submitted`` | — |
+| review_ready → accepted | ``accepted_commit``; ``acceptance_path``; ``accepted_at``; ``delivery_state: accepted`` | ``current_dispatch`` |
+| review_ready → returned | ``delivery_state: rejected`` | ``current_dispatch`` |
+| returned → ready | attempt preserved | ``current_dispatch`` |
+| accepted → integrated | ``integrated_commit``; ``integrated_at`` | — |
+| → blocked | blocked envelope (8 fields) | — (``current_dispatch`` retained only if ``blocked_attempt_valid: true``) |
+| → cancelled | — | ``current_dispatch`` |
+| → superseded | — | ``current_dispatch`` |
+
+**Revision increment**: ``revision`` is bumped by the caller — the
+service never increments it.  The service validates that the
+caller-supplied ``expected_revision`` matches the current value.
+
+**Attempt increment**: ``attempt`` is set by the caller for each new
+dispatch — the service never increments it.  The service validates that
+the dispatch CAS ``expected_attempt`` matches.
+
+---
+#### 2.14.9 Event File Rules — Frozen
+
+Every transition produces exactly one ``agentdesk.state-event/v2`` file
+in ``docs/pm/events/``.  Frozen rules:
+
+1. Filename: ``EVT-YYYYMMDD-NNNN.yaml`` — derived from ``event_id``.
+2. ``event_id`` is a globally unique ``EVT-*`` string supplied by the
+   caller.  The service rejects duplicate ``event_id`` values.
+3. Required root keys: ``schema_version``, ``event_id``, ``event_type``,
+   ``task_id``, ``revision``, ``attempt``, ``dispatch_id`` (or ``null``),
+   ``from_state``, ``to_state``, ``lease_epoch``, ``actor_role_id``,
+   ``occurred_at``.
+4. ``occurred_at`` is generated by the service from the caller-supplied
+   ``now: datetime`` parameter.
+5. For dispatch events (``event_type: TASK_DISPATCHED``), ``payload_digest``
+   is computed by the service as ``sha256:`` + SHA-256 of the paired
+   outbox file's raw UTF-8 LF bytes.  The outbox file must be written
+   and its bytes finalised before the event ``payload_digest`` is
+   computed.
+6. Events are append-only — never modified after creation.
+7. Extra keys beyond the required set are rejected fail-closed
+   (``TransitionSchemaError``).  Missing required keys are rejected
+   fail-closed.
+8. ``event_id`` is validated against the ``^EVT-.+`` pattern.
+   ``message_id`` (outbox) is validated against the ``^MSG-.+`` pattern.
+
+---
+#### 2.14.10 Outbox File Rules — Frozen
+
+Dispatch transitions produce exactly one ``agentdesk.outbox-message/v2``
+file in ``docs/pm/outbox/``.  Frozen rules:
+
+1. Filename: ``MSG-YYYYMMDD-NNNN.yaml`` — derived from ``message_id``.
+2. ``message_id`` is a globally unique ``MSG-*`` string supplied by the
+   caller.  The service rejects duplicate ``message_id`` values.
+3. Required root keys: ``schema_version``, ``message_id``, ``event_id``
+   (→ TASK_DISPATCHED event), ``message_type`` (``task.dispatch``),
+   ``dedupe_key``, ``task_id``, ``revision``, ``attempt``,
+   ``dispatch_id``, ``destination_role_id``, ``created_at``,
+   ``model_selection``, ``payload``.
+4. ``dedupe_key`` is derived by the service:
+   ``{task_id}/r{revision}/a{attempt}/{dispatch_id}/task.dispatch``.
+5. ``model_selection`` must be an exact ten-field object whose keys are
+   the frozen ``MODEL_SELECTION_FIELDS`` tuple from
+   ``validate_project.py``.  Extra keys, missing keys, or value
+   mismatches against the ``current_dispatch.model_selection`` are
+   rejected fail-closed (``TransitionSchemaError``).
+6. ``payload`` must contain ``task_path``, ``task_card_commit``,
+   ``base_commit``, ``branch``, and ``report_path`` — all matching the
+   caller-supplied dispatch fields.
+7. Outbox files are immutable — never modified after creation.
+8. Transport status (sent/acknowledged) is recorded in gitignored
+   ``transport-receipts.yaml`` only, never written into the outbox file.
+   The outbox records intent, not delivery confirmation.
+
+---
+#### 2.14.11 Public API — Frozen Signatures
+
+The production module will export exactly one public class:
+
+```python
+__all__ = ["ControlPlaneTransitionService"]
+```
+
+```python
+@dataclass(frozen=True, slots=True)
+class TransitionCAS:
+    """Immutable CAS preconditions for a state transition."""
+    task_id: str
+    expected_revision: int
+    expected_state: str
+    expected_snapshot_commit: str
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchCAS:
+    """Immutable CAS extension for dispatch-lifecycle transitions."""
+    expected_dispatch_id: str
+    expected_attempt: int
+
+
+@dataclass(frozen=True, slots=True)
+class TransitionRequest:
+    """Immutable input for a single state transition.
+
+    All fields have verifiable origins in the current control-plane
+    state.  The service validates CAS preconditions, writes canonical
+    files, regenerates derived views, and returns a
+    ``TransitionResult``.
+    """
+    cas: TransitionCAS
+    dispatch_cas: DispatchCAS | None     # required for dispatch-lifecycle transitions
+    event_id: str                        # EVT-*; caller-generated, globally unique
+    event_type: str                      # from frozen event-type names
+    to_state: str                        # from frozen STATES tuple
+    # dispatch fields (required for ready→dispatched)
+    dispatch_id: str | None
+    role_id: str | None
+    model_selection: ModelSelectionSnapshot | None
+    task_card_path: str | None
+    task_card_commit: str | None
+    base_commit: str | None
+    branch: str | None
+    report_path: str | None
+    outbox_message_id: str | None        # MSG-*; required for dispatch
+    # delivery fields (required for review_ready transitions)
+    implementation_commit: str | None    # 40-char SHA
+    report_commit: str | None            # 40-char SHA
+    # acceptance fields (required for review_ready→accepted)
+    accepted_commit: str | None          # 40-char SHA
+    acceptance_path: str | None
+    # integration fields (required for accepted→integrated)
+    integrated_commit: str | None        # 40-char SHA
+    equivalence_method: str | None       # patch_id | tree | approved_mapping
+    equivalence_evidence_ref: str | None
+    # blocked fields (required for →blocked)
+    blocked_reason: str | None
+    blocked_kind: str | None
+    blocked_owner: str | None
+    unblock_condition: str | None
+    resume_state: str | None
+    # override fields
+    supreseded_by: str | None            # required for →superseded
+
+
+@dataclass(frozen=True, slots=True)
+class TransitionResult:
+    """Immutable result of a successful state transition."""
+    task_id: str
+    event_id: str
+    from_state: str
+    to_state: str
+    occurred_at: str                     # RFC 3339 UTC
+    outbox_message_id: str | None        # set when outbox was written
+
+
+@dataclass(frozen=True, slots=True)
+class ControlPlaneTransitionService:
+    """CAS-write service for control-plane state transitions.
+
+    Takes a ``project_root`` and does NOT store mutable state.
+    Every ``apply_transition`` call is self-contained.
+    """
+    project_root: Path
+
+    def apply_transition(
+        self,
+        request: TransitionRequest,
+        lease: WorkerSlotLease | None,
+        now: datetime,
+    ) -> TransitionResult:
+        """Validate CAS, write canonical files, render views, return result.
+
+        *lease* is required for worker-lifecycle transitions (transition
+        types 2–6 in §2.14.8) and optional for PM-only transitions.
+
+        *now* must be a timezone-aware UTC ``datetime``.  Naive or
+        non-UTC values are rejected (``TypeError``).
+        """
+        ...
+```
+
+**Frozen API rules**:
+
+1. All public types use ``frozen=True, slots=True`` dataclasses.
+   ``TransitionRequest`` fields are typed — no ``object``, no bare
+   ``dict``, no ``Any`` appears in the public API.
+2. ``project_root`` is an absolute ``Path`` supplied at service
+   construction.
+3. ``now`` is an explicit ``datetime`` parameter — the service never
+   calls ``datetime.now()`` internally.
+4. ``lease`` is an explicit ``WorkerSlotLease | None`` — ``None``
+   signals a PM-only transition.  For worker-lifecycle transitions,
+   ``lease`` must be non-``None``.
+5. Error messages must **never** call ``repr()``, ``str()``, or ``{!r}``
+   on untrusted input values.  Only ``type(value).__name__`` is safe for
+   error context.  ``task_id``, ``event_id`` and ``dispatch_id`` are
+   considered safe identifiers and may appear in error messages.
+6. Error messages must **never** contain: the task prompt, stdout/stderr
+   content, secrets, full ``holder_instance_id``, full
+   ``canonical_worktree``, or environment variable values.
+
+---
+#### 2.14.12 Exception Hierarchy — Frozen
+
+```text
+ControlPlaneTransitionError                  (Exception)
+├── TransitionValidationError                — input type/value violation
+├── TransitionCASConflictError               — CAS precondition failed
+├── TransitionLockContentionError            — control-plane lock held
+├── TransitionLockOrderError                 — reverse lock acquisition
+├── TransitionDuplicateEvidenceError         — duplicate event_id / message_id / dedupe_key
+├── TransitionSchemaError                    — corrupt or invalid canonical file on read
+└── TransitionWriteError                     — file write / os.replace failure
+```
+
+**Propagation rules**:
+
+* ``WorkerSlotLeaseError`` subclasses are propagated **unchanged** to
+  the caller.  The service never introduces a semantically-equivalent
+  "TransitionFencingError".
+* ``TypeError`` is raised for type violations (wrong input types,
+  naive datetime, etc.) — matching existing module conventions.
+* ``TransitionDuplicateEvidenceError`` covers all duplicate-ID
+  scenarios including same-ID-different-content and
+  same-dedupe-key-different-message-id.
+* ``TransitionCASConflictError`` covers stale ``expected_revision``,
+  stale ``expected_state``, stale ``expected_dispatch_id``, stale
+  ``expected_attempt``, and stale ``expected_snapshot_commit``.
+* **Every exception path guarantees zero authoritative file writes.**
+  The only exceptions are filesystem-level failures during the atomic
+  write sequence itself (``TransitionWriteError``), which are
+  crash-boundary cases where a partial temp file may exist but the
+  original file is unmodified.
+* ``ControlPlaneTransitionService`` does **not** catch
+  ``WorkerSlotLeaseError``.  Those exceptions propagate through the
+  service boundary untouched.
+
+---
+#### 2.14.13 Acceptance Boundary
+
+The service may write acceptance records and update
+``accepted_commit`` / ``acceptance_path`` / ``delivery_state`` when
+the caller supplies a valid ``TransitionRequest`` for the
+``review_ready → accepted`` transition.  The service does **not**
+authorise the acceptance — the caller must already have determined that
+the acceptance is authorised (via ``ApprovalGate``, TC-13.12).
+
+The service does **not**:
+
+* Grant, revoke, or infer approval.
+* Manage ``granted_approval_ids`` — that is the caller's responsibility.
+* Generate ``MODEL_DEGRADATION_APPROVED`` or
+  ``MODEL_DEGRADATION_REVOKED`` events — those belong to TC-13.12.
+* Write ``owner_approval`` fields in the acceptance record beyond what
+  the caller supplies.
+
+---
+#### 2.14.14 Explicit Non-Goals
+
+TC-13.11 must **not** implement, freeze, or assume responsibility for:
+
+* **ApprovalGate** (TC-13.12) — TASK_APPROVAL structured scope,
+  MODEL_DEGRADATION_APPROVED/REVOKED events, ``granted_approval_ids``
+  management.
+* **EscalationService** (TC-13.13) — difficulty tier progression.
+* **RateLimit service** (TC-13.14) — provider 429 handling.
+* **StateProvider** (TC-13.17) — read-only access boundary.
+* **WorkflowOrchestrator** (TC-13.18) — full lifecycle coordination
+  (acquire → heartbeat → run_worker → fenced transition → release).
+* **Provider output decoder** (TC-13.9c) — stdout parsing.
+* **Retry / backoff** — single-attempt only.
+* **Subprocess invocation** — no CLI, model, or network calls.
+* **Git worktree creation or deletion** — the service assumes the
+  worktree already exists.
+* **Secret / auth management** — credentials are never read, written,
+  or logged.
+* **Dashboard** (TC-13.20) — read-only HTML views.
+* **MAD audit** (TC-13.15 / TC-13.16) — audit subprocess invocation.
+* **Git commit** — the service writes files but does not commit.
+  The caller must commit all canonical files as a single Git commit.
+* **Transport receipt management** — transport state lives in
+  gitignored runtime files, never in canonical event/outbox files.
+* **pm-lease acquisition / renewal** — the service reads
+  ``pm_control.lease_epoch`` for PM-only transitions but does not
+  manage the PM lease lifecycle.
+
+---
+#### 2.14.15 Task-Card Split
+
+```text
+TC-13.11a — this frozen contract (§2.14)
+TC-13.11b — typed models, validation, state lock, serialisation helpers
+TC-13.11c — CAS transition execution, event/outbox writes, view
+            regeneration, crash-recovery tests
+```
+
+| Card | Depends on | Scope | Interface #16 status after completion |
+|------|-----------|-------|--------------------------------------|
+| TC-13.11a | TC-13.10c, TC-13.2 | This contract only | **Target** |
+| TC-13.11b | TC-13.11a | Data model, store validation, state lock, serialisation | **Target** |
+| TC-13.11c | TC-13.11b | Full ``apply_transition``, all 15 transition types, complete test matrix | **Target** → **Current** |
+
+Interface #16 status must remain **Target** until TC-13.11c is complete
+and the production module and full test suite are committed.  No
+intermediate "Current (contract frozen)" sub-status is permitted.
+
+---
+#### 2.14.16 Status
+
+* ADR Interface Status row #16 "AgentDesk ControlPlaneTransitionService"
+  is **Target**.
+* This section (§2.14) is the Frozen Contract for TC-13.11a.
+* No production module (``control_plane_transition.py``) exists;
+  no production test file (``test_control_plane_transition.py``) exists.
+* §2.5 (WorkerSlotLease) is **Current**.
+* TC-13.10a/b/c are all **Current**.
+* TC-13.12, TC-13.13, TC-13.14, TC-13.17, TC-13.18, and all subsequent
+  Target interfaces remain **Target**.
+* TC-13.11b and TC-13.11c remain **Target** — this contract freezes the
+  API, not the implementation.
+
 ---
 
 ## 3. Ownership Boundaries

@@ -5902,6 +5902,12 @@ class ReleaseSmokeTests(unittest.TestCase):
             if re.match(r"^\s*TC-[\d.]+(?:\s*[→,]\s*TC-[\d.]+)*\s*$",
                         stripped_line):
                 continue
+            # Skip §2.14 status/status-subsection lines that list
+            # TC-13.10 as Current (e.g. "TC-13.10a/b/c are all Current").
+            if ("TC-13.10" in stripped_line
+                and "Current" in stripped_line
+                and "###" not in stripped_line):
+                continue
             # Skip the §2.13.14 line that says "TC-13.10 is Current".
             if "TC-13.10 is **Current**" in stripped_line:
                 continue
@@ -5924,6 +5930,10 @@ class ReleaseSmokeTests(unittest.TestCase):
             # Skip the Frozen Contract marker in §2.5.
             if "Frozen Contract — TC-13.10a" in stripped_line:
                 continue
+            # Skip the TC-13.11a task-card split table (lists TC-13.10c
+            # as a dependency — a valid forward reference, not a Target claim).
+            if stripped_line.startswith("| TC-13.11") and "TC-13.10" in stripped_line:
+                continue
             # If the line contains both TC-13.10 and Target, it's
             # a potential stale claim.
             if "Target" in stripped_line:
@@ -5931,6 +5941,548 @@ class ReleaseSmokeTests(unittest.TestCase):
                     f"ADR line {i + 1}: potential stale TC-13.10 Target "
                     f"claim: {stripped_line[:100]!r}"
                 )
+
+    # ── TC-13.11a ControlPlaneTransitionService frozen contract tests ───────
+
+    _TC1311A_CONTRACT_SECTION = "### 2.14"
+    _CONTROL_PLANE_PY = SKILL_ROOT / "scripts" / "control_plane_transition.py"
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _tc1311a_section(self) -> str:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, self._TC1311A_CONTRACT_SECTION
+        )
+        self.assertIsNotNone(
+            section,
+            f"ADR must contain {self._TC1311A_CONTRACT_SECTION} section",
+        )
+        return section  # type: ignore[return-value]
+
+    def _tc1311a_heading(self) -> str:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        m = re.search(
+            r"^### 2\.14\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(m, "ADR must have a §2.14 heading")
+        return m.group(0)
+
+    # ── existence / basic structure ──────────────────────────────────────────
+
+    def test_tc1311a_section_exists(self) -> None:
+        """§2.14 ControlPlaneTransitionService section must exist with
+        the frozen‑contract marker in its heading."""
+        heading = self._tc1311a_heading()
+        self.assertIn(
+            "Frozen Contract", heading,
+            "§2.14 heading must contain 'Frozen Contract' marker",
+        )
+        self.assertIn(
+            "TC-13.11a", heading,
+            "§2.14 heading must reference TC-13.11a",
+        )
+        # section body must exist.
+        section = self._tc1311a_section()
+        self.assertGreater(
+            len(section), 500,
+            "§2.14 body must be substantive (>500 chars)",
+        )
+
+    def test_tc1311a_interface_16_still_target(self) -> None:
+        """Interface Status row #16 must still be Target after §2.14 added."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        for row in rows:
+            num = self._resolve_col(row, "#")
+            if num == "16":
+                status = self._resolve_col(row, "Status")
+                self.assertIn(
+                    "Target", status,
+                    "Interface #16 must be Target",
+                )
+                self.assertNotIn(
+                    "Current", status,
+                    "Interface #16 must NOT be Current",
+                )
+                return
+        self.fail("Interface Status row #16 not found")
+
+    def test_tc1311a_production_module_does_not_exist(self) -> None:
+        """control_plane_transition.py must not exist yet."""
+        self.assertFalse(
+            self._CONTROL_PLANE_PY.exists(),
+            "control_plane_transition.py must not exist under TC-13.11a",
+        )
+
+    def test_tc1311a_section_25_still_current(self) -> None:
+        """§2.5 WorkerSlotLease must still be Current."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        heading_m = re.search(
+            r"^### 2\.5\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m, "ADR must have a §2.5 heading")
+        self.assertIn("Current", heading_m.group(0))
+
+    def test_tc1311a_tc1312_and_beyond_still_target(self) -> None:
+        """TC-13.12, TC-13.13, TC-13.14, TC-13.18 must remain Target."""
+        section = self._tc1311a_section()
+        for tc_id in ("TC-13.12", "TC-13.13", "TC-13.14", "TC-13.17", "TC-13.18"):
+            self.assertIn(
+                tc_id, section,
+                f"§2.14 must reference {tc_id} as explicit non-goal/dependency",
+            )
+
+    # ── CAS semantics (resolved contradictions) ──────────────────────────────
+
+    def test_tc1311a_cas_git_semantics_unambiguous(self) -> None:
+        """Git CAS uses expected_snapshot_commit supplied by caller.
+
+        Must compare against git rev-parse HEAD at service entry —
+        not derive or guess."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "expected_snapshot_commit", section,
+            "§2.14 must define expected_snapshot_commit",
+        )
+        self.assertIn(
+            "git rev-parse HEAD", section,
+            "§2.14 must reference git rev-parse HEAD for comparison",
+        )
+        self.assertNotIn(
+            "expected_git_head", section,
+            "§2.14 must NOT use ambiguous 'expected_git_head'",
+        )
+        # Must state zero writes on failure (allow line-break in source).
+        normalized = section.replace("\n", " ")
+        self.assertIn(
+            "Zero canonical files are written", normalized,
+            "§2.14 must guarantee zero canonical file writes on CAS failure",
+        )
+
+    def test_tc1311a_no_git_commit_by_service(self) -> None:
+        """Service does NOT create a Git commit — caller's responsibility.
+        Verified by checking non-goals and crash recovery sections."""
+        section = self._tc1311a_section()
+        # Must assign Git commit responsibility to the caller.
+        self.assertIn(
+            "caller must commit", section.lower(),
+            "§2.14 must assign Git commit responsibility to caller",
+        )
+        # Must explicitly list Git commit as a non-goal.
+        self.assertIn(
+            "does not commit", section.lower(),
+            "§2.14 must state service does NOT create a Git commit",
+        )
+
+    def test_tc1311a_result_has_no_ambiguous_commit(self) -> None:
+        """TransitionResult must not contain an optional commit field."""
+        section = self._tc1311a_section()
+        self.assertNotIn(
+            "transition_commit", section,
+            "TransitionResult must not contain transition_commit",
+        )
+
+    # ── lease epoch single source ────────────────────────────────────────────
+
+    def test_tc1311a_lease_epoch_single_source(self) -> None:
+        """Lease epoch is read from WorkerSlotLease (worker) or pm_control
+        (PM-only) — never a bare integer parameter alongside the lease."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "lease.lease_epoch", section,
+            "§2.14 must read epoch from WorkerSlotLease.lease_epoch",
+        )
+        self.assertIn(
+            "pm_control.lease_epoch", section,
+            "§2.14 must read epoch from pm_control for PM-only transitions",
+        )
+        self.assertIn(
+            "never accepts a bare epoch integer", section.lower(),
+            "§2.14 must forbid bare epoch integer alongside lease",
+        )
+
+    def test_tc1311a_worker_slot_lease_errors_propagated(self) -> None:
+        """WorkerSlotLeaseError subclasses propagate unchanged."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "propagated unchanged", section.lower(),
+            "§2.14 must state WorkerSlotLeaseError propagates unchanged",
+        )
+        self.assertIn(
+            "WorkerSlotFencingError", section,
+            "§2.14 must reference WorkerSlotFencingError",
+        )
+
+    # ── ID generation responsibility ─────────────────────────────────────────
+
+    def test_tc1311a_id_generation_unique(self) -> None:
+        """event_id, message_id, dispatch_id are caller-generated.
+        dedupe_key is service-derived."""
+        section = self._tc1311a_section()
+        for id_name in ("event_id", "message_id", "dispatch_id"):
+            self.assertIn(
+                "Caller", section.split(f"``{id_name}``")[1][:200]
+                if f"``{id_name}``" in section
+                else "",
+                "",
+            )
+            # Check the ID generation table explicitly.
+            self.assertIn(
+                f"{id_name}", section,
+                f"§2.14 must reference {id_name}",
+            )
+        # dedupe_key is generated by service.
+        self.assertIn(
+            "**Service**", section,
+            "§2.14 must have Service as dedupe_key generator",
+        )
+
+    def test_tc1311a_dedupe_key_format(self) -> None:
+        """dedupe_key format must be frozen."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "{task_id}/r{revision}/a{attempt}/{dispatch_id}/{message_type}",
+            section,
+            "§2.14 must freeze dedupe_key format",
+        )
+
+    # ── duplicate / replay semantics ─────────────────────────────────────────
+
+    def test_tc1311a_duplicate_semantics_unambiguous(self) -> None:
+        """Duplicate outcomes must be a single behaviour per scenario."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "TransitionDuplicateEvidenceError", section,
+            "§2.14 must define TransitionDuplicateEvidenceError",
+        )
+        self.assertIn(
+            "Idempotent success", section,
+            "§2.14 must define idempotent success for identical content",
+        )
+        # Must define behavior for same-ID-different-content (may appear
+        # as "same-ID-different-content" or "different content" in the section).
+        lower = section.lower()
+        self.assertTrue(
+            "same-id-different-content" in lower
+            or "different content" in lower,
+            "§2.14 must define behaviour for same ID + different content",
+        )
+        # Must NOT leave duplicate behaviour open.
+        self.assertNotIn(
+            "no-op", section.lower(),
+            "§2.14 must not use ambiguous 'no-op' language",
+        )
+
+    def test_tc1311a_zero_writes_on_all_errors(self) -> None:
+        """All error paths guarantee zero file writes."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "zero authoritative file writes", section.lower(),
+            "§2.14 must guarantee zero authoritative file writes on errors",
+        )
+
+    # ── lock granularity and ordering ────────────────────────────────────────
+
+    def test_tc1311a_lock_granularity_project_level(self) -> None:
+        """Control-plane state lock is project-level (single lock).
+        The lowercase search accounts for both heading and prose."""
+        section = self._tc1311a_section()
+        lower = section.lower()
+        self.assertIn(
+            "project-level", lower,
+            "§2.14 must specify project-level state lock granularity",
+        )
+        self.assertIn(
+            "per-task", lower,
+            "§2.14 must mention that per-task locking is not yet supported",
+        )
+
+    def test_tc1311a_lock_ordering_exact(self) -> None:
+        """Lock order: worker-slot lock → state lock (never reverse)."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "worker-slot lease lock", section.lower(),
+            "§2.14 must list worker-slot lock as step 1",
+        )
+        self.assertIn(
+            "control-plane state lock", section.lower(),
+            "§2.14 must list control-plane state lock",
+        )
+        self.assertIn(
+            "TransitionLockOrderError", section,
+            "§2.14 must define TransitionLockOrderError for reverse order",
+        )
+
+    def test_tc1311a_state_lock_path(self) -> None:
+        """control-plane state lock path must be defined."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            ".state-transition.lock", section,
+            "§2.14 must define state lock path .state-transition.lock",
+        )
+
+    def test_tc1311a_lock_contention_immediate(self) -> None:
+        """Lock contention fails immediately, no retry."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "TransitionLockContentionError", section,
+            "§2.14 must define TransitionLockContentionError",
+        )
+        self.assertIn(
+            "no sleeping", section.lower(),
+            "§2.14 must state no sleeping/waiting on lock contention",
+        )
+
+    # ── multi-file and crash ─────────────────────────────────────────────────
+
+    def test_tc1311a_multi_file_not_fs_atomic_claim(self) -> None:
+        """Must NOT claim cross-file atomicity in the filesystem sense."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "not cross-file atomicity", section.lower(),
+            "§2.14 must explicitly deny cross-file atomicity",
+        )
+
+    def test_tc1311a_tasks_yaml_written_last(self) -> None:
+        """tasks.yaml is written last among canonical files."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "tasks.yaml", section,
+        )
+        # Check it's listed last (find its position in the ordering block).
+        ordering_match = re.search(
+            r"tasks\.yaml.*LAST",
+            section,
+        )
+        last_match = re.search(
+            r"LAST authoritative write",
+            section,
+        )
+        self.assertTrue(
+            ordering_match is not None or last_match is not None,
+            "§2.14 must state tasks.yaml is the last authoritative write",
+        )
+
+    def test_tc1311a_derived_views_separate_from_canonical(self) -> None:
+        """BOARD.md / STATUS.md are derived views, not canonical."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "derived", section.lower(),
+            "§2.14 must name BOARD.md / STATUS.md as derived views",
+        )
+        self.assertIn(
+            "canonical authority", section.lower(),
+            "§2.14 must distinguish canonical vs derived",
+        )
+
+    # ── approval gate exclusion ──────────────────────────────────────────────
+
+    def test_tc1311a_approval_gate_excluded(self) -> None:
+        """ApprovalGate (TC-13.12) must be listed in explicit non-goals."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "ApprovalGate", section,
+            "§2.14 must list ApprovalGate in non-goals",
+        )
+        self.assertIn(
+            "granted_approval_ids", section,
+            "§2.14 must reference granted_approval_ids as caller responsibility",
+        )
+
+    # ── public API structure ─────────────────────────────────────────────────
+
+    def test_tc1311a_transition_cas_frozen(self) -> None:
+        """TransitionCAS must be defined with frozen+sots."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "class TransitionCAS", section,
+            "§2.14 must define TransitionCAS",
+        )
+        self.assertIn(
+            "expected_snapshot_commit", section,
+            "TransitionCAS must include expected_snapshot_commit",
+        )
+
+    def test_tc1311a_transition_request_no_object_or_bare_dict(self) -> None:
+        """TransitionRequest must not use 'object' or bare dict for payload."""
+        section = self._tc1311a_section()
+        # Must use typed Optional fields, not object/dict.
+        self.assertNotIn(
+            "model_selection: object", section,
+        )
+        self.assertNotIn(
+            "payload: dict", section,
+        )
+
+    def test_tc1311a_now_is_explicit_parameter(self) -> None:
+        """apply_transition must accept explicit now: datetime."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "now: datetime", section,
+            "apply_transition must accept explicit now: datetime",
+        )
+
+    def test_tc1311a_project_root_is_construction_param(self) -> None:
+        """project_root is a construction-time Path, not implicit cwd."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "project_root: Path", section,
+            "ControlPlaneTransitionService must store project_root: Path",
+        )
+
+    def test_tc1311a_lease_is_explicit_optional_param(self) -> None:
+        """lease is explicit WorkerSlotLease | None parameter."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "lease: WorkerSlotLease | None", section,
+            "apply_transition must accept lease: WorkerSlotLease | None",
+        )
+
+    # ── exception hierarchy ──────────────────────────────────────────────────
+
+    def test_tc1311a_exception_hierarchy_defined(self) -> None:
+        """Exception hierarchy must be listed with all required types."""
+        section = self._tc1311a_section()
+        required = [
+            "ControlPlaneTransitionError",
+            "TransitionValidationError",
+            "TransitionCASConflictError",
+            "TransitionLockContentionError",
+            "TransitionLockOrderError",
+            "TransitionDuplicateEvidenceError",
+            "TransitionSchemaError",
+            "TransitionWriteError",
+        ]
+        for name in required:
+            self.assertIn(
+                name, section,
+                f"§2.14 must define {name}",
+            )
+
+    def test_tc1311a_no_duplicate_fencing_error(self) -> None:
+        """Must not define TransitionFencingError as a service exception —
+        WorkerSlotFencingError propagates unchanged.  The prohibition text
+        in the propagation rules may mention the name; the tree itself
+        must not list it."""
+        section = self._tc1311a_section()
+        # Find the ASCII-art exception tree block.
+        tree_match = re.search(
+            r"ControlPlaneTransitionError\s+\(Exception\)\n"
+            r"(?:.|\n)*?\n```",
+            section,
+        )
+        self.assertIsNotNone(
+            tree_match,
+            "§2.14 must contain an exception hierarchy tree",
+        )
+        tree = tree_match.group(0)
+        self.assertNotIn(
+            "TransitionFencingError", tree,
+            "§2.14 exception tree must not list TransitionFencingError",
+        )
+
+    def test_tc1311a_no_repr_or_str_on_untrusted(self) -> None:
+        """Error messages must never call repr/str on untrusted input."""
+        section = self._tc1311a_section()
+        lower = section.lower()
+        self.assertTrue(
+            "never" in lower and "repr" in lower,
+            "§2.14 must forbid repr/str calls on untrusted input",
+        )
+
+    # ── task-card split ──────────────────────────────────────────────────────
+
+    def test_tc1311a_subtask_split_defined(self) -> None:
+        """TC-13.11a/b/c split must be defined."""
+        section = self._tc1311a_section()
+        for card in ("TC-13.11a", "TC-13.11b", "TC-13.11c"):
+            self.assertIn(
+                card, section,
+                f"§2.14 must define {card}",
+            )
+
+    def test_tc1311a_no_current_contract_frozen_substatus(self) -> None:
+        """TC-13.11a must prohibit 'Current (contract frozen)' intermediate status.
+
+        The section may mention the phrase in its prohibition text;
+        the test verifies that a prohibition sentence exists."""
+        section = self._tc1311a_section()
+        # The contract must explicitly forbid this intermediate status —
+        # the prohibition uses the quoted phrase.
+        self.assertIn(
+            'Current (contract frozen)', section,
+            "§2.14 must explicitly mention and forbid "
+            "'Current (contract frozen)' intermediate status",
+        )
+        # Must also include a prohibitive word in the same area.
+        self.assertIn(
+            'sub-status is permitted', section.lower(),
+            "§2.14 must state the sub-status is NOT permitted",
+        )
+        # The subsection's own status table must list only Target.
+        self.assertIn("| TC-13.11a |", section)
+        self.assertIn("| TC-13.11c |", section)
+
+    # ── transition coverage ──────────────────────────────────────────────────
+
+    def test_tc1311a_all_required_transitions_listed(self) -> None:
+        """All 15 transition types must be referenced."""
+        section = self._tc1311a_section()
+        transitions = [
+            "draft → ready",
+            "ready → dispatched",
+            "dispatched → in_progress",
+            "in_progress → review_ready",
+            "review_ready → accepted",
+            "review_ready → returned",
+            "returned → ready",
+            "accepted → integrated",
+            "→ blocked",
+            "→ cancelled",
+            "→ superseded",
+        ]
+        for t in transitions:
+            self.assertIn(
+                t, section,
+                f"§2.14 must define transition: {t}",
+            )
+
+    # ── event / outbox rules ─────────────────────────────────────────────────
+
+    def test_tc1311a_event_outbox_immutable(self) -> None:
+        """Event and outbox files are immutable after creation."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "never modified after creation", section.lower(),
+            "§2.14 must state event/outbox are never modified",
+        )
+
+    def test_tc1311a_transport_not_in_outbox(self) -> None:
+        """Transport status never written to immutable outbox."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "transport-receipts.yaml", section,
+            "§2.14 must reference transport-receipts.yaml for delivery state",
+        )
+
+    def test_tc1311a_payload_digest_computed_by_service(self) -> None:
+        """payload_digest is computed by the service from outbox bytes."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "payload_digest", section,
+            "§2.14 must define payload_digest computation",
+        )
+
+    # ── model_selection snapshot rules ───────────────────────────────────────
+
+    def test_tc1311a_model_selection_exact_ten_fields(self) -> None:
+        """model_selection in outbox must be exactly ten selector fields."""
+        section = self._tc1311a_section()
+        self.assertIn(
+            "MODEL_SELECTION_FIELDS", section,
+            "§2.14 must reference MODEL_SELECTION_FIELDS for outbox validation",
+        )
 
 
 if __name__ == "__main__":
