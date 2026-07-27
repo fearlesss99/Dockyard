@@ -3630,6 +3630,33 @@ def _validate_acceptance_record(
             f"{context} reviewed_dispatch_id must match the immutable delivery report dispatch_id"
         )
 
+    # Validate type: must be a supported task type (from committed task-card contract).
+    acceptance_type = frontmatter.get("type")
+    if acceptance_type not in TASK_TYPES:
+        reporter.error(
+            f"{context} frontmatter type must be a supported task type, "
+            f"got {acceptance_type!r}"
+        )
+
+    # Validate owner_approval block (gate and approval_ids).
+    owner_approval = frontmatter.get("owner_approval")
+    if not isinstance(owner_approval, dict):
+        reporter.error(
+            f"{context} frontmatter owner_approval must be a mapping"
+        )
+    else:
+        gate = owner_approval.get("gate")
+        if gate != "none":
+            reporter.error(
+                f"{context} frontmatter owner_approval.gate must be 'none', "
+                f"got {gate!r}"
+            )
+        approval_ids = owner_approval.get("approval_ids")
+        if not isinstance(approval_ids, list):
+            reporter.error(
+                f"{context} frontmatter owner_approval.approval_ids must be a list"
+            )
+
 
 def _validate_report_and_acceptance_paths(
     project: Path,

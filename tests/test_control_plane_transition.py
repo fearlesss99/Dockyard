@@ -8226,7 +8226,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         finally:
             tmpdir.cleanup()
 
-    def test_type_null_fails_real_validator(self):
+    def test_wrong_schema_version_fails_real_validator(self):
         """When 'schema_version: agentdesk.acceptance/v2' is changed to
         'agentdesk.acceptance/v1' in the generated acceptance, real
         validator reports errors."""
@@ -8519,6 +8519,221 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
             )
             self.assertGreater(reporter.errors, 0,
                                "Real validator must report errors when reviewed_dispatch_id is empty")
+        finally:
+            tmpdir.cleanup()
+
+    def test_type_null_fails_real_validator(self):
+        """When 'type: implementation' is changed to 'type: null'
+        in the generated acceptance frontmatter, real validator
+        reports errors."""
+        import json as _json
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            self._setup_acceptance_project(root)
+            lease = self._make_acceptance_lease(root)
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review7.md"
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-TYPENULL",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path=acc_path,
+                    residual_risks=(),
+                    criteria_evidence=("evidence",),
+                    rationale="Accepted.",
+                ),
+                event_context=self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            svc.apply_transition(req, lease, now)
+
+            # Change 'type: implementation' to 'type: null'.
+            acc_file = root / acc_path
+            acc_text = acc_file.read_text(encoding="utf-8")
+            corrupted = acc_text.replace("type: implementation", "type: null")
+            acc_file.write_text(corrupted, encoding="utf-8")
+
+            state_data = _json.loads(
+                (root / "docs" / "pm" / "state" / "tasks.yaml").read_text(encoding="utf-8")
+            )
+            task = state_data["tasks"][0]
+            reporter = Reporter()
+            _validate_acceptance_record(
+                acc_file, root, task, None, None,
+                "test:corrupted-type-null", "accepted", False, reporter,
+            )
+            self.assertGreater(reporter.errors, 0,
+                               "Real validator must report errors when type is null")
+        finally:
+            tmpdir.cleanup()
+
+    def test_review_header_mismatch_fails_real_validator(self):
+        """When path is review7.md but body header says 'Review 8',
+        real validator reports errors."""
+        import json as _json
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            self._setup_acceptance_project(root)
+            lease = self._make_acceptance_lease(root)
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+            # Path contains review7 but we'll corrupt the body to say Review 8.
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review7.md"
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-REVMISMATCH",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path=acc_path,
+                    residual_risks=(),
+                    criteria_evidence=("evidence",),
+                    rationale="Accepted.",
+                ),
+                event_context=self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            svc.apply_transition(req, lease, now)
+
+            # Change body 'Review 7' to 'Review 8'.
+            acc_file = root / acc_path
+            acc_text = acc_file.read_text(encoding="utf-8")
+            corrupted = acc_text.replace("Review 7", "Review 8")
+            acc_file.write_text(corrupted, encoding="utf-8")
+
+            state_data = _json.loads(
+                (root / "docs" / "pm" / "state" / "tasks.yaml").read_text(encoding="utf-8")
+            )
+            task = state_data["tasks"][0]
+            reporter = Reporter()
+            _validate_acceptance_record(
+                acc_file, root, task, None, None,
+                "test:corrupted-review-mismatch", "accepted", False, reporter,
+            )
+            self.assertGreater(reporter.errors, 0,
+                               "Real validator must report errors when review number is wrong")
+        finally:
+            tmpdir.cleanup()
+
+    def test_invalid_owner_approval_fails_real_validator(self):
+        """When 'gate: none' is changed to an illegal gate value in the
+        generated acceptance, real validator reports errors."""
+        import json as _json
+        import sys as _sys
+        _scripts = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        try:
+            from validate_project import Reporter, _validate_acceptance_record, _read_frontmatter_scalars
+        finally:
+            if _scripts in _sys.path:
+                _sys.path.remove(_scripts)
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            self._setup_acceptance_project(root)
+            lease = self._make_acceptance_lease(root)
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, timeout=10, capture_output=True, text=True,
+            )
+            head = r.stdout.strip()
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review7.md"
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            dc = self.cpt.DispatchCAS(
+                expected_dispatch_id="DSP-001", expected_attempt=1,
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=dc,
+                event_id="EVT-20260727-BADOWNER",
+                event_type="DELIVERY_ACCEPTED",
+                payload=self.cpt.DeliveryAcceptedPayload(
+                    accepted_commit="a" * 40,
+                    acceptance_path=acc_path,
+                    residual_risks=(),
+                    criteria_evidence=("evidence",),
+                    rationale="Accepted.",
+                ),
+                event_context=self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+            now = datetime(2026, 7, 27, 11, 0, 0, tzinfo=UTC)
+            svc.apply_transition(req, lease, now)
+
+            # Change 'gate: none' to illegal value.
+            acc_file = root / acc_path
+            acc_text = acc_file.read_text(encoding="utf-8")
+            corrupted = acc_text.replace("gate: none", "gate: pm_approval")
+            acc_file.write_text(corrupted, encoding="utf-8")
+
+            state_data = _json.loads(
+                (root / "docs" / "pm" / "state" / "tasks.yaml").read_text(encoding="utf-8")
+            )
+            task = state_data["tasks"][0]
+            reporter = Reporter()
+            _validate_acceptance_record(
+                acc_file, root, task, None, None,
+                "test:corrupted-illegal-owner-approval", "accepted", False, reporter,
+            )
+            self.assertGreater(reporter.errors, 0,
+                               "Real validator must report errors when owner_approval gate is illegal")
         finally:
             tmpdir.cleanup()
 
