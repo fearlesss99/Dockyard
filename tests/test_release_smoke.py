@@ -5761,6 +5761,177 @@ class ReleaseSmokeTests(unittest.TestCase):
             "ADR §2.5 must document time monotonicity rule",
         )
 
+    # ── §2.13.14 status consistency tests ──────────────────────────────────
+
+    def test_section_21314_tc13_10_is_current(self) -> None:
+        """§2.13.14 must declare TC-13.10 as Current, not Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.13.14"
+        )
+        self.assertIsNotNone(
+            section,
+            "ADR must contain §2.13.14 Status subsection",
+        )
+        # Must declare TC-13.10 as Current.
+        self.assertIn(
+            "TC-13.10 is **Current**",
+            section,
+            "§2.13.14 must declare TC-13.10 is Current",
+        )
+        # Must NOT contain the stale "TC-13.10 ... remain Target" sentence.
+        self.assertNotIn(
+            "TC-13.10, TC-13.11, TC-13.13, TC-13.14, and TC-13.18 remain "
+            "**Target**",
+            section,
+            "§2.13.14 must NOT claim TC-13.10 remains Target",
+        )
+
+    def test_section_21314_tc13_11_13_14_18_remain_target(self) -> None:
+        """§2.13.14 must keep TC-13.11/13/14/18 as Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, "#### 2.13.14"
+        )
+        self.assertIsNotNone(section)
+        # TC-13.11, TC-13.13, TC-13.14, TC-13.18 remain Target.
+        self.assertIn(
+            "TC-13.11",
+            section,
+        )
+        self.assertIn(
+            "TC-13.13",
+            section,
+        )
+        self.assertIn(
+            "TC-13.14",
+            section,
+        )
+        self.assertIn(
+            "TC-13.18",
+            section,
+        )
+        self.assertIn(
+            "remain **Target**",
+            section,
+            "§2.13.14 must state remaining tasks are Target",
+        )
+
+    def test_interface_status_15_current(self) -> None:
+        """Interface Status row #15 must be Current."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        # Row 15 should be Current.
+        for row in rows:
+            num = self._resolve_col(row, "#")
+            if num == "15":
+                status = self._resolve_col(row, "Status")
+                self.assertIn(
+                    "Current",
+                    status,
+                    f"Interface Status #15 must be Current, got {status!r}",
+                )
+                self.assertNotIn(
+                    "Target",
+                    status,
+                    f"Interface Status #15 must NOT be Target, got {status!r}",
+                )
+                return
+        self.fail("Interface Status row #15 not found")
+
+    def test_interface_status_16_target(self) -> None:
+        """Interface Status row #16 must still be Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        for row in rows:
+            num = self._resolve_col(row, "#")
+            if num == "16":
+                status = self._resolve_col(row, "Status")
+                self.assertIn(
+                    "Target",
+                    status,
+                    f"Interface Status #16 must be Target, got {status!r}",
+                )
+                self.assertNotIn(
+                    "Current",
+                    status,
+                    f"Interface Status #16 must NOT be Current, got {status!r}",
+                )
+                return
+        self.fail("Interface Status row #16 not found")
+
+    def test_section_25_heading_current(self) -> None:
+        """§2.5 heading must be Current."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        heading_m = re.search(
+            r"^### 2\.5\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m, "ADR must have a §2.5 heading")
+        heading = heading_m.group(0)
+        self.assertIn(
+            "Current",
+            heading,
+            "§2.5 heading must say Current",
+        )
+
+    def test_no_other_tc13_10_target_claim_in_adr(self) -> None:
+        """No other sentence in the ADR should claim TC-13.10 is Target.
+        We parse only the substantive paragraphs — not code blocks, links,
+        or future-task-card dependency descriptions that merely mention
+        TC-13.10 as a task ID."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+
+        # Strip code fences to avoid false positives.
+        stripped = re.sub(r"```.*?```", "", adr_text, flags=re.DOTALL)
+
+        # Find lines that contain "TC-13.10" AND "Target" within a
+        # reasonable distance — but explicitly exclude lines where
+        # TC-13.10 is listed alongside other TC IDs that ARE Target
+        # (those are the allowed ones in §2.13.14 and Future Task Cards).
+        # We already verify those lines individually above.  This test
+        # guards against rogue "TC-13.10 … Target" patterns.
+        lines = stripped.splitlines()
+        for i, raw in enumerate(lines):
+            stripped_line = raw.strip()
+            if not stripped_line or stripped_line.startswith(">"):
+                continue
+            if "TC-13.10" not in stripped_line:
+                continue
+            # Skip lines that are purely dependency listings (e.g.
+            # "TC-13.11 → TC-13.10c").
+            if re.match(r"^\s*TC-[\d.]+(?:\s*[→,]\s*TC-[\d.]+)*\s*$",
+                        stripped_line):
+                continue
+            # Skip the §2.13.14 line that says "TC-13.10 is Current".
+            if "TC-13.10 is **Current**" in stripped_line:
+                continue
+            # Skip the §2.5 heading which says Current.
+            if "### 2.5" in stripped_line:
+                continue
+            # Skip the §2.5.16 heading / status lines.
+            if "2.5.16" in stripped_line:
+                continue
+            # Skip the §2.5.15 task card split which names TC-13.10c in
+            # dependency arrows.
+            if "TC-13.10c" in stripped_line and "→" in stripped_line:
+                continue
+            # Skip the interface table row #15 header.
+            if "| 15 |" in stripped_line and "WorkerSlotLease" in stripped_line:
+                continue
+            # Skip the Future Task Cards table rows.
+            if stripped_line.startswith("| TC-13.10"):
+                continue
+            # Skip the Frozen Contract marker in §2.5.
+            if "Frozen Contract — TC-13.10a" in stripped_line:
+                continue
+            # If the line contains both TC-13.10 and Target, it's
+            # a potential stale claim.
+            if "Target" in stripped_line:
+                self.fail(
+                    f"ADR line {i + 1}: potential stale TC-13.10 Target "
+                    f"claim: {stripped_line[:100]!r}"
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

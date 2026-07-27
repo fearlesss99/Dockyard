@@ -3448,7 +3448,8 @@ Concurrency fencing must not be blocked by output-decoding work.
 * The production module `worker_adapter.py` and matching test suite
   `test_worker_adapter.py` exist and are committed.
 * TC-13.9c (output decoding) remains **Target**.
-* TC-13.10, TC-13.11, TC-13.13, TC-13.14, and TC-13.18 remain **Target**.
+* TC-13.10 is **Current** (fully implemented by TC-13.10a/b/c).
+* TC-13.11, TC-13.13, TC-13.14, and TC-13.18 remain **Target**.
 * All Current interfaces remain **Current**.
 
 ---
