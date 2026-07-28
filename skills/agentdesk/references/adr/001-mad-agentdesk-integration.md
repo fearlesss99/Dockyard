@@ -6087,6 +6087,146 @@ TC-13.16b → TC-13.16a (this contract)
 
 ---
 
+### 2.18 StateProvider — Frozen Contract (Target — TC-13.17a)
+
+TC-13.17a freezes the **StateProvider read-only contract**.  No production
+module is shipped under TC-13.17a — the contract itself is the deliverable
+and must be implemented by TC-13.17b.
+
+StateProvider is the read-only service boundary for canonical project
+state.  The Skill (PM/Worker runbooks) and the HTML Dashboard (TC-13.20)
+both consume data through this interface.  Neither writes to canonical
+state directly — all writes go through `ControlPlaneTransitionService`
+(TC-13.11).
+
+StateProvider does **not** acquire the control-plane state lock, does
+**not** write lock files, and does **not** spawn subprocesses.
+
+The full frozen contract lives at:
+`skills/agentdesk/references/public-interfaces/state-provider-contract.md`
+
+---
+#### 2.18.1 Canonical Input Files
+
+| # | File | Required | Description |
+|---|------|----------|-------------|
+| 1 | `docs/pm/state/tasks.yaml` | Yes | `agentdesk.tasks/v2` — authoritative task ledger |
+| 2 | `docs/pm/events/*.yaml` | Yes | `agentdesk.state-event/v2` — immutable event records |
+| 3 | `docs/pm/outbox/*.yaml` | Yes | `agentdesk.outbox-message/v2` — replayable outbox |
+| 4 | `docs/pm/acceptances/*.md` | Yes | `agentdesk.acceptance/v2` — acceptance records |
+| 5 | `.agentdesk/runtime/mad-refs.yaml` | No | `agentdesk.mad-refs/v1` — runtime MAD reference records |
+
+---
+#### 2.18.2 Multi-File Consistency Protocol
+
+StateProvider must detect concurrent transitions without acquiring
+the state lock:
+
+1. Read `tasks.yaml` raw bytes → **A**.
+2. Read events, outbox, acceptances (stable-sorted).
+3. Read optional `mad-refs.yaml`.
+4. Re-read `tasks.yaml` raw bytes → **B**.
+5. **A** ≠ **B** → `StateProviderSnapshotChangedError`.
+6. Validate cross-file referential integrity and digest parity.
+7. Any inconsistency → `StateProviderInconsistentSnapshotError`.
+8. Only when all checks pass: construct frozen snapshot.
+
+StateProvider must **never** skip validation on the assumption that
+the caller has already verified the snapshot.
+
+---
+#### 2.18.3 Output — `StateSnapshot`
+
+A single frozen/slots dataclass with `tuple` collections:
+
+```text
+StateSnapshot
+├── project_root: Path
+├── schema_version: str
+├── project_id: str
+├── adoption_level: str
+├── updated_at: str
+├── pm_holder_id: str
+├── pm_lease_epoch: int
+├── pm_mode: str
+├── tasks: tuple[TaskEntry, ...]
+├── events: tuple[EventEntry, ...]
+├── outbox: tuple[OutboxEntry, ...]
+├── acceptances: tuple[AcceptanceEntry, ...]
+└── mad_refs: tuple[MadRefEntry, ...] | None
+```
+
+`TaskEntry`, `EventEntry`, `OutboxEntry`, `AcceptanceEntry`, and
+`MadRefEntry` are all frozen/slots dataclasses.  `TaskTimestamps`
+and `DispatchInfo` are nested frozen/slots sub-dataclasses within
+`TaskEntry`.
+
+---
+#### 2.18.4 Public API
+
+```python
+StateProvider(project_root: Path)
+    # project_root must be absolute Path.
+    # Raises StateProviderInputError if not.
+
+def snapshot(self) -> StateSnapshot:
+    # Executes the multi-file consistency protocol.
+    # Returns a frozen StateSnapshot.
+    # All errors raised from snapshot() — never from construction.
+```
+
+---
+#### 2.18.5 Exception Hierarchy
+
+```text
+StateProviderError (Exception)
+├── StateProviderInputError
+├── StateProviderNotFoundError
+├── StateProviderSchemaError
+├── StateProviderSnapshotChangedError
+└── StateProviderInconsistentSnapshotError
+```
+
+No `PermissionDeniedError` — no real permissions system to evidence
+such a distinction.
+
+---
+#### 2.18.6 Design Constraints
+
+- All input/output types: frozen/slots dataclasses.
+- All collections: `tuple` — no public `dict`, `list`, or `set`.
+- `project_root`: absolute `Path`.
+- Sort order: deterministic (`sorted()` on filenames).
+- Error messages must not contain paths, task IDs, dispatch IDs,
+  file content, or secrets.
+- StateProvider must not import write-end gateways, WorkerAdapter,
+  or `apply_transition` from ControlPlaneTransitionService.
+- May reuse pure parse/validation helpers that do not write files,
+  acquire locks, or spawn subprocesses.
+
+---
+#### 2.18.7 Explicit Exclusion
+
+StateProvider does **not** handle:
+
+- Approval authorization (→ ApprovalGate, TC-13.12).
+- Worker-slot lease, PM lease, lock ownership tokens.
+- Transport receipts, process IDs, environment variables, secrets.
+- MAD archive internal files.
+- Derived views (BOARD.md, STATUS.md) as authoritative input.
+- Writing files, acquiring locks, spawning subprocesses.
+
+---
+#### 2.18.8 Status
+
+* Interface #21 remains **Target** — TC-13.17a.
+* This section (§2.18) is the Frozen Contract for TC-13.17a.
+* TC-13.17b (production module) is **not** started.
+* TC-13.18 (WorkflowOrchestrator) and TC-13.20 (HTML Dashboard)
+  remain **Target**.
+
+---
+
 ## 3. Ownership Boundaries
 
 | Domain | Owned by | Description |

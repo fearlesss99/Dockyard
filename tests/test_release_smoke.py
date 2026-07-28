@@ -8266,3 +8266,346 @@ class TC1316bProductionSmokeTests(unittest.TestCase):
             dataclass_count, 6,
             f"Expected at least 6 frozen/slots dataclasses, found {dataclass_count}"
         )
+
+
+class TC1317aContractFreezeTests(unittest.TestCase):
+    """TC-13.17a — StateProvider read-only contract freeze smoke tests.
+
+    Covers: TC-13.17a smoke class — Target contract only, no production
+    module; ADR §2.18 exists; public-interface contract doc exists;
+    exception hierarchy declared; field counts; excluson boundaries;
+    frozen/slots mandate; tuple-only collections; error message safety;
+    import boundaries; no stale docs.
+    """
+
+    def setUp(self) -> None:
+        self.adr_path = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        )
+        self.contract_path = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "state-provider-contract.md"
+        )
+        self.adr_text = self.adr_path.read_text(encoding="utf-8")
+        self.contract_text = self.contract_path.read_text(encoding="utf-8")
+
+    # -- 1. Contract file existence and ADR §2.18 --
+
+    def test_contract_file_exists(self) -> None:
+        """state-provider-contract.md must exist."""
+        self.assertTrue(
+            self.contract_path.is_file(),
+            "state-provider-contract.md must exist as a regular file",
+        )
+
+    def test_adr_section_218_frozen_contract_exists(self) -> None:
+        """§2.18 StateProvider Frozen Contract must exist in ADR."""
+        self.assertIn(
+            "### 2.18 StateProvider — Frozen Contract (Target — TC-13.17a)",
+            self.adr_text,
+            "ADR: §2.18 StateProvider Frozen Contract must exist",
+        )
+
+    def test_adr_section_218_references_contract_file(self) -> None:
+        """§2.18 must reference state-provider-contract.md."""
+        section = _extract_markdown_section(
+            self.adr_text, "### 2.18 StateProvider"
+        )
+        self.assertIsNotNone(
+            section,
+            "ADR must contain §2.18",
+        )
+        self.assertIn(
+            "state-provider-contract.md",
+            section,
+            "ADR §2.18 must reference state-provider-contract.md",
+        )
+
+    # -- 2. Interface #21 remains Target --
+
+    def test_interface_21_is_target(self) -> None:
+        """Interface #21 (StateProvider) must be Target — not Current."""
+        self.assertIn(
+            "| 21 | AgentDesk StateProvider (read-only) | **Target** | TC-13.17",
+            self.adr_text,
+            "ADR: Interface #21 must remain Target — TC-13.17a",
+        )
+        self.assertNotIn(
+            "| 21 | AgentDesk StateProvider (read-only) | **Current**",
+            self.adr_text,
+            "ADR: Interface #21 must NOT be Current yet",
+        )
+
+    def test_tc1317b_not_started_in_adr(self) -> None:
+        """§2.18.8 must state TC-13.17b is not started."""
+        section = _extract_markdown_section(
+            self.adr_text, "### 2.18 StateProvider"
+        )
+        self.assertIsNotNone(section, "ADR must contain §2.18")
+        self.assertIn(
+            "TC-13.17b",
+            section,
+            "ADR §2.18 must reference TC-13.17b",
+        )
+        # §2.18.8 Status: "TC-13.17b (production module) is **not** started."
+        self.assertTrue(
+            "not" in section.lower() and "started" in section.lower(),
+            "ADR §2.18 must state TC-13.17b is not started",
+        )
+
+    # -- 3. Five canonical input files declared --
+
+    def test_five_canonical_input_files_declared(self) -> None:
+        """Contract must declare exactly 5 canonical input files."""
+        for f in (
+            "docs/pm/state/tasks.yaml",
+            "docs/pm/events/*.yaml",
+            "docs/pm/outbox/*.yaml",
+            "docs/pm/acceptances/*.md",
+            ".agentdesk/runtime/mad-refs.yaml",
+        ):
+            self.assertIn(
+                f, self.contract_text,
+                f"Contract must declare input file: {f}",
+            )
+
+    def test_mad_refs_is_optional(self) -> None:
+        """mad-refs.yaml must be declared optional (not required)."""
+        # Find the canonical input files section and verify mad-refs is No
+        self.assertIn(
+            "mad-refs.yaml",
+            self.contract_text,
+            "Contract must mention mad-refs.yaml",
+        )
+        # The table row for mad-refs should have "No" in the Required column
+        self.assertTrue(
+            "| 5 | `.agentdesk/runtime/mad-refs.yaml` | No"
+            in self.contract_text
+            or "| 5 | `.agentdesk/runtime/mad-refs.yaml` | `agentdesk.mad-refs/v1` | No"
+            in self.contract_text,
+            "Contract: mad-refs.yaml must be marked No (optional)",
+        )
+
+    # -- 4. Multi-file consistency protocol --
+
+    def test_multi_file_consistency_protocol(self) -> None:
+        """Contract must define the A→B consistency protocol (A ≠ B → error)."""
+        self.assertIn("**A**", self.contract_text,
+                      "Contract must define snapshot byte A (bold)")
+        self.assertIn("**B**", self.contract_text,
+                      "Contract must define snapshot byte B (bold)")
+        self.assertTrue(
+            "A" in self.contract_text and "B" in self.contract_text
+            and "snapshot-changed" not in self.contract_text,  # contract uses exception name
+            "Contract must define A and B bytes",
+        )
+        # The contract uses StateProviderSnapshotChangedError not "snapshot-changed"
+        self.assertIn(
+            "StateProviderSnapshotChangedError",
+            self.contract_text,
+            "Contract must name the snapshot-changed error",
+        )
+
+    def test_snapshot_changed_error_declared(self) -> None:
+        """StateProviderSnapshotChangedError must be declared."""
+        self.assertIn(
+            "StateProviderSnapshotChangedError",
+            self.contract_text,
+            "Contract must declare StateProviderSnapshotChangedError",
+        )
+
+    def test_inconsistent_snapshot_error_declared(self) -> None:
+        """StateProviderInconsistentSnapshotError must be declared."""
+        self.assertIn(
+            "StateProviderInconsistentSnapshotError",
+            self.contract_text,
+            "Contract must declare StateProviderInconsistentSnapshotError",
+        )
+
+    # -- 5. Exception hierarchy --
+
+    def test_exception_hierarchy_has_5_leaf_types(self) -> None:
+        """Contract must declare at least 5 leaf exception types."""
+        expected = [
+            "StateProviderInputError",
+            "StateProviderNotFoundError",
+            "StateProviderSchemaError",
+            "StateProviderSnapshotChangedError",
+            "StateProviderInconsistentSnapshotError",
+        ]
+        for ex in expected:
+            self.assertIn(
+                ex, self.contract_text,
+                f"Contract must declare {ex}",
+            )
+
+    def test_exception_hierarchy_root(self) -> None:
+        """StateProviderError must be the root."""
+        self.assertIn(
+            "StateProviderError",
+            self.contract_text,
+            "Contract must declare StateProviderError as root",
+        )
+
+    def test_no_permission_denied_error(self) -> None:
+        """No PermissionDeniedError — no real permissions system exists."""
+        # The contract names PermissionDeniedError in an explanatory note
+        # ("No `PermissionDeniedError`") — verify the exception hierarchy
+        # diagram does not list it as an actual leaf type.
+        hierarchy_section = None
+        for heading in ("## 11. Exception Hierarchy", "## 11."):
+            idx = self.contract_text.find(heading)
+            if idx >= 0:
+                # Grab roughly 600 chars after the heading
+                hierarchy_section = self.contract_text[idx:idx + 800]
+                break
+        self.assertIsNotNone(
+            hierarchy_section,
+            "Contract must have an Exception Hierarchy section",
+        )
+        # The hierarchy tree lines use ├── / └── prefixes for leaf types.
+        # PermissionDeniedError must NOT appear as a tree node.
+        lines = hierarchy_section.split("\n")
+        tree_lines = [
+            l for l in lines
+            if ("PermissionDeniedError" in l
+                and any(c in l for c in ("├", "└", "──")))
+        ]
+        self.assertEqual(
+            [], tree_lines,
+            "Exception hierarchy must not list PermissionDeniedError as a leaf",
+        )
+
+    # -- 6. Frozen/slots dataclass mandate --
+
+    def test_frozen_slots_mandate(self) -> None:
+        """Contract must mandate frozen=True, slots=True for all types."""
+        self.assertIn(
+            "frozen/slots",
+            self.contract_text.lower(),
+            "Contract must mandate frozen/slots dataclasses",
+        )
+
+    def test_tuple_collections_only(self) -> None:
+        """All collections must be tuple — no public dict/list/set."""
+        self.assertTrue(
+            "tuple" in self.contract_text.lower(),
+            "Contract must mandate tuple collections",
+        )
+        self.assertIn(
+            "no public `dict`, `list`, or `set`",
+            self.contract_text,
+            "Contract must forbid public dict/list/set",
+        )
+
+    # -- 7. project_root must be absolute Path --
+
+    def test_project_root_must_be_absolute_path(self) -> None:
+        """project_root must be absolute Path."""
+        self.assertIn(
+            "absolute `Path`",
+            self.contract_text,
+            "Contract: project_root must be absolute Path",
+        )
+
+    # -- 8. Error message safety --
+
+    def test_error_message_safety(self) -> None:
+        """Error messages must not contain paths, task IDs, secrets."""
+        safety_terms = [
+            "must not contain",
+            "must **never** contain",
+            "must never contain",
+        ]
+        found = any(t in self.contract_text.lower() for t in safety_terms)
+        self.assertTrue(
+            found,
+            "Contract must specify error message safety (must not contain paths/IDs/content)",
+        )
+
+    # -- 9. Import boundaries --
+
+    def test_no_write_end_imports(self) -> None:
+        """StateProvider must not import write-end gateways."""
+        self.assertIn(
+            "must **not** import",
+            self.contract_text,
+            "Contract must declare import boundaries",
+        )
+
+    # -- 10. Explicit exclusions --
+
+    def test_approval_excluded(self) -> None:
+        """Approval authorization must be explicitly excluded."""
+        self.assertIn(
+            "ApprovalGate",
+            self.contract_text,
+            "Contract must reference ApprovalGate as excluded",
+        )
+
+    def test_worker_slot_lease_excluded(self) -> None:
+        """Worker-slot lease must be explicitly excluded."""
+        self.assertTrue(
+            "worker-slot" in self.contract_text.lower()
+            or "WorkerSlotLease" in self.contract_text,
+            "Contract must exclude worker-slot lease",
+        )
+
+    def test_derived_views_excluded(self) -> None:
+        """Derived views (BOARD.md, STATUS.md) must be excluded."""
+        self.assertIn(
+            "BOARD.md",
+            self.contract_text,
+            "Contract must exclude BOARD.md as authoritative input",
+        )
+
+    # -- 11. No production module --
+
+    def test_no_state_provider_py_exists(self) -> None:
+        """state_provider.py must NOT exist (TC-13.17b not started)."""
+        scripts = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "scripts"
+        )
+        self.assertFalse(
+            (scripts / "state_provider.py").exists(),
+            "state_provider.py must not exist — TC-13.17b not started",
+        )
+
+    # -- 12. No stale docs --
+
+    def test_no_stale_state_provider_current_text(self) -> None:
+        """Interface #21 must not claim Current."""
+        self.assertNotIn(
+            "| 21 | AgentDesk StateProvider (read-only) | **Current**",
+            self.adr_text,
+            "ADR: Interface #21 must not claim Current",
+        )
+
+    def test_tc1317a_is_not_tc1317b(self) -> None:
+        """TC-13.17a and TC-13.17b must be distinct in contract."""
+        self.assertIn(
+            "TC-13.17a",
+            self.contract_text,
+            "Contract must reference TC-13.17a",
+        )
+        self.assertIn(
+            "TC-13.17b",
+            self.contract_text,
+            "Contract must reference TC-13.17b",
+        )
+
+    # -- 13. ADR §2.7 still references StateProvider --
+    # (preserved from existing smoke test)
+
+    def test_adr_section_27_still_references_state_provider(self) -> None:
+        """ADR §2.7 must still reference StateProvider."""
+        section = _extract_markdown_section(self.adr_text, "### 2.7")
+        self.assertIsNotNone(section, "ADR must contain §2.7")
+        self.assertIn("StateProvider", section,
+                      "ADR §2.7 must reference StateProvider")
+        self.assertIn("TC-13.17", section,
+                      "ADR §2.7 must reference TC-13.17")
