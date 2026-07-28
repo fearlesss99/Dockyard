@@ -1,8 +1,13 @@
-# WorkflowOrchestrator — Implementable Contract (Frozen — TC-13.18a)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18b)
 
-Interface #22 frozen contract.  TC-13.18a freezes the implementable
-contract; no production module is shipped under this card.  Implementation
-begins with TC-13.18b.
+Interface #22 frozen contract.  TC-13.18b implements the production
+WorkflowOrchestrator module.
+
+## Status
+
+**Current** as of TC-13.18b.  The dispatch cycle (snapshot → acquire →
+TASK_DISPATCHED → heartbeat + run_worker → stop heartbeat → release → result)
+is implemented and callable.
 
 This document is the authoritative frozen specification for the
 WorkflowOrchestrator public API, ownership boundaries, hard dependencies,

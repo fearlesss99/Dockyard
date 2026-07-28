@@ -8819,11 +8819,13 @@ class TC1317aContractFreezeTests(unittest.TestCase):
                       "ADR §2.7 must reference TC-13.17")
 
 
-class TC1318aContractFreezeTests(unittest.TestCase):
-    """TC-13.18a — WorkflowOrchestrator implementable contract freeze smoke.
+class TC1318bProductionSmokeTests(unittest.TestCase):
+    """TC-13.18b — WorkflowOrchestrator production smoke.
 
     Covers: Interface #22 remains Target; ADR §2.19 exists;
-    public-interface contract doc exists; ownership boundary (no direct
+    public-interface contract doc exists + updated to Current;
+    production module and test module present;
+    ownership boundary (no direct
     fence/state-lock/ApprovalGate calls); TC-13.9c hard dependency
     declared; ACK excluded from automated cycle; WorkflowClock
     injected; no skip_audit: bool; workspace caller-supplied;
@@ -8897,23 +8899,21 @@ class TC1318aContractFreezeTests(unittest.TestCase):
             "ADR: Interface #22 must NOT claim Current",
         )
 
-    # ── 3. Production module absent ─────────────────────────────────────
+    # ── 3. Production module present ─────────────────────────────────────
 
-    def test_workflow_orchestrator_py_absent(self) -> None:
-        """workflow_orchestrator.py must NOT exist."""
-        self.assertFalse(
-            (self.scripts_dir / "workflow_orchestrator.py").exists(),
-            "workflow_orchestrator.py must not exist — "
-            "TC-13.18a is contract-only",
+    def test_workflow_orchestrator_py_exists(self) -> None:
+        """workflow_orchestrator.py must exist — TC-13.18b implemented."""
+        self.assertTrue(
+            (self.scripts_dir / "workflow_orchestrator.py").is_file(),
+            "workflow_orchestrator.py must exist — TC-13.18b is implemented",
         )
 
-    def test_test_workflow_orchestrator_py_absent(self) -> None:
-        """test_workflow_orchestrator.py must NOT exist."""
+    def test_test_workflow_orchestrator_py_exists(self) -> None:
+        """test_workflow_orchestrator.py must exist — TC-13.18b implemented."""
         tests_dir = Path(__file__).resolve().parent
-        self.assertFalse(
-            (tests_dir / "test_workflow_orchestrator.py").exists(),
-            "test_workflow_orchestrator.py must not exist — "
-            "TC-13.18a is contract-only",
+        self.assertTrue(
+            (tests_dir / "test_workflow_orchestrator.py").is_file(),
+            "test_workflow_orchestrator.py must exist — TC-13.18b is implemented",
         )
 
     # ── 4. Ownership boundary — no direct fence/state-lock/ApprovalGate ──
