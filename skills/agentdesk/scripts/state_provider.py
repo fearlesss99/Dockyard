@@ -1,19 +1,30 @@
-"""StateProvider — read-only canonical project state snapshot (TC-13.17b).
+"""StateProvider — read-only canonical project state snapshot (TC-13.17b.1).
 
 Interface #21 production module.  Provides a single frozen snapshot of
 all five canonical input sources with strict fail-closed validation.
+
+Parses the canonical YAML format produced by
+``control_plane_transition._to_yaml_str()`` — a deterministic,
+sorted-key, 2-space-indent, LF-only YAML subset with no third-party
+dependency.
+
+tasks.yaml is parsed as JSON (the writer uses ``json.dumps``).
+events/*.yaml and outbox/*.yaml are parsed with a hand-written YAML
+subset parser compatible with ``_to_yaml_str`` output.
+acceptances/*.md use a markdown frontmatter parser.
 
 Public API
 ----------
 ``StateProvider``       — read-only service boundary
 ``StateProvider.snapshot()`` — execute the multi-file consistency protocol
 ``StateSnapshot``       — frozen/slots dataclass with all parsed data
-``TaskEntry``           — frozen task record (25 fields)
+``TaskEntry``           — frozen task record (24 fields)
 ``TaskTimestamps``      — frozen timestamps sub-record (9 fields)
-``DispatchInfo``        — frozen dispatch sub-record (8 fields)
-``EventEntry``          — frozen event record (18 fields)
+``DispatchInfo``        — frozen dispatch sub-record (7 fields)
+``EventEntry``          — frozen event record (17 fields)
+``GuardInput``          — frozen guard key-value pair (2 fields)
 ``GuardResult``         — frozen guard sub-record (5 fields)
-``OutboxEntry``         — frozen outbox record (14 fields)
+``OutboxEntry``         — frozen outbox record (13 fields)
 ``OutboxPayload``       — frozen outbox payload sub-record (5 fields)
 ``AcceptanceEntry``     — frozen acceptance record (16 fields)
 ``MadRefEntry``         — frozen mad-ref record (10 fields, from mad_refs.py)
@@ -32,20 +43,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from _typeshed import DataclassInstance
+from typing import Any
 
 __all__ = [
     "AcceptanceEntry",
     "DispatchInfo",
     "EventEntry",
+    "GuardInput",
     "GuardResult",
     "MadRefEntry",
     "ModelSelectionSnapshot",
@@ -107,6 +117,9 @@ _ACCEPTANCE_DECISIONS: frozenset[str] = frozenset(
 )
 _MAD_PURPOSES: frozenset[str] = frozenset({"planning", "audit"})
 _MAD_DEPTHS: frozenset[str] = frozenset({"fast", "balanced", "deep"})
+_GUARD_RESULT_VALUES: frozenset[str] = frozenset(
+    {"passed", "failed", "skipped", "not_applicable"}
+)
 
 # Regex patterns
 _TASK_ID_RE = re.compile(r"^TC-[0-9]{3,}$")
@@ -168,12 +181,6 @@ _TIMESTAMP_FIELDS: tuple[str, ...] = (
     "updated_at",
 )
 
-# Dispatch info fields (8)
-_DISPATCH_FIELDS: tuple[str, ...] = (
-    "dispatch_id", "attempt_id", "role_id", "base_commit",
-    "branch", "dispatched_at", "model_selection",
-)
-
 # Event common fields
 _EVENT_COMMON_FIELDS: tuple[str, ...] = (
     "schema_version", "event_id", "event_type", "task_id",
@@ -208,7 +215,7 @@ _GUARD_FIELDS: tuple[str, ...] = (
     "guard", "inputs", "result", "checked_at", "evidence_ref",
 )
 
-# Acceptance frontmatter fields (matching validate_project.py)
+# Acceptance frontmatter keys (matching validate_project.py)
 _ACCEPTANCE_FRONTMATTER_KEYS: frozenset[str] = frozenset({
     "schema_version", "task_id", "revision", "attempt",
     "implementation_commit", "report_commit", "base_commit",
@@ -237,44 +244,31 @@ def _is_bool(value: Any) -> bool:
 
 
 def _require_str(value: Any) -> str:
-    """Return *value* if it is a non-empty str, else raise."""
     if not isinstance(value, str) or not value:
-        raise StateProviderSchemaError(
-            "expected non-empty string field value"
-        )
+        raise StateProviderSchemaError("expected non-empty string field value")
     return value
 
 
 def _require_int_ge(value: Any, minimum: int) -> int:
-    """Return *value* if it is a non-bool int >= *minimum*."""
     if not _is_int(value) or value < minimum:
-        raise StateProviderSchemaError(
-            "expected integer field value"
-        )
+        raise StateProviderSchemaError("expected integer field value")
     return value
 
 
 def _sha256_hex(data: bytes) -> str:
-    """Return the SHA-256 hex digest of *data*."""
     return hashlib.sha256(data).hexdigest()
 
 
-def _freeze_strings(value: str) -> str:
+def _freeze(value: str) -> str:
     """Intern a string to reduce memory."""
     return sys.intern(value)
 
 
-def _make_immutable(obj: Any) -> Any:
-    """Recursively convert lists to tuples and dicts to MappingProxyType."""
-    if isinstance(obj, dict):
-        return MappingProxyType(
-            {k: _make_immutable(v) for k, v in obj.items()}
-        )
-    if isinstance(obj, list):
-        return tuple(_make_immutable(v) for v in obj)
-    if isinstance(obj, str):
-        return sys.intern(obj)
-    return obj
+def _frozen_str(value: str | None) -> str | None:
+    """Intern *value* if non-None, else None."""
+    if value is None:
+        return None
+    return sys.intern(value)
 
 
 def _stable_sort(entries: list[Path]) -> list[Path]:
@@ -282,164 +276,295 @@ def _stable_sort(entries: list[Path]) -> list[Path]:
     return sorted(entries, key=lambda p: p.name.encode("utf-8"))
 
 
-def _read_bytes(path: Path) -> bytes:
-    """Read raw bytes from *path*; raise OSError on failure."""
-    return path.read_bytes()
+# ── YAML subset parser (compatible with control_plane_transition._to_yaml_str) ─
 
 
-def _read_text(path: Path) -> str:
-    """Read UTF-8 text from *path*; raise on failure."""
-    return path.read_text(encoding="utf-8")
+def _parse_yaml_mapping(raw_bytes: bytes, description: str) -> dict[str, object]:
+    """Parse a YAML mapping produced by ``_to_yaml_str``.
 
+    Handles the canonical YAML format: LF line endings, sorted keys,
+    2-space indent, inline first-field for nested dicts, 4-space indent
+    for nested dict fields, 8-space for nested list entries within
+    guard_results.
 
-def _parse_json(raw: bytes, description: str) -> dict[str, Any]:
-    """Parse JSON-compatible YAML bytes, returning a dict.
-
-    Raises StateProviderSchemaError on parse failure or non-dict root.
+    Raises StateProviderSchemaError on parse failure.
     """
     try:
-        value = json.loads(raw)
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise StateProviderSchemaError("YAML file is not valid UTF-8") from None
+    return _parse_canonical_yaml(text, description)
+
+
+def _parse_canonical_yaml(raw: str, description: str) -> dict[str, object]:
+    """Line-based canonical YAML parser.
+
+    Canonical YAML format (from ``_to_yaml_str`` / ``_emit_yaml``):
+
+    * Top-level keys at column 0, in sorted order.
+    * Simple values inline after ``": "`` or on the same line.
+    * Nested dicts: FIRST field inline at column 0 (after 2-space separator from
+      parent key), remaining fields on subsequent lines at **2-space indent**.
+    * Lists: ``- `` prefix at 2-space indent per nesting level.
+    * ``guard_results``: list of dicts. First field inline, remaining at indent 4.
+      ``inputs`` within a guard: inline first, subsequent at indent 8.
+    """
+    lines = raw.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+
+    annotated: list[tuple[int, str]] = []
+    for line in lines:
+        if not line or line.isspace():
+            continue
+        ind = _get_indent(line)
+        if ind < 0:
+            continue
+        annotated.append((ind, line[ind:]))
+
+    root: dict[str, object] = {}
+    guard_list: list[dict[str, object]] | None = None
+    # Track the last-created nested dict at indent 0 (for indent-2 lines)
+    active_nested: dict[str, object] | None = None
+
+    i = 0
+    while i < len(annotated):
+        indent, stripped = annotated[i]
+
+        # ── list items ──
+        if stripped.startswith("- "):
+            item_val = _coerce_yaml_value(stripped[2:].strip())
+            if indent == 2:
+                ev = root.get("evidence_refs")
+                if isinstance(ev, list):
+                    ev.append(item_val)
+            elif indent == 4 and active_nested is not None:
+                for k, v in active_nested.items():
+                    if isinstance(v, list) and k.endswith("s"):
+                        v.append(item_val)
+                        break
+            i += 1
+            continue
+
+        if ":" not in stripped:
+            i += 1
+            continue
+
+        key, _, val = stripped.partition(":")
+        key = key.strip()
+        val = val.strip()
+
+        # ── indent 0: root-level key ──
+        if indent == 0:
+            if key == "guard_results":
+                guard_list = []
+                root["guard_results"] = guard_list
+                active_nested = None
+                if val and val != "[]":
+                    g = _parse_inline_dict_first_field(val)
+                    guard_list.append(g)
+                i += 1
+                continue
+            if val:
+                coerce_val = _coerce_yaml_value(val)
+                if isinstance(coerce_val, str) and _has_inline_field(val):
+                    nested = _parse_inline_dict_first_field(val)
+                    root[key] = nested
+                    active_nested = nested
+                else:
+                    # Check for inline list: "- cg"
+                    if isinstance(coerce_val, (str, list)):
+                        if isinstance(coerce_val, str) and coerce_val.startswith("- "):
+                            coerce_val = [coerce_val[2:]]
+                    root[key] = coerce_val
+                    active_nested = None
+            else:
+                root[key] = None
+                active_nested = None
+            i += 1
+            continue
+
+        # ── indent 2: nested-dict fields (model_selection, payload, pm_control) ──
+        if indent == 2:
+            if active_nested is not None:
+                cv = _coerce_yaml_value(val) if val else None
+                if isinstance(cv, str) and cv.startswith("- "):
+                    cv = [cv[2:]]
+                active_nested[key] = cv
+            i += 1
+            continue
+
+        # ── indent 4: guard_result fields ──
+        if indent == 4:
+            if guard_list is not None and len(guard_list) > 0:
+                cg = guard_list[-1]
+                if key == "inputs":
+                    il: list[dict[str, object]] = []
+                    cg["inputs"] = il
+                    if val:
+                        inp = _parse_inline_input(val)
+                        if inp:
+                            il.append(inp)
+                else:
+                    cg[key] = _coerce_yaml_value(val) if val else None
+            i += 1
+            continue
+
+        # ── indent 8: guard_result inputs entries ──
+        if indent == 8 and guard_list is not None and len(guard_list) > 0:
+            cg = guard_list[-1]
+            il = cg.get("inputs")
+            if isinstance(il, list):
+                if key == "key":
+                    il.append({"key": val})
+                elif key == "value":
+                    if il:
+                        il[-1]["value"] = _coerce_yaml_value(val) if val else None
+            i += 1
+            continue
+
+        i += 1
+
+    return root
+
+
+def _has_inline_field(val: str) -> bool:
+    """Check if *val* contains an inline field (e.g. 'model_binding_id: ...')."""
+    return ":" in val and not val.startswith('"') and not val.startswith("sha256:")
+
+
+def _find_or_create_nested(
+    root: dict[str, object], key: str, val: str,
+    stack: list[tuple[int, dict[str, object], str | None]],
+) -> dict[str, object]:
+    """Find the correct nested dict for this key and add a field to it.
+
+    The canonical YAML format arranges nested dicts as:
+      parent_key:   first_field_key: first_field_value      # indent 0
+      second_field_key: second_field_value                   # indent 2
+      third_field_key: third_field_value                     # indent 2
+
+    So the 'parent' is the LAST dict in root that was created
+    with an inline first field and hasn't been superseded by a
+    newer top-level key.
+    """
+    # The parent dict is the last entry on our stack with indent < current
+    # Find the last nested dict (indent=2) on the stack, or the root
+    for indent, d, _ in reversed(stack):
+        if indent < 2:
+            # Found the parent nested dict — it's the most recently
+            # created nested dict that's still on the stack at indent 0.
+            # Actually, the right approach: for indent-2 lines, the parent
+            # is the dict that was pushed at indent 0 with inline first field.
+            # In _parse_canonical_yaml, when we see a nested dict starter at
+            # indent 0, we push it onto the stack at indent 2.
+            # So the parent for subsequent indent-2 keys is simply the
+            # head of the stack.
+            pass
+
+    # Simpler approach: the last-created nested dict is on top of stack
+    parent = stack[-1][1]
+    # But if parent is root (indent 0), we need to find the recently-created nested dict
+    if parent is root:
+        # Find the most recent nested dict among root's values
+        # This is O(1) if we track it, but for now check the stack
+        for _, d, _ in stack:
+            if d is not root and indent >= 2:
+                if val:
+                    d[key] = _coerce_yaml_value(val) if val else None
+                return d
+    if val:
+        parent[key] = _coerce_yaml_value(val) if val else None
+    return parent
+
+
+def _parse_inline_dict_first_field(val: str) -> dict[str, object]:
+    """Parse 'model_binding_id: binding-001' from inline nested dict start."""
+    d: dict[str, object] = {}
+    if ":" in val:
+        k, _, v = val.partition(":")
+        k = k.strip()
+        v = v.strip()
+        d[k] = _coerce_yaml_value(v) if v else None
+    return d
+
+
+def _parse_inline_input(val: str) -> dict[str, object]:
+    """Parse 'key: scope' from inline input field."""
+    d: dict[str, object] = {}
+    if ":" in val:
+        k, _, v = val.partition(":")
+        k = k.strip()
+        v = v.strip()
+        if k == "key":
+            d["key"] = v
+    return d
+
+
+def _get_indent(line: str) -> int:
+    """Return the count of leading spaces, or -1 if blank."""
+    if not line or line.isspace():
+        return -1
+    count = 0
+    for ch in line:
+        if ch == " ":
+            count += 1
+        else:
+            return count
+    return count
+
+
+def _parse_json_mapping(raw_bytes: bytes, description: str) -> dict[str, Any]:
+    """Parse a JSON mapping (for tasks.yaml and mad-refs.yaml).
+
+    The writer for tasks.yaml uses ``json.dumps``, so JSON is the
+    authoritative parse path.  Raises StateProviderSchemaError.
+    """
+    try:
+        value = json.loads(raw_bytes)
     except json.JSONDecodeError:
         raise StateProviderSchemaError(
-            f"{description} is not valid JSON-compatible YAML"
+            "file is not valid JSON"
         ) from None
     if not isinstance(value, dict):
-        raise StateProviderSchemaError(
-            f"{description} root must be an object"
-        )
+        raise StateProviderSchemaError("root must be an object")
     return value
 
 
+def _coerce_yaml_value(val: str) -> object:
+    """Coerce a string from canonical YAML to proper Python type."""
+    v = val.strip()
+    if v == "null":
+        return None
+    if v in ("true", "True"):
+        return True
+    if v in ("false", "False"):
+        return False
+    if v.isdigit() or (v.startswith("-") and v[1:].isdigit()):
+        return int(v)
+    if v.startswith('"') and v.endswith('"'):
+        return v[1:-1]
+    if v == "[]":
+        return []
+    if v == "{}":
+        return {}
+    return v
+
+
 def _validate_extra_keys(
-    data: dict[str, Any], allowed: frozenset[str], description: str
+    data: dict[str, object], allowed: frozenset[str], description: str
 ) -> None:
-    """Reject unexpected keys."""
     extra = set(data.keys()) - allowed
     if extra:
-        raise StateProviderSchemaError(
-            f"{description} has forbidden key(s)"
-        )
+        raise StateProviderSchemaError("has forbidden key(s)")
 
 
 def _validate_missing_keys(
-    data: dict[str, Any], required: frozenset[str], description: str
+    data: dict[str, object], required: frozenset[str], description: str
 ) -> None:
-    """Reject missing required keys."""
     missing = required - set(data.keys())
     if missing:
-        raise StateProviderSchemaError(
-            f"{description} is missing required key(s)"
-        )
-
-
-# ── YAML subset frontmatter parser ────────────────────────────────────────
-
-
-def _parse_frontmatter(raw: str, description: str) -> dict[str, Any]:
-    """Parse a minimal YAML subset from markdown frontmatter.
-
-    Handles:
-    - Top-level scalar keys (string, int, bool, null)
-    - One level of nested mapping (owner_approval: {gate: none, ...})
-    - Inline lists (approval_ids: [])
-    - Inline null / empty values
-
-    This is intentionally a stripped-down parser — the file structure
-    was already validated by the writer.  Malformed frontmatter raises
-    StateProviderSchemaError.
-
-    No import from validate_project.py — this is a self-contained
-    read-only parser.
-    """
-    lines = raw.splitlines()
-    if not lines or lines[0].strip() != "---":
-        raise StateProviderSchemaError(
-            f"{description} must start with YAML frontmatter"
-        )
-    try:
-        closing = next(
-            i for i, line in enumerate(lines[1:], start=1)
-            if line.strip() == "---"
-        )
-    except StopIteration:
-        raise StateProviderSchemaError(
-            f"{description} has no closing frontmatter delimiter"
-        )
-    fm_lines = lines[1:closing]
-    result: dict[str, Any] = {}
-    current_map_key: str | None = None
-    current_map: dict[str, Any] = {}
-
-    for line in fm_lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-
-        # Indented line (2 spaces) — belongs to current nested mapping
-        if line.startswith("  ") and not line.startswith("    "):
-            if ":" in stripped:
-                key, _, val = stripped.partition(":")
-                key = key.strip()
-                val = val.strip()
-                if current_map_key is None:
-                    # Start a new nested map
-                    current_map = {}
-                if val:
-                    current_map[key] = _parse_yaml_scalar(val)
-                else:
-                    # Empty value — could be a list like "[]" on the next line
-                    # or genuinely null/empty
-                    current_map[key] = None
-            continue
-
-        # Top-level key: flush any pending nested map
-        if current_map_key is not None and current_map:
-            result[current_map_key] = dict(current_map)
-            current_map_key = None
-            current_map = {}
-
-        if ":" in stripped:
-            current_map_key, _, val = stripped.partition(":")
-            current_map_key = current_map_key.strip()
-            val = val.strip()
-            current_map = {}
-            if val:
-                result[current_map_key] = _parse_yaml_scalar(val)
-                current_map_key = None
-
-    # Flush final pending nested map
-    if current_map_key is not None and current_map:
-        result[current_map_key] = dict(current_map)
-
-    return result
-
-
-def _parse_yaml_scalar(val: str) -> Any:
-    """Parse a YAML scalar value — str, int, bool, None, or inline empty list."""
-    if not val:
-        return ""
-    # Quoted string
-    if (val.startswith('"') and val.endswith('"')) or \
-       (val.startswith("'") and val.endswith("'")):
-        return val[1:-1]
-    # Empty list literal
-    if val == "[]":
-        return []
-    # Null
-    if val in ("null", "~", ""):
-        return None
-    # Bool
-    if val in ("true", "True", "TRUE"):
-        return True
-    if val in ("false", "False", "FALSE"):
-        return False
-    # Int
-    try:
-        return int(val)
-    except ValueError:
-        pass
-    # String
-    return val
+        raise StateProviderSchemaError("is missing required key(s)")
 
 
 # ── frozen dataclasses ────────────────────────────────────────────────────
@@ -462,11 +587,22 @@ class ModelSelectionSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class GuardInput:
+    """Frozen key-value pair for a guard input set.
+
+    Matches ``control_plane_transition.GuardInput``.
+    """
+
+    key: str
+    value: str | int | bool | None
+
+
+@dataclass(frozen=True, slots=True)
 class GuardResult:
     """Frozen guard result entry."""
 
     guard: str
-    inputs: tuple[tuple[str, object], ...]
+    inputs: tuple[GuardInput, ...]
     result: str
     checked_at: str
     evidence_ref: str
@@ -500,7 +636,7 @@ class TaskTimestamps:
 
 @dataclass(frozen=True, slots=True)
 class DispatchInfo:
-    """Frozen dispatch identity sub-record (8 fields)."""
+    """Frozen dispatch identity sub-record (7 fields)."""
 
     dispatch_id: str
     attempt_id: str
@@ -509,12 +645,11 @@ class DispatchInfo:
     branch: str
     dispatched_at: str
     model_selection: ModelSelectionSnapshot
-    raw_dispatch: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
 class TaskEntry:
-    """Frozen task record (25 fields)."""
+    """Frozen task record (24 fields)."""
 
     task_id: str
     revision: int
@@ -540,12 +675,11 @@ class TaskEntry:
     blocked_attempt_valid: bool | None
     resume_state: str | None
     timestamps: TaskTimestamps
-    raw_task: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
 class EventEntry:
-    """Frozen event record covering all 15 event types (18 fields)."""
+    """Frozen event record covering all 15 event types (17 fields)."""
 
     schema_version: str
     event_id: str
@@ -564,12 +698,11 @@ class EventEntry:
     guard_results: tuple[GuardResult, ...]
     payload_digest: str | None           # TASK_DISPATCHED only
     extra_fields: tuple[tuple[str, object], ...] | None  # CHANGE_INTEGRATED only
-    raw_event: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
 class OutboxEntry:
-    """Frozen outbox record (14 fields)."""
+    """Frozen outbox record (13 fields)."""
 
     schema_version: str
     message_id: str
@@ -584,7 +717,6 @@ class OutboxEntry:
     created_at: str
     model_selection: ModelSelectionSnapshot
     payload: OutboxPayload
-    raw_outbox: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -662,7 +794,7 @@ class StateProviderNotFoundError(StateProviderError):
 
 class StateProviderSchemaError(StateProviderError):
     """Schema violation — version mismatch, invalid type, extra/missing keys,
-    corrupt JSON/YAML."""
+    corrupt YAML/JSON."""
 
 
 class StateProviderSnapshotChangedError(StateProviderError):
@@ -703,103 +835,77 @@ class StateProvider:
         self._project_root = project_root
 
     def snapshot(self) -> StateSnapshot:
-        """Execute the five-source consistency protocol and return a frozen snapshot.
-
-        Raises:
-            StateProviderNotFoundError: required file/dir missing.
-            StateProviderSchemaError: schema violation.
-            StateProviderSnapshotChangedError: state changed between passes.
-            StateProviderInconsistentSnapshotError: cross-file integrity failure.
-        """
         root = self._project_root
         _ensure_required_exist(root)
 
-        # ── Pass A: read all five sources ──
-        a_tasks_bytes = _read_bytes(root / _TASKS_PATH)
-        a_events = _read_dir_entries(root / _EVENTS_DIR, ".yaml",
-                                     _EVENT_ID_FILENAME_RE)
-        a_outbox = _read_dir_entries(root / _OUTBOX_DIR, ".yaml",
-                                     _OUTBOX_FILENAME_RE)
-        a_acceptances = _read_dir_entries(root / _ACCEPTANCES_DIR, ".md", None)
-        a_mad_refs_bytes = _read_opt_bytes(root / _MAD_REFS_PATH)
+        # ── Pass A ──
+        a_tasks = _read_file_safe(root / _TASKS_PATH)
+        a_events = _read_dir_entries_reject_symlinks(root / _EVENTS_DIR, ".yaml",
+                                                      _EVENT_ID_FILENAME_RE)
+        a_outbox = _read_dir_entries_reject_symlinks(root / _OUTBOX_DIR, ".yaml",
+                                                      _OUTBOX_FILENAME_RE)
+        a_acceptances = _read_dir_entries_reject_symlinks(root / _ACCEPTANCES_DIR, ".md", None)
+        a_mad = _read_opt_bytes(root / _MAD_REFS_PATH)
 
-        # ── Pass B: re-read all five sources ──
-        b_tasks_bytes = _read_bytes(root / _TASKS_PATH)
-        b_events = _read_dir_entries(root / _EVENTS_DIR, ".yaml",
-                                     _EVENT_ID_FILENAME_RE)
-        b_outbox = _read_dir_entries(root / _OUTBOX_DIR, ".yaml",
-                                     _OUTBOX_FILENAME_RE)
-        b_acceptances = _read_dir_entries(root / _ACCEPTANCES_DIR, ".md", None)
-        b_mad_refs_bytes = _read_opt_bytes(root / _MAD_REFS_PATH)
+        # ── Pass B ──
+        b_tasks = _read_file_safe(root / _TASKS_PATH)
+        b_events = _read_dir_entries_reject_symlinks(root / _EVENTS_DIR, ".yaml",
+                                                      _EVENT_ID_FILENAME_RE)
+        b_outbox = _read_dir_entries_reject_symlinks(root / _OUTBOX_DIR, ".yaml",
+                                                      _OUTBOX_FILENAME_RE)
+        b_acceptances = _read_dir_entries_reject_symlinks(root / _ACCEPTANCES_DIR, ".md", None)
+        b_mad = _read_opt_bytes(root / _MAD_REFS_PATH)
 
-        # ── Compute integrity hash over all sources ──
-        a_hash = _compute_pass_hash(
-            a_tasks_bytes, a_events, a_outbox, a_acceptances, a_mad_refs_bytes
-        )
-        b_hash = _compute_pass_hash(
-            b_tasks_bytes, b_events, b_outbox, b_acceptances, b_mad_refs_bytes
-        )
-
-        if a_hash != b_hash:
+        # ── Hash ──
+        ah = _compute_pass_hash(a_tasks, a_events, a_outbox, a_acceptances, a_mad)
+        bh = _compute_pass_hash(b_tasks, b_events, b_outbox, b_acceptances, b_mad)
+        if ah != bh:
             raise StateProviderSnapshotChangedError(
                 "snapshot changed between first and second read"
             )
 
-        # ── Parse all sources ──
-        tasks_doc = _parse_json(a_tasks_bytes, "tasks.yaml")
-        events_raw_list = [
-            (fn, _parse_json(raw, fn))
-            for fn, raw in a_events
-        ]
-        outbox_raw_list = [
-            (fn, _parse_json(raw, fn))
-            for fn, raw in a_outbox
-        ]
-        acceptance_raw_list = [
-            (fn, _parse_acceptance(raw, fn))
-            for fn, raw in a_acceptances
-        ]
-        mad_refs_doc = None
-        mad_refs_raw_list: list[dict[str, Any]] = []
-        if a_mad_refs_bytes is not None:
-            mad_refs_doc = _parse_json(a_mad_refs_bytes, "mad-refs.yaml")
-            mad_refs_raw_list = mad_refs_doc.get("refs", [])
-            if not isinstance(mad_refs_raw_list, list):
-                mad_refs_raw_list = []
+        # ── Parse ──
+        tasks_doc = _parse_json_mapping(a_tasks, "tasks.yaml")
+        events_raw = [(fn, raw) for fn, raw in a_events]
+        outbox_raw = [(fn, raw) for fn, raw in a_outbox]
+        acceptances_raw = [(fn, raw) for fn, raw in a_acceptances]
+        mad_doc: dict[str, Any] | None = None
+        if a_mad is not None:
+            mad_doc = _parse_json_mapping(a_mad, "mad-refs.yaml")
 
-        # ── Build parsed collections ──
-        tasks_tuple = _build_tasks(tasks_doc)
-        events_tuple = _build_events(events_raw_list)
-        outbox_tuple = _build_outbox(outbox_raw_list)
-        acceptances_tuple = _build_acceptances(acceptance_raw_list)
-        mad_refs_tuple: tuple[MadRefEntry, ...] | None = None
-        if mad_refs_doc is not None:
-            mad_refs_tuple = _build_mad_refs(mad_refs_doc)
+        # ── Build collections ──
+        tasks = _build_tasks(tasks_doc)
+        events = _build_events(events_raw)
+        outbox = _build_outbox(outbox_raw)
+        acceptances = _build_acceptances(acceptances_raw)
+        mad_refs: tuple[MadRefEntry, ...] | None = None
+        if mad_doc is not None:
+            mad_refs = _build_mad_refs(mad_doc)
 
         # ── Cross-file consistency ──
         _validate_cross_consistency(
-            tasks_tuple, events_tuple, outbox_tuple,
-            acceptances_tuple, mad_refs_tuple,
+            tasks, events, outbox, acceptances, mad_refs,
             a_events, a_outbox, a_acceptances,
         )
 
-        # ── Build frozen snapshot ──
+        # ── Snapshot ──
         pm = tasks_doc["pm_control"]
+        assert isinstance(pm, dict)
         return StateSnapshot(
             project_root=root,
-            schema_version=_freeze_strings(tasks_doc["schema_version"]),
-            project_id=_freeze_strings(tasks_doc["project_id"]),
-            adoption_level=_freeze_strings(tasks_doc["adoption_level"]),
-            updated_at=_freeze_strings(tasks_doc["updated_at"]),
-            pm_holder_id=_freeze_strings(pm["holder_id"]),
+            schema_version=_freeze(tasks_doc["schema_version"]),
+            project_id=_freeze(tasks_doc["project_id"]),
+            adoption_level=_freeze(tasks_doc["adoption_level"]),
+            updated_at=_freeze(tasks_doc["updated_at"]),
+            pm_holder_id=_freeze(pm["holder_id"]),
             pm_lease_epoch=_require_int_ge(pm["lease_epoch"], 1),
-            pm_mode=_freeze_strings(pm["mode"]),
-            tasks=tasks_tuple,
-            events=events_tuple,
-            outbox=outbox_tuple,
-            acceptances=acceptances_tuple,
-            mad_refs=mad_refs_tuple,
-            read_hexsha=a_hash,
+            pm_mode=_freeze(pm["mode"]),
+            tasks=tasks,
+            events=events,
+            outbox=outbox,
+            acceptances=acceptances,
+            mad_refs=mad_refs,
+            read_hexsha=ah,
         )
 
 
@@ -807,78 +913,105 @@ class StateProvider:
 
 
 def _ensure_required_exist(root: Path) -> None:
-    """Verify required files and directories exist.
-
-    Raises StateProviderNotFoundError if any required path is missing.
-    """
     tasks_path = root / _TASKS_PATH
     if not tasks_path.is_file():
-        raise StateProviderNotFoundError(
-            "required canonical file not found"
-        )
+        raise StateProviderNotFoundError("required canonical file not found")
     for dir_path in (_EVENTS_DIR, _OUTBOX_DIR, _ACCEPTANCES_DIR):
         full = root / dir_path
         if not full.is_dir():
-            raise StateProviderNotFoundError(
-                "required canonical directory not found"
-            )
+            raise StateProviderNotFoundError("required canonical directory not found")
 
 
-def _read_dir_entries(
+def _is_symlink_or_reparse(entry: Path) -> bool:
+    """Return True if *entry* is a symlink (POSIX) or reparse point (Windows).
+
+    Symlinks and reparse points are rejected — StateProvider only reads
+    regular files in canonical directories.
+    """
+    if entry.is_symlink():
+        return True
+    # Windows reparse point / junction detection
+    try:
+        st = os.lstat(str(entry))
+        if hasattr(st, "st_file_attributes") and hasattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT"):
+            if st.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                return True
+    except (AttributeError, OSError):
+        pass
+    return False
+
+
+def _read_dir_entries_reject_symlinks(
     dir_path: Path, suffix: str, name_pattern: re.Pattern | None,
 ) -> list[tuple[str, bytes]]:
-    """Read all files in *dir_path* matching *suffix* (and optionally
-    *name_pattern*), returning a stable-sorted list of (filename, raw_bytes).
+    """Read all regular files in *dir_path* matching *suffix*.
 
-    Raises StateProviderSchemaError if any file doesn't match the pattern.
+    - Rejects symlinks and reparse points (fail-closed).
+    - Sorts by locale-independent byte order on filename.
+    - Raises StateProviderNotFoundError on directory I/O error.
+    - Raises StateProviderSchemaError on filename pattern mismatch.
     """
     try:
-        entries = [p for p in dir_path.iterdir()
-                   if p.is_file() and not p.is_symlink()
-                   and p.suffix == suffix]
+        candidates = list(dir_path.iterdir())
     except OSError:
-        raise StateProviderNotFoundError(
-            "cannot read canonical directory"
-        ) from None
+        raise StateProviderNotFoundError("cannot read canonical directory") from None
+
+    regular: list[Path] = []
+    for p in candidates:
+        if _is_symlink_or_reparse(p):
+            raise StateProviderSchemaError("symlink or reparse point forbidden")
+        if p.is_file() and p.suffix == suffix:
+            regular.append(p)
+
     result: list[tuple[str, bytes]] = []
-    for entry in _stable_sort(entries):
-        if name_pattern is not None:
-            if not name_pattern.fullmatch(entry.name):
-                raise StateProviderSchemaError(
-                    "filename does not match expected pattern"
-                )
+    for entry in _stable_sort(regular):
+        if name_pattern is not None and not name_pattern.fullmatch(entry.name):
+            raise StateProviderSchemaError("filename does not match expected pattern")
         try:
-            raw = entry.read_bytes()
-        except OSError:
-            raise StateProviderNotFoundError(
-                "cannot read canonical file"
+            result.append((entry.name, entry.read_bytes()))
+        except FileNotFoundError:
+            raise StateProviderSnapshotChangedError(
+                "file disappeared during snapshot read"
             ) from None
-        result.append((entry.name, raw))
+        except OSError:
+            raise StateProviderNotFoundError("cannot read canonical file") from None
     return result
 
 
 def _read_opt_bytes(path: Path) -> bytes | None:
-    """Read raw bytes from *path* if it exists, else None."""
+    """Read raw bytes from *path* if it exists, else None.
+
+    On Windows, also reject the file if it is a reparse point.
+    """
     try:
+        if _is_symlink_or_reparse(path):
+            raise StateProviderSchemaError("symlink or reparse point forbidden")
         return path.read_bytes()
     except FileNotFoundError:
         return None
     except OSError:
-        raise StateProviderNotFoundError(
-            "cannot read optional runtime file"
-        ) from None
+        raise StateProviderNotFoundError("cannot read optional runtime file") from None
+
+
+def _read_file_safe(path: Path) -> bytes:
+    """Read required file, converting I/O errors safely."""
+    try:
+        if _is_symlink_or_reparse(path):
+            raise StateProviderSchemaError("symlink or reparse point forbidden")
+        return path.read_bytes()
+    except FileNotFoundError:
+        raise StateProviderNotFoundError("required canonical file not found") from None
+    except OSError:
+        raise StateProviderNotFoundError("cannot read required file") from None
 
 
 def _compute_pass_hash(
-    tasks_bytes: bytes,
-    events: list[tuple[str, bytes]],
-    outbox: list[tuple[str, bytes]],
-    acceptances: list[tuple[str, bytes]],
-    mad_refs_bytes: bytes | None,
+    tasks: bytes, events: list[tuple[str, bytes]],
+    outbox: list[tuple[str, bytes]], acceptances: list[tuple[str, bytes]],
+    mad: bytes | None,
 ) -> str:
-    """Compute a SHA-256 hash over all five-source raw data."""
     h = hashlib.sha256()
-    h.update(tasks_bytes)
+    h.update(tasks)
     for name, raw in events:
         h.update(name.encode("utf-8"))
         h.update(raw)
@@ -888,9 +1021,9 @@ def _compute_pass_hash(
     for name, raw in acceptances:
         h.update(name.encode("utf-8"))
         h.update(raw)
-    if mad_refs_bytes is not None:
+    if mad is not None:
         h.update(b"mad-refs\x00")
-        h.update(mad_refs_bytes)
+        h.update(mad)
     else:
         h.update(b"mad-refs\x00none")
     return h.hexdigest()
@@ -900,22 +1033,16 @@ def _compute_pass_hash(
 
 
 def _build_tasks(doc: dict[str, Any]) -> tuple[TaskEntry, ...]:
-    """Parse and validate tasks.yaml, returning a tuple of TaskEntry."""
-    # Validate root
     _validate_missing_keys(doc, _TASKS_ROOT_KEYS, "tasks.yaml root")
     _validate_extra_keys(doc, _TASKS_ROOT_KEYS, "tasks.yaml root")
 
     sv = doc["schema_version"]
     if sv != _SCHEMA_TASKS:
-        raise StateProviderSchemaError(
-            "tasks.yaml schema_version is not agentdesk.tasks/v2"
-        )
+        raise StateProviderSchemaError("tasks.yaml schema_version is not agentdesk.tasks/v2")
     if not isinstance(doc["project_id"], str) or not doc["project_id"]:
         raise StateProviderSchemaError("tasks.yaml project_id must be non-empty")
     if doc["adoption_level"] not in _ADOPTION_LEVELS:
-        raise StateProviderSchemaError(
-            "tasks.yaml adoption_level is invalid"
-        )
+        raise StateProviderSchemaError("tasks.yaml adoption_level is invalid")
     if not isinstance(doc["updated_at"], str) or not doc["updated_at"]:
         raise StateProviderSchemaError("tasks.yaml updated_at must be non-empty")
     _validate_pm_control(doc["pm_control"])
@@ -924,20 +1051,16 @@ def _build_tasks(doc: dict[str, Any]) -> tuple[TaskEntry, ...]:
     if not isinstance(tasks_raw, list):
         raise StateProviderSchemaError("tasks.yaml tasks must be an array")
 
-    seen_task_ids: set[str] = set()
+    seen: set[str] = set()
     result: list[TaskEntry] = []
-    for i, raw_task in enumerate(tasks_raw):
-        if not isinstance(raw_task, dict):
-            raise StateProviderSchemaError(
-                f"tasks[{i}] must be an object"
-            )
-        task_entry = _build_single_task(raw_task, i, seen_task_ids)
-        result.append(task_entry)
+    for i, raw in enumerate(tasks_raw):
+        if not isinstance(raw, dict):
+            raise StateProviderSchemaError("task entry must be an object")
+        result.append(_build_single_task(raw, seen))
     return tuple(result)
 
 
 def _validate_pm_control(pm: Any) -> None:
-    """Validate pm_control object."""
     if not isinstance(pm, dict):
         raise StateProviderSchemaError("pm_control must be an object")
     allowed = frozenset({"holder_id", "lease_epoch", "mode"})
@@ -946,20 +1069,15 @@ def _validate_pm_control(pm: Any) -> None:
     if not isinstance(pm["holder_id"], str) or not pm["holder_id"]:
         raise StateProviderSchemaError("pm_control.holder_id must be non-empty")
     if not _is_int(pm["lease_epoch"]) or pm["lease_epoch"] < 1:
-        raise StateProviderSchemaError(
-            "pm_control.lease_epoch must be an integer >= 1"
-        )
+        raise StateProviderSchemaError("pm_control.lease_epoch must be an integer >= 1")
     if pm["mode"] not in _PM_MODES:
         raise StateProviderSchemaError("pm_control.mode is invalid")
 
 
-def _build_single_task(
-    raw: dict[str, Any], index: int, seen: set[str]
-) -> TaskEntry:
-    """Build a single TaskEntry from raw task dict."""
+def _build_single_task(raw: dict[str, Any], seen: set[str]) -> TaskEntry:
     allowed = frozenset(_TASK_FIELDS)
-    _validate_extra_keys(raw, allowed, f"task at index {index}")
-    _validate_missing_keys(raw, allowed, f"task at index {index}")
+    _validate_extra_keys(raw, allowed, "task")
+    _validate_missing_keys(raw, allowed, "task")
 
     task_id = _validate_task_id(raw.get("task_id"))
     if task_id in seen:
@@ -967,7 +1085,6 @@ def _build_single_task(
     seen.add(task_id)
 
     revision = _require_int_ge(raw.get("revision"), 1)
-
     task_card_path = _require_str(raw.get("task_card_path"))
     task_card_commit = _validate_sha40(raw.get("task_card_commit"), required=True)
     state = _validate_state(raw.get("state"))
@@ -977,105 +1094,74 @@ def _build_single_task(
     if attempt_raw is not None:
         attempt = _require_int_ge(attempt_raw, 1)
     elif state in ("dispatched", "in_progress", "review_ready"):
-        raise StateProviderSchemaError(
-            "attempt must be set for active dispatch state"
-        )
+        raise StateProviderSchemaError("attempt must be set for active dispatch state")
 
-    dispatch = _build_dispatch(raw.get("current_dispatch"), state)
+    dispatch = _build_dispatch(raw.get("current_dispatch"))
+    report_path = _frozen_str(_validate_str_or_none(raw.get("report_path")))
 
-    report_path = _validate_str_or_none(raw.get("report_path"))
+    granted = _build_str_list_or_none(raw.get("granted_approval_ids"))
 
-    granted_raw = raw.get("granted_approval_ids")
-    granted: tuple[str, ...] | None = None
-    if granted_raw is not None:
-        if not isinstance(granted_raw, list):
-            raise StateProviderSchemaError(
-                "granted_approval_ids must be a list"
-            )
-        for gid in granted_raw:
-            if not isinstance(gid, str) or not gid:
-                raise StateProviderSchemaError(
-                    "granted_approval_ids entries must be non-empty strings"
-                )
-        granted = tuple(sys.intern(str(g)) for g in granted_raw)
-
-    delivery_state = _validate_str_or_none(raw.get("delivery_state"))
+    delivery_state = _frozen_str(_validate_str_or_none(raw.get("delivery_state")))
     if delivery_state is not None and delivery_state not in _DELIVERY_STATES:
         raise StateProviderSchemaError("delivery_state is invalid")
-    integration_state = _validate_str_or_none(raw.get("integration_state"))
+    integration_state = _frozen_str(_validate_str_or_none(raw.get("integration_state")))
     if integration_state is not None and integration_state not in _INTEGRATION_STATES:
         raise StateProviderSchemaError("integration_state is invalid")
 
     impl_commit = _validate_sha40(raw.get("implementation_commit"), required=False)
-    report_commit = _validate_sha40(raw.get("report_commit"), required=False)
+    report_commit_val = _validate_sha40(raw.get("report_commit"), required=False)
     accepted_commit = _validate_sha40(raw.get("accepted_commit"), required=False)
-    acceptance_path = _validate_str_or_none(raw.get("acceptance_path"))
+    acceptance_path = _frozen_str(_validate_str_or_none(raw.get("acceptance_path")))
     integrated_commit = _validate_sha40(raw.get("integrated_commit"), required=False)
 
-    blocked_reason = _validate_str_or_none(raw.get("blocked_reason"))
-    blocked_kind = _validate_str_or_none(raw.get("blocked_kind"))
+    blocked_reason = _frozen_str(_validate_str_or_none(raw.get("blocked_reason")))
+    blocked_kind = _frozen_str(_validate_str_or_none(raw.get("blocked_kind")))
     if blocked_kind is not None and blocked_kind not in _BLOCKED_KINDS:
         raise StateProviderSchemaError("blocked_kind is invalid")
-    blocked_owner = _validate_str_or_none(raw.get("blocked_owner"))
-    unblock_condition = _validate_str_or_none(raw.get("unblock_condition"))
-    review_after = _validate_str_or_none(raw.get("review_after"))
+    blocked_owner = _frozen_str(_validate_str_or_none(raw.get("blocked_owner")))
+    unblock_condition = _frozen_str(_validate_str_or_none(raw.get("unblock_condition")))
+    review_after = _frozen_str(_validate_str_or_none(raw.get("review_after")))
 
     bav = raw.get("blocked_attempt_valid")
     if bav is not None and not _is_bool(bav):
-        raise StateProviderSchemaError(
-            "blocked_attempt_valid must be bool or null"
-        )
+        raise StateProviderSchemaError("blocked_attempt_valid must be bool or null")
 
-    resume_state = _validate_str_or_none(raw.get("resume_state"))
+    resume_state = _frozen_str(_validate_str_or_none(raw.get("resume_state")))
     if resume_state is not None and resume_state not in _STATES:
         raise StateProviderSchemaError("resume_state is invalid")
 
     timestamps = _build_timestamps(raw.get("timestamps"))
 
-    raw_immutable = _make_immutable(raw)
-
     return TaskEntry(
-        task_id=_freeze_strings(task_id),
-        revision=revision,
-        task_card_path=_freeze_strings(task_card_path),
+        task_id=_freeze(task_id), revision=revision,
+        task_card_path=_freeze(task_card_path),
         task_card_commit=task_card_commit,
-        state=_freeze_strings(state),
-        attempt=attempt,
-        current_dispatch=dispatch,
-        report_path=_freeze_strings(report_path) if report_path else None,
-        granted_approval_ids=granted,
-        delivery_state=_freeze_strings(delivery_state) if delivery_state else None,
-        integration_state=_freeze_strings(integration_state) if integration_state else None,
-        implementation_commit=impl_commit,
-        report_commit=report_commit,
-        accepted_commit=accepted_commit,
-        acceptance_path=_freeze_strings(acceptance_path) if acceptance_path else None,
+        state=_freeze(state), attempt=attempt,
+        current_dispatch=dispatch, report_path=report_path,
+        granted_approval_ids=granted, delivery_state=delivery_state,
+        integration_state=integration_state,
+        implementation_commit=impl_commit, report_commit=report_commit_val,
+        accepted_commit=accepted_commit, acceptance_path=acceptance_path,
         integrated_commit=integrated_commit,
-        blocked_reason=_freeze_strings(blocked_reason) if blocked_reason else None,
-        blocked_kind=_freeze_strings(blocked_kind) if blocked_kind else None,
-        blocked_owner=_freeze_strings(blocked_owner) if blocked_owner else None,
-        unblock_condition=_freeze_strings(unblock_condition) if unblock_condition else None,
-        review_after=_freeze_strings(review_after) if review_after else None,
-        blocked_attempt_valid=bav,
-        resume_state=_freeze_strings(resume_state) if resume_state else None,
-        timestamps=timestamps,
-        raw_task=raw_immutable,
+        blocked_reason=blocked_reason, blocked_kind=blocked_kind,
+        blocked_owner=blocked_owner, unblock_condition=unblock_condition,
+        review_after=review_after, blocked_attempt_valid=bav,
+        resume_state=resume_state, timestamps=timestamps,
     )
 
 
-def _build_dispatch(raw: Any, state: str) -> DispatchInfo | None:
-    """Build DispatchInfo from raw current_dispatch, or None."""
+def _build_dispatch(raw: Any) -> DispatchInfo | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
         raise StateProviderSchemaError("current_dispatch must be an object or null")
 
-    dispatch_fields = frozenset(
+    fields = frozenset(
         ("dispatch_id", "attempt_id", "role_id", "base_commit",
          "branch", "dispatched_at", "model_selection")
     )
-    _validate_missing_keys(raw, dispatch_fields, "current_dispatch")
-    _validate_extra_keys(raw, dispatch_fields, "current_dispatch")
+    _validate_missing_keys(raw, fields, "current_dispatch")
+    _validate_extra_keys(raw, fields, "current_dispatch")
 
     dispatch_id = _require_str(raw.get("dispatch_id"))
     attempt_id = _require_str(raw.get("attempt_id"))
@@ -1086,27 +1172,18 @@ def _build_dispatch(raw: Any, state: str) -> DispatchInfo | None:
 
     ms_raw = raw.get("model_selection")
     if not isinstance(ms_raw, dict):
-        raise StateProviderSchemaError(
-            "current_dispatch.model_selection must be an object"
-        )
+        raise StateProviderSchemaError("current_dispatch.model_selection must be an object")
     model_selection = _build_model_selection(ms_raw)
 
-    raw_immutable = _make_immutable(raw)
-
     return DispatchInfo(
-        dispatch_id=_freeze_strings(dispatch_id),
-        attempt_id=_freeze_strings(attempt_id),
-        role_id=_freeze_strings(role_id),
-        base_commit=base_commit,
-        branch=_freeze_strings(branch),
-        dispatched_at=_freeze_strings(dispatched_at),
+        dispatch_id=_freeze(dispatch_id), attempt_id=_freeze(attempt_id),
+        role_id=_freeze(role_id), base_commit=base_commit,
+        branch=_freeze(branch), dispatched_at=_freeze(dispatched_at),
         model_selection=model_selection,
-        raw_dispatch=raw_immutable,
     )
 
 
 def _build_model_selection(raw: dict[str, Any]) -> ModelSelectionSnapshot:
-    """Build ModelSelectionSnapshot from raw dict."""
     ms_fields = frozenset(_MODEL_SELECTION_FIELDS)
     _validate_missing_keys(raw, ms_fields, "model_selection")
     _validate_extra_keys(raw, ms_fields, "model_selection")
@@ -1114,55 +1191,57 @@ def _build_model_selection(raw: dict[str, Any]) -> ModelSelectionSnapshot:
     req_caps = _freeze_capabilities(raw.get("required_model_capabilities"))
     sel_caps = _freeze_capabilities(raw.get("selected_model_capabilities"))
 
-    ctx_tokens = raw.get("selected_context_window_tokens")
-    if not _is_int(ctx_tokens) or ctx_tokens < 1:
-        raise StateProviderSchemaError(
-            "selected_context_window_tokens must be int >= 1"
-        )
+    ctx = raw.get("selected_context_window_tokens")
+    if not _is_int(ctx) or ctx < 1:
+        raise StateProviderSchemaError("selected_context_window_tokens must be int >= 1")
 
-    mda_id = raw.get("model_degradation_approval_id")
-    if mda_id is not None and not isinstance(mda_id, str):
-        raise StateProviderSchemaError(
-            "model_degradation_approval_id must be str or null"
-        )
+    mda = raw.get("model_degradation_approval_id")
+    if mda is not None and not isinstance(mda, str):
+        raise StateProviderSchemaError("model_degradation_approval_id must be str or null")
 
     return ModelSelectionSnapshot(
-        required_model_tier=_freeze_strings(_require_str(raw.get("required_model_tier"))),
+        required_model_tier=_freeze(_require_str(raw.get("required_model_tier"))),
         required_model_capabilities=req_caps,
-        model_binding_id=_freeze_strings(_require_str(raw.get("model_binding_id"))),
-        selected_model_provider=_freeze_strings(_require_str(raw.get("selected_model_provider"))),
-        selected_model_id=_freeze_strings(_require_str(raw.get("selected_model_id"))),
-        selected_model_tier=_freeze_strings(_require_str(raw.get("selected_model_tier"))),
-        selected_deliberation_tier=_freeze_strings(_require_str(raw.get("selected_deliberation_tier"))),
-        selected_context_window_tokens=ctx_tokens,
+        model_binding_id=_freeze(_require_str(raw.get("model_binding_id"))),
+        selected_model_provider=_freeze(_require_str(raw.get("selected_model_provider"))),
+        selected_model_id=_freeze(_require_str(raw.get("selected_model_id"))),
+        selected_model_tier=_freeze(_require_str(raw.get("selected_model_tier"))),
+        selected_deliberation_tier=_freeze(_require_str(raw.get("selected_deliberation_tier"))),
+        selected_context_window_tokens=ctx,
         selected_model_capabilities=sel_caps,
-        model_degradation_approval_id=_freeze_strings(mda_id) if mda_id else None,
+        model_degradation_approval_id=_frozen_str(mda) if mda else None,
     )
 
 
 def _build_timestamps(raw: Any) -> TaskTimestamps:
-    """Build TaskTimestamps from raw dict."""
     if not isinstance(raw, dict):
         raise StateProviderSchemaError("timestamps must be an object")
     allowed = frozenset(_TIMESTAMP_FIELDS)
     _validate_extra_keys(raw, allowed, "timestamps")
     _validate_missing_keys(raw, allowed, "timestamps")
 
+    def _opt(key: str) -> str | None:
+        v = raw.get(key)
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            raise StateProviderSchemaError("timestamp must be str or null")
+        return _freeze(v)
+
     return TaskTimestamps(
-        created_at=_freeze_strings(_require_str(raw.get("created_at"))),
-        ready_at=_freeze_strings(_validate_str_or_none(raw.get("ready_at"))) if raw.get("ready_at") else None,
-        dispatched_at=_freeze_strings(_validate_str_or_none(raw.get("dispatched_at"))) if raw.get("dispatched_at") else None,
-        started_at=_freeze_strings(_validate_str_or_none(raw.get("started_at"))) if raw.get("started_at") else None,
-        delivered_at=_freeze_strings(_validate_str_or_none(raw.get("delivered_at"))) if raw.get("delivered_at") else None,
-        blocked_at=_freeze_strings(_validate_str_or_none(raw.get("blocked_at"))) if raw.get("blocked_at") else None,
-        accepted_at=_freeze_strings(_validate_str_or_none(raw.get("accepted_at"))) if raw.get("accepted_at") else None,
-        integrated_at=_freeze_strings(_validate_str_or_none(raw.get("integrated_at"))) if raw.get("integrated_at") else None,
-        updated_at=_freeze_strings(_require_str(raw.get("updated_at"))),
+        created_at=_freeze(_require_str(raw.get("created_at"))),
+        ready_at=_opt("ready_at"),
+        dispatched_at=_opt("dispatched_at"),
+        started_at=_opt("started_at"),
+        delivered_at=_opt("delivered_at"),
+        blocked_at=_opt("blocked_at"),
+        accepted_at=_opt("accepted_at"),
+        integrated_at=_opt("integrated_at"),
+        updated_at=_freeze(_require_str(raw.get("updated_at"))),
     )
 
 
 def _freeze_capabilities(raw: Any) -> tuple[str, ...]:
-    """Convert a list of capability strings to a tuple."""
     if not isinstance(raw, list):
         raise StateProviderSchemaError("capabilities must be an array")
     result: list[str] = []
@@ -1175,31 +1254,47 @@ def _freeze_capabilities(raw: Any) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _freeze_str_list(raw: Any) -> tuple[str, ...]:
+    """Freeze a JSON list of strings into a tuple."""
+    if not isinstance(raw, list):
+        raise StateProviderSchemaError("expected a list")
+    return tuple(sys.intern(str(s)) for s in raw)
+
+
+def _build_str_list_or_none(raw: Any) -> tuple[str, ...] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise StateProviderSchemaError("expected a list or null")
+    for item in raw:
+        if not isinstance(item, str) or not item:
+            raise StateProviderSchemaError("list entries must be non-empty strings")
+    return tuple(sys.intern(str(item)) for item in raw)
+
+
+# ── events ────────────────────────────────────────────────────────────────
+
+
 def _build_events(
-    raw_list: list[tuple[str, dict[str, Any]]],
+    raw_list: list[tuple[str, bytes]],
 ) -> tuple[EventEntry, ...]:
-    """Parse and validate events, returning a tuple of EventEntry."""
-    seen_event_ids: set[str] = set()
+    seen: set[str] = set()
     result: list[EventEntry] = []
-    for filename, doc in raw_list:
-        entry = _build_single_event(doc, filename, seen_event_ids)
-        result.append(entry)
+    for fn, raw in raw_list:
+        result.append(_build_single_event(raw, fn, seen))
     return tuple(result)
 
 
-def _build_single_event(
-    doc: dict[str, Any], filename: str, seen: set[str]
-) -> EventEntry:
-    """Build a single EventEntry from raw event dict."""
-    # Validate schema_version
+def _build_single_event(raw: bytes, filename: str, seen: set[str]) -> EventEntry:
+    doc = _parse_yaml_mapping(raw, filename)
+    return _build_event_from_dict(doc, filename, seen)
+
+
+def _build_event_from_dict(doc: dict[str, object], filename: str, seen: set[str]) -> EventEntry:
     sv = doc.get("schema_version")
     if sv != _SCHEMA_EVENT:
-        raise StateProviderSchemaError(
-            "event schema_version is not agentdesk.state-event/v2"
-        )
+        raise StateProviderSchemaError("event schema_version is not agentdesk.state-event/v2")
 
-    # Validate exact keys: common fields + possible event-type extras
-    common_allowed = frozenset(_EVENT_COMMON_FIELDS)
     event_type = doc.get("event_type")
     if event_type not in _EVENT_TYPES:
         raise StateProviderSchemaError("unknown event_type")
@@ -1210,59 +1305,50 @@ def _build_single_event(
     elif event_type == "CHANGE_INTEGRATED":
         extra_allowed = frozenset(_CHANGE_INTEGRATED_EXTRA_FIELDS)
 
-    # Check event_type-specific extra keys: they may be present
-    allowed = common_allowed | extra_allowed
-    extra_keys = set(doc.keys()) - allowed
-    if extra_keys:
-        raise StateProviderSchemaError("event has forbidden key(s)")
+    allowed = frozenset(_EVENT_COMMON_FIELDS) | extra_allowed
+    _validate_extra_keys(doc, allowed, "event")
 
-    # Common field extraction
     event_id = _require_str(doc.get("event_id"))
     if event_id in seen:
         raise StateProviderSchemaError("duplicate event_id")
     seen.add(event_id)
-
     if not _EVENT_ID_RE.match(event_id):
         raise StateProviderSchemaError("event_id does not match pattern")
 
     task_id = _validate_task_id(doc.get("task_id"))
     revision = _require_int_ge(doc.get("revision"), 1)
+
     attempt_raw = doc.get("attempt")
     attempt: int | None = None
     if attempt_raw is not None:
         attempt = _require_int_ge(attempt_raw, 1)
 
-    dispatch_id = _validate_str_or_none(doc.get("dispatch_id"))
+    dispatch_id = _frozen_str(_validate_str_or_none(doc.get("dispatch_id")))
     from_state = _validate_state(doc.get("from_state"))
     to_state = _validate_state(doc.get("to_state"))
     lease_epoch = _require_int_ge(doc.get("lease_epoch"), 1)
     actor_role_id = _require_str(doc.get("actor_role_id"))
     occurred_at = _require_str(doc.get("occurred_at"))
-    source_message_id = _validate_str_or_none(doc.get("source_message_id"))
+    source_message_id = _frozen_str(_validate_str_or_none(doc.get("source_message_id")))
 
-    # evidence_refs
-    evidence_refs_raw = doc.get("evidence_refs")
-    if not isinstance(evidence_refs_raw, list):
-        raise StateProviderSchemaError("evidence_refs must be a list")
-    evidence_refs: tuple[str, ...] = tuple(
-        sys.intern(str(ref)) for ref in evidence_refs_raw
-    )
+    evidence_refs = _freeze_str_list(doc.get("evidence_refs"))
 
-    # guard_results
+    # guard_results — parse the real list[dict] format
     guard_raw = doc.get("guard_results")
-    if not isinstance(guard_raw, list):
-        raise StateProviderSchemaError("guard_results must be a list")
+    if guard_raw is not None:
+        if not isinstance(guard_raw, list):
+            raise StateProviderSchemaError("guard_results must be a list")
+    else:
+        guard_raw = []
     guard_results = tuple(_build_guard_result(g) for g in guard_raw)
 
     # Event-type-specific extras
-    payload_digest: str | None = None
+    payload_digest = None
     if event_type == "TASK_DISPATCHED":
         pd = doc.get("payload_digest")
         if not isinstance(pd, str) or not _PAYLOAD_DIGEST_RE.match(pd):
-            raise StateProviderSchemaError(
-                "TASK_DISPATCHED payload_digest is invalid"
-            )
-        payload_digest = _freeze_strings(pd)
+            raise StateProviderSchemaError("TASK_DISPATCHED payload_digest is invalid")
+        payload_digest = _freeze(pd)
 
     extra_fields: tuple[tuple[str, object], ...] | None = None
     if event_type == "CHANGE_INTEGRATED":
@@ -1271,89 +1357,101 @@ def _build_single_event(
             val = doc.get(key)
             if val is not None:
                 pairs.append((key, val))
-        # Require at least accepted_commit and integrated_commit
         for req_key in ("accepted_commit", "integrated_commit"):
             v = doc.get(req_key)
             if not isinstance(v, str) or not v:
-                raise StateProviderSchemaError(
-                    f"CHANGE_INTEGRATED missing {req_key}"
-                )
+                raise StateProviderSchemaError(f"CHANGE_INTEGRATED missing {req_key}")
         extra_fields = tuple(pairs)
 
-    raw_immutable = _make_immutable(doc)
-
     return EventEntry(
-        schema_version=_freeze_strings(sv),
-        event_id=_freeze_strings(event_id),
-        event_type=_freeze_strings(event_type),
-        task_id=_freeze_strings(task_id),
+        schema_version=_freeze(sv),
+        event_id=_freeze(event_id),
+        event_type=_freeze(event_type),
+        task_id=_freeze(task_id),
         revision=revision,
         attempt=attempt,
-        dispatch_id=_freeze_strings(dispatch_id) if dispatch_id else None,
-        from_state=_freeze_strings(from_state),
-        to_state=_freeze_strings(to_state),
+        dispatch_id=dispatch_id,
+        from_state=_freeze(from_state),
+        to_state=_freeze(to_state),
         lease_epoch=lease_epoch,
-        actor_role_id=_freeze_strings(actor_role_id),
-        occurred_at=_freeze_strings(occurred_at),
-        source_message_id=_freeze_strings(source_message_id) if source_message_id else None,
+        actor_role_id=_freeze(actor_role_id),
+        occurred_at=_freeze(occurred_at),
+        source_message_id=source_message_id,
         evidence_refs=evidence_refs,
         guard_results=guard_results,
         payload_digest=payload_digest,
         extra_fields=extra_fields,
-        raw_event=raw_immutable,
     )
 
 
 def _build_guard_result(raw: Any) -> GuardResult:
-    """Build a GuardResult from raw dict."""
+    """Build a GuardResult from raw dict.
+
+    The inputs field is ``list[{"key": ..., "value": ...}]``
+    (matching ``control_plane_transition._serialize_guard_input``).
+    """
     if not isinstance(raw, dict):
-        raise StateProviderSchemaError("guard_results entry must be an object")
+        raise StateProviderSchemaError("guard_result entry must be an object")
     allowed = frozenset(_GUARD_FIELDS)
-    _validate_extra_keys(raw, allowed, "guard_results entry")
-    _validate_missing_keys(raw, allowed, "guard_results entry")
+    _validate_extra_keys(raw, allowed, "guard_result")
+    _validate_missing_keys(raw, allowed, "guard_result")
 
     guard = _require_str(raw.get("guard"))
+
     inputs_raw = raw.get("inputs")
-    if not isinstance(inputs_raw, dict):
-        raise StateProviderSchemaError("guard inputs must be an object")
-    inputs: tuple[tuple[str, object], ...] = tuple(
-        (sys.intern(str(k)), v)
-        for k, v in inputs_raw.items()
-    )
-    result_val = _require_str(raw.get("result"))
+    if not isinstance(inputs_raw, list):
+        raise StateProviderSchemaError("guard_result inputs must be a list")
+    inputs_list: list[GuardInput] = []
+    for inp in inputs_raw:
+        if not isinstance(inp, dict):
+            raise StateProviderSchemaError("guard_input must be an object")
+        ik = inp.get("key")
+        iv = inp.get("value")
+        if not isinstance(ik, str) or not ik:
+            raise StateProviderSchemaError("guard_input key must be non-empty string")
+        # value: str, int, bool, or None
+        if iv is not None and not isinstance(iv, (str, int, bool)):
+            raise StateProviderSchemaError("guard_input value must be str, int, bool, or null")
+        if isinstance(iv, int) and isinstance(iv, bool):
+            raise StateProviderSchemaError("guard_input value must not be bool-as-int")
+        inputs_list.append(GuardInput(key=_freeze(ik), value=iv))
+
+    result_val = raw.get("result")
+    if not isinstance(result_val, str) or result_val not in _GUARD_RESULT_VALUES:
+        raise StateProviderSchemaError(
+            "guard_result result must be one of passed/failed/skipped/not_applicable"
+        )
     checked_at = _require_str(raw.get("checked_at"))
     evidence_ref = _require_str(raw.get("evidence_ref"))
 
     return GuardResult(
-        guard=_freeze_strings(guard),
-        inputs=inputs,
-        result=_freeze_strings(result_val),
-        checked_at=_freeze_strings(checked_at),
-        evidence_ref=_freeze_strings(evidence_ref),
+        guard=_freeze(guard),
+        inputs=tuple(inputs_list),
+        result=_freeze(result_val),
+        checked_at=_freeze(checked_at),
+        evidence_ref=_freeze(evidence_ref),
     )
 
 
+# ── outbox ────────────────────────────────────────────────────────────────
+
+
 def _build_outbox(
-    raw_list: list[tuple[str, dict[str, Any]]],
+    raw_list: list[tuple[str, bytes]],
 ) -> tuple[OutboxEntry, ...]:
-    """Parse and validate outbox, returning a tuple of OutboxEntry."""
-    seen_message_ids: set[str] = set()
+    seen: set[str] = set()
     result: list[OutboxEntry] = []
-    for filename, doc in raw_list:
-        entry = _build_single_outbox(doc, filename, seen_message_ids)
-        result.append(entry)
+    for fn, raw in raw_list:
+        result.append(_build_single_outbox(raw, fn, seen))
     return tuple(result)
 
 
-def _build_single_outbox(
-    doc: dict[str, Any], filename: str, seen: set[str]
-) -> OutboxEntry:
-    """Build a single OutboxEntry."""
+def _build_single_outbox(raw: bytes, filename: str, seen: set[str]) -> OutboxEntry:
+    doc = _parse_yaml_mapping(raw, filename)
+
     sv = doc.get("schema_version")
     if sv != _SCHEMA_OUTBOX:
-        raise StateProviderSchemaError(
-            "outbox schema_version is not agentdesk.outbox-message/v2"
-        )
+        raise StateProviderSchemaError("outbox schema_version is not agentdesk.outbox-message/v2")
 
     allowed = frozenset(_OUTBOX_FIELDS)
     _validate_extra_keys(doc, allowed, "outbox")
@@ -1386,117 +1484,169 @@ def _build_single_outbox(
         raise StateProviderSchemaError("outbox payload must be an object")
     payload = _build_outbox_payload(payload_raw)
 
-    raw_immutable = _make_immutable(doc)
-
     return OutboxEntry(
-        schema_version=_freeze_strings(sv),
-        message_id=_freeze_strings(message_id),
-        event_id=_freeze_strings(event_id),
-        message_type=_freeze_strings(message_type),
-        dedupe_key=_freeze_strings(dedupe_key),
-        task_id=_freeze_strings(task_id),
+        schema_version=_freeze(sv),
+        message_id=_freeze(message_id),
+        event_id=_freeze(event_id),
+        message_type=_freeze(message_type),
+        dedupe_key=_freeze(dedupe_key),
+        task_id=_freeze(task_id),
         revision=revision,
         attempt=attempt,
-        dispatch_id=_freeze_strings(dispatch_id),
-        destination_role_id=_freeze_strings(destination_role_id),
-        created_at=_freeze_strings(created_at),
+        dispatch_id=_freeze(dispatch_id),
+        destination_role_id=_freeze(destination_role_id),
+        created_at=_freeze(created_at),
         model_selection=model_selection,
         payload=payload,
-        raw_outbox=raw_immutable,
     )
 
 
 def _build_outbox_payload(raw: dict[str, Any]) -> OutboxPayload:
-    """Build OutboxPayload from raw dict."""
     allowed = frozenset(_OUTBOX_PAYLOAD_FIELDS)
     _validate_extra_keys(raw, allowed, "outbox payload")
     _validate_missing_keys(raw, allowed, "outbox payload")
 
     return OutboxPayload(
-        task_path=_freeze_strings(_require_str(raw.get("task_path"))),
-        task_card_commit=_freeze_strings(_require_str(raw.get("task_card_commit"))),
-        base_commit=_freeze_strings(_require_str(raw.get("base_commit"))),
-        branch=_freeze_strings(_require_str(raw.get("branch"))),
-        report_path=_freeze_strings(_require_str(raw.get("report_path"))),
+        task_path=_freeze(_require_str(raw.get("task_path"))),
+        task_card_commit=_freeze(_require_str(raw.get("task_card_commit"))),
+        base_commit=_freeze(_require_str(raw.get("base_commit"))),
+        branch=_freeze(_require_str(raw.get("branch"))),
+        report_path=_freeze(_require_str(raw.get("report_path"))),
     )
 
 
+# ── acceptances ───────────────────────────────────────────────────────────
+
+
+def _parse_frontmatter(raw: str, description: str) -> dict[str, Any]:
+    """Parse YAML frontmatter from markdown.
+
+    Handles top-level scalars + one-level nested mappings
+    (owner_approval.gate, owner_approval.approval_ids as inline []).
+    """
+    lines = raw.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise StateProviderSchemaError("must start with YAML frontmatter")
+    try:
+        closing = next(i for i, line in enumerate(lines[1:], start=1)
+                       if line.strip() == "---")
+    except StopIteration:
+        raise StateProviderSchemaError("has no closing frontmatter delimiter")
+    fm_lines = lines[1:closing]
+    result: dict[str, Any] = {}
+    current_map_key: str | None = None
+    current_map: dict[str, Any] = {}
+
+    for line in fm_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if line.startswith("  ") and not line.startswith("    "):
+            if ":" in stripped:
+                key, _, val = stripped.partition(":")
+                key = key.strip()
+                val = val.strip()
+                if current_map_key is None:
+                    current_map = {}
+                if val:
+                    current_map[key] = _parse_yaml_scalar(val)
+                else:
+                    current_map[key] = None
+            continue
+
+        if current_map_key is not None and current_map:
+            result[current_map_key] = dict(current_map)
+            current_map_key = None
+            current_map = {}
+
+        if ":" in stripped:
+            current_map_key, _, val = stripped.partition(":")
+            current_map_key = current_map_key.strip()
+            val = val.strip()
+            current_map = {}
+            if val:
+                result[current_map_key] = _parse_yaml_scalar(val)
+                current_map_key = None
+
+    if current_map_key is not None and current_map:
+        result[current_map_key] = dict(current_map)
+
+    return result
+
+
+def _parse_yaml_scalar(val: str) -> Any:
+    if not val:
+        return ""
+    if (val.startswith('"') and val.endswith('"')) or \
+       (val.startswith("'") and val.endswith("'")):
+        return val[1:-1]
+    if val == "[]":
+        return []
+    if val in ("null", "~", ""):
+        return None
+    if val in ("true", "True", "TRUE"):
+        return True
+    if val in ("false", "False", "FALSE"):
+        return False
+    try:
+        return int(val)
+    except ValueError:
+        pass
+    return val
+
+
 def _parse_acceptance(raw: bytes, filename: str) -> dict[str, Any]:
-    """Parse acceptance markdown file, returning dict with frontmatter + body."""
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        raise StateProviderSchemaError(
-            "acceptance file is not valid UTF-8"
-        ) from None
-    # Validate filename pattern
+        raise StateProviderSchemaError("acceptance file is not valid UTF-8") from None
     m = _ACCEPTANCE_FILENAME_RE.match(filename)
     if not m:
-        raise StateProviderSchemaError(
-            "acceptance filename does not match expected pattern"
-        )
+        raise StateProviderSchemaError("acceptance filename does not match expected pattern")
     review_n = int(m.group(4))
     fm = _parse_frontmatter(text, filename)
     body_start = _find_body_start(text)
     body = text[body_start:] if body_start < len(text) else ""
-
-    return {
-        **fm,
-        "_review_n": review_n,
-        "_body": body,
-        "_filename": filename,
-    }
+    return {**fm, "_review_n": review_n, "_body": body, "_filename": filename}
 
 
 def _find_body_start(text: str) -> int:
-    """Find the start of the markdown body after frontmatter."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return 0
     try:
-        closing = next(
-            i for i, line in enumerate(lines[1:], start=1)
-            if line.strip() == "---"
-        )
+        closing = next(i for i, line in enumerate(lines[1:], start=1)
+                       if line.strip() == "---")
     except StopIteration:
         return 0
-    # Body starts after the closing --- line
-    return sum(len(line) + 1 for line in lines[:closing + 1])
+    return sum(len(l) + 1 for l in lines[:closing + 1])
 
 
 def _build_acceptances(
-    raw_list: list[tuple[str, dict[str, Any]]],
+    raw_list: list[tuple[str, bytes]],
 ) -> tuple[AcceptanceEntry, ...]:
-    """Parse and validate acceptances, returning a tuple of AcceptanceEntry."""
-    seen_filenames: set[str] = set()
+    seen: set[str] = set()
     result: list[AcceptanceEntry] = []
-    for filename, fm in raw_list:
-        entry = _build_single_acceptance(fm, filename, seen_filenames)
-        result.append(entry)
+    for fn, raw in raw_list:
+        fm = _parse_acceptance(raw, fn)
+        result.append(_build_single_acceptance(fm, fn, seen))
     return tuple(result)
 
 
 def _build_single_acceptance(
     fm: dict[str, Any], filename: str, seen: set[str]
 ) -> AcceptanceEntry:
-    """Build a single AcceptanceEntry from parsed frontmatter."""
     if filename in seen:
         raise StateProviderSchemaError("duplicate acceptance filename")
     seen.add(filename)
 
-    # Validate frontmatter against expected schema
     sv = fm.get("schema_version")
     if sv != _SCHEMA_ACCEPTANCE:
-        raise StateProviderSchemaError(
-            "acceptance schema_version is not agentdesk.acceptance/v2"
-        )
+        raise StateProviderSchemaError("acceptance schema_version is not agentdesk.acceptance/v2")
 
-    # Validate required frontmatter keys
     for key in _ACCEPTANCE_FRONTMATTER_KEYS:
         if key not in fm:
-            raise StateProviderSchemaError(
-                "acceptance frontmatter missing required key"
-            )
+            raise StateProviderSchemaError("acceptance frontmatter missing required key")
 
     task_id = _validate_task_id(fm.get("task_id"))
     revision = _require_int_ge(fm.get("revision"), 1)
@@ -1512,74 +1662,61 @@ def _build_single_acceptance(
     impl_commit = _validate_sha40(fm.get("implementation_commit"), required=True)
     report_commit_val = _validate_sha40(fm.get("report_commit"), required=True)
     base_commit = _validate_sha40(fm.get("base_commit"), required=False)
-    accepted_commit = _validate_sha40(fm.get("accepted_commit"), required=False)
+    accepted_commit_val = _validate_sha40(fm.get("accepted_commit"), required=False)
 
     reviewed_dispatch_id = _require_str(fm.get("reviewed_dispatch_id"))
     acc_type = fm.get("type")
     if acc_type not in _TASK_TYPES:
         raise StateProviderSchemaError("acceptance type is invalid")
 
-    # owner_approval
     oa = fm.get("owner_approval")
     if not isinstance(oa, dict):
-        raise StateProviderSchemaError(
-            "acceptance owner_approval must be a mapping"
-        )
+        raise StateProviderSchemaError("acceptance owner_approval must be a mapping")
     gate = oa.get("gate")
     if gate != "none":
-        raise StateProviderSchemaError(
-            "acceptance owner_approval.gate must be 'none'"
-        )
+        raise StateProviderSchemaError("acceptance owner_approval.gate must be 'none'")
     approval_ids_raw = oa.get("approval_ids")
     if not isinstance(approval_ids_raw, list):
-        raise StateProviderSchemaError(
-            "acceptance owner_approval.approval_ids must be a list"
-        )
-    approval_ids: tuple[str, ...] = tuple(
-        sys.intern(str(aid)) for aid in approval_ids_raw
-    )
+        raise StateProviderSchemaError("acceptance owner_approval.approval_ids must be a list")
+    approval_ids: tuple[str, ...] = tuple(sys.intern(str(aid)) for aid in approval_ids_raw)
 
     body = fm.get("_body", "")
     if not isinstance(body, str):
         body = ""
 
     return AcceptanceEntry(
-        schema_version=_freeze_strings(sv),
-        task_id=_freeze_strings(task_id),
+        schema_version=_freeze(sv),
+        task_id=_freeze(task_id),
         revision=revision,
         attempt=attempt,
         review_n=review_n,
-        decision=_freeze_strings(decision),
+        decision=_freeze(decision),
         implementation_commit=impl_commit,
         report_commit=report_commit_val,
         base_commit=base_commit,
-        accepted_commit=accepted_commit,
-        reviewed_dispatch_id=_freeze_strings(reviewed_dispatch_id),
-        type=_freeze_strings(acc_type),
-        owner_approval_gate=_freeze_strings(gate),
+        accepted_commit=accepted_commit_val,
+        reviewed_dispatch_id=_freeze(reviewed_dispatch_id),
+        type=_freeze(acc_type),
+        owner_approval_gate=_freeze(gate),
         owner_approval_ids=approval_ids,
         raw_body=body,
-        filename=_freeze_strings(filename),
+        filename=_freeze(filename),
     )
 
 
-def _build_mad_refs(
-    doc: dict[str, Any],
-) -> tuple[MadRefEntry, ...]:
-    """Parse and validate mad-refs.yaml, returning tuple of MadRefEntry."""
+# ── mad-refs ──────────────────────────────────────────────────────────────
+
+
+def _build_mad_refs(doc: dict[str, Any]) -> tuple[MadRefEntry, ...]:
     sv = doc.get("schema_version")
     if sv != _SCHEMA_MAD_REFS:
-        raise StateProviderSchemaError(
-            "mad-refs schema_version is not agentdesk.mad-refs/v1"
-        )
+        raise StateProviderSchemaError("mad-refs schema_version is not agentdesk.mad-refs/v1")
     _validate_missing_keys(doc, _MAD_REF_ROOT_FIELDS, "mad-refs root")
     _validate_extra_keys(doc, _MAD_REF_ROOT_FIELDS, "mad-refs root")
 
     ua = doc.get("updated_at")
     if not isinstance(ua, str) or not ua:
-        raise StateProviderSchemaError(
-            "mad-refs updated_at must be non-empty"
-        )
+        raise StateProviderSchemaError("mad-refs updated_at must be non-empty")
 
     refs_raw = doc.get("refs")
     if not isinstance(refs_raw, list):
@@ -1589,75 +1726,48 @@ def _build_mad_refs(
     result: list[MadRefEntry] = []
     for i, ref in enumerate(refs_raw):
         if not isinstance(ref, dict):
-            raise StateProviderSchemaError(
-                f"mad-refs entry {i} must be an object"
-            )
-        # Validate exact 10 keys
+            raise StateProviderSchemaError("mad-refs entry must be an object")
         actual_keys = set(ref.keys())
         missing = _MAD_REF_FIELD_SET - actual_keys
         extra = actual_keys - _MAD_REF_FIELD_SET
         if missing:
-            raise StateProviderSchemaError(
-                "mad-refs entry missing field(s)"
-            )
+            raise StateProviderSchemaError("mad-refs entry missing field(s)")
         if extra:
-            raise StateProviderSchemaError(
-                "mad-refs entry has forbidden field(s)"
-            )
+            raise StateProviderSchemaError("mad-refs entry has forbidden field(s)")
 
-        # Validate each field
         task_id = _require_str(ref["task_id"])
         dispatch_id = _require_str(ref["dispatch_id"])
         purpose = ref["purpose"]
         if purpose not in _MAD_PURPOSES:
-            raise StateProviderSchemaError(
-                "mad-refs purpose is invalid"
-            )
+            raise StateProviderSchemaError("mad-refs purpose is invalid")
         deliberation_id = _require_str(ref["deliberation_id"])
         depth = ref["depth"]
         if depth not in _MAD_DEPTHS:
-            raise StateProviderSchemaError(
-                "mad-refs depth is invalid"
-            )
+            raise StateProviderSchemaError("mad-refs depth is invalid")
         stdout_sha = ref["stdout_sha256"]
         if not isinstance(stdout_sha, str) or not _SHA256_RE.fullmatch(stdout_sha):
-            raise StateProviderSchemaError(
-                "mad-refs stdout_sha256 must be 64 lowercase hex"
-            )
+            raise StateProviderSchemaError("mad-refs stdout_sha256 must be 64 lowercase hex")
         report_sha = ref["report_sha256"]
         if not isinstance(report_sha, str) or not _SHA256_RE.fullmatch(report_sha):
-            raise StateProviderSchemaError(
-                "mad-refs report_sha256 must be 64 lowercase hex"
-            )
+            raise StateProviderSchemaError("mad-refs report_sha256 must be 64 lowercase hex")
         status = _require_str(ref["status"])
         archive_path = _require_str(ref["archive_path"])
         if not Path(archive_path).is_absolute():
-            raise StateProviderSchemaError(
-                "mad-refs archive_path must be absolute"
-            )
+            raise StateProviderSchemaError("mad-refs archive_path must be absolute")
         created_at = _require_str(ref["created_at"])
 
-        # Duplicate check
         pair = (dispatch_id, purpose)
         if pair in seen_pairs:
-            raise StateProviderSchemaError(
-                "duplicate mad-refs entry"
-            )
+            raise StateProviderSchemaError("duplicate mad-refs entry")
         seen_pairs.add(pair)
 
         result.append(MadRefEntry(
-            task_id=_freeze_strings(task_id),
-            dispatch_id=_freeze_strings(dispatch_id),
-            purpose=_freeze_strings(purpose),
-            deliberation_id=_freeze_strings(deliberation_id),
-            depth=_freeze_strings(depth),
-            stdout_sha256=stdout_sha,
-            report_sha256=report_sha,
-            status=_freeze_strings(status),
-            archive_path=_freeze_strings(archive_path),
-            created_at=_freeze_strings(created_at),
+            task_id=_freeze(task_id), dispatch_id=_freeze(dispatch_id),
+            purpose=_freeze(purpose), deliberation_id=_freeze(deliberation_id),
+            depth=_freeze(depth), stdout_sha256=stdout_sha,
+            report_sha256=report_sha, status=_freeze(status),
+            archive_path=_freeze(archive_path), created_at=_freeze(created_at),
         ))
-
     return tuple(result)
 
 
@@ -1674,51 +1784,44 @@ def _validate_cross_consistency(
     a_outbox_raw: list[tuple[str, bytes]],
     a_acceptances_raw: list[tuple[str, bytes]],
 ) -> None:
-    """Validate cross-file referential integrity."""
-
-    # Build index maps
     task_ids = {t.task_id for t in tasks}
     event_ids = {e.event_id for e in events}
     event_index = {e.event_id: e for e in events}
-    outbox_event_refs = {o.event_id for o in outbox}
     acceptance_filenames = {a.filename for a in acceptances}
 
-    # Events indexed by task
     events_by_task: dict[str, list[EventEntry]] = {}
     for e in events:
         events_by_task.setdefault(e.task_id, []).append(e)
 
-    # Outbox raw bytes indexed by event_id for digest parity
+    # Outbox raw bytes indexed by event_id
     outbox_raw_by_event: dict[str, bytes] = {}
-    for (fn, raw), o in zip(a_outbox_raw, outbox):
+    for (_, raw), o in zip(a_outbox_raw, outbox):
         outbox_raw_by_event[o.event_id] = raw
 
-    # Acceptance raw bytes by filename
-    acceptance_raw_by_filename: dict[str, bytes] = {}
-    for (fn, raw), a in zip(a_acceptances_raw, acceptances):
-        acceptance_raw_by_filename[a.filename] = raw
-
-    # ── Outbox → Event referential check ──
+    # ── Outbox event_id must exist ──
     for o in outbox:
         if o.event_id not in event_ids:
-            raise StateProviderInconsistentSnapshotError(
-                "outbox references non-existent event"
-            )
+            raise StateProviderInconsistentSnapshotError("outbox references non-existent event")
 
-    # ── Dispatch → Event referential check ──
+    # ── TASK_DISPATCHED event must have a corresponding outbox ──
+    for e in events:
+        if e.event_type == "TASK_DISPATCHED":
+            if e.event_id not in outbox_raw_by_event:
+                raise StateProviderInconsistentSnapshotError(
+                    "TASK_DISPATCHED event has no corresponding outbox"
+                )
+
+    # ── Dispatch → event evidence ──
     for t in tasks:
         if t.current_dispatch is not None and t.state in (
             "dispatched", "in_progress", "review_ready"
         ):
             did = t.current_dispatch.dispatch_id
             task_events = events_by_task.get(t.task_id, [])
-            found = any(
-                e.dispatch_id == did
-                and e.revision == t.revision
-                and e.attempt == t.attempt
+            if not any(
+                e.dispatch_id == did and e.revision == t.revision and e.attempt == t.attempt
                 for e in task_events
-            )
-            if not found:
+            ):
                 raise StateProviderInconsistentSnapshotError(
                     "current_dispatch has no matching event evidence"
                 )
@@ -1726,15 +1829,13 @@ def _validate_cross_consistency(
     # ── Acceptance path → file existence ──
     for t in tasks:
         if t.state in ("accepted", "integrated") and t.acceptance_path:
-            # acceptance_path refers to a file in docs/pm/acceptances/
-            # The filename should exist in our acceptance set
             acc_filename = Path(t.acceptance_path).name
             if acc_filename not in acceptance_filenames:
                 raise StateProviderInconsistentSnapshotError(
                     "acceptance_path references non-existent file"
                 )
 
-    # ── Digest parity: TASK_DISPATCHED payload_digest must match outbox sha256 ──
+    # ── Digest parity ──
     for e in events:
         if e.event_type == "TASK_DISPATCHED" and e.payload_digest:
             ob_raw = outbox_raw_by_event.get(e.event_id)
@@ -1745,51 +1846,30 @@ def _validate_cross_consistency(
                         "TASK_DISPATCHED payload_digest does not match outbox"
                     )
 
-    # ── Orphan detection: outbox referencing non-existent task ──
+    # ── Orphan: outbox/event/acceptance/mad-ref → non-existent task ──
     for o in outbox:
         if o.task_id not in task_ids:
-            raise StateProviderInconsistentSnapshotError(
-                "outbox references non-existent task"
-            )
-
-    # ── Orphan detection: event referencing non-existent task ──
+            raise StateProviderInconsistentSnapshotError("outbox references non-existent task")
     for e in events:
         if e.task_id not in task_ids:
-            raise StateProviderInconsistentSnapshotError(
-                "event references non-existent task"
-            )
-
-    # ── Orphan detection: acceptance referencing non-existent task ──
+            raise StateProviderInconsistentSnapshotError("event references non-existent task")
     for a in acceptances:
         if a.task_id not in task_ids:
-            raise StateProviderInconsistentSnapshotError(
-                "acceptance references non-existent task"
-            )
+            raise StateProviderInconsistentSnapshotError("acceptance references non-existent task")
 
-    # ── Partial transition detection: outbox with no matching event ──
+    # ── Outbox task_id matches event task_id ──
     for o in outbox:
         ev = event_index.get(o.event_id)
-        if ev is None:
-            continue
-        if ev.task_id != o.task_id:
-            raise StateProviderInconsistentSnapshotError(
-                "outbox event_id task mismatch"
-            )
+        if ev is not None and ev.task_id != o.task_id:
+            raise StateProviderInconsistentSnapshotError("outbox event_id task mismatch")
 
-    # ── Mad-ref cross-file: task_id must exist ──
+    # ── Mad-ref cross-ref ──
     if mad_refs is not None:
         for mr in mad_refs:
             if mr.task_id not in task_ids:
-                raise StateProviderInconsistentSnapshotError(
-                    "mad-ref references non-existent task"
-                )
-            # dispatch_id must have event evidence
-            found = any(
-                e.dispatch_id == mr.dispatch_id
-                and e.task_id == mr.task_id
-                for e in events
-            )
-            if not found:
+                raise StateProviderInconsistentSnapshotError("mad-ref references non-existent task")
+            if not any(e.dispatch_id == mr.dispatch_id and e.task_id == mr.task_id
+                       for e in events):
                 raise StateProviderInconsistentSnapshotError(
                     "mad-ref dispatch_id has no matching event"
                 )
@@ -1799,21 +1879,18 @@ def _validate_cross_consistency(
 
 
 def _validate_task_id(raw: Any) -> str:
-    """Validate task_id format."""
     if not isinstance(raw, str) or not _TASK_ID_RE.match(raw):
         raise StateProviderSchemaError("invalid task_id")
     return raw
 
 
 def _validate_state(raw: Any) -> str:
-    """Validate state is one of the 11 frozen states."""
     if not isinstance(raw, str) or raw not in _STATES:
         raise StateProviderSchemaError("invalid state")
     return raw
 
 
 def _validate_sha40(raw: Any, required: bool) -> str | None:
-    """Validate a 40-char lowercase hex SHA field."""
     if raw is None:
         if required:
             raise StateProviderSchemaError("required SHA field is null")
@@ -1824,7 +1901,6 @@ def _validate_sha40(raw: Any, required: bool) -> str | None:
 
 
 def _validate_str_or_none(raw: Any) -> str | None:
-    """Validate a string-or-null field."""
     if raw is None:
         return None
     if not isinstance(raw, str):
