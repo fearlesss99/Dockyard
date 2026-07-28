@@ -32,7 +32,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 19 | AgentDesk RateLimit service | **Target** | TC-13.14 | Provider rate-limit handling independent of escalation |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
-| 22 | AgentDesk WorkflowOrchestrator | **Partial** | TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; retry loop, cancellation, fault recovery: Target) |
+| 22 | AgentDesk WorkflowOrchestrator | **Partial** | TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Target; retry loop, superseded, fault recovery: Target) |
 | 23 | E2E / Recovery tests | **Target** | TC-13.19 | End-to-end validation and recovery scenarios |
 | 24 | AgentDesk HTML Dashboard | **Target** | TC-13.20 | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target 鈫?Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
@@ -6460,8 +6460,9 @@ in `ControlPlaneTransitionService._TRANSITION_SPECS` (搂2.14.8):
 | 11 | `BLOCKER_RESOLVED` | TC-13.18d.2 unblock path |
 | 12 | `BLOCKER_RESCOPED` | Current — TC-13.18d.5 rescope path |
 | 13 | `BLOCKER_CANCELLED` | Current — TC-13.18d.6 cancel path |
-| 14 | `TASK_CANCELLED` | TC-13.18d.2 cancel path |
-| 15 | `TASK_SUPERSEDED` | TC-13.18d.2 supersede path |
+| 14 | `TASK_CANCELLED` (quiescent path) | Current — TC-13.18d.7 |
+| 15 | `TASK_CANCELLED` (active dispatch path) | Target |
+| 16 | `TASK_SUPERSEDED` | Target |
 
 WorkflowOrchestrator does **not** duplicate `_TRANSITION_SPECS` 鈥?it
 constructs typed `TransitionRequest` objects and passes them to

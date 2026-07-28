@@ -1,4 +1,4 @@
-"""AgentDesk WorkflowOrchestrator — TC-13.18b / TC-13.18b.2 / TC-13.18c.1 / TC-13.18c.2 / TC-13.18d.1 / TC-13.18d.2.
+"""AgentDesk WorkflowOrchestrator — TC-13.18b / TC-13.18b.2 / TC-13.18c.1 / TC-13.18c.2 / TC-13.18d.1 / TC-13.18d.2 / TC-13.18d.3 / TC-13.18d.4 / TC-13.18d.5 / TC-13.18d.6 / TC-13.18d.7.
 
 Single dispatch-cycle execution: snapshot -> acquire lease ->
 TASK_DISPATCHED -> heartbeat + run_worker_observed ->
@@ -18,8 +18,15 @@ Blocked audit escalation (TC-13.18d.2): audit verdict=blocked →
 evaluate_escalation(current_worker_kind) → TASK_BLOCKED (lease=None) →
 BlockedAuditResult.
 
+Quiescent task cancellation (TC-13.18d.7): StateProvider.snapshot() →
+validate no current_dispatch → TASK_CANCELLED (lease=None) →
+TaskCancellationResult.
+
 Non-goals (explicitly excluded):
 * Escalation, retry, automatic blocked/fail remediation
+* Active-dispatch cooperative cancellation →Target
+* Subprocess termination →Target
+* Heartbeat cleanup →Target
 * Codex output decoding (blocked until TC-13.9c.2)
 * Parsing stdout/stderr manually, guessing commits from Git HEAD
 * Git worktree lifecycle, subprocess invocation, file I/O
@@ -44,6 +51,7 @@ from control_plane_transition import (
     BlockerCancelledPayload,
     BlockerRescopedPayload,
     BlockerResolvedPayload,
+    CancelledPayload,
     ControlPlaneTransitionService,
     DeliveryAcceptedPayload,
     DeliveryReturnedPayload,
@@ -111,6 +119,8 @@ __all__ = [
     "EscalatedRedispatchResult",
     "IntegrationFailureRequest",
     "IntegrationFailureResult",
+    "TaskCancellationRequest",
+    "TaskCancellationResult",
     "WorkerOutput",
     "WorkflowClock",
     "WorkflowHeartbeatError",
@@ -615,6 +625,27 @@ class BlockedCancellationResult:
 
     task_id: str
     escalation_decision: EscalationDecision
+    cancellation_transition: TransitionResult
+
+
+# -- TaskCancellation types (TC-13.18d.7) ------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TaskCancellationRequest:
+    """Immutable input for quiescent task cancellation — exactly one field.
+
+    All identifiers are caller-supplied.
+    """
+
+    cancellation_transition_request: TransitionRequest
+
+
+@dataclass(frozen=True, slots=True)
+class TaskCancellationResult:
+    """Immutable result of quiescent task cancellation — exactly two fields."""
+
+    task_id: str
     cancellation_transition: TransitionResult
 
 
@@ -2227,6 +2258,130 @@ class WorkflowOrchestrator:
         return BlockedCancellationResult(
             task_id=request.blocked_audit_result.task_id,
             escalation_decision=request.blocked_audit_result.escalation_decision,
+            cancellation_transition=cancellation_transition,
+        )
+
+    async def cancel_quiescent_task(
+        self,
+        request: TaskCancellationRequest,
+    ) -> TaskCancellationResult:
+        """Cancel a non-terminal task with no active dispatch (TC-13.18d.7).
+
+        Execution order:
+        1. Validate request shape (exactly TaskCancellationRequest)
+        2. StateProvider.snapshot()
+        3. Locate and validate task from snapshot
+        4. now = clock.now()
+        5. apply_transition(TASK_CANCELLED, lease=None, now)
+        6. return TaskCancellationResult
+
+        Must NOT cancel a running Worker.  Active dispatch cooperative
+        cancellation, subprocess termination, and heartbeat cleanup are
+        deferred to separate task cards.
+
+        Does NOT run MAD audit, EscalationService, WorkerAdapter, or any
+        WorkerSlotLease operations.  No auto-retry.  Transition exceptions
+        and asyncio.CancelledError propagate unchanged.
+        """
+        # -- 1. Validate request shape -------------------------------------------
+        if type(request) is not TaskCancellationRequest:
+            raise WorkflowInputError(
+                "request must be TaskCancellationRequest, "
+                f"got {type(request).__name__}"
+            )
+
+        tr = request.cancellation_transition_request
+
+        # -- 1a. transition request must be exactly TransitionRequest ------------
+        if type(tr) is not TransitionRequest:
+            raise WorkflowInputError(
+                "cancellation_transition_request must be TransitionRequest, "
+                f"got {type(tr).__name__}"
+            )
+
+        # -- 1b. event_type must be TASK_CANCELLED ------------------------------
+        if tr.event_type != "TASK_CANCELLED":
+            raise WorkflowInputError(
+                "cancellation_transition_request event_type must be "
+                "TASK_CANCELLED"
+            )
+
+        # -- 1c. payload must be CancelledPayload -------------------------------
+        if type(tr.payload) is not CancelledPayload:
+            raise WorkflowInputError(
+                "cancellation_transition_request payload must be "
+                "CancelledPayload"
+            )
+
+        # -- 1d. to_state must be "cancelled" -----------------------------------
+        # (validated by TransitionService, fail-closed check here)
+
+        # -- 1e. dispatch_cas must be None --------------------------------------
+        if tr.dispatch_cas is not None:
+            raise WorkflowInputError(
+                "cancellation_transition_request dispatch_cas must be None"
+            )
+
+        # -- 1f. event_id must not be empty --------------------------------------
+        if not tr.event_id:
+            raise WorkflowInputError(
+                "cancellation_transition_request event_id must not be empty"
+            )
+
+        # -- 2. StateProvider.snapshot() -----------------------------------------
+        try:
+            snapshot = StateProvider(self.project_root).snapshot()
+        except StateProviderError:
+            raise  # propagate as-is
+
+        # -- 3. Locate and validate task -----------------------------------------
+        task_id = tr.cas.task_id
+        task = None
+        for t in snapshot.tasks:
+            if t.task_id == task_id:
+                task = t
+                break
+        if task is None:
+            raise WorkflowInputError(
+                "target task not found in snapshot"
+            )
+
+        # -- 3a. revision must match CAS expected_revision -----------------------
+        if task.revision != tr.cas.expected_revision:
+            raise WorkflowInputError(
+                "task revision does not match CAS expected_revision"
+            )
+
+        # -- 3b. state must match CAS expected_state ----------------------------
+        if task.state != tr.cas.expected_state:
+            raise WorkflowInputError(
+                "task state does not match CAS expected_state"
+            )
+
+        # -- 3c. current_dispatch must be None (quiescent only) ------------------
+        if task.current_dispatch is not None:
+            raise WorkflowInputError(
+                "task has active dispatch — quiescent cancellation refused"
+            )
+
+        # -- 3d. task must not already be in a terminal state --------------------
+        _TERMINAL_STATES = frozenset({"cancelled", "superseded", "integrated"})
+        if task.state in _TERMINAL_STATES:
+            raise WorkflowInputError(
+                "task is already in a terminal state"
+            )
+
+        # -- 4. clock.now() ------------------------------------------------------
+        now = self.clock.now()
+
+        # -- 5. Apply TASK_CANCELLED with lease=None -----------------------------
+        cancellation_transition = ControlPlaneTransitionService(
+            self.project_root
+        ).apply_transition(tr, lease=None, now=now)
+
+        # -- 6. Return result ----------------------------------------------------
+        return TaskCancellationResult(
+            task_id=task_id,
             cancellation_transition=cancellation_transition,
         )
 

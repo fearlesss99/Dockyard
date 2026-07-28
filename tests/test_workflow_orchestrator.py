@@ -13645,3 +13645,1295 @@ class WorkflowOrchestratorBlockedCancellationTests(unittest.TestCase):
                 asyncio.run(_run())
         finally:
             import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── TaskCancellationRequest One-Field Tests ───────────────────────────────
+
+
+class TaskCancellationRequestOneFieldTests(unittest.TestCase):
+    """TaskCancellationRequest: exactly one field, frozen, slots, no __dict__."""
+
+    def test_exactly_one_field(self) -> None:
+        from workflow_orchestrator import TaskCancellationRequest
+        field_names = {f.name for f in dc_fields(TaskCancellationRequest)}
+        expected = {"cancellation_transition_request"}
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import TaskCancellationRequest
+        self.assertTrue(
+            TaskCancellationRequest.__dataclass_params__.frozen
+        )
+        self.assertTrue(hasattr(TaskCancellationRequest, "__slots__"))
+
+    def test_no_dict(self) -> None:
+        from workflow_orchestrator import TaskCancellationRequest
+        from control_plane_transition import (
+            CancelledPayload,
+            TransitionCAS,
+            TransitionEventContext,
+            TransitionRequest,
+        )
+        tr = TransitionRequest(
+            cas=TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="a" * 40,
+            ),
+            dispatch_cas=None,
+            event_id="EVT-CANCEL-001",
+            event_type="TASK_CANCELLED",
+            payload=CancelledPayload(),
+            event_context=TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(),
+                guard_results=(),
+            ),
+        )
+        req = TaskCancellationRequest(cancellation_transition_request=tr)
+        self.assertFalse(hasattr(req, "__dict__"))
+
+
+# ── TaskCancellationResult Two-Field Tests ────────────────────────────────
+
+
+class TaskCancellationResultTwoFieldTests(unittest.TestCase):
+    """TaskCancellationResult: exactly two fields, frozen, slots, no __dict__."""
+
+    def test_exactly_two_fields(self) -> None:
+        from workflow_orchestrator import TaskCancellationResult
+        field_names = {f.name for f in dc_fields(TaskCancellationResult)}
+        expected = {"task_id", "cancellation_transition"}
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import TaskCancellationResult
+        self.assertTrue(
+            TaskCancellationResult.__dataclass_params__.frozen
+        )
+        self.assertTrue(hasattr(TaskCancellationResult, "__slots__"))
+
+    def test_no_dict(self) -> None:
+        from workflow_orchestrator import TaskCancellationResult
+        from control_plane_transition import TransitionResult
+        tr = TransitionResult(
+            task_id="TC-001",
+            event_id="EVT-CANCEL-001",
+            from_state="draft",
+            to_state="cancelled",
+            occurred_at="2026-07-28T12:00:04Z",
+            outbox_message_id=None,
+        )
+        result = TaskCancellationResult(
+            task_id="TC-001",
+            cancellation_transition=tr,
+        )
+        self.assertFalse(hasattr(result, "__dict__"))
+
+
+# ── TaskCancellationRequest One-Field Tests ───────────────────────────────
+
+
+class TaskCancellationRequestOneFieldTests(unittest.TestCase):
+    """TaskCancellationRequest: exactly one field, frozen, slots, no __dict__."""
+
+    def test_exactly_one_field(self) -> None:
+        from workflow_orchestrator import TaskCancellationRequest
+        field_names = {f.name for f in dc_fields(TaskCancellationRequest)}
+        expected = {"cancellation_transition_request"}
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import TaskCancellationRequest
+        self.assertTrue(
+            TaskCancellationRequest.__dataclass_params__.frozen
+        )
+        self.assertTrue(hasattr(TaskCancellationRequest, "__slots__"))
+
+    def test_no_dict(self) -> None:
+        from workflow_orchestrator import TaskCancellationRequest
+        from control_plane_transition import (
+            CancelledPayload,
+            TransitionCAS,
+            TransitionEventContext,
+            TransitionRequest,
+        )
+        tr = TransitionRequest(
+            cas=TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="a" * 40,
+            ),
+            dispatch_cas=None,
+            event_id="EVT-CANCEL-001",
+            event_type="TASK_CANCELLED",
+            payload=CancelledPayload(),
+            event_context=TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(),
+                guard_results=(),
+            ),
+        )
+        req = TaskCancellationRequest(cancellation_transition_request=tr)
+        self.assertFalse(hasattr(req, "__dict__"))
+
+
+# ── TaskCancellationResult Two-Field Tests ────────────────────────────────
+
+
+class TaskCancellationResultTwoFieldTests(unittest.TestCase):
+    """TaskCancellationResult: exactly two fields, frozen, slots, no __dict__."""
+
+    def test_exactly_two_fields(self) -> None:
+        from workflow_orchestrator import TaskCancellationResult
+        field_names = {f.name for f in dc_fields(TaskCancellationResult)}
+        expected = {"task_id", "cancellation_transition"}
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import TaskCancellationResult
+        self.assertTrue(
+            TaskCancellationResult.__dataclass_params__.frozen
+        )
+        self.assertTrue(hasattr(TaskCancellationResult, "__slots__"))
+
+    def test_no_dict(self) -> None:
+        from workflow_orchestrator import TaskCancellationResult
+        from control_plane_transition import TransitionResult
+        tr = TransitionResult(
+            task_id="TC-001",
+            event_id="EVT-CANCEL-001",
+            from_state="draft",
+            to_state="cancelled",
+            occurred_at="2026-07-28T12:00:04Z",
+            outbox_message_id=None,
+        )
+        result = TaskCancellationResult(
+            task_id="TC-001",
+            cancellation_transition=tr,
+        )
+        self.assertFalse(hasattr(result, "__dict__"))
+
+
+# ── Quiescent Cancellation Tests ────────────────────────────────────────
+
+
+class WorkflowOrchestratorQuiescentCancellationTests(unittest.TestCase):
+    """TC-13.18d.7: quiescent task cancellation — targeted tests."""
+
+    @staticmethod
+    def _setup_orch(tmp: Path) -> "WorkflowOrchestrator":
+        return _new_orch(tmp)
+
+    @staticmethod
+    def _make_quiescent_cancellation_request(
+        task_id: str = "TC-001",
+        state: str = "draft",
+        revision: int = 1,
+        event_id: str = "EVT-CANCEL-001",
+        head_sha: str | None = None,
+    ) -> "TaskCancellationRequest":
+        from workflow_orchestrator import TaskCancellationRequest
+        from control_plane_transition import (
+            CancelledPayload,
+            TransitionCAS,
+            TransitionEventContext,
+            TransitionRequest,
+        )
+        if head_sha is None:
+            head_sha = "a" * 40
+        cas = TransitionCAS(
+            task_id=task_id,
+            expected_revision=revision,
+            expected_state=state,
+            expected_snapshot_commit=head_sha,
+        )
+        tr = TransitionRequest(
+            cas=cas,
+            dispatch_cas=None,
+            event_id=event_id,
+            event_type="TASK_CANCELLED",
+            payload=CancelledPayload(),
+            event_context=TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(),
+                guard_results=(),
+            ),
+        )
+        return TaskCancellationRequest(cancellation_transition_request=tr)
+
+    # -- 1. draft state → cancelled -----------------------------------------
+
+    def test_01_draft_state_cancelled_success(self) -> None:
+        """Draft task with no dispatch → successful cancellation."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request(state="draft")
+
+            cancel_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-CANCEL-001",
+                from_state="draft", to_state="cancelled",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                self.assertIsNone(lease, "TASK_CANCELLED must have lease=None")
+                return cancel_tr
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.cancel_quiescent_task(req)
+                    self.assertEqual(result.task_id, "TC-001")
+                    self.assertEqual(result.cancellation_transition, cancel_tr)
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 2. ready state → cancelled -----------------------------------------
+
+    def test_02_ready_state_cancelled_success(self) -> None:
+        """Ready task with no dispatch → successful cancellation."""
+        tmp = _setup_project(task_id="TC-001", state="ready")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request(state="ready")
+
+            cancel_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-CANCEL-001",
+                from_state="ready", to_state="cancelled",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return cancel_tr
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.cancel_quiescent_task(req)
+                    self.assertEqual(result.task_id, "TC-001")
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 3. review_ready state → cancelled ----------------------------------
+
+    def test_03_review_ready_state_cancelled_success(self) -> None:
+        """Review-ready task with no dispatch → successful cancellation."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot,
+                TaskEntry,
+                TaskTimestamps,
+                EventEntry,
+                OutboxEntry,
+                AcceptanceEntry,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request(
+                state="review_ready",
+            )
+
+            # Build snapshot with review_ready state but NO current_dispatch
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-28T12:00:00Z",
+                pm_holder_id="pm-1",
+                pm_lease_epoch=1,
+                pm_mode="manual",
+                tasks=(
+                    TaskEntry(
+                        task_id="TC-001", revision=1,
+                        task_card_path="tasks/TC-001/task.md",
+                        task_card_commit="b" * 40,
+                        state="review_ready", attempt=None,
+                        current_dispatch=None, report_path=None,
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-28T12:00:00Z",
+                            ready_at="2026-07-28T12:00:00Z",
+                            dispatched_at=None, started_at=None,
+                            delivered_at=None, blocked_at=None,
+                            accepted_at=None, integrated_at=None,
+                            updated_at="2026-07-28T12:00:00Z",
+                        ),
+                    ),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            cancel_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-CANCEL-001",
+                from_state="review_ready", to_state="cancelled",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return cancel_tr
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.cancel_quiescent_task(req)
+                    self.assertEqual(result.task_id, "TC-001")
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 4. blocked state → cancelled ----------------------------------------
+
+    def test_04_blocked_state_cancelled_success(self) -> None:
+        """Blocked task with no dispatch → successful cancellation."""
+        tmp = _setup_project(task_id="TC-001", state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request(state="blocked")
+
+            cancel_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-CANCEL-001",
+                from_state="blocked", to_state="cancelled",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return cancel_tr
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.cancel_quiescent_task(req)
+                    self.assertEqual(result.task_id, "TC-001")
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 5. lease=None -------------------------------------------------------
+
+    def test_05_lease_none_passed_to_transition(self) -> None:
+        """TASK_CANCELLED must pass lease=None to apply_transition."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request()
+
+            lease_values = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                lease_values.append(lease)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-CANCEL-001",
+                    from_state="draft", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(lease_values), 1)
+            self.assertIsNone(lease_values[0])
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 6. StateProvider snapshot exactly once ------------------------------
+
+    def test_06_snapshot_exactly_once(self) -> None:
+        """StateProvider.snapshot must be called exactly once."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request()
+
+            snapshot_calls = []
+
+            _orig_snapshot = wo.StateProvider.snapshot
+
+            def _counting_snapshot(sp_self):
+                snapshot_calls.append(1)
+                return _orig_snapshot(sp_self)
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-CANCEL-001",
+                    from_state="draft", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True,
+                side_effect=_counting_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(snapshot_calls), 1)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 7. transition exactly once ------------------------------------------
+
+    def test_07_transition_exactly_once(self) -> None:
+        """apply_transition must be called exactly once."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request()
+
+            call_count = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                call_count.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-CANCEL-001",
+                    from_state="draft", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(call_count), 1)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 8. active dispatch must be rejected ---------------------------------
+
+    def test_08_active_dispatch_rejected(self) -> None:
+        """Task with current_dispatch must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                DispatchInfo,
+                ModelSelectionSnapshot,
+                StateSnapshot,
+                TaskEntry,
+                TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request(state="dispatched")
+
+            # Build snapshot with a dispatched task that HAS current_dispatch
+            ms = ModelSelectionSnapshot(
+                required_model_tier="advanced",
+                required_model_capabilities=(),
+                model_binding_id="binding-001",
+                selected_model_provider="claude",
+                selected_model_id="test-model",
+                selected_model_tier="advanced",
+                selected_deliberation_tier="balanced",
+                selected_context_window_tokens=200000,
+                selected_model_capabilities=(),
+                model_degradation_approval_id=None,
+            )
+            dispatch_info = DispatchInfo(
+                dispatch_id="DSP-001",
+                attempt_id="attempt-1",
+                role_id="agent",
+                base_commit="c" * 40,
+                branch="feat/test",
+                dispatched_at="2026-07-28T12:00:00Z",
+                model_selection=ms,
+            )
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-28T12:00:00Z",
+                pm_holder_id="pm-1",
+                pm_lease_epoch=1,
+                pm_mode="manual",
+                tasks=(
+                    TaskEntry(
+                        task_id="TC-001", revision=1,
+                        task_card_path="tasks/TC-001/task.md",
+                        task_card_commit="b" * 40,
+                        state="dispatched", attempt=1,
+                        current_dispatch=dispatch_info, report_path="reports/report.md",
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-28T12:00:00Z",
+                            ready_at="2026-07-28T12:00:00Z",
+                            dispatched_at="2026-07-28T12:00:00Z",
+                            started_at=None, delivered_at=None,
+                            blocked_at=None, accepted_at=None,
+                            integrated_at=None,
+                            updated_at="2026-07-28T12:00:00Z",
+                        ),
+                    ),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-CANCEL-001",
+                    from_state="dispatched", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 9. DispatchCAS must be rejected ------------------------------------
+
+    def test_09_dispatch_cas_rejected(self) -> None:
+        """TransitionRequest with dispatch_cas must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from control_plane_transition import DispatchCAS
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request()
+            cas = req.cancellation_transition_request.cas
+            from control_plane_transition import (
+                CancelledPayload,
+                TransitionEventContext,
+                TransitionRequest,
+            )
+            # Bypass __post_init__ to test orchestrator's own validation
+            bad_tr = object.__new__(TransitionRequest)
+            object.__setattr__(bad_tr, "cas", cas)
+            object.__setattr__(bad_tr, "dispatch_cas", DispatchCAS(
+                expected_dispatch_id="DSP-001",
+                expected_attempt=1,
+            ))
+            object.__setattr__(bad_tr, "event_id", "EVT-CANCEL-002")
+            object.__setattr__(bad_tr, "event_type", "TASK_CANCELLED")
+            object.__setattr__(bad_tr, "payload", CancelledPayload())
+            object.__setattr__(bad_tr, "event_context", TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(),
+                guard_results=(),
+            ))
+            from workflow_orchestrator import TaskCancellationRequest
+            bad_req = TaskCancellationRequest(
+                cancellation_transition_request=bad_tr,
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-CANCEL-002",
+                    from_state="draft", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.cancel_quiescent_task(bad_req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 10. cancelled state rejected ---------------------------------------
+
+    def test_10_cancelled_state_rejected(self) -> None:
+        """Task already in cancelled state must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="cancelled")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request(state="cancelled")
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-CANCEL-001",
+                    from_state="cancelled", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 11. superseded state rejected ---------------------------------------
+
+    def test_11_superseded_state_rejected(self) -> None:
+        """Task already in superseded state must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="superseded")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request(
+                state="superseded",
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-CANCEL-001",
+                    from_state="superseded", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 12. integrated state rejected ---------------------------------------
+
+    def test_12_integrated_state_rejected(self) -> None:
+        """Task already in integrated state must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="integrated")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request(
+                state="integrated",
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-CANCEL-001",
+                    from_state="integrated", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 13. task not found rejected ----------------------------------------
+
+    def test_13_task_not_found_rejected(self) -> None:
+        """Non-existent task must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request(
+                task_id="TC-999",
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-999", event_id="EVT-CANCEL-001",
+                    from_state="draft", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 14. revision mismatch rejected -------------------------------------
+
+    def test_14_revision_mismatch_rejected(self) -> None:
+        """Snapshot revision != CAS expected_revision must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft", revision=1)
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request(
+                revision=99,
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-CANCEL-001",
+                    from_state="draft", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 15. state mismatch rejected -----------------------------------------
+
+    def test_15_state_mismatch_rejected(self) -> None:
+        """Snapshot state != CAS expected_state must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="ready")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request(state="draft")
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-CANCEL-001",
+                    from_state="ready", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 16. invalid event_type rejected -------------------------------------
+
+    def test_16_invalid_event_type_rejected(self) -> None:
+        """Non-TASK_CANCELLED event_type must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            from control_plane_transition import (
+                CancelledPayload,
+                TransitionCAS,
+                TransitionEventContext,
+                TransitionRequest,
+            )
+            # Bypass __post_init__ to test orchestrator's own validation
+            bad_tr = object.__new__(TransitionRequest)
+            object.__setattr__(bad_tr, "cas", TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="a" * 40,
+            ))
+            object.__setattr__(bad_tr, "dispatch_cas", None)
+            object.__setattr__(bad_tr, "event_id", "EVT-BAD-001")
+            object.__setattr__(bad_tr, "event_type", "TASK_SUPERSEDED")
+            object.__setattr__(bad_tr, "payload", CancelledPayload())
+            object.__setattr__(bad_tr, "event_context", TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(),
+                guard_results=(),
+            ))
+            from workflow_orchestrator import TaskCancellationRequest
+            bad_req = TaskCancellationRequest(
+                cancellation_transition_request=bad_tr,
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-BAD-001",
+                    from_state="draft", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.cancel_quiescent_task(bad_req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 17. invalid payload type rejected -----------------------------------
+
+    def test_17_invalid_payload_type_rejected(self) -> None:
+        """Non-CancelledPayload must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            from control_plane_transition import (
+                SupersededPayload,
+                TransitionCAS,
+                TransitionEventContext,
+                TransitionRequest,
+            )
+            # Bypass __post_init__ to test orchestrator's own validation
+            bad_tr = object.__new__(TransitionRequest)
+            object.__setattr__(bad_tr, "cas", TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="a" * 40,
+            ))
+            object.__setattr__(bad_tr, "dispatch_cas", None)
+            object.__setattr__(bad_tr, "event_id", "EVT-BAD-002")
+            object.__setattr__(bad_tr, "event_type", "TASK_CANCELLED")
+            object.__setattr__(bad_tr, "payload", SupersededPayload(superseded_by="TC-002"))
+            object.__setattr__(bad_tr, "event_context", TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(),
+                guard_results=(),
+            ))
+            from workflow_orchestrator import TaskCancellationRequest
+            bad_req = TaskCancellationRequest(
+                cancellation_transition_request=bad_tr,
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-BAD-002",
+                    from_state="draft", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.cancel_quiescent_task(bad_req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 18. CAS conflict propagates ----------------------------------------
+
+    def test_18_cas_conflict_propagates(self) -> None:
+        """TransitionCASConflictError must propagate unchanged."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from control_plane_transition import TransitionCASConflictError
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request()
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                raise TransitionCASConflictError("CAS conflict")
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(TransitionCASConflictError):
+                        await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 19. StateProvider error propagates ----------------------------------
+
+    def test_19_state_provider_error_propagates(self) -> None:
+        """StateProviderError must propagate unchanged."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request()
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True,
+                side_effect=StateProviderError("SP error"),
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(StateProviderError):
+                        await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 20. asyncio.CancelledError propagates -------------------------------
+
+    def test_20_cancelled_error_propagates(self) -> None:
+        """asyncio.CancelledError must propagate unchanged."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request()
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                raise asyncio.CancelledError()
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(asyncio.CancelledError):
+                        await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 21. no audit/escalation/dispatch/lease operations on failure -------
+
+    def test_21_failure_path_zero_side_effects(self) -> None:
+        """All failure paths must have zero side effects."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                DispatchInfo,
+                ModelSelectionSnapshot,
+                StateSnapshot,
+                TaskEntry,
+                TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_cancellation_request(state="dispatched")
+
+            # Build snapshot with a dispatched task that HAS current_dispatch
+            ms = ModelSelectionSnapshot(
+                required_model_tier="advanced",
+                required_model_capabilities=(),
+                model_binding_id="binding-001",
+                selected_model_provider="claude",
+                selected_model_id="test-model",
+                selected_model_tier="advanced",
+                selected_deliberation_tier="balanced",
+                selected_context_window_tokens=200000,
+                selected_model_capabilities=(),
+                model_degradation_approval_id=None,
+            )
+            dispatch_info = DispatchInfo(
+                dispatch_id="DSP-001",
+                attempt_id="attempt-1",
+                role_id="agent",
+                base_commit="c" * 40,
+                branch="feat/test",
+                dispatched_at="2026-07-28T12:00:00Z",
+                model_selection=ms,
+            )
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-28T12:00:00Z",
+                pm_holder_id="pm-1",
+                pm_lease_epoch=1,
+                pm_mode="manual",
+                tasks=(
+                    TaskEntry(
+                        task_id="TC-001", revision=1,
+                        task_card_path="tasks/TC-001/task.md",
+                        task_card_commit="b" * 40,
+                        state="dispatched", attempt=1,
+                        current_dispatch=dispatch_info,
+                        report_path="reports/report.md",
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-28T12:00:00Z",
+                            ready_at="2026-07-28T12:00:00Z",
+                            dispatched_at="2026-07-28T12:00:00Z",
+                            started_at=None, delivered_at=None,
+                            blocked_at=None, accepted_at=None,
+                            integrated_at=None,
+                            updated_at="2026-07-28T12:00:00Z",
+                        ),
+                    ),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True,
+            ) as mock_transition:
+                with mock.patch.object(
+                    wo, "run_audit_gateway",
+                ) as mock_audit:
+                    with mock.patch.object(
+                        wo, "evaluate_escalation",
+                    ) as mock_esc:
+                        with mock.patch.object(
+                            wo, "acquire_worker_slot",
+                        ) as mock_acquire:
+                            with mock.patch.object(
+                                wo, "release_worker_slot",
+                            ) as mock_release:
+                                with mock.patch.object(
+                                    wo, "renew_worker_slot",
+                                ) as mock_renew:
+                                    async def _run() -> None:
+                                        with self.assertRaises(WorkflowInputError):
+                                            await orch.cancel_quiescent_task(req)
+                                    asyncio.run(_run())
+
+                                    mock_transition.assert_not_called()
+                                    mock_audit.assert_not_called()
+                                    mock_esc.assert_not_called()
+                                    mock_acquire.assert_not_called()
+                                    mock_release.assert_not_called()
+                                    mock_renew.assert_not_called()
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 22. request type must be exactly TaskCancellationRequest ------------
+
+    def test_22_request_type_exact(self) -> None:
+        """Non-TaskCancellationRequest must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            orch = _new_orch(tmp)
+
+            async def _run() -> None:
+                with self.assertRaises(WorkflowInputError):
+                    await orch.cancel_quiescent_task("not a request")
+            asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 23. empty event_id rejected -----------------------------------------
+
+    def test_23_empty_event_id_rejected(self) -> None:
+        """Empty event_id must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from control_plane_transition import (
+                CancelledPayload,
+                TransitionCAS,
+                TransitionEventContext,
+                TransitionRequest,
+            )
+            orch = _new_orch(tmp)
+            # Use object.__setattr__ on a frozen dataclass (bypasses __post_init__)
+            bad_tr = object.__new__(TransitionRequest)
+            object.__setattr__(bad_tr, "cas", TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="a" * 40,
+            ))
+            object.__setattr__(bad_tr, "dispatch_cas", None)
+            object.__setattr__(bad_tr, "event_id", "")
+            object.__setattr__(bad_tr, "event_type", "TASK_CANCELLED")
+            object.__setattr__(bad_tr, "payload", CancelledPayload())
+            object.__setattr__(bad_tr, "event_context", TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(),
+                guard_results=(),
+            ))
+            from workflow_orchestrator import TaskCancellationRequest
+            req = TaskCancellationRequest(
+                cancellation_transition_request=bad_tr,
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="",
+                    from_state="draft", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.cancel_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
