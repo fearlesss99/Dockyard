@@ -28,7 +28,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 15 | AgentDesk WorkerSlotLease | **Current** | TC-13.10c | `agentdesk.worker-slot-lease/v1`; frozen contract §2.5; implemented by TC-13.10a (frozen contract), TC-13.10b (data model, store, atomic I/O), TC-13.10c (acquire/release/renew/hold fence) |
 | 16 | AgentDesk ControlPlaneTransitionService | **Current** | TC-13.11c | CAS-write tasks, immutable events, replayable outbox |
 | 17 | AgentDesk ApprovalGate | **Current** | TC-13.12d | TASK_APPROVAL with structured scope (dispatch/accept/integrate); runtime gate + ControlPlaneTransitionService integration + offline validator implemented |
-| 18 | AgentDesk EscalationService | **Target** | TC-13.13 | Difficulty escalation independent of rate-limit |
+| 18 | AgentDesk EscalationService | **Target** | TC-13.13a | Pure WorkerKind tier progression; frozen contract §2.16; production module deferred to TC-13.13b |
 | 19 | AgentDesk RateLimit service | **Target** | TC-13.14 | Provider rate-limit handling independent of escalation |
 | 20 | AgentDesk MadAuditGateway | **Target** | TC-13.16 | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Target** | TC-13.17 | Read-only access to tasks, events, outbox, acceptances |
@@ -134,7 +134,7 @@ AgentDesk does **not** currently have:
 - `MAD Gateway` — no automated MAD subprocess invocation.
 - `ControlPlaneTransitionService` — write logic is distributed across runbook
   procedures.
-- `EscalationService` / `RateLimit` as separate services.
+- `EscalationService` / `RateLimit` as separate services (EscalationService contract frozen in §2.16; production module will be TC-13.13b).
 - `TASK_APPROVAL` with structured scope (only `MODEL_DEGRADATION_APPROVED`
   exists for model-tier exceptions).
 - `StateProvider` as an explicit read-only service boundary.
@@ -1006,7 +1006,7 @@ They must not be conflated:
 
 See §2.15 for the frozen ApprovalGate contract.
 
-- **Escalation** (TC-13.13 — difficulty tier change) is separate from
+* **EscalationGate** (TC-13.13a) — Pure WorkerKind tier progression.
   **RateLimit** (TC-13.14 — provider 429 handling).  A rate-limit event must
   not change difficulty or generate `TASK_ESCALATED`.
 - **Event** records what happened (audit trail).  **Outbox** records what
@@ -3475,7 +3475,7 @@ Concurrency fencing must not be blocked by output-decoding work.
   `test_worker_adapter.py` exist and are committed.
 * TC-13.9c (output decoding) remains **Target**.
 * TC-13.10 is **Current** (fully implemented by TC-13.10a/b/c).
-* TC-13.11, TC-13.13, TC-13.14, and TC-13.18 remain **Target**.
+* TC-13.11, TC-13.13a, TC-13.13b, TC-13.14, and TC-13.18 remain **Target**.
 * All Current interfaces remain **Current**.
 
 
@@ -4518,7 +4518,7 @@ TC-13.11 must **not** implement, freeze, or assume responsibility for:
 * **ApprovalGate** (TC-13.12) — TASK_APPROVAL structured scope,
   MODEL_DEGRADATION_APPROVED/REVOKED events, ``granted_approval_ids``
   management.
-* **EscalationService** (TC-13.13) — difficulty tier progression.
+* **EscalationService** (TC-13.13a/b) — difficulty tier progression.
 * **RateLimit service** (TC-13.14) — provider 429 handling.
 * **StateProvider** (TC-13.17) — read-only access boundary.
 * **WorkflowOrchestrator** (TC-13.18) — full lifecycle coordination
@@ -4575,7 +4575,7 @@ intermediate "Current (contract frozen)" sub-status is permitted.
 * Interface #16 is **Current**.
 * SS2.5 (WorkerSlotLease) is **Current**.
 * TC-13.10a/b/c are all **Current**.
-* TC-13.12, TC-13.13, TC-13.14, TC-13.17, TC-13.18, and all subsequent
+* TC-13.12, TC-13.13a, TC-13.13b, TC-13.14, TC-13.17, TC-13.18, and all subsequent
   Target interfaces remain **Target**.
 
 ---
@@ -5379,7 +5379,8 @@ TC-13.12a must **not** implement, freeze, or assume responsibility for:
 * **``TASK_APPROVAL`` write implementation** — deferred to TC-13.12b.
 * **Runtime gate implementation** — deferred to TC-13.12c.
 * **Interface #17** — remains **Target**.
-* **TC-13.13 (EscalationService)** — not started; remains Target.
+* **TC-13.13a (EscalationService)** — frozen contract (§2.16); production
+  implementation (TC-13.13b) remains Target.
 * **Subprocess invocation** — no CLI, model, or network calls.
 * **Git worktree creation or deletion** — out of scope.
 * **Secret / auth management** — credentials are never read, written,
@@ -5419,8 +5420,383 @@ TC-13.12a must **not** implement, freeze, or assume responsibility for:
   calls ``_validate_approval_evidence()`` after all tasks are indexed,
   reporting through the existing ``Reporter``.
 * Interface #17 is **Current**.
-* TC-13.13 (EscalationService) and all subsequent Target interfaces
+* TC-13.13a (EscalationService) and all subsequent Target interfaces
   remain **Target**.
+
+---
+
+### 2.16 EscalationService -- Frozen Contract (Target — TC-13.13a)
+
+TC-13.13a freezes the **pure-policy EscalationService contract** for Worker
+execution tier progression.  No production module is shipped under
+TC-13.13a — the contract itself is the deliverable and must be implemented by
+TC-13.13b.
+
+EscalationService is a deterministic, pure-in-memory policy.  It receives
+the current ``WorkerKind`` and returns an ``EscalationDecision``.  It carries
+no retry loop, no subprocess, no persistent state, and no side effects.
+
+---
+#### 2.16.1 Core Semantic — WorkerKind Progression (Not TaskDifficulty)
+
+"Difficulty escalation" in TC-13.13 means **raising the execution Worker tier**
+(``WorkerKind``), not changing the task's intrinsic ``TaskDifficulty``
+(TC-13.4).  The two are independent inputs (§2.13.1).  An Advanced-difficulty
+task may be handled by an Expert Worker after escalation, but the task's
+``TaskDifficulty`` remains ``ADVANCED``.
+
+Frozen progression (exactly three tiers, no skip):
+
+```
+basic_agent   → standard_agent
+standard_agent → advanced_agent
+advanced_agent → expert_agent
+expert_agent   → request_user_decision (no further tier)
+```
+
+No downward escalation, skip, or wrap-around to ``basic_agent`` is permitted.
+
+---
+#### 2.16.2 EscalationAction — Exact Two Values
+
+```python
+import enum
+
+
+@enum.unique
+class EscalationAction(str, enum.Enum):
+    ESCALATE = "escalate"
+    REQUEST_USER_DECISION = "request_user_decision"
+```
+
+Frozen rules:
+
+* Exactly two values — no more, no less.
+* ``str(member) == member.value`` — serialised as lowercase strings.
+* Unknown values → fail-closed (``ValueError`` at construction).
+* Free-text values are forbidden.
+* Bare strings are rejected at the public API boundary — callers must pass
+  an ``EscalationAction`` member, not a literal ``"escalate"``.
+
+---
+#### 2.16.3 EscalationRequest — Exact One Field
+
+```python
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class EscalationRequest:
+    current_worker_kind: WorkerKind
+```
+
+Exactly one field — no more, no less.
+
+| # | Field | Type | Rule |
+|---|-------|------|------|
+| 1 | ``current_worker_kind`` | ``WorkerKind`` | Must be a ``WorkerKind`` enum member; bare strings, other enums, ``bool``, ``int``, or arbitrary objects are rejected fail-closed |
+
+Fields permanently excluded from ``EscalationRequest``:
+
+```text
+task_id            — belongs to ControlPlaneTransitionService (TC-13.11)
+revision           — belongs to ControlPlaneTransitionService (TC-13.11)
+attempt            — belongs to ControlPlaneTransitionService (TC-13.11)
+dispatch_id        — belongs to ControlPlaneTransitionService (TC-13.11)
+task_difficulty    — independent concept; must not be modified by escalation
+retry_count        — belongs to WorkflowOrchestrator (TC-13.18)
+last_exit_code     — subprocess detail; not a policy input
+stdout / stderr    — never stored or ingested
+provider / model_id — model-tier concerns, not Worker tier escalation
+lease / slot_id    — belongs to WorkerSlotLease (TC-13.10)
+cas / snapshot     — belongs to ControlPlaneTransitionService (TC-13.11)
+prompt / secrets   — never stored
+```
+
+---
+#### 2.16.4 EscalationDecision — Exact Three Fields
+
+```python
+@dataclass(frozen=True, slots=True)
+class EscalationDecision:
+    action: EscalationAction
+    current_worker_kind: WorkerKind
+    next_worker_kind: WorkerKind | None
+```
+
+Exactly three fields — no more, no less.
+
+| # | Field | Type | Rule |
+|---|-------|------|------|
+| 1 | ``action`` | ``EscalationAction`` | Must be an ``EscalationAction`` member |
+| 2 | ``current_worker_kind`` | ``WorkerKind`` | Echoed from ``EscalationRequest`` |
+| 3 | ``next_worker_kind`` | ``WorkerKind`` or ``None`` | Non-``None`` when ``action == ESCALATE``; ``None`` when ``action == REQUEST_USER_DECISION`` |
+
+Frozen rules:
+
+* When ``action == ESCALATE``: ``next_worker_kind`` is the immediate
+  next ``WorkerKind`` in the progression (§2.16.1).
+* When ``action == REQUEST_USER_DECISION``: ``next_worker_kind`` is
+  ``None`` — there is no further tier.
+* Construction of an ``ESCALATE`` decision with ``next_worker_kind=None``
+  must fail closed (``ValueError``).
+* Construction of a ``REQUEST_USER_DECISION`` decision with a non-``None``
+  ``next_worker_kind`` must fail closed (``ValueError``).
+
+Fields permanently excluded from ``EscalationDecision``:
+
+```text
+task_id, revision, attempt, dispatch_id     — TC-13.11 domain
+task_difficulty                             — must not be changed
+escalation_level                            — integer counter belongs to orchestration
+reason / kind strings                       — not defined in this contract
+retry_advice / backoff_ms                   — TC-13.18 domain
+new_provider / new_model_id                 — model selection is independent
+timestamp / occurred_at                     — caller's responsibility
+```
+
+---
+#### 2.16.5 Public API — Exact Four Symbols
+
+```python
+def evaluate_escalation(
+    request: EscalationRequest,
+) -> EscalationDecision:
+    """Evaluate the escalation action for *request*.
+
+    Args:
+        request: Frozen input carrying the current WorkerKind.
+
+    Returns:
+        An ``EscalationDecision`` with the action and next WorkerKind.
+
+    Raises:
+        TypeError: *request* is not an ``EscalationRequest``.
+        ValueError: The ``current_worker_kind`` is not a valid
+                    ``WorkerKind`` member.
+    """
+    ...
+```
+
+Frozen module-level ``__all__``:
+
+```python
+__all__ = [
+    "EscalationAction",
+    "EscalationRequest",
+    "EscalationDecision",
+    "evaluate_escalation",
+]
+```
+
+Exactly **4** public symbols — no more, no less.
+
+Frozen rules:
+
+1. ``evaluate_escalation`` is a **pure deterministic function** —
+   no I/O, no random, no wall-clock dependency.
+2. The production implementation must be importable without side effects.
+3. No module-level mutable registry.
+4. No ``register_provider()``, ``unregister_provider()``, or hook system.
+5. No custom exception hierarchy.  ``TypeError`` is raised for type
+   violations; ``ValueError`` for invariant violations.  Both follow
+   existing module conventions.
+6. Error messages must **never** contain: prompt, stdout/stderr, secrets,
+   paths, ``holder_instance_id``, ``canonical_worktree``.
+7. Error messages may contain: enum member names, type names via
+   ``type(x).__name__``.
+8. No bare ``assert`` in security-critical validation paths (``python -O``
+   behaviour unchanged).
+
+---
+#### 2.16.6 Retry Boundary — Explicitly Deferred
+
+TC-13.13 owns the **escalation decision**, not the retry loop.
+
+Frozen rules:
+
+* ``evaluate_escalation()`` does **not** count attempts.
+* ``evaluate_escalation()`` does **not** track same-tier retries.
+* ``evaluate_escalation()`` does **not** decide when to re-run a subprocess.
+* The caller (WorkflowOrchestrator, TC-13.18) is responsible for:
+  exhausting same-tier retries, confirming failure, and calling
+  ``evaluate_escalation()``.
+* Retry loop, attempt counter, dispatch-id generation, and subprocess
+  re-invocation are all **excluded** from TC-13.13.
+
+---
+#### 2.16.7 TaskDifficulty Boundary — Explicitly Preserved
+
+Frozen rules:
+
+* EscalationService does **not** receive ``TaskDifficulty``.
+* EscalationService does **not** derive ``TaskDifficulty``.
+* EscalationService does **not** modify ``TaskDifficulty``.
+* Escalation of ``WorkerKind`` (e.g. ``basic_agent → standard_agent``)
+  does **not** imply any change to the task's intrinsic ``TaskDifficulty``.
+* An Advanced-difficulty task assigned to an Expert Worker after escalation
+  remains Advanced-difficulty — ``TaskDifficulty`` and ``WorkerKind`` are
+  independent concepts (§2.13.1).
+
+---
+#### 2.16.8 State & Persistence Boundary
+
+TC-13.13a/b must **not**:
+
+* Directly write ``tasks.yaml``.
+* Write events (``docs/pm/events/``).
+* Write outbox entries (``docs/pm/outbox/``).
+* Write acceptance records (``docs/pm/acceptances/``).
+* Write approval records (``docs/pm/approvals/``).
+* Write runtime files (``.agentdesk/runtime/``).
+* Introduce ``TASK_ESCALATED`` as a new event type.
+* Introduce any new ``agentdesk.*`` schema version.
+* Acquire any lock (worker-slot, control-plane state, or PM lease).
+* Acquire, release, renew, or validate a ``WorkerSlotLease``.
+* Call ``ApprovalGate`` (TC-13.12).
+* Call ``ControlPlaneTransitionService`` (TC-13.11).
+* Call ``WorkerAdapter``, ``DispatcherAgentGateway``, or any subprocess.
+* Read Git HEAD or perform any Git operation.
+* Access network, model API, or environment variables.
+* Modify ``dispatch_id``, ``attempt``, ``revision``, ``provider``, or
+  ``model_id``.
+
+**EscalationService is a pure-policy function.**  The consumption of its
+``EscalationDecision`` — including state transitions, event/outbox writes,
+slot acquisition, and lease management — is the responsibility of the
+WorkflowOrchestrator (TC-13.18).
+
+---
+#### 2.16.9 Expert Boundary — Deferred to Orchestration
+
+The ``expert_agent → request_user_decision`` path is the **only**
+escalation outcome that does not yield a next ``WorkerKind``.
+
+| Decision | ``action`` | ``next_worker_kind`` |
+|----------|------------|----------------------|
+| ``basic_agent`` → ``standard_agent`` | ``ESCALATE`` | ``WorkerKind.STANDARD_AGENT`` |
+| ``standard_agent`` → ``advanced_agent`` | ``ESCALATE`` | ``WorkerKind.ADVANCED_AGENT`` |
+| ``advanced_agent`` → ``expert_agent`` | ``ESCALATE`` | ``WorkerKind.EXPERT_AGENT`` |
+| ``expert_agent`` → (end of chain) | ``REQUEST_USER_DECISION`` | ``None`` |
+
+What happens after ``REQUEST_USER_DECISION`` — user interaction UI,
+ApprovalGate scope, blocked transition, outbox message, or notification —
+is **explicitly deferred** to TC-13.18 (WorkflowOrchestrator) and is
+**not** defined by this contract.
+
+---
+#### 2.16.10 Rate-Limit Boundary
+
+Provider rate-limit handling (TC-13.14) is independent of escalation.
+
+Frozen rules:
+
+* A rate-limit event (429, quota, backoff) must **not** call
+  ``evaluate_escalation()``.
+* A rate-limit event must **not** change ``WorkerKind``.
+* A rate-limit event must **not** change ``TaskDifficulty``.
+* A rate-limit event must **not** generate an ``EscalationDecision``.
+* TC-13.13 and TC-13.14 share zero types, zero code paths, and zero
+  dependency edges.
+
+---
+#### 2.16.11 Deep Immutability
+
+* ``EscalationAction`` is an enum — hashable, identity-stable.
+* ``EscalationRequest`` is a frozen/slots dataclass — single field,
+  cannot be reassigned after construction.
+* ``EscalationDecision`` is a frozen/slots dataclass — three fields,
+  cannot be reassigned after construction.
+* ``WorkerKind`` is an enum — hashable, identity-stable.
+* No ``list``, ``dict``, or ``set`` is introduced in any public type.
+* No input object is mutated.
+
+---
+#### 2.16.12 Fail-Closed Rules
+
+The production implementation must **reject** (fail closed, no silent
+recovery) for:
+
+| Condition | Exception |
+|-----------|-----------|
+| ``request`` is not an ``EscalationRequest`` instance | ``TypeError`` |
+| ``current_worker_kind`` is not a ``WorkerKind`` member | ``ValueError`` |
+| ``current_worker_kind`` is a bare string, ``bool``, ``int``, or arbitrary object | ``TypeError`` or ``ValueError`` |
+| Unknown ``WorkerKind`` value | ``ValueError`` — no silent fallback |
+| ``EscalationAction`` value not in ``{escalate, request_user_decision}`` | ``ValueError`` |
+| ``next_worker_kind=None`` with ``action=ESCALATE`` | ``ValueError`` |
+| ``next_worker_kind ≠ None`` with ``action=REQUEST_USER_DECISION`` | ``ValueError`` |
+
+No silent correction, trimming, fallback, or alias normalization is
+permitted.
+
+---
+#### 2.16.13 Explicit Non-Goals
+
+TC-13.13 must **not** implement, freeze, or assume responsibility for:
+
+* **Retry loop or orchestration** (TC-13.18) — attempt counting,
+  subprocess re-invocation, dispatch-id generation.
+* **State machine writes** (TC-13.11) — ``tasks.yaml``, events, outbox,
+  acceptance, approval records.
+* **``TASK_ESCALATED``** — no new event type, no new schema version.
+* **Slot acquisition or lease fencing** (TC-13.10).
+* **ApprovalGate integration** (TC-13.12).
+* **Provider rate-limiting** (TC-13.14).
+* **Provider output decoding** (TC-13.9c).
+* **User interaction or notification** — the ``request_user_decision``
+  action is a return value; its consumption is a TC-13.18 concern.
+* **Model selection or provider routing** — ``WorkerKind`` escalation
+  does not change ``selected_model_provider``, ``selected_model_id``,
+  or any ``model_selection`` field.
+* **TaskDifficulty modification** (§2.16.7).
+* **Subprocess invocation** — no CLI, model, or network calls.
+* **Git operations** — no ``rev-parse``, ``merge-base``, or worktree
+  management.
+* **Secret / auth management** — credentials are never read, written,
+  or logged.
+* **Production module** (``escalation_service.py``) — does not exist
+  under TC-13.13a.
+
+---
+#### 2.16.14 Dependency
+
+```text
+TC-13.13a  →  TC-13.4   (WorkerKind enum)
+TC-13.13b  →  TC-13.13a (this contract)
+```
+
+TC-13.13a depends **only** on the ``WorkerKind`` enumeration from TC-13.4
+(shared core types).  No other Current or Target interface is required.
+
+---
+#### 2.16.15 Task-Card Split
+
+```text
+TC-13.13a — this frozen contract (§2.16)
+TC-13.13b — production implementation (escalation_service.py)
+```
+
+| Card | Depends on | Scope | Interface #18 status after completion |
+|------|-----------|-------|--------------------------------------|
+| TC-13.13a | TC-13.4 | This contract only | **Target** |
+| TC-13.13b | TC-13.13a | Production module + tests | **Target** → **Current** |
+
+Interface #18 status must remain **Target** until TC-13.13b is complete
+and the production module and full test suite are committed.  No
+intermediate "Current (contract frozen)" sub-status is permitted.
+
+---
+#### 2.16.16 Status
+
+* ADR Interface Status row #18 "AgentDesk EscalationService"
+  remains **Target** — TC-13.13a (this contract).
+* This section (§2.16) is the Frozen Contract for TC-13.13a — it governs
+  the future production implementation.
+* No production module (``escalation_service.py``) exists.
+* TC-13.13b (production implementation) remains **Target**.
+* TC-13.4 (``WorkerKind`` enum) is **Current** — no changes required.
+* TC-13.14 and all subsequent Target interfaces remain **Target**.
 
 ---
 
@@ -5486,12 +5862,13 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.12b | ApprovalGate typed models, evidence store/writer, schema validation | TC-13.12a |
 | TC-13.12c | ApprovalGate read-only runtime gate, ControlPlaneTransitionService internal integration | TC-13.12b, TC-13.11 |
 | TC-13.12d | ApprovalGate offline validator, replay, TOCTOU, concurrency hardening | TC-13.12c |
-| TC-13.13 | EscalationService | TC-13.12d |
+| TC-13.13a | EscalationService frozen contract (§2.16) | TC-13.4 |
+| TC-13.13b | EscalationService production implementation | TC-13.13a |
 | TC-13.14 | RateLimit service | TC-13.11 |
 | TC-13.15 | MAD `audit` sub-command (`mad.audit-result/v1`) | TC-13.2 |
 | TC-13.16 | AgentDesk MadAuditGateway | TC-13.15 |
 | TC-13.17 | StateProvider (read-only) | TC-13.11 |
-| TC-13.18 | WorkflowOrchestrator (full integration) | TC-13.10c, 13.11, 13.12, 13.13, 13.14, 13.16, 13.17 |
+| TC-13.18 | WorkflowOrchestrator (full integration) | TC-13.10c, 13.11, 13.12, 13.13a, 13.13b, 13.14, 13.16, 13.17 |
 | TC-13.19 | E2E / Recovery tests | TC-13.18 |
 | TC-13.20 | HTML Dashboard | TC-13.17, TC-13.19 |
 | TC-13.21 | ADR status update (Target → Current) | TC-13.19 |

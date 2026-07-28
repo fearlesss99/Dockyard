@@ -7450,3 +7450,339 @@ class ReleaseSmokeTests(unittest.TestCase):
             len(symbols), 31,
             f"__all__ must have 31 symbols, got {len(symbols)}: {symbols}",
         )
+
+    # ── TC-13.13a EscalationService frozen contract smoke tests ─────────
+
+    _TC1313A_CONTRACT_SECTION = "### 2.16"
+
+    def _tc1313a_section(self) -> str:
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        section = _extract_markdown_section(
+            adr_text, self._TC1313A_CONTRACT_SECTION
+        )
+        self.assertIsNotNone(
+            section,
+            f"ADR must contain {self._TC1313A_CONTRACT_SECTION} section",
+        )
+        return section  # type: ignore[return-value]
+
+    # -- 0: section existence and heading --
+
+    def test_tc1313a_section_exists_and_target(self) -> None:
+        """§2.16 must exist with 'Frozen Contract' and 'TC-13.13a'."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        heading_m = re.search(
+            r"^### 2\.16\s.*$", adr_text, re.MULTILINE,
+        )
+        self.assertIsNotNone(heading_m, "ADR must contain §2.16 heading")
+        heading = heading_m.group(0)
+        self.assertIn("EscalationService", heading)
+        self.assertIn("Frozen Contract", heading)
+        section = self._tc1313a_section()
+        self.assertIn("TC-13.13a", section)
+        self.assertGreater(len(section), 800,
+                          "§2.16 must contain the full frozen contract")
+
+    def test_tc1313a_interface_18_still_target(self) -> None:
+        """Interface #18 must remain Target — TC-13.13b not yet implemented."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        row18 = None
+        for r in rows:
+            if r.get("#") == "18" or r.get("No.") == "18":
+                row18 = r
+                break
+        self.assertIsNotNone(row18, "Interface #18 row not found")
+        status = row18.get("Status", "")
+        self.assertTrue(
+            "Target" in status or "target" in status.lower(),
+            f"Interface #18 must be Target, got: {status}"
+        )
+        impl = row18.get("Implemented by", "")
+        self.assertIn("TC-13.13a", impl,
+                      "Interface #18 must reference TC-13.13a")
+
+    # -- 1: EscalationAction enum --
+
+    def test_tc1313a_escalation_action_exact_two_values(self) -> None:
+        """§2.16.2 must define EscalationAction with exactly two values."""
+        section = self._tc1313a_section()
+        self.assertIn("class EscalationAction", section)
+        self.assertIn('"escalate"', section)
+        self.assertIn('"request_user_decision"', section)
+        self.assertTrue(
+            "str, enum.Enum" in section or "str.Enum" in section,
+            "§2.16.2 must define EscalationAction as a str Enum",
+        )
+        self.assertTrue(
+            "enum.unique" in section or "unique" in section.lower(),
+            "§2.16.2 must use @enum.unique",
+        )
+
+    # -- 2: EscalationRequest exact one field --
+
+    def test_tc1313a_escalation_request_exact_one_field(self) -> None:
+        """§2.16.3 must define EscalationRequest with exactly one field."""
+        section = self._tc1313a_section()
+        self.assertIn("class EscalationRequest", section)
+        self.assertIn("current_worker_kind", section)
+        self.assertIn("WorkerKind", section)
+        self.assertIn("frozen=True", section)
+        self.assertIn("slots=True", section)
+
+    # -- 3: EscalationDecision exact three fields --
+
+    def test_tc1313a_escalation_decision_exact_three_fields(self) -> None:
+        """§2.16.4 must define EscalationDecision with exactly three fields."""
+        section = self._tc1313a_section()
+        self.assertIn("class EscalationDecision", section)
+        self.assertIn("action", section)
+        self.assertIn("current_worker_kind", section)
+        self.assertIn("next_worker_kind", section)
+        self.assertIn("WorkerKind | None", section)
+        self.assertIn("frozen=True", section)
+        self.assertIn("slots=True", section)
+
+    # -- 4: __all__ exact four symbols --
+
+    def test_tc1313a_all_exact_four_symbols(self) -> None:
+        """§2.16.5 must declare __all__ with exactly four symbols."""
+        section = self._tc1313a_section()
+        self.assertIn("__all__", section)
+        for symbol in (
+            "EscalationAction",
+            "EscalationRequest",
+            "EscalationDecision",
+            "evaluate_escalation",
+        ):
+            self.assertIn(symbol, section,
+                          f"__all__ must contain {symbol}")
+
+    # -- 5: progression — exactly three stepping upgrades --
+
+    def test_tc1313a_progression_exact_three_tiers(self) -> None:
+        """§2.16.1 must define exact three-step progression."""
+        section = self._tc1313a_section()
+        self.assertIn("basic_agent", section)
+        self.assertIn("standard_agent", section)
+        self.assertIn("advanced_agent", section)
+        self.assertIn("expert_agent", section)
+        # Verify the progression direction — each arrow points to next tier
+        collapsed = section.replace(" ", "")
+        self.assertIn("basic_agent→standard_agent", collapsed,
+                      "§2.16.1 must show basic_agent → standard_agent progression")
+        self.assertIn("standard_agent→advanced_agent", collapsed,
+                      "§2.16.1 must show standard_agent → advanced_agent progression")
+        self.assertIn("advanced_agent→expert_agent", collapsed,
+                      "§2.16.1 must show advanced_agent → expert_agent progression")
+        self.assertIn("request_user_decision", section)
+        self.assertTrue(
+            "No skip" in section or "no skip" in section.lower()
+            or "skip" in section.lower(),
+            "§2.16.1 must forbid skipping tiers",
+        )
+        self.assertTrue(
+            "wrap-around" in section.lower() or "wrap-around" in section,
+            "§2.16.1 must forbid wrap-around",
+        )
+
+    def test_tc1313a_expert_returns_request_user_decision(self) -> None:
+        """§2.16.1/§2.16.9 must state expert → request_user_decision."""
+        section = self._tc1313a_section()
+        self.assertIn("request_user_decision", section)
+        self.assertIn("None", section)  # next_worker_kind is None
+
+    # -- 6: TaskDifficulty independence --
+
+    def test_tc1313a_does_not_receive_task_difficulty(self) -> None:
+        """§2.16.7 must explicitly forbid TaskDifficulty input."""
+        section = self._tc1313a_section()
+        text = section.lower()
+        # The ADR uses "does **not** receive" with markdown bold.
+        self.assertTrue(
+            "receive" in text and "taskdifficulty" in text.replace(" ", ""),
+            "§2.16.7 must state EscalationService does not receive "
+            "TaskDifficulty",
+        )
+        self.assertTrue(
+            "modify" in text and "taskdifficulty" in text.replace(" ", ""),
+            "§2.16.7 must state EscalationService does not modify "
+            "TaskDifficulty",
+        )
+
+    # -- 7: retry belongs to TC-13.18 --
+
+    def test_tc1313a_retry_belongs_to_tc1318(self) -> None:
+        """§2.16.6 must state retry loop/orchestration is TC-13.18."""
+        section = self._tc1313a_section()
+        self.assertIn("TC-13.18", section,
+                      "§2.16.6 must reference TC-13.18 for retry")
+        # Uses markdown bold: "does **not** count attempts"
+        text = section.lower()
+        self.assertTrue(
+            "count" in text and "attempt" in text,
+            "§2.16.6 must state no attempt counting",
+        )
+
+    # -- 8: rate-limit belongs to TC-13.14 --
+
+    def test_tc1313a_rate_limit_belongs_to_tc1314(self) -> None:
+        """§2.16.10 must state rate-limit is TC-13.14, independent."""
+        section = self._tc1313a_section()
+        self.assertIn("TC-13.14", section,
+                      "§2.16.10 must reference TC-13.14 for rate-limit")
+        self.assertIn("share zero types"
+                      .lower().replace(" ", ""),
+                      section.lower().replace(" ", ""),
+                      "§2.16.10 must state zero shared types between 13.13 and 13.14")
+
+    # -- 9: no TASK_ESCALATED / new event / outbox --
+
+    def test_tc1313a_no_task_escalated_event(self) -> None:
+        """§2.16.8 must forbid TASK_ESCALATED and new schema versions."""
+        section = self._tc1313a_section()
+        self.assertIn("TASK_ESCALATED", section,
+                      "§2.16.8 must explicitly forbid TASK_ESCALATED")
+        text = section.lower()
+        self.assertTrue(
+            "not introduce" in text or "no new event" in text
+            or "no new schema" in text,
+            "§2.16.8 must state no new event type",
+        )
+
+    # -- 10: no state/file writes --
+
+    def test_tc1313a_no_state_writes(self) -> None:
+        """§2.16.8 must forbid tasks.yaml, events, outbox, acceptance
+        writes."""
+        section = self._tc1313a_section()
+        for forbidden in (
+            "tasks.yaml", "events", "outbox",
+            "acceptance", "approval records",
+        ):
+            self.assertIn(forbidden, section,
+                          f"§2.16.8 must forbid {forbidden}")
+
+    # -- 11: data class field counts are exact --
+
+    def test_tc1313a_escalation_request_forbids_extra_fields(self) -> None:
+        """§2.16.3 must list permanently excluded fields."""
+        section = self._tc1313a_section()
+        for excluded in (
+            "task_id", "revision", "attempt",
+            "dispatch_id", "retry_count",
+            "stdout", "stderr",
+        ):
+            self.assertIn(excluded, section,
+                          f"§2.16.3 excluded fields must include {excluded}")
+
+    def test_tc1313a_escalation_decision_forbids_extra_fields(self) -> None:
+        """§2.16.4 must list permanently excluded fields."""
+        section = self._tc1313a_section()
+        for excluded in (
+            "escalation_level", "reason",
+            "retry_advice", "new_provider",
+        ):
+            self.assertIn(excluded, section,
+                          f"§2.16.4 excluded fields must include {excluded}")
+
+    # -- 12: TC-13.14 and beyond are still Target --
+
+    def test_tc1313a_tc1314_still_target(self) -> None:
+        """Interface #19 (RateLimit) must remain Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        row19 = None
+        for r in rows:
+            if r.get("#") == "19" or r.get("No.") == "19":
+                row19 = r
+                break
+        self.assertIsNotNone(row19, "Interface #19 row not found")
+        status = row19.get("Status", "")
+        self.assertTrue(
+            "Target" in status or "target" in status.lower(),
+            f"Interface #19 must be Target, got: {status}"
+        )
+
+    def test_tc1313a_interface_20_through_25_still_target(self) -> None:
+        """Interfaces #20–25 must remain Target."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_interface_status_table(adr_text)
+        for n in ("20", "21", "22", "23", "24", "25"):
+            row = None
+            for r in rows:
+                if r.get("#") == n or r.get("No.") == n:
+                    row = r
+                    break
+            self.assertIsNotNone(row, f"Interface #{n} row not found")
+            status = row.get("Status", "")
+            self.assertTrue(
+                "Target" in status or "target" in status.lower(),
+                f"Interface #{n} must be Target, got: {status}",
+            )
+
+    # -- 13: escalation_service.py must NOT exist --
+
+    def test_tc1313a_no_production_module_yet(self) -> None:
+        """escalation_service.py must NOT exist — TC-13.13b not started."""
+        self.assertFalse(
+            (SKILL_ROOT / "scripts" / "escalation_service.py").is_file(),
+            "escalation_service.py must not exist until TC-13.13b",
+        )
+
+    # -- 14: Future Task Cards split --
+
+    def test_tc1313a_future_task_cards_split(self) -> None:
+        """§5 must have TC-13.13a and TC-13.13b as separate rows."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        ids_seen = {
+            self._resolve_col(row, "Task Card", "Task", "#")
+            for row in rows
+        }
+        self.assertIn("TC-13.13a", ids_seen,
+                      "§5 must contain TC-13.13a row")
+        self.assertIn("TC-13.13b", ids_seen,
+                      "§5 must contain TC-13.13b row")
+        self.assertNotIn("TC-13.13", ids_seen,
+                         "§5 must NOT contain bare TC-13.13 row — split into a/b")
+
+    def test_tc1313a_depends_only_on_tc134(self) -> None:
+        """§2.16.14: TC-13.13a depends only on TC-13.4."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        by_id = {
+            self._resolve_col(row, "Task Card", "Task", "#"): row
+            for row in rows
+        }
+        tc1313a = by_id.get("TC-13.13a")
+        self.assertIsNotNone(tc1313a, "TC-13.13a must exist in Future Task Cards")
+        dep = self._resolve_col(tc1313a, "Depends on", "Dep")
+        self.assertIn("TC-13.4", dep,
+                      "TC-13.13a must depend on TC-13.4")
+        self.assertNotIn("TC-13.12d", dep,
+                         "TC-13.13a must NOT depend on TC-13.12d")
+
+    def test_tc1313b_depends_on_tc1313a(self) -> None:
+        """§5: TC-13.13b must depend on TC-13.13a."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        rows = self._parse_future_task_cards_table(adr_text)
+        by_id = {
+            self._resolve_col(row, "Task Card", "Task", "#"): row
+            for row in rows
+        }
+        tc1313b = by_id.get("TC-13.13b")
+        self.assertIsNotNone(tc1313b, "TC-13.13b must exist in Future Task Cards")
+        dep = self._resolve_col(tc1313b, "Depends on", "Dep")
+        self.assertIn("TC-13.13a", dep,
+                      "TC-13.13b must depend on TC-13.13a")
+
+    # -- 15: no custom exceptions --
+
+    def test_tc1313a_no_custom_exception_hierarchy(self) -> None:
+        """§2.16.5 must state no custom exception hierarchy."""
+        section = self._tc1313a_section()
+        self.assertIn("No custom exception hierarchy"
+                      .lower().replace(" ", ""),
+                      section.lower().replace(" ", ""),
+                      "§2.16.5 must state no custom exception classes")
