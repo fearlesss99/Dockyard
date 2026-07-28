@@ -4342,21 +4342,6 @@ def _validate_approval_evidence(
                 )
                 if isinstance(parsed, dict) and parsed.get("schema_version") == "agentdesk.state-event/v2":
                     canonical_events.append(parsed)
-                # Also fall back to JSON parse for events written in
-                # json.dumps format.  Catch the syntax error silently
-                # so the JSON parse failure doesn't emit a diagnostic
-                # when the event is valid production YAML.
-                try:
-                    json_parsed = json.loads(raw)
-                except (json.JSONDecodeError, ValueError):
-                    json_parsed = None
-                if json_parsed is not None and isinstance(json_parsed, dict):
-                    if json_parsed.get("schema_version") == "agentdesk.state-event/v2":
-                        # Only add the JSON fallback if the YAML parser
-                        # output for the same file was empty (i.e. the
-                        # production YAML parser didn't pick it up)
-                        if parsed is None or not isinstance(parsed, dict):
-                            canonical_events.append(json_parsed)
     except OSError:
         pass
 
