@@ -8817,3 +8817,390 @@ class TC1317aContractFreezeTests(unittest.TestCase):
                       "ADR §2.7 must reference StateProvider")
         self.assertIn("TC-13.17", section,
                       "ADR §2.7 must reference TC-13.17")
+
+
+class TC1318aContractFreezeTests(unittest.TestCase):
+    """TC-13.18a — WorkflowOrchestrator implementable contract freeze smoke.
+
+    Covers: Interface #22 remains Target; ADR §2.19 exists;
+    public-interface contract doc exists; ownership boundary (no direct
+    fence/state-lock/ApprovalGate calls); TC-13.9c hard dependency
+    declared; ACK excluded from automated cycle; WorkflowClock
+    injected; no skip_audit: bool; workspace caller-supplied;
+    no worktree management; underlying exceptions pass through;
+    exactly 3 orchestrator exceptions; all 15 transitions covered;
+    BLOCKER_CANCELLED not missed; production module absent.
+    """
+
+    def setUp(self) -> None:
+        self.adr_path = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        )
+        self.contract_path = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "workflow-orchestrator-contract.md"
+        )
+        self.adr_text = self.adr_path.read_text(encoding="utf-8")
+        self.contract_text = self.contract_path.read_text(encoding="utf-8")
+        self.scripts_dir = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "scripts"
+        )
+
+    # ── 1. Contract file & ADR §2.19 existence ──────────────────────────
+
+    def test_contract_file_exists(self) -> None:
+        """workflow-orchestrator-contract.md must exist."""
+        self.assertTrue(
+            self.contract_path.is_file(),
+            "workflow-orchestrator-contract.md must exist as a regular file",
+        )
+
+    def test_adr_section_219_exists(self) -> None:
+        """ADR §2.19 WorkflowOrchestrator Frozen Contract must exist."""
+        self.assertIn(
+            "### 2.19 WorkflowOrchestrator",
+            self.adr_text,
+            "ADR: §2.19 WorkflowOrchestrator Frozen Contract must exist",
+        )
+
+    def test_adr_section_219_references_contract_file(self) -> None:
+        """§2.19 must reference workflow-orchestrator-contract.md."""
+        section = _extract_markdown_section(
+            self.adr_text, "### 2.19 WorkflowOrchestrator"
+        )
+        self.assertIsNotNone(section, "ADR must contain §2.19")
+        self.assertIn(
+            "workflow-orchestrator-contract.md",
+            section,
+            "ADR §2.19 must reference workflow-orchestrator-contract.md",
+        )
+
+    # ── 2. Interface #22 remains Target ──────────────────────────────────
+
+    def test_interface_22_is_target(self) -> None:
+        """Interface #22 must remain Target — TC-13.18."""
+        self.assertIn(
+            "| 22 | AgentDesk WorkflowOrchestrator | **Target** | TC-13.18",
+            self.adr_text,
+            "ADR: Interface #22 must remain Target — TC-13.18",
+        )
+
+    def test_interface_22_not_current(self) -> None:
+        """Interface #22 must NOT claim Current."""
+        self.assertNotIn(
+            "| 22 | AgentDesk WorkflowOrchestrator | **Current**",
+            self.adr_text,
+            "ADR: Interface #22 must NOT claim Current",
+        )
+
+    # ── 3. Production module absent ─────────────────────────────────────
+
+    def test_workflow_orchestrator_py_absent(self) -> None:
+        """workflow_orchestrator.py must NOT exist."""
+        self.assertFalse(
+            (self.scripts_dir / "workflow_orchestrator.py").exists(),
+            "workflow_orchestrator.py must not exist — "
+            "TC-13.18a is contract-only",
+        )
+
+    def test_test_workflow_orchestrator_py_absent(self) -> None:
+        """test_workflow_orchestrator.py must NOT exist."""
+        tests_dir = Path(__file__).resolve().parent
+        self.assertFalse(
+            (tests_dir / "test_workflow_orchestrator.py").exists(),
+            "test_workflow_orchestrator.py must not exist — "
+            "TC-13.18a is contract-only",
+        )
+
+    # ── 4. Ownership boundary — no direct fence/state-lock/ApprovalGate ──
+
+    def test_contract_forbids_direct_hold_worker_slot_fence(self) -> None:
+        """Contract must forbid direct hold_worker_slot_fence() call."""
+        lowered = self.contract_text.lower()
+        self.assertTrue(
+            "must not" in lowered and "hold_worker_slot_fence" in lowered,
+            "Contract: orchestrator must not call hold_worker_slot_fence directly",
+        )
+
+    def test_contract_forbids_direct_state_lock(self) -> None:
+        """Contract must forbid direct .state-transition.lock acquisition."""
+        self.assertIn(
+            ".state-transition.lock",
+            self.contract_text,
+            "Contract: must mention the state lock as TransitionService-only",
+        )
+
+    def test_contract_forbids_duplicate_approval_gate_calls(self) -> None:
+        """Contract must forbid ApprovalGate calls before/after transition."""
+        lowered = self.contract_text.lower()
+        self.assertTrue(
+            ("approvalgate.require" in lowered or "approvalgate" in lowered)
+            and ("must not" in lowered),
+            "Contract: orchestrator must not call ApprovalGate "
+            "before/after transitions",
+        )
+
+    def test_contract_forbids_fabricated_guard_results(self) -> None:
+        """Contract must forbid caller-fabricated approval_gate GuardResult."""
+        self.assertIn(
+            "fabricat",
+            self.contract_text,
+            "Contract: must forbid fabricated approval_gate GuardResult entries",
+        )
+
+    # ── 5. TC-13.9c hard dependency ──────────────────────────────────────
+
+    def test_contract_declares_tc139c_hard_dependency(self) -> None:
+        """Contract must declare TC-13.9c as hard dependency."""
+        self.assertIn(
+            "TC-13.9c",
+            self.contract_text,
+            "Contract: must reference TC-13.9c",
+        )
+        lowered = self.contract_text.lower()
+        self.assertTrue(
+            "hard" in lowered or "cannot automatically" in lowered,
+            "Contract: must declare TC-13.9c as a hard dependency "
+            "for DELIVERY_SUBMITTED completion",
+        )
+
+    def test_contract_forbids_guessing_commits_from_stdout(self) -> None:
+        """Contract must forbid guessing implementation_commit from stdout."""
+        lowered = self.contract_text.lower()
+        self.assertTrue(
+            "guess" in lowered
+            or "must **not**" in self.contract_text
+            and "implementation_commit" in self.contract_text,
+            "Contract: must forbid guessing commits from opaque stdout",
+        )
+
+    # ── 6. ACK semantics — excluded from automated cycle ─────────────────
+
+    def test_contract_excludes_ack_from_automated_cycle(self) -> None:
+        """Contract must exclude DISPATCH_ACKNOWLEDGED from v1 automated cycle."""
+        self.assertIn(
+            "DISPATCH_ACKNOWLEDGED",
+            self.contract_text,
+            "Contract: must mention DISPATCH_ACKNOWLEDGED",
+        )
+        lowered = self.contract_text.lower()
+        self.assertTrue(
+            "excluded" in lowered or "deferred" in lowered,
+            "Contract: ACK must be excluded or deferred from v1 "
+            "automated cycle",
+        )
+
+    def test_contract_rejects_fake_ack_patterns(self) -> None:
+        """Contract must reject fake ACK patterns."""
+        lowered = self.contract_text.lower()
+        self.assertTrue(
+            "prohibited" in lowered or "forbidden" in lowered,
+            "Contract: must explicitly prohibit fake ACK patterns",
+        )
+
+    # ── 7. WorkflowClock injected ────────────────────────────────────────
+
+    def test_contract_declares_workflow_clock(self) -> None:
+        """Contract must declare WorkflowClock Protocol."""
+        self.assertIn(
+            "WorkflowClock",
+            self.contract_text,
+            "Contract: must declare WorkflowClock Protocol",
+        )
+
+    def test_contract_forbids_static_now_reuse(self) -> None:
+        """Contract must forbid reusing a single frozen now across operations."""
+        lowered = self.contract_text.lower()
+        self.assertTrue(
+            "reus" in lowered and "now" in lowered
+            or "frozen `now`" in self.contract_text,
+            "Contract: must forbid reusing a single now value",
+        )
+
+    def test_contract_specifies_heartbeat_interval(self) -> None:
+        """Contract must mention 20 s heartbeat max interval."""
+        self.assertIn(
+            "20",
+            self.contract_text,
+            "Contract: must mention the 20 s heartbeat interval",
+        )
+
+    def test_contract_requires_heartbeat_stop_on_failure(self) -> None:
+        """Contract must require heartbeat cancellation on Worker failure."""
+        lowered = self.contract_text.lower()
+        self.assertIn("cancel", lowered)
+        self.assertTrue(
+            "heartbeat" in lowered and "cancel" in lowered
+            or "stop" in self.contract_text.lower()
+            and "heartbeat" in self.contract_text.lower(),
+            "Contract: must stop/cancel heartbeat on Worker "
+            "completion, failure, or cancellation",
+        )
+
+    # ── 8. No skip_audit: bool ───────────────────────────────────────────
+
+    def test_contract_forbids_skip_audit_bool(self) -> None:
+        """Contract must forbid skip_audit: bool."""
+        self.assertIn(
+            "skip_audit",
+            self.contract_text,
+            "Contract: must explicitly forbid skip_audit: bool",
+        )
+        self.assertIn(
+            "FORBIDDEN",
+            self.contract_text,
+            "Contract: must mark skip_audit as FORBIDDEN",
+        )
+
+    def test_contract_declares_audit_verdict_routing(self) -> None:
+        """Contract must declare audit verdict routing table."""
+        self.assertIn(
+            "verdict",
+            self.contract_text,
+            "Contract: must declare audit verdict routing",
+        )
+        self.assertTrue(
+            '"pass"' in self.contract_text
+            and '"fail"' in self.contract_text,
+            "Contract: must route pass/fail/blocked verdicts",
+        )
+
+    # ── 9. Workspace caller-supplied, no worktree management ─────────────
+
+    def test_contract_workspace_caller_supplied(self) -> None:
+        """Contract must state workspace is caller-supplied."""
+        lowered = self.contract_text.lower()
+        self.assertTrue(
+            "caller" in lowered and "workspace" in lowered
+            or "existing absolute" in lowered,
+            "Contract: workspace must be caller-supplied "
+            "existing absolute directory",
+        )
+
+    def test_contract_forbids_worktree_management(self) -> None:
+        """Contract must forbid worktree create/remove/checkout."""
+        lowered = self.contract_text.lower()
+        self.assertTrue(
+            "worktree" in lowered and "must **not**" in self.contract_text
+            or "does **not**" in self.contract_text
+            and "worktree" in lowered,
+            "Contract: must forbid orchestrator worktree management",
+        )
+
+    # ── 10. Underlying exceptions pass through unchanged ─────────────────
+
+    def test_contract_exceptions_pass_through(self) -> None:
+        """Contract must declare underlying exceptions propagate unchanged."""
+        for exc_root in (
+            "WorkerSlotLeaseError",
+            "DispatchGatewayError",
+            "ApprovalError",
+            "ControlPlaneTransitionError",
+            "StateProviderError",
+        ):
+            self.assertIn(
+                exc_root,
+                self.contract_text,
+                f"Contract: must declare {exc_root} passes through "
+                "unchanged",
+            )
+
+    def test_contract_no_parallel_wrapping_exceptions(self) -> None:
+        """Contract must NOT declare parallel wrapping exception classes."""
+        # The contract may mention these names in a prohibition sentence
+        # ("No parallel wrapping exception ... is created").
+        # But it must not declare them as class definitions.
+        contract = self.contract_text
+        self.assertIn(
+            "No parallel wrapping exception",
+            contract,
+            "Contract: must explicitly state no parallel wrapping exceptions",
+        )
+        for banned in (
+            "WorkflowSlotError",
+            "WorkflowDispatchError",
+            "WorkflowAuditError",
+            "WorkflowApprovalError",
+            "WorkflowTransitionError",
+            "WorkflowEscalationError",
+        ):
+            self.assertNotIn(
+                f"class {banned}",
+                contract,
+                f"Contract: must NOT contain 'class {banned}'",
+            )
+
+    # ── 11. Exactly 3 orchestrator exceptions ────────────────────────────
+
+    def test_contract_exactly_three_own_exceptions(self) -> None:
+        """Contract must declare exactly 3 orchestrator-specific exceptions."""
+        for required in (
+            "WorkflowInputError",
+            "WorkflowHeartbeatError",
+            "WorkflowInvariantError",
+        ):
+            self.assertIn(
+                required,
+                self.contract_text,
+                f"Contract: must declare {required}",
+            )
+
+    # ── 12. All 15 transitions covered, BLOCKER_CANCELLED present ────────
+
+    def test_contract_covers_all_15_transitions(self) -> None:
+        """Contract must cover all 15 transition types."""
+        all_15 = [
+            "TASK_SPECIFIED",
+            "TASK_DISPATCHED",
+            "DISPATCH_ACKNOWLEDGED",
+            "DELIVERY_SUBMITTED",
+            "DELIVERY_ACCEPTED",
+            "DELIVERY_RETURNED",
+            "TASK_REQUEUED",
+            "CHANGE_INTEGRATED",
+            "INTEGRATION_FAILED",
+            "TASK_BLOCKED",
+            "BLOCKER_RESOLVED",
+            "BLOCKER_RESCOPED",
+            "BLOCKER_CANCELLED",
+            "TASK_CANCELLED",
+            "TASK_SUPERSEDED",
+        ]
+        for name in all_15:
+            self.assertIn(
+                name,
+                self.contract_text,
+                f"Contract: must cover transition type {name}",
+            )
+
+    def test_blocker_cancelled_not_missed(self) -> None:
+        """BLOCKER_CANCELLED must be present — not 14 transitions."""
+        self.assertIn(
+            "BLOCKER_CANCELLED",
+            self.contract_text,
+            "Contract: BLOCKER_CANCELLED must be present "
+            "(all 15 transitions, not 14)",
+        )
+
+    # ── 13. ADR §2.19 status section ─────────────────────────────────────
+
+    def test_adr_219_status_declares_target(self) -> None:
+        """§2.19.11 must state Interface #22 remains Target."""
+        section = _extract_markdown_section(
+            self.adr_text, "#### 2.19.11 Status"
+        )
+        self.assertIsNotNone(section, "ADR §2.19.11 must exist")
+        self.assertIn(
+            "Target",
+            section,
+            "ADR §2.19.11 must state Interface #22 remains Target",
+        )
+        self.assertIn(
+            "TC-13.18a",
+            section,
+            "ADR §2.19.11 must reference TC-13.18a",
+        )

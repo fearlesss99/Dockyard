@@ -6228,6 +6228,289 @@ StateProvider does **not** handle:
 
 ---
 
+### 2.19 WorkflowOrchestrator — Frozen Contract (Target — TC-13.18a)
+
+TC-13.18a freezes the **WorkflowOrchestrator implementable contract**.
+No production module is shipped under TC-13.18a — the contract itself is the
+deliverable.  Implementation begins with TC-13.18b.
+
+The full frozen contract lives at:
+`skills/agentdesk/references/public-interfaces/workflow-orchestrator-contract.md`
+
+---
+
+#### 2.19.1 Ownership Boundary — Delegation-Only
+
+The WorkflowOrchestrator is a **pure orchestration facade**.  It owns zero
+canonical state writes, zero lock primitives, and zero subprocess execution.
+Every authoritative operation delegates to an existing Current service:
+
+| Responsibility | Delegated to | Method |
+|---------------|-------------|--------|
+| Read task state | `StateProvider` | `snapshot()` |
+| Compute budget | `ContextBudgetPolicy` | `compute_budget()` |
+| Acquire / release / renew Worker slot | `WorkerSlotLease` | `acquire_worker_slot` / `release_worker_slot` / `renew_worker_slot` |
+| Execute Worker dispatch | `WorkerAdapter` | `run_worker()` |
+| Write canonical state / events / outbox / acceptance | `ControlPlaneTransitionService` | `apply_transition()` |
+| Check / grant / revoke task-action approval | `ApprovalGate` | `check()` / `require()` / `write_grant()` / `write_revoke()` |
+| Evaluate escalation | `EscalationService` | `evaluate_escalation()` |
+| Invoke MAD deliberation | `MadGateway` | `run_gateway()` |
+| Invoke MAD audit | `MadAuditGateway` | `run_audit_gateway()` |
+
+**Frozen rules:**
+
+1. WorkflowOrchestrator does **not** directly serialize or write any file
+   under `docs/pm/` or `.agentdesk/runtime/`.
+2. WorkflowOrchestrator does **not** directly call
+   `hold_worker_slot_fence()` — `ControlPlaneTransitionService.apply_transition()`
+   acquires the fence internally when a `WorkerSlotLease` is supplied.
+3. WorkflowOrchestrator does **not** directly acquire
+   `.state-transition.lock` — `apply_transition()` acquires it internally.
+4. The three gated transitions (`TASK_DISPATCHED`, `DELIVERY_ACCEPTED`,
+   `CHANGE_INTEGRATED`) have `ApprovalGate.require()` already executed by
+   `apply_transition()` inside the state lock.  WorkflowOrchestrator does
+   **not** call ApprovalGate before or after transition requests.
+5. Callers must **not** fabricate `approval_gate` GuardResult entries —
+   `apply_transition()` constructs them from the actual ApprovalGate
+   outcome (§2.15.13).
+
+---
+
+#### 2.19.2 TC-13.9c Hard Dependency — Opaque Output Boundary
+
+`WorkerResult.dispatch_result.stdout` and `.stderr` are opaque `bytes`.
+The WorkflowOrchestrator must **never**:
+
+* Parse Claude JSON or Codex JSONL.
+* Guess `implementation_commit` or `report_commit` from stdout.
+* Decode bytes to text and extract report content.
+* Use the current Git HEAD as a substitute for Worker-reported commits.
+* Silently decode with fallback character sets.
+
+Until TC-13.9c delivers typed, trustable `WorkerOutput` / `DeliveryReceipt`:
+
+* WorkflowOrchestrator **can** complete scheduling, lease, Worker execution,
+  and result return.
+* WorkflowOrchestrator **cannot** automatically complete
+  `DELIVERY_SUBMITTED` — caller must supply `implementation_commit` and
+  `report_commit` from out-of-band evidence.
+* WorkflowOrchestrator **cannot** derive commit SHAs from opaque bytes.
+
+This dependency is **hard**: any path that claims to complete
+`DELIVERY_SUBMITTED` without TC-13.9c must document exactly which
+out-of-band mechanism supplies the two commit SHAs.
+
+---
+
+#### 2.19.3 DISPATCH_ACKNOWLEDGED — ACK Semantics
+
+The true point at which a CLI subprocess has started and is ready to
+receive input is **not observable** via the current `run_worker()` API.
+`run_worker()` calls `run_dispatch()`, which calls
+`asyncio.create_subprocess_exec` and then `process.communicate()` — the
+function returns only after the subprocess exits.
+
+Decision for TC-13.18 v1: **ACK is excluded from the automated dispatch
+cycle.**  The `DISPATCH_ACKNOWLEDGED` transition requires an external
+reliable start signal.  When the DispatcherAgentGateway gains a
+process-started callback (future task card), the ACK transition will be
+integrated.  Until then, the automated cycle skips
+`DISPATCH_ACKNOWLEDGED` — task remains `dispatched` until a Worker
+explicitly reports in-progress.
+
+This decision does **not** alter the existing `DISPATCH_ACKNOWLEDGED`
+event schema or semantics — it merely defers its automated production.
+
+---
+
+#### 2.19.4 Clock and Heartbeat — Explicit Injection
+
+The WorkflowOrchestrator must accept an explicit `WorkflowClock` Protocol
+rather than calling `datetime.now()` or `time.sleep()` in production logic:
+
+```python
+class WorkflowClock(Protocol):
+    def now(self) -> datetime:
+        """Return a timezone-aware UTC datetime."""
+        ...
+
+    async def sleep(self, seconds: float) -> None:
+        """Suspend the current task for *seconds*."""
+        ...
+```
+
+**Frozen rules:**
+
+1. `now()` must return timezone-aware UTC.
+2. Heartbeat interval must not exceed the `WorkerSlotLease`
+   `MAX_HEARTBEAT_INTERVAL_SECONDS` of 20 s (§2.5.5).
+3. A heartbeat background task must be started before `run_worker()` and
+   stopped (cancelled) on Worker completion, failure, or cancellation.
+4. Heartbeat failure (renew raises `WorkerSlotFencingError`) must cancel
+   the dispatch and enter the cleanup path — subsequent transitions must
+   **not** proceed with an expired lease.
+5. Tests use a fake clock; production uses a real asyncio clock.
+6. A single frozen `now` value must **not** be reused across multiple
+   time-dependent operations.
+
+---
+
+#### 2.19.5 ID and Workspace Ownership
+
+In TC-13.18 v1, **all authoritative identifiers are caller-supplied**:
+
+| Identity | Supplied by | Validated by |
+|----------|------------|-------------|
+| `task_id` | Caller | TransitionService (CAS) |
+| `dispatch_id` | Caller | TransitionService (CAS) |
+| `event_id` | Caller (`EVT-*`) | TransitionService (uniqueness) |
+| `message_id` (outbox) | Caller (`MSG-*`) | TransitionService (uniqueness) |
+| `holder_instance_id` | Caller | WorkerSlotLease |
+| `holder_dispatch_id` | Caller | WorkerSlotLease |
+
+WorkflowOrchestrator does **not** generate UUIDs, timestamps, or random
+identifiers.  It does **not** hide ID generation behind private helpers.
+
+`workspace` must be an existing absolute directory supplied by the caller.
+WorkflowOrchestrator does **not**:
+
+* Create or remove Git worktrees.
+* Execute `git checkout`, `git worktree add`, or `git worktree remove`.
+* Derive the workspace from environment variables.
+
+Worktree lifecycle is deferred to a future task card with a separate
+interface.
+
+---
+
+#### 2.19.6 MAD Audit — Fail-Closed Strategy
+
+In TC-13.18 v1, MAD audit is **mandatory** in the automated acceptance
+path.  There is **no** `skip_audit: bool` flag.
+
+Audit result routing (frozen):
+
+| `verdict` | Action |
+|-----------|--------|
+| `"pass"` | Proceed to acceptance request |
+| `"fail"` | Reject automatic acceptance → enter return/escalation path |
+| `"blocked"` | Pause for PM / user decision |
+| Gateway exception (non-zero exit, timeout, parse failure) | Must **not** be treated as `"pass"`; enters blocked/escalation path |
+| No audit result (audit not invoked) | Automatic acceptance is **not** permitted |
+
+Future exemption from mandatory audit must use a separate, typed,
+auditable policy evidence object — never a bare boolean flag.
+
+---
+
+#### 2.19.7 Exception Hierarchy
+
+WorkflowOrchestrator does **not** introduce parallel wrapping exceptions for
+every underlying service.  The following propagate **unchanged** through
+the orchestrator:
+
+* `WorkerSlotLeaseError` (all subclasses)
+* `DispatchGatewayError` (all subclasses)
+* `ApprovalError` (all subclasses)
+* `ControlPlaneTransitionError` (all subclasses)
+* `GatewayError` (all subclasses — from `mad_gateway`)
+* `StateProviderError` (all subclasses)
+
+Only three orchestrator-specific exception types exist:
+
+```text
+WorkflowOrchestratorError                  (Exception)
+├── WorkflowInputError                     — invalid argument types/values
+├── WorkflowHeartbeatError                 — heartbeat renewal lost
+└── WorkflowInvariantError                 — internal precondition violated
+```
+
+Exception messages must **never** contain: the task prompt, raw stdout or
+stderr bytes, workspace paths, `holder_instance_id`, `canonical_worktree`,
+dispatch IDs, user-generated content, or secrets.
+
+---
+
+#### 2.19.8 Transition Coverage
+
+WorkflowOrchestrator must be aware of **all 15** transition types defined
+in `ControlPlaneTransitionService._TRANSITION_SPECS` (§2.14.8):
+
+| # | Event type | Covered by path |
+|---|-----------|----------------|
+| 1 | `TASK_SPECIFIED` | PM manual (orchestrator-aware) |
+| 2 | `TASK_DISPATCHED` | TC-13.18b dispatch path |
+| 3 | `DISPATCH_ACKNOWLEDGED` | Deferred (see §2.19.3) |
+| 4 | `DELIVERY_SUBMITTED` | TC-13.18c delivery path |
+| 5 | `DELIVERY_ACCEPTED` | TC-13.18c acceptance path |
+| 6 | `DELIVERY_RETURNED` | TC-13.18c return path |
+| 7 | `TASK_REQUEUED` | TC-13.18c requeue path |
+| 8 | `CHANGE_INTEGRATED` | TC-13.18c integration path |
+| 9 | `INTEGRATION_FAILED` | TC-13.18d blocked path |
+| 10 | `TASK_BLOCKED` | TC-13.18d blocked path |
+| 11 | `BLOCKER_RESOLVED` | TC-13.18d unblock path |
+| 12 | `BLOCKER_RESCOPED` | TC-13.18d rescope path |
+| 13 | `BLOCKER_CANCELLED` | TC-13.18d cancel path |
+| 14 | `TASK_CANCELLED` | TC-13.18d cancel path |
+| 15 | `TASK_SUPERSEDED` | TC-13.18d supersede path |
+
+WorkflowOrchestrator does **not** duplicate `_TRANSITION_SPECS` — it
+constructs typed `TransitionRequest` objects and passes them to
+`apply_transition()`.
+
+---
+
+#### 2.19.9 Contract Scope — Explicit Non-Goals
+
+TC-13.18a does **not** implement:
+
+* WorkflowOrchestrator production module (`workflow_orchestrator.py` —
+  deferred to TC-13.18b).
+* Provider output decoding — TC-13.9c.
+* Rate-limit handling — TC-13.14.
+* Git worktree lifecycle — deferred to a future task card.
+* HTML Dashboard — TC-13.20.
+* Retry, escalation, and cancellation execution — deferred to TC-13.18d.
+* E2E / recovery tests — TC-13.19.
+* `DISPATCH_ACKNOWLEDGED` automated production — deferred to a future
+  DispatcherGateway start-receipt task card.
+
+---
+
+#### 2.19.10 Recommended Task-Card Split
+
+```text
+TC-13.18a — this frozen contract (§2.19)
+TC-13.9c  — typed WorkerOutput / DeliveryReceipt decoding
+TC-13.18b — lease, heartbeat, Worker execution, bounded cleanup
+TC-13.18c — DeliverySubmitted, MAD audit, Acceptance, Integration
+TC-13.18d — Escalation, retry, cancellation, replay, fault recovery
+TC-13.19  — real E2E closed-loop tests
+TC-13.20  — HTML Dashboard
+```
+
+| Card | Depends on | Scope | Interface #22 status after completion |
+|------|-----------|-------|--------------------------------------|
+| TC-13.18a | This ADR | Contract only | **Target** |
+| TC-13.18b | TC-13.18a, TC-13.10c, TC-13.11c, TC-13.12d, TC-13.13b, TC-13.17b | Lease + heartbeat + run_worker + cleanup | **Target** |
+| TC-13.18c | TC-13.18b, TC-13.16b | Delivery + audit + accept + integrate | **Target** |
+| TC-13.18d | TC-13.18c | Escalation + retry + cancel + replay | **Target** |
+| TC-13.19 | TC-13.18d | E2E / recovery tests | **Target** → **Current** |
+
+---
+
+#### 2.19.11 Status
+
+* ADR Interface Status row #22 "AgentDesk WorkflowOrchestrator"
+  remains **Target** — TC-13.18a.
+* This section (§2.19) is the Frozen Contract for TC-13.18a.
+* No production module is shipped under TC-13.18a.
+* TC-13.18b/c/d, TC-13.19, and TC-13.20 remain **Target**.
+* All prior Current interfaces remain **Current**.
+
+---
+
+
 ## 3. Ownership Boundaries
 
 | Domain | Owned by | Description |
@@ -6281,11 +6564,11 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.8.4 | Codex CLI Provider implementation | TC-13.8.3 |
 | TC-13.9a | WorkerAdapter core contract freeze (§2.13) | TC-13.5.1, TC-13.7, TC-13.8, TC-13.8.4 |
 | TC-13.9b | WorkerAdapter core production implementation (`worker_adapter.py`) | TC-13.9a |
-| TC-13.9c | Provider output decoding investigation and contract (Claude JSON + Codex JSONL) | TC-13.9b + reliable Claude/Codex output-schema evidence |
+| TC-13.9c | Provider output decoding (Claude JSON + Codex JSONL) | TC-13.9b (module), reliable Claude/Codex output-schema evidence |
 | TC-13.10a | WorkerSlotLease frozen contract (§2.5) | This ADR |
 | TC-13.10b | WorkerSlotLease data model, validation, runtime store, atomic I/O, file lock | TC-13.10a |
 | TC-13.10c | WorkerSlotLease acquire / release / renew / hold fence | TC-13.10b |
-| TC-13.11 | ControlPlaneTransitionService | TC-13.10c, TC-13.2 |
+| TC-13.11a/b/c | ControlPlaneTransitionService | TC-13.10c, TC-13.2 |
 | TC-13.12a | ApprovalGate frozen contract (§2.15) | TC-13.11c |
 | TC-13.12b | ApprovalGate typed models, evidence store/writer, schema validation | TC-13.12a |
 | TC-13.12c | ApprovalGate read-only runtime gate, ControlPlaneTransitionService internal integration | TC-13.12b, TC-13.11 |
@@ -6294,10 +6577,13 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.13b | EscalationService production implementation | TC-13.13a |
 | TC-13.14 | RateLimit service | TC-13.11 |
 | TC-13.15 | MAD `audit` sub-command (`mad.audit-result/v1`) | TC-13.2 |
-| TC-13.16 | AgentDesk MadAuditGateway | TC-13.15 |
-| TC-13.17 | StateProvider (read-only) | TC-13.11 |
-| TC-13.18 | WorkflowOrchestrator (full integration) | TC-13.10c, 13.11, 13.12, 13.13a, 13.13b, 13.14, 13.16, 13.17 |
-| TC-13.19 | E2E / Recovery tests | TC-13.18 |
+| TC-13.16a/b | AgentDesk MadAuditGateway | TC-13.15 |
+| TC-13.17a/b | StateProvider (read-only) | TC-13.11 |
+| TC-13.18a | WorkflowOrchestrator frozen contract (§2.19) | This ADR |
+| TC-13.18b | Lease + heartbeat + Worker execution + bounded cleanup | TC-13.18a, TC-13.10c, TC-13.11c, TC-13.12d, TC-13.13b, TC-13.17b |
+| TC-13.18c | DeliverySubmitted + MAD audit + Acceptance + Integration | TC-13.18b, TC-13.16b |
+| TC-13.18d | Escalation + retry + cancellation + replay + fault recovery | TC-13.18c |
+| TC-13.19 | E2E / Recovery tests | TC-13.18d |
 | TC-13.20 | HTML Dashboard | TC-13.17, TC-13.19 |
 | TC-13.21 | ADR status update (Target → Current) | TC-13.19 |
 
