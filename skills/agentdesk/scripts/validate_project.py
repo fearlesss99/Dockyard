@@ -4340,19 +4340,23 @@ def _validate_approval_evidence(
                 parsed = _yaml_subset_mapping_from_text(
                     raw, f"event history {logical_path}", reporter
                 )
-                if not isinstance(parsed, dict):
-                    continue
-                if parsed.get("schema_version") != "agentdesk.state-event/v2":
-                    continue
-                canonical_events.append(parsed)
-                # Also index legacy JSON events that were written by
-                # tests or older workflows
-                json_parsed = _parse_json_compatible_object(
-                    raw, f"event history {logical_path}", reporter,
-                )
+                if isinstance(parsed, dict) and parsed.get("schema_version") == "agentdesk.state-event/v2":
+                    canonical_events.append(parsed)
+                # Also fall back to JSON parse for events written in
+                # json.dumps format.  Catch the syntax error silently
+                # so the JSON parse failure doesn't emit a diagnostic
+                # when the event is valid production YAML.
+                try:
+                    json_parsed = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    json_parsed = None
                 if json_parsed is not None and isinstance(json_parsed, dict):
                     if json_parsed.get("schema_version") == "agentdesk.state-event/v2":
-                        canonical_events.append(json_parsed)
+                        # Only add the JSON fallback if the YAML parser
+                        # output for the same file was empty (i.e. the
+                        # production YAML parser didn't pick it up)
+                        if parsed is None or not isinstance(parsed, dict):
+                            canonical_events.append(json_parsed)
     except OSError:
         pass
 
@@ -4466,7 +4470,7 @@ def _validate_approval_evidence(
             except AttributeError:
                 # stat.FILE_ATTRIBUTE_REPARSE_POINT doesn't exist on
                 # this platform (e.g. POSIX) — not an error.
-                pass
+                _assert_json_cannot_parse(event_yaml)
             except OSError as exc:
                 reporter.error(
                     f"cannot verify whether approval evidence is a "

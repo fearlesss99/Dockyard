@@ -445,8 +445,10 @@ class PositiveApprovalValidationTests(unittest.TestCase):
                 "not evidence", encoding="utf-8",
             )
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
-                _make_grant_yaml(snapshot_commit=head, event_id="EVT-0001"),
-                encoding="utf-8",
+                _make_grant_yaml(
+                    snapshot_commit=head, event_id="EVT-0001",
+                    task_id="TC-001", revision=1, attempt=1,
+                ), encoding="utf-8",
             )
             reporter = validate_project.validate(proj, require_committed=False)
             self.assertEqual(0, reporter.errors,
@@ -1006,6 +1008,15 @@ class ActiveGrantConflictTests(unittest.TestCase):
     def test_expired_grant_not_counted_as_active(self) -> None:
         with _temp_project([_make_draft_task()]) as proj:
             head = _git_head(proj)
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            event_yaml = _make_event_yaml(
+                task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-001", event_id="EVT-HIST-0001",
+            )
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                event_yaml, encoding="utf-8",
+            )
             past_granted = "2026-07-20T08:00:00Z"
             past_expiry = "2026-07-21T08:00:00Z"
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
@@ -1017,6 +1028,7 @@ class ActiveGrantConflictTests(unittest.TestCase):
             (proj / "docs" / "pm" / "approvals" / "EVT-0002.yaml").write_text(
                 _make_grant_yaml(
                     snapshot_commit=head, approval_id="APR-002", event_id="EVT-0002",
+                    task_id="TC-001", revision=1, attempt=1,
                 ), encoding="utf-8",
             )
             reporter = validate_project.validate(proj, require_committed=False)
@@ -1088,6 +1100,9 @@ class OrphanEvidenceTests(unittest.TestCase):
                 ), encoding="utf-8",
             )
             reporter = validate_project.validate(proj, require_committed=False)
+            # Expect 0 approval errors.  The event YAML file also produces
+            # a JSON parse warning (expected — it IS YAML, not JSON-like),
+            # but that's a WARN, not an ERROR.
             self.assertEqual(0, reporter.errors,
                              f"Event history should prove task: got {reporter.errors}")
 
