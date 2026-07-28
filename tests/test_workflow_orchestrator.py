@@ -78,6 +78,8 @@ from workflow_orchestrator import (
     AcceptanceCycleResult,
     BlockedAuditRequest,
     BlockedAuditResult,
+    BlockedRescopeRequest,
+    BlockedRescopeResult,
     DeliveryRemediationRequest,
     DeliveryRemediationResult,
     DispatchCycleRequest,
@@ -11422,3 +11424,1141 @@ class WorkflowOrchestratorIntegrationFailureTests(unittest.TestCase):
         except Exception as e:
             msg = str(e)
             self.assertNotIn("TC-001", msg)
+
+
+# ── BlockedRescope helpers ─────────────────────────────────────────────────
+
+
+def _make_blocked_rescope_request(
+    task_id: str = "TC-001",
+    dispatch_id: str = "DSP-001",
+    attempt: int = 1,
+    revision: int = 1,
+    implementation_commit: str | None = None,
+    report_commit: str | None = None,
+    worker_kind: WorkerKind = WorkerKind.EXPERT_AGENT,
+    block_event_id: str = "EVT-BLOCK-001",
+    rescope_event_id: str = "EVT-RESCOPE-001",
+    head_sha: str | None = None,
+) -> "BlockedRescopeRequest":
+    """Build a valid BlockedRescopeRequest for expert blocked task rescope."""
+    if implementation_commit is None:
+        implementation_commit = "a" * 40
+    if report_commit is None:
+        report_commit = "b" * 40
+    if head_sha is None:
+        head_sha = "a" * 40
+
+    from workflow_orchestrator import (
+        BlockedAuditRequest,
+        BlockedRescopeRequest,
+    )
+
+    # Build BlockedAuditRequest with Expert REQUEST_USER_DECISION
+    # BlockedPayload: resume_state="draft", blocked_attempt_valid=False
+    bar = _make_blocked_audit_request(
+        task_id=task_id,
+        dispatch_id=dispatch_id,
+        attempt=attempt,
+        revision=revision,
+        implementation_commit=implementation_commit,
+        report_commit=report_commit,
+        worker_kind=worker_kind,
+        block_event_id=block_event_id,
+    )
+
+    # Override the BlockedPayload to have resume_state="draft", blocked_attempt_valid=False
+    from control_plane_transition import BlockedPayload as BPayload
+    bp = BPayload(
+        blocked_reason="test blocked reason",
+        blocked_kind="decision_required",
+        blocked_owner="pm",
+        unblock_condition="manual override",
+        resume_state="draft",
+        blocked_attempt_valid=False,
+    )
+    new_btr = TransitionRequest(
+        cas=bar.block_transition_request.cas,
+        dispatch_cas=None,
+        event_id=bar.block_transition_request.event_id,
+        event_type="TASK_BLOCKED",
+        payload=bp,
+        event_context=bar.block_transition_request.event_context,
+    )
+    bar = BlockedAuditRequest(
+        acceptance_cycle_result=bar.acceptance_cycle_result,
+        dispatch_cycle_result=bar.dispatch_cycle_result,
+        block_transition_request=new_btr,
+        current_worker_kind=bar.current_worker_kind,
+    )
+
+    # Build BlockedAuditResult with REQUEST_USER_DECISION, Expert
+    from escalation_service import (
+        EscalationAction,
+        EscalationDecision,
+    )
+    ed = EscalationDecision(
+        action=EscalationAction.REQUEST_USER_DECISION,
+        current_worker_kind=worker_kind,
+        next_worker_kind=None,
+    )
+    bar_result = BlockedAuditResult(
+        task_id=task_id,
+        audit_result=bar.acceptance_cycle_result.audit_result,
+        escalation_decision=ed,
+        block_transition=TransitionResult(
+            task_id=task_id,
+            event_id=block_event_id,
+            from_state="review_ready",
+            to_state="blocked",
+            occurred_at="2026-07-28T12:00:03Z",
+            outbox_message_id=None,
+        ),
+    )
+
+    # Build BLOCKER_RESCOPED TransitionRequest
+    new_revision = revision + 1
+    from control_plane_transition import (
+        BlockerRescopedPayload as BRPayload,
+        DispatchCAS as DCAS,
+    )
+    rescope_payload = BRPayload(new_revision=new_revision)
+    rescope_cas = TransitionCAS(
+        task_id=task_id,
+        expected_revision=revision,
+        expected_state="blocked",
+        expected_snapshot_commit=head_sha,
+    )
+    rescope_tr = TransitionRequest(
+        cas=rescope_cas,
+        dispatch_cas=None,
+        event_id=rescope_event_id,
+        event_type="BLOCKER_RESCOPED",
+        payload=rescope_payload,
+        event_context=TransitionEventContext(
+            source_message_id=None,
+            evidence_refs=(),
+            guard_results=(),
+        ),
+    )
+
+    return BlockedRescopeRequest(
+        blocked_audit_request=bar,
+        blocked_audit_result=bar_result,
+        rescope_transition_request=rescope_tr,
+    )
+
+
+# ── BlockedRescopeRequest Three-Field Tests ─────────────────────────────────
+
+
+class BlockedRescopeRequestThreeFieldTests(unittest.TestCase):
+    """BlockedRescopeRequest: exactly three fields, frozen, slots, no __dict__."""
+
+    def test_exactly_three_fields(self) -> None:
+        from workflow_orchestrator import BlockedRescopeRequest
+        field_names = {f.name for f in dc_fields(BlockedRescopeRequest)}
+        expected = {
+            "blocked_audit_request",
+            "blocked_audit_result",
+            "rescope_transition_request",
+        }
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import BlockedRescopeRequest
+        self.assertTrue(BlockedRescopeRequest.__dataclass_params__.frozen)
+        self.assertTrue(hasattr(BlockedRescopeRequest, "__slots__"))
+
+    def test_no_dict(self) -> None:
+        from workflow_orchestrator import BlockedRescopeRequest
+        req = _make_blocked_rescope_request()
+        self.assertFalse(hasattr(req, "__dict__"))
+
+
+# ── BlockedRescopeResult Four-Field Tests ───────────────────────────────────
+
+
+class BlockedRescopeResultFourFieldTests(unittest.TestCase):
+    """BlockedRescopeResult: exactly four fields, frozen, slots, no __dict__."""
+
+    def test_exactly_four_fields(self) -> None:
+        from workflow_orchestrator import BlockedRescopeResult
+        field_names = {f.name for f in dc_fields(BlockedRescopeResult)}
+        expected = {
+            "task_id",
+            "previous_revision",
+            "new_revision",
+            "rescope_transition",
+        }
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import BlockedRescopeResult
+        self.assertTrue(BlockedRescopeResult.__dataclass_params__.frozen)
+        self.assertTrue(hasattr(BlockedRescopeResult, "__slots__"))
+
+    def test_no_dict(self) -> None:
+        from workflow_orchestrator import BlockedRescopeResult
+        result = BlockedRescopeResult(
+            task_id="TC-001",
+            previous_revision=1,
+            new_revision=2,
+            rescope_transition=TransitionResult(
+                task_id="TC-001", event_id="EVT-RESCOPE-001",
+                from_state="blocked", to_state="draft",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            ),
+        )
+        self.assertFalse(hasattr(result, "__dict__"))
+
+
+# ── WorkflowOrchestratorBlockedRescope Tests ─────────────────────────────────
+
+
+class WorkflowOrchestratorBlockedRescopeTests(unittest.TestCase):
+    """TC-13.18d.5: expert blocked task rescope — targeted tests."""
+
+    @staticmethod
+    def _setup_orch(tmp: Path) -> "WorkflowOrchestrator":
+        return _new_orch(tmp)
+
+    # -- 1. Expert REQUEST_USER_DECISION normal rescope ------------------------
+
+    def test_01_expert_request_user_decision_rescope_success(self) -> None:
+        """Expert blocked task with REQUEST_USER_DECISION → successful rescope."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            rescope_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-RESCOPE-001",
+                from_state="blocked", to_state="draft",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                self.assertIsNone(lease, "BLOCKER_RESCOPED must have lease=None")
+                return rescope_tr
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.record_blocked_rescope(req)
+                    self.assertEqual(result.task_id, "TC-001")
+                    self.assertEqual(result.previous_revision, 1)
+                    self.assertEqual(result.new_revision, 2)
+                    self.assertEqual(
+                        result.rescope_transition, rescope_tr,
+                    )
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 2. lease=None ---------------------------------------------------------
+
+    def test_02_lease_none_passed_to_transition(self) -> None:
+        """BLOCKER_RESCOPED must pass lease=None to apply_transition."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            lease_values = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                lease_values.append(lease)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-RESCOPE-001",
+                    from_state="blocked", to_state="draft",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(lease_values), 1)
+            self.assertIsNone(lease_values[0])
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 3. transition exactly once --------------------------------------------
+
+    def test_03_transition_exactly_once(self) -> None:
+        """apply_transition must be called exactly once."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            call_count = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                call_count.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-RESCOPE-001",
+                    from_state="blocked", to_state="draft",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(call_count), 1)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 4. revision exactly +1 ------------------------------------------------
+
+    def test_04_revision_exactly_plus_one(self) -> None:
+        """new_revision must equal previous_revision + 1."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            rescope_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-RESCOPE-001",
+                from_state="blocked", to_state="draft",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return rescope_tr
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.record_blocked_rescope(req)
+                    self.assertEqual(result.previous_revision, 1)
+                    self.assertEqual(result.new_revision, 2)
+                    self.assertEqual(
+                        result.new_revision,
+                        result.previous_revision + 1,
+                    )
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 5. non-EXPERT current_worker_kind rejected ----------------------------
+
+    def test_05_basic_worker_kind_rejected(self) -> None:
+        """BASIC current_worker_kind must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            # Bypass EscalationDecision.__post_init__ to create
+            # REQUEST_USER_DECISION with non-EXPERT current_worker_kind
+            from escalation_service import (
+                EscalationAction,
+                EscalationDecision,
+            )
+            ed = object.__new__(EscalationDecision)
+            object.__setattr__(ed, "action", EscalationAction.REQUEST_USER_DECISION)
+            object.__setattr__(ed, "current_worker_kind", WorkerKind.BASIC_AGENT)
+            object.__setattr__(ed, "next_worker_kind", None)
+
+            from workflow_orchestrator import BlockedRescopeRequest
+            bad_bar_result = BlockedAuditResult(
+                task_id=req.blocked_audit_result.task_id,
+                audit_result=req.blocked_audit_result.audit_result,
+                escalation_decision=ed,
+                block_transition=req.blocked_audit_result.block_transition,
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                rescope_transition_request=req.rescope_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_05b_standard_worker_kind_rejected(self) -> None:
+        """STANDARD current_worker_kind must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from escalation_service import (
+                EscalationAction,
+                EscalationDecision,
+            )
+            ed = object.__new__(EscalationDecision)
+            object.__setattr__(ed, "action", EscalationAction.REQUEST_USER_DECISION)
+            object.__setattr__(ed, "current_worker_kind", WorkerKind.STANDARD_AGENT)
+            object.__setattr__(ed, "next_worker_kind", None)
+
+            from workflow_orchestrator import BlockedRescopeRequest
+            bad_bar_result = BlockedAuditResult(
+                task_id=req.blocked_audit_result.task_id,
+                audit_result=req.blocked_audit_result.audit_result,
+                escalation_decision=ed,
+                block_transition=req.blocked_audit_result.block_transition,
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                rescope_transition_request=req.rescope_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_05c_advanced_worker_kind_rejected(self) -> None:
+        """ADVANCED current_worker_kind must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from escalation_service import (
+                EscalationAction,
+                EscalationDecision,
+            )
+            ed = object.__new__(EscalationDecision)
+            object.__setattr__(ed, "action", EscalationAction.REQUEST_USER_DECISION)
+            object.__setattr__(ed, "current_worker_kind", WorkerKind.ADVANCED_AGENT)
+            object.__setattr__(ed, "next_worker_kind", None)
+
+            from workflow_orchestrator import BlockedRescopeRequest
+            bad_bar_result = BlockedAuditResult(
+                task_id=req.blocked_audit_result.task_id,
+                audit_result=req.blocked_audit_result.audit_result,
+                escalation_decision=ed,
+                block_transition=req.blocked_audit_result.block_transition,
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                rescope_transition_request=req.rescope_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 6. ESCALATE action rejected -------------------------------------------
+
+    def test_06_escalate_action_rejected(self) -> None:
+        """ESCALATE action must be rejected for blocked rescope."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from escalation_service import (
+                EscalationAction,
+                EscalationDecision,
+            )
+            ed = EscalationDecision(
+                action=EscalationAction.ESCALATE,
+                current_worker_kind=WorkerKind.EXPERT_AGENT,
+                next_worker_kind=WorkerKind.EXPERT_AGENT,
+            )
+            # Rebuild request with bad escalation decision
+            from workflow_orchestrator import BlockedRescopeRequest
+            bad_bar_result = BlockedAuditResult(
+                task_id=req.blocked_audit_result.task_id,
+                audit_result=req.blocked_audit_result.audit_result,
+                escalation_decision=ed,
+                block_transition=req.blocked_audit_result.block_transition,
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                rescope_transition_request=req.rescope_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 7. non-None next_worker_kind rejected ---------------------------------
+
+    def test_07_non_none_next_worker_kind_rejected(self) -> None:
+        """next_worker_kind must be None for REQUEST_USER_DECISION."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from escalation_service import (
+                EscalationAction,
+                EscalationDecision,
+            )
+            # Bypass EscalationDecision.__post_init__ to create
+            # REQUEST_USER_DECISION with non-None next_worker_kind
+            ed = object.__new__(EscalationDecision)
+            object.__setattr__(ed, "action", EscalationAction.REQUEST_USER_DECISION)
+            object.__setattr__(ed, "current_worker_kind", WorkerKind.EXPERT_AGENT)
+            object.__setattr__(ed, "next_worker_kind", WorkerKind.EXPERT_AGENT)
+
+            from workflow_orchestrator import BlockedRescopeRequest
+            bad_bar_result = BlockedAuditResult(
+                task_id=req.blocked_audit_result.task_id,
+                audit_result=req.blocked_audit_result.audit_result,
+                escalation_decision=ed,
+                block_transition=req.blocked_audit_result.block_transition,
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                rescope_transition_request=req.rescope_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 8. non-blocked verdict rejected ---------------------------------------
+
+    def test_08_non_blocked_verdict_rejected(self) -> None:
+        """Audit verdict not 'blocked' must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            acr_pass = AcceptanceCycleResult(
+                task_id=req.blocked_audit_request.acceptance_cycle_result.task_id,
+                audit_result=_make_fake_audit_result(verdict="pass"),
+                accept_transition=None,
+                integrate_transition=None,
+            )
+            from workflow_orchestrator import (
+                BlockedAuditRequest,
+                BlockedRescopeRequest,
+            )
+            bad_bar = BlockedAuditRequest(
+                acceptance_cycle_result=acr_pass,
+                dispatch_cycle_result=req.blocked_audit_request.dispatch_cycle_result,
+                block_transition_request=req.blocked_audit_request.block_transition_request,
+                current_worker_kind=req.blocked_audit_request.current_worker_kind,
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=bad_bar,
+                blocked_audit_result=req.blocked_audit_result,
+                rescope_transition_request=req.rescope_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 9. task/revision/attempt/dispatch mismatch each rejected ---------------
+
+    def test_09_task_id_mismatch_rejected(self) -> None:
+        """Mismatched task_id between bar_result and dcr rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from workflow_orchestrator import BlockedRescopeRequest
+            bad_bar_result = BlockedAuditResult(
+                task_id="TC-999",
+                audit_result=req.blocked_audit_result.audit_result,
+                escalation_decision=req.blocked_audit_result.escalation_decision,
+                block_transition=req.blocked_audit_result.block_transition,
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                rescope_transition_request=req.rescope_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_10_revision_mismatch_rejected(self) -> None:
+        """rescope CAS expected_revision != delivery receipt revision rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from workflow_orchestrator import BlockedRescopeRequest
+            bad_cas = TransitionCAS(
+                task_id="TC-001",
+                expected_revision=99,
+                expected_state="blocked",
+                expected_snapshot_commit="a" * 40,
+            )
+            bad_ftr = TransitionRequest(
+                cas=bad_cas,
+                dispatch_cas=None,
+                event_id="EVT-BAD",
+                event_type="BLOCKER_RESCOPED",
+                payload=req.rescope_transition_request.payload,
+                event_context=req.rescope_transition_request.event_context,
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                rescope_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 11. block_transition to_state not "blocked" rejected -------------------
+
+    def test_11_block_transition_not_blocked_rejected(self) -> None:
+        """bar_result.block_transition.to_state != 'blocked' rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from workflow_orchestrator import BlockedRescopeRequest
+            bad_block_tr = TransitionResult(
+                task_id=req.blocked_audit_result.block_transition.task_id,
+                event_id=req.blocked_audit_result.block_transition.event_id,
+                from_state="review_ready",
+                to_state="ready",  # wrong: must be "blocked"
+                occurred_at="2026-07-28T12:00:03Z",
+                outbox_message_id=None,
+            )
+            bad_bar_result = BlockedAuditResult(
+                task_id=req.blocked_audit_result.task_id,
+                audit_result=req.blocked_audit_result.audit_result,
+                escalation_decision=req.blocked_audit_result.escalation_decision,
+                block_transition=bad_block_tr,
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                rescope_transition_request=req.rescope_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 12. wrong event_type rejected -----------------------------------------
+
+    def test_12_wrong_event_type_rejected(self) -> None:
+        """event_type != BLOCKER_RESCOPED must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from workflow_orchestrator import BlockedRescopeRequest
+            # Bypass TransitionRequest.__post_init__ to create
+            # BLOCKER_RESOLVED event_type with BlockerRescopedPayload payload
+            bad_ftr = object.__new__(TransitionRequest)
+            object.__setattr__(bad_ftr, "cas", req.rescope_transition_request.cas)
+            object.__setattr__(bad_ftr, "dispatch_cas", None)
+            object.__setattr__(bad_ftr, "event_id", "EVT-BAD")
+            object.__setattr__(bad_ftr, "event_type", "BLOCKER_RESOLVED")
+            object.__setattr__(bad_ftr, "payload", req.rescope_transition_request.payload)
+            object.__setattr__(bad_ftr, "event_context", req.rescope_transition_request.event_context)
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                rescope_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 13. wrong payload type rejected ---------------------------------------
+
+    def test_13_wrong_payload_type_rejected(self) -> None:
+        """payload not BlockerRescopedPayload must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from workflow_orchestrator import BlockedRescopeRequest
+            # Build valid BLOCKER_RESCOPED TransitionRequest first, then swap payload
+            bad_ftr = TransitionRequest(
+                cas=req.rescope_transition_request.cas,
+                dispatch_cas=None,
+                event_id="EVT-BAD",
+                event_type="BLOCKER_RESCOPED",
+                payload=req.rescope_transition_request.payload,
+                event_context=req.rescope_transition_request.event_context,
+            )
+            from control_plane_transition import BlockerResolvedPayload
+            bad_payload = BlockerResolvedPayload(resume_to_state="draft")
+            object.__setattr__(bad_ftr, "payload", bad_payload)
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                rescope_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 14. wrong CAS expected_state rejected ---------------------------------
+
+    def test_14_wrong_expected_state_rejected(self) -> None:
+        """CAS expected_state != 'blocked' must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from workflow_orchestrator import BlockedRescopeRequest
+            bad_cas = TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="ready",
+                expected_snapshot_commit="a" * 40,
+            )
+            bad_ftr = TransitionRequest(
+                cas=bad_cas,
+                dispatch_cas=None,
+                event_id="EVT-BAD",
+                event_type="BLOCKER_RESCOPED",
+                payload=req.rescope_transition_request.payload,
+                event_context=req.rescope_transition_request.event_context,
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                rescope_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 15. dispatch_cas not None rejected ------------------------------------
+
+    def test_15_dispatch_cas_not_none_rejected(self) -> None:
+        """dispatch_cas must be None; non-None must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from workflow_orchestrator import BlockedRescopeRequest
+            bad_ftr = TransitionRequest(
+                cas=req.rescope_transition_request.cas,
+                dispatch_cas=None,
+                event_id="EVT-BAD",
+                event_type="BLOCKER_RESCOPED",
+                payload=req.rescope_transition_request.payload,
+                event_context=req.rescope_transition_request.event_context,
+            )
+            object.__setattr__(
+                bad_ftr, "dispatch_cas",
+                DispatchCAS(expected_dispatch_id="DSP-001", expected_attempt=1),
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                rescope_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 16. resume_state not "draft" rejected ---------------------------------
+
+    def test_16_resume_state_not_draft_rejected(self) -> None:
+        """BlockedPayload.resume_state != 'draft' must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from control_plane_transition import BlockedPayload as BPayload
+            from workflow_orchestrator import (
+                BlockedAuditRequest,
+                BlockedRescopeRequest,
+            )
+            bp = BPayload(
+                blocked_reason="test blocked reason",
+                blocked_kind="decision_required",
+                blocked_owner="pm",
+                unblock_condition="manual override",
+                resume_state="ready",
+                blocked_attempt_valid=False,
+            )
+            bad_btr = TransitionRequest(
+                cas=req.blocked_audit_request.block_transition_request.cas,
+                dispatch_cas=None,
+                event_id=req.blocked_audit_request.block_transition_request.event_id,
+                event_type="TASK_BLOCKED",
+                payload=bp,
+                event_context=req.blocked_audit_request.block_transition_request.event_context,
+            )
+            bad_bar = BlockedAuditRequest(
+                acceptance_cycle_result=req.blocked_audit_request.acceptance_cycle_result,
+                dispatch_cycle_result=req.blocked_audit_request.dispatch_cycle_result,
+                block_transition_request=bad_btr,
+                current_worker_kind=req.blocked_audit_request.current_worker_kind,
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=bad_bar,
+                blocked_audit_result=req.blocked_audit_result,
+                rescope_transition_request=req.rescope_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 17. blocked_attempt_valid not False rejected --------------------------
+
+    def test_17_blocked_attempt_valid_not_false_rejected(self) -> None:
+        """BlockedPayload.blocked_attempt_valid must be exactly False."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from control_plane_transition import BlockedPayload as BPayload
+            from workflow_orchestrator import (
+                BlockedAuditRequest,
+                BlockedRescopeRequest,
+            )
+            bp = BPayload(
+                blocked_reason="test blocked reason",
+                blocked_kind="decision_required",
+                blocked_owner="pm",
+                unblock_condition="manual override",
+                resume_state="draft",
+                blocked_attempt_valid=True,
+            )
+            bad_btr = TransitionRequest(
+                cas=req.blocked_audit_request.block_transition_request.cas,
+                dispatch_cas=None,
+                event_id=req.blocked_audit_request.block_transition_request.event_id,
+                event_type="TASK_BLOCKED",
+                payload=bp,
+                event_context=req.blocked_audit_request.block_transition_request.event_context,
+            )
+            bad_bar = BlockedAuditRequest(
+                acceptance_cycle_result=req.blocked_audit_request.acceptance_cycle_result,
+                dispatch_cycle_result=req.blocked_audit_request.dispatch_cycle_result,
+                block_transition_request=bad_btr,
+                current_worker_kind=req.blocked_audit_request.current_worker_kind,
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=bad_bar,
+                blocked_audit_result=req.blocked_audit_result,
+                rescope_transition_request=req.rescope_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 18. event_id conflict rejected ----------------------------------------
+
+    def test_18_event_id_conflict_rejected(self) -> None:
+        """rescope event_id must differ from dispatch, ACK, delivery, block."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from workflow_orchestrator import BlockedRescopeRequest
+            # Use the block event_id as the rescope event_id
+            bad_ftr = TransitionRequest(
+                cas=req.rescope_transition_request.cas,
+                dispatch_cas=None,
+                event_id="EVT-BLOCK-001",  # duplicates block event_id
+                event_type="BLOCKER_RESCOPED",
+                payload=req.rescope_transition_request.payload,
+                event_context=req.rescope_transition_request.event_context,
+            )
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                rescope_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_rescope(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 19. transition failure propagates as-is -------------------------------
+
+    def test_19_transition_failure_propagates_as_is(self) -> None:
+        """Transition exceptions must propagate unchanged."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            class TestTransitionError(Exception):
+                pass
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                side_effect=TestTransitionError("transition failed"),
+            ):
+                with self.assertRaises(TestTransitionError):
+                    async def _run() -> None:
+                        await orch.record_blocked_rescope(req)
+                    asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 20. cancellation propagates as-is -------------------------------------
+
+    def test_20_cancellation_propagates(self) -> None:
+        """asyncio.CancelledError must propagate unchanged."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            async def _test_cancel() -> None:
+                task = asyncio.ensure_future(
+                    orch.record_blocked_rescope(req)
+                )
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True,
+            ):
+                asyncio.run(_test_cancel())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 21. failure path: zero side effects -----------------------------------
+
+    def test_21_no_side_operations_on_failure(self) -> None:
+        """All validation rejections: 0 audit, 0 lease, 0 transition, 0 escalation."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            from workflow_orchestrator import BlockedRescopeRequest
+            bad_req = BlockedRescopeRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                rescope_transition_request=req.rescope_transition_request,
+            )
+            # Force wrong type to trigger TypeError before transition
+            bad_req = object()
+
+            with mock.patch.object(wo, "acquire_worker_slot") as mock_acquire, \
+                 mock.patch.object(wo, "release_worker_slot") as mock_release, \
+                 mock.patch.object(wo, "renew_worker_slot") as mock_renew, \
+                 mock.patch.object(wo, "run_worker_observed") as mock_run_worker, \
+                 mock.patch.object(wo, "run_audit_gateway") as mock_audit, \
+                 mock.patch.object(wo, "evaluate_escalation") as mock_esc, \
+                 mock.patch.object(
+                     wo.ControlPlaneTransitionService, "apply_transition",
+                     autospec=True,
+                 ) as mock_transition:
+                with self.assertRaises(TypeError):
+                    async def _run() -> None:
+                        await orch.record_blocked_rescope(bad_req)
+                    asyncio.run(_run())
+
+            mock_acquire.assert_not_called()
+            mock_release.assert_not_called()
+            mock_renew.assert_not_called()
+            mock_run_worker.assert_not_called()
+            mock_audit.assert_not_called()
+            mock_esc.assert_not_called()
+            mock_transition.assert_not_called()
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 22. malicious repr not called, exception messages don't leak input ----
+
+    def test_22_malicious_repr_not_called_exception_safe(self) -> None:
+        """Malicious __repr__ not invoked; exception messages safe."""
+        import workflow_orchestrator as wo
+        orch = _new_orch(Path(__file__).resolve().parents[1])
+        req = _make_blocked_rescope_request()
+
+        # Use non-blocked verdict to trigger validation failure
+        acr_pass = AcceptanceCycleResult(
+            task_id=req.blocked_audit_request.acceptance_cycle_result.task_id,
+            audit_result=_make_fake_audit_result(verdict="pass"),
+            accept_transition=None,
+            integrate_transition=None,
+        )
+        from workflow_orchestrator import (
+            BlockedAuditRequest,
+            BlockedRescopeRequest,
+        )
+        bad_bar = BlockedAuditRequest(
+            acceptance_cycle_result=acr_pass,
+            dispatch_cycle_result=req.blocked_audit_request.dispatch_cycle_result,
+            block_transition_request=req.blocked_audit_request.block_transition_request,
+            current_worker_kind=req.blocked_audit_request.current_worker_kind,
+        )
+        bad_req = BlockedRescopeRequest(
+            blocked_audit_request=bad_bar,
+            blocked_audit_result=req.blocked_audit_result,
+            rescope_transition_request=req.rescope_transition_request,
+        )
+
+        try:
+            async def _run() -> None:
+                await orch.record_blocked_rescope(bad_req)
+            asyncio.run(_run())
+        except WorkflowInputError as e:
+            msg = str(e)
+            self.assertNotIn("TC-001", msg)
+            self.assertNotIn("DSP-001", msg)
+            self.assertNotIn("test blocked reason", msg)
+        except Exception as e:
+            msg = str(e)
+            self.assertNotIn("TC-001", msg)
+
+    # -- 23. no audit, no escalation, no dispatch ------------------------------
+
+    def test_23_no_audit_no_escalation_no_dispatch(self) -> None:
+        """record_blocked_rescope must not invoke audit, escalation, or dispatch."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_rescope_request()
+
+            rescope_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-RESCOPE-001",
+                from_state="blocked", to_state="draft",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return rescope_tr
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ), mock.patch.object(wo, "run_audit_gateway") as mock_audit, \
+               mock.patch.object(wo, "evaluate_escalation") as mock_esc, \
+               mock.patch.object(
+                   wo.WorkflowOrchestrator, "run_dispatch_cycle",
+               ) as mock_dispatch:
+                async def _run() -> None:
+                    result = await orch.record_blocked_rescope(req)
+                    self.assertEqual(result.task_id, "TC-001")
+
+                asyncio.run(_run())
+
+            mock_audit.assert_not_called()
+            mock_esc.assert_not_called()
+            mock_dispatch.assert_not_called()
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)

@@ -1,4 +1,4 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.4)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.5)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
@@ -8,10 +8,11 @@ TC-13.18d.1 extends it with DELIVERY_RETURNED and TASK_REQUEUED.
 TC-13.18d.2 extends it with TASK_BLOCKED (audit blocked → escalation).
 TC-13.18d.3 extends it with BLOCKER_RESOLVED (escalation resume → single redispatch).
 TC-13.18d.4 extends it with INTEGRATION_FAILED (accepted → blocked for external integration failure).
+TC-13.18d.5 extends it with BLOCKER_RESCOPED (expert blocked task rescope to draft).
 
 ## Status
 
-**Current** as of TC-13.18d.4.  The dispatch cycle (snapshot → acquire →
+**Current** as of TC-13.18d.5.  The dispatch cycle (snapshot → acquire →
 TASK_DISPATCHED → heartbeat + run_worker →
 DISPATCH_ACKNOWLEDGED → decode_worker_result →
 require_delivery_receipt → DELIVERY_SUBMITTED → stop heartbeat → release
@@ -19,10 +20,12 @@ require_delivery_receipt → DELIVERY_SUBMITTED → stop heartbeat → release
 DELIVERY_RETURNED → release lease → TASK_REQUEUED (lease=None) →
 DeliveryRemediationResult), blocked audit escalation (audit blocked →
 evaluate_escalation → TASK_BLOCKED (lease=None) → BlockedAuditResult),
-and escalated single redispatch (BLOCKER_RESOLVED (lease=None) → single
+escalated single redispatch (BLOCKER_RESOLVED (lease=None) → single
 run_dispatch_cycle with next_worker_kind → EscalatedRedispatchResult),
-and integration failure recording (INTEGRATION_FAILED (lease=None) →
-IntegrationFailureResult)
+integration failure recording (INTEGRATION_FAILED (lease=None) →
+IntegrationFailureResult),
+and expert blocked task rescope (BLOCKER_RESCOPED (lease=None) →
+BlockedRescopeResult)
 are implemented and callable.
 
 This document is the authoritative frozen specification for the
@@ -325,10 +328,10 @@ defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
 | 9 | `INTEGRATION_FAILED` | Current — TC-13.18d.4 (blocked path) |
 | 10 | `TASK_BLOCKED` | Current — TC-13.18d.2 (blocked path) |
 | 11 | `BLOCKER_RESOLVED` | Current — TC-13.18d.3 (escalation resume → ready → single redispatch) |
-| 12 | `BLOCKER_RESCOPED` | TC-13.18d.2 (rescope path) |
-| 13 | `BLOCKER_CANCELLED` | TC-13.18d.2 (cancel path) |
-| 14 | `TASK_CANCELLED` | TC-13.18d.2 (cancel path) |
-| 15 | `TASK_SUPERSEDED` | TC-13.18d.2 (supersede path) |
+| 12 | `BLOCKER_RESCOPED` | Current — TC-13.18d.5 (expert blocked → draft rescope) |
+| 13 | `BLOCKER_CANCELLED` | Target |
+| 14 | `TASK_CANCELLED` | Target |
+| 15 | `TASK_SUPERSEDED` | Target |
 
 The orchestrator does **not** duplicate `_TRANSITION_SPECS`.  It constructs
 typed `TransitionRequest` objects and passes them to `apply_transition()`.
@@ -493,6 +496,7 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18d.1** | DELIVERY_RETURNED + TASK_REQUEUED (fail remediation) | TC-13.18c.2 | Current |
 | **TC-13.18d.2** | Blocked audit escalation (TASK_BLOCKED + EscalationDecision) | TC-13.18d.1 | Current |
 | **TC-13.18d.4** | INTEGRATION_FAILED recording (accepted → blocked) | TC-13.18d.3 | Current |
+| **TC-13.18d.5** | BLOCKER_RESCOPED (expert blocked → draft rescope) | TC-13.18d.2 | Current |
 | **TC-13.18d-ext** | Retry loop, escalation replay, cancellation, fault recovery | TC-13.18d.3 | Target |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Target |
@@ -502,14 +506,16 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 
 ## 13. Explicit Non-Goals
 
-TC-13.18d.2 does **not** implement:
+TC-13.18d.5 does **not** implement:
 
 - Automatic `run_dispatch_cycle()` on escalation → TC-13.18d.3
 - Auto-retry → TC-13.18d.3
 - Auto-unblock → TC-13.18d.3
-- `BLOCKER_RESOLVED` / `BLOCKER_RESCOPED` / `BLOCKER_CANCELLED` → TC-13.18d.3
-- `TASK_CANCELLED` / `TASK_SUPERSEDED` → TC-13.18d.3
-- `INTEGRATION_FAILED` → TC-13.18d.4
-- User notification / UI → TC-13.18d.3
-- Expert user-decision external interaction → TC-13.18d.3
-- Escalation decision consumption (auto re-dispatch) → TC-13.18d.3
+- `BLOCKER_CANCELLED` → Target
+- `TASK_CANCELLED` / `TASK_SUPERSEDED` → Target
+- `INTEGRATION_FAILED` → TC-13.18d.4 (already implemented)
+- User notification / UI → Target
+- Expert user-decision external interaction (chat UI, approval UI) → Target
+- Escalation decision consumption (auto re-dispatch) → TC-13.18d.3 (already implemented)
+- Rescue execution boundary — rescope is a PM control-plane only action
+- `BLOCKER_RESOLVED` → TC-13.18d.3 (already implemented)
