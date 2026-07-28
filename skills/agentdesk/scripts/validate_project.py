@@ -4313,10 +4313,119 @@ def _validate_approval_evidence(
     if not approvals_dir.is_dir():
         return
 
+    # ── build event-history index for orphan cross-reference ──
+    event_history: dict[str, dict[str, Any]] = {}
+    try:
+        events_dir = project / "docs" / "pm" / "events"
+        if events_dir.is_dir():
+            for entry in sorted(events_dir.iterdir()):
+                if not entry.is_file() or entry.suffix != ".yaml":
+                    continue
+                try:
+                    raw = entry.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                parsed = _parse_json_compatible_object(
+                    raw, f"event history {entry.relative_to(project).as_posix()}",
+                    reporter,
+                )
+                if parsed is None:
+                    continue
+                dispatch_id = parsed.get("dispatch_id")
+                if isinstance(dispatch_id, str) and dispatch_id:
+                    event_history.setdefault(dispatch_id, parsed)
+                # Also index events that may carry accepted_commit evidence
+                event_type = parsed.get("event_type")
+                task_id_ev = parsed.get("task_id")
+                if isinstance(event_type, str) and isinstance(task_id_ev, str):
+                    key = f"{task_id_ev}|{event_type}"
+                    event_history.setdefault(key, parsed)
+    except OSError:
+        pass
+
+    def _event_history_has_dispatch(dispatch_id: str) -> bool:
+        return dispatch_id in event_history
+
+    def _event_history_has_accepted_commit(task_id: str, ac: str) -> bool:
+        for key, ev in event_history.items():
+            if isinstance(key, str) and key.startswith(task_id + "|"):
+                if ev.get("accepted_commit") == ac:
+                    return True
+                eq_commit = ev.get("integrated_commit") or ev.get("implementation_commit")
+                if ac in (ev.get("accepted_commit"), eq_commit):
+                    return True
+        return False
+
+    def _event_history_has_task_id(task_id: str) -> bool:
+        for key, ev in event_history.items():
+            if isinstance(key, str) and key.startswith(task_id + "|"):
+                return True
+        return False
+
+    # ── shared snapshot_commit fail-closed validator ──
+    def _validate_snapshot_commit(
+        snapshot: Any, ctx: str, path: str
+    ) -> None:
+        """Validate snapshot_commit for both grant and revoke — fail-closed."""
+        if not isinstance(snapshot, str) or len(snapshot) != 40 or not all(
+            c in "0123456789abcdef" for c in snapshot
+        ):
+            reporter.error(
+                f"{ctx} snapshot_commit must be a 40-char lowercase hex SHA"
+            )
+            return
+
+        if head_commit is None:
+            reporter.error(
+                f"{ctx} cannot verify snapshot_commit because HEAD is unavailable"
+            )
+            return
+
+        commit_exists = _git_commit_exists(project, snapshot)
+        if commit_exists is False:
+            reporter.error(
+                f"{ctx} snapshot_commit does not resolve to a Git commit"
+            )
+            return
+        if commit_exists is None:
+            reporter.error(
+                f"{ctx} snapshot_commit could not be verified; Git query failed"
+            )
+            return
+
+        is_ancestor = _git_is_ancestor(project, snapshot, head_commit)
+        if is_ancestor is False:
+            reporter.error(
+                f"{ctx} snapshot_commit is not an ancestor of HEAD"
+            )
+        elif is_ancestor is None:
+            reporter.error(
+                f"{ctx} snapshot_commit ancestry could not be verified; "
+                f"Git query failed"
+            )
+        # else: True → valid
+
     # ── collect evidence files ──
     evidence_files: list[Path] = []
     try:
         for entry in sorted(approvals_dir.iterdir()):
+            # Reject symlink / junction / reparse point before anything else
+            if entry.is_symlink():
+                reporter.error(
+                    f"approval evidence must not be a symlink: "
+                    f"{entry.relative_to(project).as_posix()}"
+                )
+                continue
+            # Detect Windows junctions/reparse points
+            try:
+                if os.path.realpath(str(entry)) != str(entry.resolve()):
+                    reporter.error(
+                        f"approval evidence must not be a reparse point: "
+                        f"{entry.relative_to(project).as_posix()}"
+                    )
+                    continue
+            except OSError:
+                pass
             if entry.is_dir():
                 continue
             if not entry.is_file():
@@ -4326,17 +4435,13 @@ def _validate_approval_evidence(
                 continue
             if entry.name == "README.md":
                 continue
-            # Reject symlink / reparse point
-            if entry.is_symlink():
-                reporter.error(
-                    f"approval evidence must not be a symlink: "
-                    f"{entry.relative_to(project).as_posix()}"
-                )
-                continue
-            # Validate filename pattern
+            # Validate filename pattern — .yaml files MUST match EVT-*
             stem = entry.stem
             if SAFE_EVENT_ID_FILENAME_RE.fullmatch(stem) is None:
-                # Non-EVT files are ignored silently
+                reporter.error(
+                    f"approval evidence filename must match EVT-* pattern: "
+                    f"{entry.relative_to(project).as_posix()}"
+                )
                 continue
             evidence_files.append(entry)
     except OSError as exc:
@@ -4436,10 +4541,6 @@ def _validate_approval_evidence(
             seen_approval_ids.setdefault(approval_id, []).append(logical_path)
 
     # ── check global uniqueness ──
-    # approval_id uniqueness: a grant and its revoke share the same
-    # approval_id (that's the relationship).  Multiple grants with the
-    # same approval_id are the real error.
-    # Filter to only count grant-type records for approval_id uniqueness.
     grant_approval_ids: dict[str, list[str]] = {}
     for grant in grants:
         aid = grant["values"].get("approval_id")
@@ -4549,72 +4650,104 @@ def _validate_approval_evidence(
         if not isinstance(reason, str) or not reason.strip():
             reporter.error(f"{ctx} reason must be a non-empty string")
 
-        # snapshot_commit
-        snapshot = values.get("snapshot_commit")
-        if not isinstance(snapshot, str) or len(snapshot) != 40 or not all(c in "0123456789abcdef" for c in snapshot):
-            reporter.error(
-                f"{ctx} snapshot_commit must be a 40-char lowercase hex SHA"
-            )
-        elif head_commit is not None:
-            commit_exists = _git_commit_exists(project, snapshot)
-            if commit_exists is True:
-                is_ancestor = _git_is_ancestor(project, snapshot, head_commit)
-                if is_ancestor is False:
-                    reporter.error(
-                        f"{ctx} snapshot_commit is not an ancestor of HEAD"
-                    )
-                elif is_ancestor is True:
-                    pass  # valid ancestry
-                else:
-                    reporter.warn(
-                        f"could not verify snapshot ancestry for {path}"
-                    )
-            elif commit_exists is False:
-                reporter.error(
-                    f"{ctx} snapshot_commit does not resolve to a Git commit"
-                )
-            else:
-                reporter.warn(f"could not verify snapshot_commit for {path}")
+        # snapshot_commit — shared fail-closed helper
+        _validate_snapshot_commit(values.get("snapshot_commit"), ctx, path)
 
-        # orphan detection
-        if isinstance(task_id, str) and task_ledger_index is not None:
-            ledger_task = task_ledger_index.get(task_id)
-            if ledger_task is None:
+        # orphan detection — uses ledger + event history
+        if isinstance(task_id, str):
+            in_ledger = task_ledger_index is not None and task_id in task_ledger_index
+            in_history = _event_history_has_task_id(task_id)
+            if not in_ledger and not in_history:
                 reporter.error(
-                    f"{ctx} task_id {task_id} not found in task ledger"
+                    f"{ctx} task_id {task_id} not found in task ledger "
+                    f"or event history"
                 )
-            else:
-                if isinstance(revision, int) and revision >= 1:
-                    if ledger_task.get("revision") != revision:
-                        reporter.error(
-                            f"{ctx} revision {revision} does not match "
-                            f"task ledger revision {ledger_task.get('revision')}"
-                        )
-                if isinstance(attempt, int) and attempt >= 1:
-                    if ledger_task.get("attempt") != attempt:
-                        reporter.error(
-                            f"{ctx} attempt {attempt} does not match "
-                            f"task ledger attempt {ledger_task.get('attempt')}"
-                        )
-                if isinstance(dispatch_id, str) and dispatch_id:
+                validated_grants.append(grant)
+                continue
+
+            ledger_task = task_ledger_index.get(task_id) if task_ledger_index else None
+
+            # revision check — ledger or history accepted
+            if isinstance(revision, int) and revision >= 1:
+                if ledger_task is not None:
+                    ledger_rev = ledger_task.get("revision")
+                    if isinstance(ledger_rev, int) and ledger_rev != revision:
+                        if not in_history:
+                            reporter.error(
+                                f"{ctx} revision {revision} does not match "
+                                f"task ledger revision {ledger_rev}"
+                            )
+
+            # attempt check — ledger or history accepted
+            if isinstance(attempt, int) and attempt >= 1:
+                if ledger_task is not None:
+                    ledger_att = ledger_task.get("attempt")
+                    if isinstance(ledger_att, int) and ledger_att != attempt:
+                        if not in_history:
+                            reporter.error(
+                                f"{ctx} attempt {attempt} does not match "
+                                f"task ledger attempt {ledger_att}"
+                            )
+
+            # dispatch_id check — fires when task is known via ledger
+            # or history AND we can't verify the dispatch_id.
+            # If the task is in the ledger, the grant's dispatch_id must
+            # be the current_dispatch (if any) or provable via event history.
+            # If the task is only in event history, the grant's dispatch_id
+            # must appear as a dispatch_id in event history.
+            if isinstance(dispatch_id, str) and dispatch_id:
+                dispatch_found = False
+                if ledger_task is not None:
                     ledger_dispatch = ledger_task.get("current_dispatch")
                     ledger_did = (
                         ledger_dispatch.get("dispatch_id")
                         if isinstance(ledger_dispatch, dict)
                         else None
                     )
-                    if ledger_did is not None and ledger_did != dispatch_id:
-                        reporter.warn(
-                            f"{ctx} dispatch_id {dispatch_id} does not match "
-                            f"task ledger current_dispatch {ledger_did}"
-                        )
-                if scope == "integrate" and isinstance(accepted_commit, str) and len(accepted_commit) == 40:
-                    ledger_accepted = ledger_task.get("accepted_commit")
-                    if ledger_accepted is not None and ledger_accepted != accepted_commit:
+                    if ledger_did == dispatch_id:
+                        dispatch_found = True
+                if not dispatch_found and _event_history_has_dispatch(dispatch_id):
+                    dispatch_found = True
+                # Error if the task exists in ledger or history but
+                # dispatch_id is unverifiable from either source.
+                # Exception: if ledger_task exists but current_dispatch
+                # is None (draft), the grant is anticipatory.
+                if not dispatch_found:
+                    ledger_has_dispatch = (
+                        ledger_task is not None
+                        and isinstance(ledger_task.get("current_dispatch"), dict)
+                    )
+                    if ledger_has_dispatch or in_history:
                         reporter.error(
-                            f"{ctx} accepted_commit {accepted_commit} does not "
-                            f"match task ledger accepted_commit {ledger_accepted}"
+                            f"{ctx} dispatch_id {dispatch_id} not found in "
+                            f"task ledger or event history"
                         )
+
+            # accepted_commit check for integrate scope
+            if scope == "integrate" and isinstance(accepted_commit, str) and len(accepted_commit) == 40:
+                ac_found = False
+                if ledger_task is not None:
+                    ledger_ac = ledger_task.get("accepted_commit")
+                    if isinstance(ledger_ac, str) and ledger_ac == accepted_commit:
+                        ac_found = True
+                if not ac_found and _event_history_has_accepted_commit(task_id, accepted_commit):
+                    ac_found = True
+                if not ac_found:
+                    # If the task IS in ledger with accepted_commit=None
+                    # (draft, not yet delivered), the grant is anticipatory.
+                    # Only error if the ledger explicitly has a different
+                    # accepted_commit or the task has event history.
+                    ledger_has_ac = (
+                        ledger_task is not None
+                        and isinstance(ledger_task.get("accepted_commit"), str)
+                    )
+                    if ledger_has_ac or in_history:
+                        reporter.error(
+                            f"{ctx} accepted_commit {accepted_commit} not found in "
+                            f"task ledger or event history"
+                        )
+                    # else: ledger_task has no accepted_commit → grant is
+                    #        anticipatory, no error
 
         validated_grants.append(grant)
 
@@ -4678,21 +4811,21 @@ def _validate_approval_evidence(
         if not isinstance(reason, str) or not reason.strip():
             reporter.error(f"{ctx} reason must be a non-empty string")
 
-        # snapshot_commit
-        snapshot = values.get("snapshot_commit")
-        if not isinstance(snapshot, str) or len(snapshot) != 40 or not all(c in "0123456789abcdef" for c in snapshot):
-            reporter.error(
-                f"{ctx} snapshot_commit must be a 40-char lowercase hex SHA"
-            )
+        # snapshot_commit — shared fail-closed helper (same as Grant)
+        _validate_snapshot_commit(values.get("snapshot_commit"), ctx, path)
 
         # task_id
         task_id = values.get("task_id")
         if not isinstance(task_id, str) or TASK_ID_RE.fullmatch(task_id) is None:
             reporter.error(f"{ctx} task_id must match TC-NNN pattern")
-        elif task_ledger_index is not None and task_id not in task_ledger_index:
-            reporter.error(
-                f"{ctx} task_id {task_id} not found in task ledger"
-            )
+        else:
+            in_ledger = task_ledger_index is not None and task_id in task_ledger_index
+            in_history = _event_history_has_task_id(task_id)
+            if not in_ledger and not in_history:
+                reporter.error(
+                    f"{ctx} task_id {task_id} not found in task ledger "
+                    f"or event history"
+                )
 
         # event_id
         event_id = values.get("event_id")

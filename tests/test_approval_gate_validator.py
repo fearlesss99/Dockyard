@@ -62,7 +62,10 @@ def _make_state_yaml(tasks: list | None = None) -> str:
 
 
 def _make_draft_task(task_id: str = "TC-001", revision: int = 1) -> dict:
-    """A truly minimal draft task that passes all non-approval validation."""
+    """A truly minimal draft task that passes all non-approval validation.
+    Sets current_dispatch=None to avoid triggering task validation errors.
+    The dispatch_id DSP-001 check in orphan detection will be satisfied by
+    event history (if present) or the specific test fixtures that need it."""
     return {
         "task_id": task_id,
         "revision": revision,
@@ -937,9 +940,189 @@ class OrphanEvidenceTests(unittest.TestCase):
                 ), encoding="utf-8",
             )
             reporter = validate_project.validate(proj, require_committed=False)
-            # The grant says accepted_commit=ff..ff but the task ledger says aa..aa
             self.assertGreater(reporter.errors, 0,
                                "Wrong accepted_commit must be ERROR")
+
+    def test_legal_grant_ledger_moved_on_but_event_history_proves(self) -> None:
+        """Grant where task ledger has moved on but event history proves task_id."""
+        with _temp_project([_make_draft_task(task_id="TC-001", revision=1)]) as proj:
+            head = _git_head(proj)
+            # Write an event that proves TC-002 existed at revision 2
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            event = {
+                "schema_version": "agentdesk.state-event/v2",
+                "event_type": "TASK_DISPATCHED",
+                "task_id": "TC-002",
+                "revision": 2,
+                "attempt": 1,
+                "dispatch_id": "DSP-002",
+                "event_id": "EVT-HIST-0001",
+                "from_state": "ready",
+                "to_state": "dispatched",
+                "actor_role_id": "PM",
+                "lease_epoch": 1,
+                "occurred_at": _NOW_STR,
+                "payload_digest": "sha256:" + "0" * 64,
+            }
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                json.dumps(event, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            # Grant references TC-002 with revision=2 — must be provable by event
+            (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
+                _make_grant_yaml(
+                    snapshot_commit=head, task_id="TC-002", revision=2,
+                    dispatch_id="DSP-002", event_id="EVT-0001",
+                ), encoding="utf-8",
+            )
+            reporter = validate_project.validate(proj, require_committed=False)
+            self.assertEqual(0, reporter.errors,
+                             f"Event history should prove task: got {reporter.errors}")
+
+    def test_dispatch_id_in_history_but_not_ledger_is_valid(self) -> None:
+        """dispatch_id found in event history but not in current ledger → legal."""
+        with _temp_project([_make_draft_task(task_id="TC-001")]) as proj:
+            head = _git_head(proj)
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            event = {
+                "schema_version": "agentdesk.state-event/v2",
+                "event_type": "TASK_DISPATCHED",
+                "task_id": "TC-001",
+                "revision": 1,
+                "attempt": 1,
+                "dispatch_id": "DSP-HISTORIC",
+                "event_id": "EVT-HIST-0001",
+                "from_state": "ready",
+                "to_state": "dispatched",
+                "actor_role_id": "PM",
+                "lease_epoch": 1,
+                "occurred_at": _NOW_STR,
+                "payload_digest": "sha256:" + "0" * 64,
+            }
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                json.dumps(event, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
+                _make_grant_yaml(
+                    snapshot_commit=head, dispatch_id="DSP-HISTORIC",
+                    event_id="EVT-0001",
+                ), encoding="utf-8",
+            )
+            reporter = validate_project.validate(proj, require_committed=False)
+            self.assertEqual(0, reporter.errors,
+                             f"History dispatch should prove: got {reporter.errors}")
+
+    def test_dispatch_id_not_in_ledger_or_history_errors(self) -> None:
+        """dispatch_id in neither ledger nor history must ERROR
+        when the task has an active current_dispatch."""
+        with _temp_project([_make_draft_task()]) as proj:
+            # Replace the task with one that has an active current_dispatch
+            # so the dispatch check fires.
+            state_dir = proj / "docs" / "pm" / "state"
+            task_with_dispatch = {
+                **_make_draft_task(),
+                "current_dispatch": {
+                    "dispatch_id": "DSP-ACTIVE",
+                    "role_id": "Worker",
+                    "base_commit": "b" * 40,
+                    "branch": "feat/test",
+                },
+                "task_card_path": "docs/pm/tasks/TC-001-r1-test.md",
+                "task_card_commit": _git_head(proj),
+            }
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / "tasks.yaml").write_text(
+                _make_state_yaml(tasks=[task_with_dispatch]),
+                encoding="utf-8",
+            )
+            head = _git_head(proj)
+            (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
+                _make_grant_yaml(
+                    snapshot_commit=head,
+                    dispatch_id="DSP-NOWHERE",
+                    event_id="EVT-0001",
+                ), encoding="utf-8",
+            )
+            reporter = validate_project.validate(proj, require_committed=False)
+            self.assertGreater(reporter.errors, 0,
+                               "Missing dispatch_id must be ERROR")
+
+    def test_integrate_ac_ledger_null_history_proves_valid(self) -> None:
+        """Integrate grant: ledger accepted_commit=None, history has it → 0 errors."""
+        with _temp_project([_make_draft_task()]) as proj:
+            head = _git_head(proj)
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            event = {
+                "schema_version": "agentdesk.state-event/v2",
+                "event_type": "CHANGE_INTEGRATED",
+                "task_id": "TC-001",
+                "revision": 1,
+                "attempt": 1,
+                "dispatch_id": "DSP-001",
+                "event_id": "EVT-HIST-0001",
+                "from_state": "accepted",
+                "to_state": "integrated",
+                "accepted_commit": "b" * 40,
+                "integrated_commit": "c" * 40,
+                "actor_role_id": "PM",
+                "lease_epoch": 1,
+                "occurred_at": _NOW_STR,
+                "payload_digest": "sha256:" + "0" * 64,
+            }
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                json.dumps(event, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
+                _make_grant_yaml(
+                    snapshot_commit=head, scope="integrate",
+                    accepted_commit="b" * 40, event_id="EVT-0001",
+                ), encoding="utf-8",
+            )
+            reporter = validate_project.validate(proj, require_committed=False)
+            self.assertEqual(0, reporter.errors,
+                             f"History accepted_commit should prove: got {reporter.errors}")
+
+    def test_integrate_ac_ledger_null_history_wrong_errors(self) -> None:
+        """Integrate: ledger null, history has different accepted_commit → ERROR."""
+        with _temp_project([_make_draft_task()]) as proj:
+            head = _git_head(proj)
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            event = {
+                "schema_version": "agentdesk.state-event/v2",
+                "event_type": "CHANGE_INTEGRATED",
+                "task_id": "TC-001",
+                "revision": 1,
+                "attempt": 1,
+                "dispatch_id": "DSP-001",
+                "event_id": "EVT-HIST-0001",
+                "from_state": "accepted",
+                "to_state": "integrated",
+                "accepted_commit": "a" * 40,
+                "integrated_commit": "c" * 40,
+                "actor_role_id": "PM",
+                "lease_epoch": 1,
+                "occurred_at": _NOW_STR,
+                "payload_digest": "sha256:" + "0" * 64,
+            }
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                json.dumps(event, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
+                _make_grant_yaml(
+                    snapshot_commit=head, scope="integrate",
+                    accepted_commit="f" * 40, event_id="EVT-0001",
+                ), encoding="utf-8",
+            )
+            reporter = validate_project.validate(proj, require_committed=False)
+            self.assertGreater(reporter.errors, 0,
+                               "Mismatched accepted_commit must be ERROR")
 
 
 class SnapshotCommitTests(unittest.TestCase):
@@ -1009,6 +1192,86 @@ class SnapshotCommitTests(unittest.TestCase):
             reporter = validate_project.validate(proj, require_committed=False)
             self.assertGreater(reporter.errors, 0, "Uppercase SHA must be ERROR")
 
+    def test_revoke_nonexistent_snapshot_rejected(self) -> None:
+        """Revoke with non-existent snapshot must ERROR."""
+        with _temp_project([_make_draft_task()]) as proj:
+            head = _git_head(proj)
+            (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
+                _make_grant_yaml(snapshot_commit=head, approval_id="APR-001",
+                                 event_id="EVT-0001"),
+                encoding="utf-8",
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-0002.yaml").write_text(
+                _make_revoke_yaml(snapshot_commit="0" * 40, approval_id="APR-001",
+                                  event_id="EVT-0002"),
+                encoding="utf-8",
+            )
+            reporter = validate_project.validate(proj, require_committed=False)
+            self.assertGreater(reporter.errors, 0,
+                               "Revoke non-existent snapshot must be ERROR")
+
+    def test_revoke_non_ancestor_snapshot_rejected(self) -> None:
+        """Revoke with non-ancestor snapshot must ERROR."""
+        with _temp_project([_make_draft_task()]) as proj:
+            head = _git_head(proj)
+            (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
+                _make_grant_yaml(snapshot_commit=head, approval_id="APR-001",
+                                 event_id="EVT-0001"),
+                encoding="utf-8",
+            )
+            # Create an orphan commit for non-ancestor snapshot
+            subprocess.run(
+                ["git", "checkout", "--orphan", "orphan2"],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            )
+            subprocess.run(
+                ["git", "rm", "-rf", "."],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            )
+            (proj / "orphan_file2").write_text("orphan", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "orphan_file2"],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "orphan2"],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            )
+            orphan_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            ).stdout.decode("utf-8").strip()
+            subprocess.run(
+                ["git", "checkout", "master"],
+                cwd=str(proj), capture_output=True, timeout=10, shell=False,
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-0002.yaml").write_text(
+                _make_revoke_yaml(snapshot_commit=orphan_sha, approval_id="APR-001",
+                                  event_id="EVT-0002"),
+                encoding="utf-8",
+            )
+            reporter = validate_project.validate(proj, require_committed=False)
+            self.assertGreater(reporter.errors, 0,
+                               "Revoke non-ancestor snapshot must be ERROR")
+
+    def test_legal_grant_and_revoke_snapshot_ancestors_valid(self) -> None:
+        """Grant + Revoke with valid ancestor snapshots = 0 errors."""
+        with _temp_project([_make_draft_task()]) as proj:
+            head = _git_head(proj)
+            (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
+                _make_grant_yaml(snapshot_commit=head, approval_id="APR-001",
+                                 event_id="EVT-0001"),
+                encoding="utf-8",
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-0002.yaml").write_text(
+                _make_revoke_yaml(snapshot_commit=head, approval_id="APR-001",
+                                  event_id="EVT-0002"),
+                encoding="utf-8",
+            )
+            reporter = validate_project.validate(proj, require_committed=False)
+            self.assertEqual(0, reporter.errors,
+                             f"Legal grant+revoke snapshots: got {reporter.errors}")
+
 
 class PathSafetyTests(unittest.TestCase):
     """Test evidence path safety (ADR §2.15.16 item 15)."""
@@ -1025,14 +1288,28 @@ class PathSafetyTests(unittest.TestCase):
             self.assertGreater(reporter.errors, 0,
                                "Mismatched filename must be ERROR")
 
+    def test_non_evt_yaml_file_with_legal_grant_errors(self) -> None:
+        """A .yaml file that does NOT match EVT-* must ERROR."""
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            (proj / "docs" / "pm" / "approvals" / "bad.yaml").write_text(
+                _make_grant_yaml(snapshot_commit=head, event_id="EVT-0001"),
+                encoding="utf-8",
+            )
+            reporter = validate_project.validate(proj, require_committed=False)
+            self.assertGreater(reporter.errors, 0,
+                               "bad.yaml must cause ERROR for non-EVT filename")
+
     def test_non_evt_filename_ignored(self) -> None:
         with _temp_project() as proj:
+            # not-an-event.yaml is a .yaml file that does NOT match EVT-*
+            # — it must ERROR, not be silently ignored
             (proj / "docs" / "pm" / "approvals" / "not-an-event.yaml").write_text(
                 _make_grant_yaml(event_id="EVT-0001"), encoding="utf-8",
             )
             reporter = validate_project.validate(proj, require_committed=False)
-            self.assertEqual(0, reporter.errors,
-                             "Non-EVT files should be ignored")
+            self.assertGreater(reporter.errors, 0,
+                               "Non-EVT .yaml must ERROR")
 
     def test_symlink_rejected(self) -> None:
         with _temp_project() as proj:
