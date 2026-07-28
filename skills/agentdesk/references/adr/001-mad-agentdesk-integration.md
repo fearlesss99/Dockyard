@@ -28,7 +28,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 15 | AgentDesk WorkerSlotLease | **Current** | TC-13.10c | `agentdesk.worker-slot-lease/v1`; frozen contract §2.5; implemented by TC-13.10a (frozen contract), TC-13.10b (data model, store, atomic I/O), TC-13.10c (acquire/release/renew/hold fence) |
 | 16 | AgentDesk ControlPlaneTransitionService | **Current** | TC-13.11c | CAS-write tasks, immutable events, replayable outbox |
 | 17 | AgentDesk ApprovalGate | **Current** | TC-13.12d | TASK_APPROVAL with structured scope (dispatch/accept/integrate); runtime gate + ControlPlaneTransitionService integration + offline validator implemented |
-| 18 | AgentDesk EscalationService | **Target** | TC-13.13a | Pure WorkerKind tier progression; frozen contract §2.16; production module deferred to TC-13.13b |
+| 18 | AgentDesk EscalationService | **Current** | TC-13.13b | Pure WorkerKind tier progression; frozen contract §2.16; production module and full test suite committed |
 | 19 | AgentDesk RateLimit service | **Target** | TC-13.14 | Provider rate-limit handling independent of escalation |
 | 20 | AgentDesk MadAuditGateway | **Target** | TC-13.16 | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Target** | TC-13.17 | Read-only access to tasks, events, outbox, acceptances |
@@ -3475,7 +3475,8 @@ Concurrency fencing must not be blocked by output-decoding work.
   `test_worker_adapter.py` exist and are committed.
 * TC-13.9c (output decoding) remains **Target**.
 * TC-13.10 is **Current** (fully implemented by TC-13.10a/b/c).
-* TC-13.11, TC-13.13a, TC-13.13b, TC-13.14, and TC-13.18 remain **Target**.
+* TC-13.11, TC-13.14, and TC-13.18 remain **Target**.
+* TC-13.13a/b are **Current** — contract and production module complete.
 * All Current interfaces remain **Current**.
 
 
@@ -4575,8 +4576,9 @@ intermediate "Current (contract frozen)" sub-status is permitted.
 * Interface #16 is **Current**.
 * SS2.5 (WorkerSlotLease) is **Current**.
 * TC-13.10a/b/c are all **Current**.
-* TC-13.12, TC-13.13a, TC-13.13b, TC-13.14, TC-13.17, TC-13.18, and all subsequent
+* TC-13.12, TC-13.14, TC-13.17, TC-13.18, and all subsequent
   Target interfaces remain **Target**.
+* TC-13.13a/b are **Current** — contract and production module complete.
 
 ---
 
@@ -5379,8 +5381,9 @@ TC-13.12a must **not** implement, freeze, or assume responsibility for:
 * **``TASK_APPROVAL`` write implementation** — deferred to TC-13.12b.
 * **Runtime gate implementation** — deferred to TC-13.12c.
 * **Interface #17** — remains **Target**.
-* **TC-13.13a (EscalationService)** — frozen contract (§2.16); production
-  implementation (TC-13.13b) remains Target.
+* **TC-13.13a/b (EscalationService)** — frozen contract (§2.16) and
+  production implementation (TC-13.13b) are **Current**.
+* **Interface #18** — **Current** (TC-13.13b).
 * **Subprocess invocation** — no CLI, model, or network calls.
 * **Git worktree creation or deletion** — out of scope.
 * **Secret / auth management** — credentials are never read, written,
@@ -5420,12 +5423,13 @@ TC-13.12a must **not** implement, freeze, or assume responsibility for:
   calls ``_validate_approval_evidence()`` after all tasks are indexed,
   reporting through the existing ``Reporter``.
 * Interface #17 is **Current**.
-* TC-13.13a (EscalationService) and all subsequent Target interfaces
-  remain **Target**.
+* TC-13.13a/b (EscalationService) are **Current** — contract and
+  production module complete and committed.
+* TC-13.14 and all subsequent Target interfaces remain **Target**.
 
 ---
 
-### 2.16 EscalationService -- Frozen Contract (Target — TC-13.13a)
+### 2.16 EscalationService -- Frozen Contract (Current -- TC-13.13b)
 
 TC-13.13a freezes the **pure-policy EscalationService contract** for Worker
 execution tier progression.  No production module is shipped under
@@ -5790,11 +5794,13 @@ intermediate "Current (contract frozen)" sub-status is permitted.
 #### 2.16.16 Status
 
 * ADR Interface Status row #18 "AgentDesk EscalationService"
-  remains **Target** — TC-13.13a (this contract).
+  is **Current** — TC-13.13b.
 * This section (§2.16) is the Frozen Contract for TC-13.13a — it governs
-  the future production implementation.
-* No production module (``escalation_service.py``) exists.
-* TC-13.13b (production implementation) remains **Target**.
+  the production implementation.
+* The production module ``escalation_service.py`` exists and is committed.
+* The test suite ``test_escalation_service.py`` exists and is committed.
+* TC-13.13a/b are **Current** — the EscalationService contract and
+  implementation are complete.
 * TC-13.4 (``WorkerKind`` enum) is **Current** — no changes required.
 * TC-13.14 and all subsequent Target interfaces remain **Target**.
 

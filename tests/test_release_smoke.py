@@ -5786,20 +5786,16 @@ class ReleaseSmokeTests(unittest.TestCase):
             "§2.13.14 must NOT claim TC-13.10 remains Target",
         )
 
-    def test_section_21314_tc13_11_13_14_18_remain_target(self) -> None:
-        """§2.13.14 must keep TC-13.11/13/14/18 as Target."""
+    def test_section_21314_tc13_11_14_18_remain_target(self) -> None:
+        """§2.13.14 must keep TC-13.11/14/18 as Target."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(
             adr_text, "#### 2.13.14"
         )
         self.assertIsNotNone(section)
-        # TC-13.11, TC-13.13, TC-13.14, TC-13.18 remain Target.
+        # TC-13.11, TC-13.14, TC-13.18 remain Target.
         self.assertIn(
             "TC-13.11",
-            section,
-        )
-        self.assertIn(
-            "TC-13.13",
             section,
         )
         self.assertIn(
@@ -5983,15 +5979,16 @@ class ReleaseSmokeTests(unittest.TestCase):
                 return
         self.fail("Interface Status row #17 not found")
 
-    def test_tc1312a_interface_18_still_target(self) -> None:
-        """Interface #18 (TC-13.13) must remain Target — not started."""
+    def test_tc1312a_interface_18_now_current(self) -> None:
+        """Interface #18 (TC-13.13b) must now be Current — TC-13.13b completed."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         for row in rows:
             num = self._resolve_col(row, "#")
             if num == "18":
                 status = self._resolve_col(row, "Status")
-                self.assertIn("Target", status)
+                self.assertIn("Current", status,
+                              f"Interface #18 must now be Current, got: {status}")
                 return
         self.fail("Interface Status row #18 not found")
 
@@ -6002,16 +5999,18 @@ class ReleaseSmokeTests(unittest.TestCase):
             "approval_gate.py must exist in TC-13.12b",
         )
 
-    def test_tc1312a_future_task_cards_tc1313_unchanged(self) -> None:
-        """§5 TC-13.13 row exists and is not claimed Current."""
+    def test_tc1312a_future_task_cards_tc1313_updated(self) -> None:
+        """§5 TC-13.13a/b rows exist; TC-13.13b is now done."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "## 5.")
         self.assertIsNotNone(section, "ADR must contain §5 Future Task Cards")
-        self.assertIn("TC-13.13", section,
-                      "§5 must reference TC-13.13")
-        # TC-13.13 must depend on TC-13.12d, not TC-13.11 directly
-        self.assertIn("TC-13.12d", section,
-                      "§5 TC-13.13 must depend on TC-13.12d")
+        self.assertIn("TC-13.13a", section,
+                      "§5 must reference TC-13.13a")
+        self.assertIn("TC-13.13b", section,
+                      "§5 must reference TC-13.13b")
+        # TC-13.13b now depends on TC-13.13a, which is complete
+        self.assertIn("TC-13.13a", section,
+                      "§5 TC-13.13b row must exist")
 
     # ── Group 1: Three domains ───────────────────────────────────────────────
 
@@ -6799,8 +6798,8 @@ class ReleaseSmokeTests(unittest.TestCase):
             "approval_gate.py must exist after TC-13.12b",
         )
 
-    def test_tc1312a_interface_17_and_tc1313_still_target(self) -> None:
-        """Interface #17 is Current; TC-13.13 must still be Target."""
+    def test_tc1312a_interface_17_current_and_tc1313b_current(self) -> None:
+        """Interface #17 and #18 are both Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         for row in rows:
@@ -6809,7 +6808,7 @@ class ReleaseSmokeTests(unittest.TestCase):
                 self.assertIn("Current",
                               self._resolve_col(row, "Status"))
             if num == "18":
-                self.assertIn("Target",
+                self.assertIn("Current",
                               self._resolve_col(row, "Status"))
 
     # ── TC-13.11a ControlPlaneTransitionService frozen contract tests ───────
@@ -7468,8 +7467,8 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     # -- 0: section existence and heading --
 
-    def test_tc1313a_section_exists_and_target(self) -> None:
-        """§2.16 must exist with 'Frozen Contract' and 'TC-13.13a'."""
+    def test_tc1313a_section_exists_and_current(self) -> None:
+        """§2.16 must exist with 'Frozen Contract' and 'TC-13.13b'."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         heading_m = re.search(
             r"^### 2\.16\s.*$", adr_text, re.MULTILINE,
@@ -7478,13 +7477,15 @@ class ReleaseSmokeTests(unittest.TestCase):
         heading = heading_m.group(0)
         self.assertIn("EscalationService", heading)
         self.assertIn("Frozen Contract", heading)
+        self.assertIn("Current", heading,
+                      "§2.16 heading must now be Current")
         section = self._tc1313a_section()
         self.assertIn("TC-13.13a", section)
         self.assertGreater(len(section), 800,
                           "§2.16 must contain the full frozen contract")
 
-    def test_tc1313a_interface_18_still_target(self) -> None:
-        """Interface #18 must remain Target — TC-13.13b not yet implemented."""
+    def test_tc1313a_interface_18_now_current(self) -> None:
+        """Interface #18 must now be Current — TC-13.13b completed."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         row18 = None
@@ -7494,13 +7495,11 @@ class ReleaseSmokeTests(unittest.TestCase):
                 break
         self.assertIsNotNone(row18, "Interface #18 row not found")
         status = row18.get("Status", "")
-        self.assertTrue(
-            "Target" in status or "target" in status.lower(),
-            f"Interface #18 must be Target, got: {status}"
-        )
+        self.assertIn("Current", status,
+                      f"Interface #18 must now be Current, got: {status}")
         impl = row18.get("Implemented by", "")
-        self.assertIn("TC-13.13a", impl,
-                      "Interface #18 must reference TC-13.13a")
+        self.assertIn("TC-13.13b", impl,
+                      "Interface #18 must reference TC-13.13b")
 
     # -- 1: EscalationAction enum --
 
@@ -7723,11 +7722,15 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     # -- 13: escalation_service.py must NOT exist --
 
-    def test_tc1313a_no_production_module_yet(self) -> None:
-        """escalation_service.py must NOT exist — TC-13.13b not started."""
-        self.assertFalse(
+    def test_tc1313b_production_module_exists(self) -> None:
+        """escalation_service.py must now exist — TC-13.13b completed."""
+        self.assertTrue(
             (SKILL_ROOT / "scripts" / "escalation_service.py").is_file(),
-            "escalation_service.py must not exist until TC-13.13b",
+            "escalation_service.py must exist after TC-13.13b",
+        )
+        self.assertTrue(
+            (REPO_ROOT / "tests" / "test_escalation_service.py").is_file(),
+            "test_escalation_service.py must exist after TC-13.13b",
         )
 
     # -- 14: Future Task Cards split --
