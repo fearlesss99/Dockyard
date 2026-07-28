@@ -6647,6 +6647,142 @@ or secrets.
 * No cross-provider generic schema is validated.
 * No other Claude version compatibility is claimed.
 
+#### 2.20 WorkerOutput Decoder — Frozen Contract (Current — TC-13.9c.1)
+
+TC-13.9c.1 delivers a version-locked, fail-closed, pure-function decoder
+for Claude Code 2.1.214 Worker output.  It converts opaque
+``WorkerResult.dispatch_result.stdout`` bytes into typed ``WorkerOutput``
+and ``DeliveryReceipt`` data classes.
+
+The full frozen contract is in
+``skills/agentdesk/references/public-interfaces/worker-output-contract.md``.
+This section records the essential design decisions.
+
+##### 2.20.1 Public API — Exactly 12 Symbols
+
+```python
+__all__ = [
+    "WorkerCompletionStatus",
+    "WorkerOutput",
+    "DeliveryReceipt",
+    "decode_worker_result",
+    "require_delivery_receipt",
+    "WorkerOutputError",
+    "WorkerOutputUnsupportedProviderError",
+    "WorkerOutputUnsupportedVersionError",
+    "WorkerOutputIntegrityError",
+    "WorkerOutputDecodeError",
+    "WorkerOutputSchemaError",
+    "WorkerOutputIdentityError",
+]
+```
+
+##### 2.20.2 Data Models
+
+``WorkerCompletionStatus`` — strict three-value ``str, Enum``:
+``completed``, ``partial``, ``blocked``.  No case-folding, no aliases,
+no unknown fallback.
+
+``WorkerOutput`` — frozen, slots, nine-field dataclass:
+``identity``, ``provider``, ``model_id``, ``status``,
+``implementation_commit`` (nullable), ``report_commit``, ``summary``,
+``warnings`` (tuple), ``stdout_sha256``.
+
+``DeliveryReceipt`` — frozen, slots, six-field dataclass (COMPLETED only):
+``identity``, ``provider``, ``model_id``, ``implementation_commit``,
+``report_commit``, ``stdout_sha256``.
+
+##### 2.20.3 Supported Matrix
+
+Only ``claude`` and ``claudecode`` at CLI version ``2.1.214`` are
+supported.  ``codex`` raises ``WorkerOutputUnsupportedProviderError``.
+Any other version raises ``WorkerOutputUnsupportedVersionError``.
+
+##### 2.20.4 Decode Pipeline
+
+1. Type-check ``WorkerResult``.
+2. Validate ``provider_cli_version`` (non-empty str, no whitespace).
+3. Provider gate (only ``claude`` / ``claudecode``).
+4. Version gate (only ``2.1.214``).
+5. SHA-256 integrity (constant-time comparison).
+6. Strict JSON parse (no BOM, no NaN/Infinity, no trailing text, no
+   duplicate keys).
+7. Claude wrapper validation (exact 20 keys; ``type=="result"``,
+   ``subtype=="success"``, ``is_error is False``,
+   ``api_error_status is None``, ``result`` non-empty str).
+8. Envelope parse (Claude ``result`` string is itself JSON).
+9. Envelope validation (exact 10 keys; identity match; commit format;
+   status-specific rules).
+10. Construct ``WorkerOutput``.
+
+##### 2.20.5 Claude Wrapper — 20 Keys
+
+Observed from three real CLI 2.1.214 captures (``success-minimal``,
+``success-unicode``, ``application-boundary``):
+
+```text
+type, subtype, is_error, api_error_status, duration_ms,
+duration_api_ms, ttft_ms, ttft_stream_ms, time_to_request_ms,
+num_turns, result, stop_reason, session_id, total_cost_usd,
+usage, modelUsage, permission_denials, terminal_reason,
+fast_mode_state, uuid
+```
+
+##### 2.20.6 AgentDesk Worker Completion Envelope — 10 Keys
+
+```text
+schema_version, task_id, revision, attempt, dispatch_id, status,
+implementation_commit, report_commit, summary, warnings
+```
+
+Key rules:
+* ``schema_version`` is ``"agentdesk.worker-output/v1"``.
+* All four identity fields must match ``DispatchIdentity`` exactly.
+* ``revision`` / ``attempt`` are non-bool int ``>=1``.
+* ``report_commit`` is always 40-char lowercase hex.
+* ``implementation_commit`` is null or 40-char lowercase hex.
+* ``completed`` requires ``implementation_commit``; the two commits
+  must differ.
+* ``summary`` is non-empty str, no NUL.
+* ``warnings``: list of non-empty, no-whitespace-edges, no-NUL/CR/LF,
+  deduplicated strings.
+
+##### 2.20.7 Security Boundaries
+
+The decoder must NOT: call subprocess, use asyncio, open files, read
+``pathlib``, access ``os.environ``, call Git, use the network, call
+Claude/Codex CLI, retry, fallback-decode, or auto-detect versions.
+Module import must have zero stdout, zero stderr, zero side effects.
+
+##### 2.20.8 Error Message Safety
+
+Exception messages must NOT contain: stdout/stderr bytes, Claude
+result text, summary text, warning content, task_id, dispatch_id,
+commit SHAs, session_id, uuid, cost fields, workspace paths, prompts,
+or secrets.
+
+##### 2.20.9 Task Card Split
+
+| Card | Description | Status |
+|------|-------------|--------|
+| TC-13.9c.1 | Claude 2.1.214 WorkerOutput decoder | Current |
+| TC-13.9c.2 | Codex WorkerOutput decoder | Target |
+| TC-13.9c | Full output decoding (Claude + Codex) | Target |
+
+##### 2.20.10 Status
+
+* ADR Interface Status row #33 "AgentDesk WorkerOutput Decoder" is
+  **Current** — TC-13.9c.1.
+* TC-13.9c.1 targets Claude/claudecode 2.1.214 only.
+* Codex decoding (TC-13.9c.2) remains **Target**.
+* The overall TC-13.9c task card remains **Target**.
+* TC-13.18c must only enable the validated Claude/claudecode path on
+  first release.
+* No cross-provider generic schema is validated.
+* No other Claude version compatibility is claimed.
+
+---
+
 ---
 ## 3. Ownership Boundaries
 
