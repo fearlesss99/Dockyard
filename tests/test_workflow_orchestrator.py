@@ -3697,6 +3697,290 @@ class WorkflowOrchestratorAcceptanceCycleTests(unittest.TestCase):
     def test_33_no_real_cli_model_network(self) -> None:
         self.assertTrue(True)
 
+    # -- 34. non-MadGatewayConfig rejected before audit (TC-13.18c.2.1) --
+    def test_34_non_mad_gateway_config_rejected_before_audit(self) -> None:
+        """Non-MadGatewayConfig must be rejected before any audit call."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            audit_called = [0]
+
+            async def _tracked_audit(*a, **kw):
+                audit_called[0] += 1
+                return _make_fake_audit_result("pass")
+
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=_tracked_audit):
+                async def _run():
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_acceptance_cycle(req, "not-a-config")
+                    # Audit must NOT have been called
+                    self.assertEqual(audit_called[0], 0,
+                                     "audit must not be called for non-MadGatewayConfig")
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 35. unknown verdict raises WorkflowInvariantError (TC-13.18c.2.1) --
+    def test_35_unknown_verdict_raises_workflow_invariant_error(self) -> None:
+        """Unknown verdict must raise WorkflowInvariantError (fail-closed)."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+
+            async def _unknown_verdict(*a, **kw):
+                return _make_fake_audit_result(verdict="unrecognized_value")
+
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=_unknown_verdict):
+                async def _run():
+                    with self.assertRaises(WorkflowInvariantError) as ctx:
+                        await orch.run_acceptance_cycle(req, config)
+                    # Message must NOT contain the actual verdict value
+                    self.assertNotIn("unrecognized_value", str(ctx.exception))
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 36. unknown verdict: audit exactly 1, acquire/transition/release zero
+    def test_36_unknown_verdict_no_acquire_transition_release(self) -> None:
+        """Unknown verdict path: audit exactly once, no acquire/transition/release."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+
+            audit_cnt = [0]
+
+            async def _unknown_verdict(*a, **kw):
+                audit_cnt[0] += 1
+                return _make_fake_audit_result(verdict="unrecognized_value")
+
+            acq_cnt = [0]
+            rel_cnt = [0]
+            tr_cnt = [0]
+
+            def _track_acquire(*a, **kw):
+                acq_cnt[0] += 1
+                from worker_slot_lease import acquire_worker_slot as real_acquire
+                return real_acquire(*a, **kw)
+
+            def _track_release(*a, **kw):
+                rel_cnt[0] += 1
+
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            _orig_apply = CTS.apply_transition
+
+            def _track_apply(s, tr, *a, **kw):
+                tr_cnt[0] += 1
+                return _orig_apply(s, tr, *a, **kw)
+
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=_unknown_verdict), \
+                 mock.patch.object(wo, "acquire_worker_slot", side_effect=_track_acquire), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=_track_release), \
+                 mock.patch.object(CTS, "apply_transition", _track_apply):
+                async def _run():
+                    with self.assertRaises(WorkflowInvariantError):
+                        await orch.run_acceptance_cycle(req, config)
+                    self.assertEqual(audit_cnt[0], 1,
+                                     "audit must be called exactly once")
+                    self.assertEqual(acq_cnt[0], 0,
+                                     "acquire must not be called for unknown verdict")
+                    self.assertEqual(tr_cnt[0], 0,
+                                     "transition must not be called for unknown verdict")
+                    self.assertEqual(rel_cnt[0], 0,
+                                     "release must not be called for unknown verdict")
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 37. malicious verdict __repr__ not called (TC-13.18c.2.1) --------
+    def test_37_malicious_verdict_repr_not_called(self) -> None:
+        """A malicious verdict value must never have its __repr__ invoked."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+
+            repr_called = [False]
+
+            class MaliciousVerdict(str):
+                def __repr__(self):
+                    repr_called[0] = True
+                    return "INJECTED_REPR"
+
+            _malicious = MaliciousVerdict("malicious_value")
+
+            async def _malicious_verdict(*a, **kw):
+                return _make_fake_audit_result(verdict=_malicious)
+
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=_malicious_verdict):
+                async def _run():
+                    with self.assertRaises(WorkflowInvariantError):
+                        await orch.run_acceptance_cycle(req, config)
+                    self.assertFalse(repr_called[0],
+                                     "verdict __repr__ must not be called")
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 38. invalid integration event_type marker not in exception msg ---
+    def test_38_invalid_integration_event_type_marker_not_in_message(self) -> None:
+        """Invalid integration event_type value must not appear in exception message."""
+        from workflow_orchestrator import AcceptanceCycleRequest
+        dcr = self._make_dispatch_cycle_result()
+        head = "a" * 40
+        atr = _make_acceptance_transition_request(head_sha=head)
+        ai = _make_mad_audit_gateway_input(workspace=Path(__file__).resolve().parents[1])
+
+        itr = _make_integration_transition_request(head_sha=head)
+        bad_itr = mock.MagicMock(spec=TransitionRequest)
+        bad_itr.event_type = "MALICIOUS_EVENT_TYPE"
+        bad_itr.cas = itr.cas
+        bad_itr.dispatch_cas = None
+        bad_itr.payload = itr.payload
+        bad_itr.event_id = itr.event_id
+        bad_itr.event_context = itr.event_context
+
+        with self.assertRaises(ValueError) as ctx:
+            AcceptanceCycleRequest(
+                dispatch_cycle_result=dcr, audit_input=ai,
+                acceptance_transition_request=atr,
+                integration_transition_request=bad_itr,
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                holder_instance_id="test",
+            )
+        msg = str(ctx.exception)
+        self.assertNotIn("MALICIOUS_EVENT_TYPE", msg,
+                         "invalid event_type must not appear in exception message")
+
+    # -- 39. invalid expected_state marker not in exception msg ------------
+    def test_39_invalid_expected_state_marker_not_in_message(self) -> None:
+        """Invalid integration expected_state value must not appear in exception message."""
+        from workflow_orchestrator import AcceptanceCycleRequest
+        dcr = self._make_dispatch_cycle_result()
+        head = "a" * 40
+        atr = _make_acceptance_transition_request(head_sha=head)
+        ai = _make_mad_audit_gateway_input(workspace=Path(__file__).resolve().parents[1])
+
+        itr = _make_integration_transition_request(head_sha=head)
+        bad_itr = mock.MagicMock(spec=TransitionRequest)
+        bad_itr.event_type = "CHANGE_INTEGRATED"
+        bad_itr.cas = mock.MagicMock()
+        bad_itr.cas.expected_state = "MALICIOUS_EXPECTED_STATE"
+        bad_itr.cas.task_id = itr.cas.task_id
+        bad_itr.dispatch_cas = None
+        bad_itr.payload = itr.payload
+        bad_itr.event_id = itr.event_id
+        bad_itr.event_context = itr.event_context
+
+        with self.assertRaises(ValueError) as ctx:
+            AcceptanceCycleRequest(
+                dispatch_cycle_result=dcr, audit_input=ai,
+                acceptance_transition_request=atr,
+                integration_transition_request=bad_itr,
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                holder_instance_id="test",
+            )
+        msg = str(ctx.exception)
+        self.assertNotIn("MALICIOUS_EXPECTED_STATE", msg,
+                         "invalid expected_state must not appear in exception message")
+
+    # -- 40. malicious __repr__ not called for integration validation ------
+    def test_40_malicious_integration_repr_not_called(self) -> None:
+        """__repr__ of integration transition request fields must not be called."""
+        from workflow_orchestrator import AcceptanceCycleRequest
+        dcr = self._make_dispatch_cycle_result()
+        head = "a" * 40
+        atr = _make_acceptance_transition_request(head_sha=head)
+        ai = _make_mad_audit_gateway_input(workspace=Path(__file__).resolve().parents[1])
+
+        repr_called = [False]
+
+        class MaliciousEventType(str):
+            def __repr__(self):
+                repr_called[0] = True
+                return "INJECTED"
+
+        _malicious = MaliciousEventType("MALICIOUS")
+
+        itr = _make_integration_transition_request(head_sha=head)
+        bad_itr = mock.MagicMock(spec=TransitionRequest)
+        bad_itr.event_type = _malicious
+        bad_itr.cas = itr.cas
+        bad_itr.dispatch_cas = None
+        bad_itr.payload = itr.payload
+        bad_itr.event_id = itr.event_id
+        bad_itr.event_context = itr.event_context
+
+        with self.assertRaises(ValueError):
+            AcceptanceCycleRequest(
+                dispatch_cycle_result=dcr, audit_input=ai,
+                acceptance_transition_request=atr,
+                integration_transition_request=bad_itr,
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                holder_instance_id="test",
+            )
+        self.assertFalse(repr_called[0],
+                         "integration __repr__ must not be called during validation")
+
+    # -- 41. existing audit pass/fail/blocked still pass (TC-13.18c.2.1) --
+    def test_41_existing_pass_fail_blocked_still_pass(self) -> None:
+        """Audit pass/fail/blocked verdicts must continue to work correctly."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+
+            tr = TransitionResult(task_id="TC-001", event_id="EVT-ACCEPT-001",
+                                  from_state="review_ready", to_state="accepted",
+                                  occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+
+            # pass
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=self._audit_pass), \
+                 mock.patch.object(CTS, "apply_transition", return_value=tr):
+                async def _run_pass():
+                    r = await orch.run_acceptance_cycle(req, config)
+                    self.assertEqual(r.audit_result.verdict, "pass")
+                    self.assertIsNotNone(r.accept_transition)
+                asyncio.run(_run_pass())
+
+            # fail
+            req2 = self._make_acceptance_req(tmp)
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=self._audit_fail):
+                async def _run_fail():
+                    r = await orch.run_acceptance_cycle(req2, config)
+                    self.assertEqual(r.audit_result.verdict, "fail")
+                    self.assertIsNone(r.accept_transition)
+                    self.assertIsNone(r.integrate_transition)
+                asyncio.run(_run_fail())
+
+            # blocked
+            req3 = self._make_acceptance_req(tmp)
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=self._audit_blocked):
+                async def _run_blocked():
+                    r = await orch.run_acceptance_cycle(req3, config)
+                    self.assertEqual(r.audit_result.verdict, "blocked")
+                    self.assertIsNone(r.accept_transition)
+                    self.assertIsNone(r.integrate_transition)
+                asyncio.run(_run_blocked())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
 
 def _make_ack_transition_request(
     task_id: str = "TC-001",

@@ -691,8 +691,9 @@ def _validate_acceptance_cycle_request(
     if itr is not None:
         if itr.event_type != "CHANGE_INTEGRATED":
             raise ValueError(
-                "integration_transition_request event_type must be "
-                f"CHANGE_INTEGRATED, got {itr.event_type!r}"
+                "integration_transition_request must be "
+                "CHANGE_INTEGRATED, "
+                "got an invalid event_type"
             )
 
         if not isinstance(itr.payload, IntegrationPayload):
@@ -705,8 +706,9 @@ def _validate_acceptance_cycle_request(
         # integration expected_state must be "accepted"
         if itr.cas.expected_state != "accepted":
             raise ValueError(
-                "integration_transition_request expected_state must be "
-                f"'accepted', got {itr.cas.expected_state!r}"
+                "integration_transition_request must be "
+                "'accepted', "
+                "got an invalid expected_state"
             )
 
         # integration task_id must match
@@ -1170,11 +1172,8 @@ class WorkflowOrchestrator:
         if verdict != "pass":
             # Unknown verdict — Gateway should have rejected this,
             # but orchestrator must fail-closed.
-            return AcceptanceCycleResult(
-                task_id=dcr.delivery_receipt.identity.task_id,
-                audit_result=audit_result,
-                accept_transition=None,
-                integrate_transition=None,
+            raise WorkflowInvariantError(
+                "audit gateway returned an unrecognized verdict"
             )
 
         # -- 4. Acquire review lease ----------------------------------------
