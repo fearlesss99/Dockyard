@@ -1,13 +1,16 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18b)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18c.1)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
-WorkflowOrchestrator module.
+WorkflowOrchestrator module.  TC-13.18c.1 extends it with
+DELIVERY_SUBMITTED.
 
 ## Status
 
-**Current** as of TC-13.18b.  The dispatch cycle (snapshot → acquire →
-TASK_DISPATCHED → heartbeat + run_worker → stop heartbeat → release → result)
-is implemented and callable.
+**Current** as of TC-13.18c.1.  The dispatch cycle (snapshot → acquire →
+TASK_DISPATCHED → heartbeat + run_worker →
+DISPATCH_ACKNOWLEDGED → decode_worker_result →
+require_delivery_receipt → DELIVERY_SUBMITTED → stop heartbeat → release
+→ result) is implemented and callable.
 
 This document is the authoritative frozen specification for the
 WorkflowOrchestrator public API, ownership boundaries, hard dependencies,
@@ -301,11 +304,11 @@ defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
 | 1 | `TASK_SPECIFIED` | TC-13.18b (PM gate) |
 | 2 | `TASK_DISPATCHED` | TC-13.18b (dispatch path) |
 | 3 | `DISPATCH_ACKNOWLEDGED` | Current — TC-13.18b.2 (§5 of this doc) |
-| 4 | `DELIVERY_SUBMITTED` | TC-13.18c (delivery path) |
-| 5 | `DELIVERY_ACCEPTED` | TC-13.18c (acceptance path) |
-| 6 | `DELIVERY_RETURNED` | TC-13.18c (return path) |
-| 7 | `TASK_REQUEUED` | TC-13.18c (requeue path) |
-| 8 | `CHANGE_INTEGRATED` | TC-13.18c (integration path) |
+| 4 | `DELIVERY_SUBMITTED` | Current — TC-13.18c.1 (§13 of this doc) |
+| 5 | `DELIVERY_ACCEPTED` | Target — TC-13.18c.2 (acceptance path) |
+| 6 | `DELIVERY_RETURNED` | Target — TC-13.18c.2 (return path) |
+| 7 | `TASK_REQUEUED` | Target — TC-13.18c.2 (requeue path) |
+| 8 | `CHANGE_INTEGRATED` | Target — TC-13.18c.2 (integration path) |
 | 9 | `INTEGRATION_FAILED` | TC-13.18d (blocked path) |
 | 10 | `TASK_BLOCKED` | TC-13.18d (blocked path) |
 | 11 | `BLOCKER_RESOLVED` | TC-13.18d (unblock path) |
@@ -367,7 +370,7 @@ the exception class name.
 
 ---
 
-## 11. Public API Sketch (Not Implemented)
+## 11. Public API Sketch (Current — TC-13.18c.1)
 
 ```python
 from dataclasses import dataclass
@@ -375,13 +378,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Protocol
 
-from dispatcher_gateway import AgentCliProvider, ModelSelectionSnapshot
+from dispatcher_gateway import AgentCliProvider, ModelSelectionSnapshot, DispatchRequest
 from core_types import WorkerKind, TaskDifficulty
 from worker_slot_lease import WorkerSlotLease
 from worker_adapter import WorkerResult
+from worker_output_decoder import WorkerOutput, DeliveryReceipt
 from control_plane_transition import (
     TransitionRequest, TransitionResult, TransitionEventContext,
     TransitionCAS, DispatchCAS,
+    DispatchPayload, AcknowledgePayload, DeliverySubmittedPayload,
 )
 from escalation_service import EscalationAction, EscalationDecision
 from approval_gate import ApprovalScope, ApprovalSubject
@@ -392,44 +397,35 @@ from state_provider import StateSnapshot
 
 class WorkflowClock(Protocol):
     def now(self) -> datetime: ...
+    def monotonic(self) -> float: ...
     async def sleep(self, seconds: float) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
 class DispatchCycleRequest:
-    """Immutable input for a dispatch + delivery cycle."""
-    task_id: str
-    dispatch_id: str
-    role_id: str
-    model_selection: ModelSelectionSnapshot
-    task_card_path: str
-    task_card_commit: str
-    base_commit: str
-    branch: str
-    report_path: str
-    outbox_message_id: str
-    prompt: str
-    workspace: Path
+    """Immutable input for a single dispatch + delivery cycle — nine fields."""
+    dispatch_request: DispatchRequest
+    dispatch_transition_request: TransitionRequest
+    acknowledge_transition_request: TransitionRequest
+    delivery_event_id: str
+    delivery_event_context: TransitionEventContext
+    provider_cli_version: str
     worker_kind: WorkerKind
     task_difficulty: TaskDifficulty
-    timeout_seconds: int
-    event_id: str
-    delivery_event_id: str
-    event_context: TransitionEventContext
     holder_instance_id: str
-    implementation_commit: str | None   # None until TC-13.9c
-    report_commit: str | None           # None until TC-13.9c
 
 
 @dataclass(frozen=True, slots=True)
 class DispatchCycleResult:
-    task_id: str
-    dispatch_id: str
+    """Immutable result — nine fields."""
     worker_result: WorkerResult
+    worker_output: WorkerOutput
+    delivery_receipt: DeliveryReceipt
     dispatch_transition: TransitionResult
-    delivery_transition: TransitionResult | None  # None when TC-13.9c pending
-    lease_epoch: int
+    acknowledge_transition: TransitionResult
+    delivery_transition: TransitionResult
     slot_id: str
+    lease_epoch: int
     duration_seconds: float
 
 
@@ -484,6 +480,9 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.9c** | Typed WorkerOutput / DeliveryReceipt decoding | TC-13.9b + reliable output-schema evidence | Output decoding |
 | **TC-13.18b** | Lease + heartbeat + Worker execution + bounded cleanup | TC-13.18a, TC-13.10c, TC-13.11c, TC-13.12d, TC-13.13b, TC-13.17b | Production |
 | **TC-13.18c** | DeliverySubmitted + MAD audit + Acceptance + Integration | TC-13.18b, TC-13.16b | Production |
+| **TC-13.18c.1** | DELIVERY_SUBMITTED via decode_worker_result + require_delivery_receipt | TC-13.18b.2, TC-13.9c.1 | Production — Current |
+| **TC-13.18c.2** | MAD audit + Acceptance + Integration | TC-13.18c.1 | Target |
+| **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.18d** | Escalation + retry + cancellation + replay + fault recovery | TC-13.18c | Production |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d | Tests |
 | **TC-13.20** | HTML Dashboard | TC-13.17, TC-13.19 | Read-only UI |
@@ -492,16 +491,13 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 
 ## 13. Explicit Non-Goals
 
-TC-13.18a does **not** implement:
+TC-13.18c.1 does **not** implement:
 
-- WorkflowOrchestrator production module (`workflow_orchestrator.py`)
+- `DELIVERY_ACCEPTED`, `DELIVERY_RETURNED`, `TASK_REQUEUED`, `CHANGE_INTEGRATED`
+- MAD audit or acceptance → TC-13.18c.2
+- Codex output decoding → TC-13.9c.2
 - Provider output decoding → TC-13.9c
 - Rate-limit handling → TC-13.14
 - Git worktree lifecycle → future task card
 - HTML Dashboard → TC-13.20
 - Retry, escalation, and cancellation execution → TC-13.18d
-- E2E / recovery tests → TC-13.19
-- `DISPATCH_ACKNOWLEDGED` automated production → future DispatcherGateway
-  start-receipt task card
-- `write_grant` / `write_revoke` direct invocation — delegated to
-  TransitionService via ApprovalGate integration

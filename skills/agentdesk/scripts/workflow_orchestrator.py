@@ -1,14 +1,16 @@
-"""AgentDesk WorkflowOrchestrator — TC-13.18b / TC-13.18b.2.
+"""AgentDesk WorkflowOrchestrator — TC-13.18b / TC-13.18b.2 / TC-13.18c.1.
 
 Single dispatch-cycle execution: snapshot -> acquire lease ->
 TASK_DISPATCHED -> heartbeat + run_worker_observed ->
 (DispatchStarted → validate → DISPATCH_ACKNOWLEDGED) ->
-stop heartbeat -> release lease -> result.
+Worker exit 0 → decode_worker_result → require_delivery_receipt →
+DELIVERY_SUBMITTED → stop heartbeat -> release lease -> result.
 
 Non-goals (explicitly excluded):
-* DELIVERY_SUBMITTED, DELIVERY_ACCEPTED, or any other transition
-* Audit, acceptance, integration, escalation, retry
-* Parsing stdout/stderr, decoding provider output
+* DELIVERY_ACCEPTED, DELIVERY_RETURNED, TASK_REQUEUED, CHANGE_INTEGRATED
+* MAD audit, acceptance, escalation, retry
+* Codex output decoding (blocked until TC-13.9c.2)
+* Parsing stdout/stderr manually, guessing commits from Git HEAD
 * Git worktree lifecycle, subprocess invocation, file I/O
 * ApprovalGate, hold_worker_slot_fence, .state-transition.lock
 * Budget computation (delegated to WorkerAdapter.run_worker)
@@ -28,6 +30,7 @@ from typing import Protocol
 from control_plane_transition import (
     AcknowledgePayload,
     ControlPlaneTransitionService,
+    DeliverySubmittedPayload,
     DispatchCAS,
     DispatchPayload,
     TransitionCAS,
@@ -44,6 +47,12 @@ from dispatcher_gateway import (
 )
 from state_provider import StateProvider, StateProviderError
 from worker_adapter import WorkerResult, run_worker_observed
+from worker_output_decoder import (
+    DeliveryReceipt,
+    WorkerOutput,
+    decode_worker_result,
+    require_delivery_receipt,
+)
 from worker_slot_lease import (
     WorkerSlotLeaseError,
     acquire_worker_slot,
@@ -52,14 +61,18 @@ from worker_slot_lease import (
 )
 
 __all__ = [
+    "DeliveryReceipt",
     "DispatchCycleRequest",
     "DispatchCycleResult",
+    "WorkerOutput",
     "WorkflowClock",
     "WorkflowHeartbeatError",
     "WorkflowInputError",
     "WorkflowInvariantError",
     "WorkflowOrchestrator",
     "WorkflowOrchestratorError",
+    "decode_worker_result",
+    "require_delivery_receipt",
 ]
 
 
@@ -90,14 +103,20 @@ class WorkflowClock(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class DispatchCycleRequest:
-    """Immutable input for a single dispatch cycle — six fields.
+    """Immutable input for a single dispatch cycle — nine fields.
 
     All identifiers are caller-supplied -- the orchestrator generates none.
+
+    The three delivery fields (*delivery_event_id*, *delivery_event_context*,
+    *provider_cli_version*) are validated in __post_init__ before any acquire.
     """
 
     dispatch_request: DispatchRequest
     dispatch_transition_request: TransitionRequest
     acknowledge_transition_request: TransitionRequest
+    delivery_event_id: str
+    delivery_event_context: TransitionEventContext
+    provider_cli_version: str
     worker_kind: WorkerKind
     task_difficulty: TaskDifficulty
     holder_instance_id: str
@@ -222,6 +241,76 @@ class DispatchCycleRequest:
                 "from dispatch_transition_request event_id"
             )
 
+        # -- delivery_event_id ----------------------------------------------
+        if not isinstance(self.delivery_event_id, str):
+            raise TypeError(
+                "delivery_event_id must be str, "
+                f"got {type(self.delivery_event_id).__name__}"
+            )
+        if not self.delivery_event_id:
+            raise ValueError("delivery_event_id must not be empty")
+        if not self.delivery_event_id.startswith("EVT-"):
+            raise ValueError(
+                "delivery_event_id must start with 'EVT-', "
+                f"got {self.delivery_event_id!r}"
+            )
+
+        # delivery event_id must differ from dispatch event_id
+        if self.delivery_event_id == tr.event_id:
+            raise ValueError(
+                "delivery_event_id must differ from dispatch event_id"
+            )
+
+        # delivery event_id must differ from ACK event_id
+        if self.delivery_event_id == ack_tr.event_id:
+            raise ValueError(
+                "delivery_event_id must differ from ACK event_id"
+            )
+
+        # -- delivery_event_context -----------------------------------------
+        if not isinstance(self.delivery_event_context, TransitionEventContext):
+            raise TypeError(
+                "delivery_event_context must be TransitionEventContext, "
+                f"got {type(self.delivery_event_context).__name__}"
+            )
+
+        # -- provider_cli_version -------------------------------------------
+        if not isinstance(self.provider_cli_version, str):
+            raise TypeError(
+                "provider_cli_version must be str, "
+                f"got {type(self.provider_cli_version).__name__}"
+            )
+        if not self.provider_cli_version:
+            raise ValueError("provider_cli_version must not be empty")
+        if self.provider_cli_version != self.provider_cli_version.strip():
+            raise ValueError(
+                "provider_cli_version must not have whitespace envelope"
+            )
+        if any(c.isspace() for c in self.provider_cli_version):
+            raise ValueError(
+                "provider_cli_version must not contain whitespace"
+            )
+
+        # -- provider boundary ----------------------------------------------
+        snapshot_sn = dr.model_selection
+        allowed_providers = frozenset({"claude", "claudecode"})
+        allowed_version = "2.1.214"
+
+        if snapshot_sn.selected_model_provider not in allowed_providers:
+            if snapshot_sn.selected_model_provider == "codex":
+                raise WorkflowInputError(
+                    "codex provider is not supported "
+                    "(blocked until TC-13.9c.2)"
+                )
+            raise WorkflowInputError(
+                "provider must be claude or claudecode for delivery"
+            )
+
+        if self.provider_cli_version != allowed_version:
+            raise WorkflowInputError(
+                f"provider_cli_version must be {allowed_version!r}"
+            )
+
         # -- worker_kind ----------------------------------------------------
         if not isinstance(self.worker_kind, WorkerKind):
             raise TypeError(
@@ -272,17 +361,18 @@ class DispatchCycleRequest:
 
 @dataclass(frozen=True, slots=True)
 class DispatchCycleResult:
-    """Immutable result of a single dispatch cycle — six fields.
+    """Immutable result of a single dispatch cycle — nine fields.
 
-    Does NOT include:
-    * delivery_transition
-    * implementation_commit / report_commit
-    * decoded output / audit result / acceptance result
+    Includes both ACK and delivery transitions, plus the decoded
+    ``WorkerOutput`` and ``DeliveryReceipt``.
     """
 
     worker_result: WorkerResult
+    worker_output: WorkerOutput
+    delivery_receipt: DeliveryReceipt
     dispatch_transition: TransitionResult
     acknowledge_transition: TransitionResult
+    delivery_transition: TransitionResult
     slot_id: str
     lease_epoch: int
     duration_seconds: float
@@ -482,23 +572,25 @@ class WorkflowOrchestrator:
         request: DispatchCycleRequest,
         providers: Mapping[str, AgentCliProvider],
     ) -> DispatchCycleResult:
-        """Execute a single dispatch cycle with process-start ACK.
+        """Execute a single dispatch cycle with ACK and DELIVERY_SUBMITTED.
 
         Execution order:
-        1. Validate inputs
-        2. Snapshot via StateProvider
-        3. Verify target task in snapshot
-        4. Acquire worker slot
-        5. Apply TASK_DISPATCHED transition
-        6. Build ACK observer with identity validation
-        7. Start heartbeat + run_worker_observed in parallel
-        8. Dispatcher launches CLI process, calls observer
-        9. Observer validates DispatchStarted, applies DISPATCH_ACKNOWLEDGED
-        10. Dispatcher communicates stdin to process
-        11. Worker completes
-        12. Stop and await heartbeat
-        13. Release slot (exactly once on all paths)
-        14. Return DispatchCycleResult with both transitions
+        1. Validate request/providers/Claude 2.1.214
+        2. StateProvider.snapshot()
+        3. acquire WorkerSlotLease
+        4. apply TASK_DISPATCHED
+        5. Start heartbeat + complete heartbeat_started Event handshake
+        6. run_worker_observed()
+        7. Process start → _AckObserver applies DISPATCH_ACKNOWLEDGED
+        8. Worker exit 0 → WorkerResult
+        9. heartbeat still running
+        10. decode_worker_result(worker_result, "2.1.214")
+        11. require_delivery_receipt(worker_output)
+        12. Construct DELIVERY_SUBMITTED TransitionRequest
+        13. Apply DELIVERY_SUBMITTED under same lease
+        14. Stop and await heartbeat
+        15. Release lease (exactly once)
+        16. Return nine-field DispatchCycleResult
         """
         # -- 1. Validate request ----------------------------------------------
         if not isinstance(request, DispatchCycleRequest):
@@ -576,6 +668,7 @@ class WorkflowOrchestrator:
         body_error: BaseException | None = None
         dispatch_transition_result: TransitionResult | None = None
         ack_transition_result: TransitionResult | None = None
+        delivery_transition_result: TransitionResult | None = None
 
         # Pre-declare task references so all exit paths can cancel + await.
         worker_task: asyncio.Task[WorkerResult] | None = None
@@ -669,22 +762,6 @@ class WorkflowOrchestrator:
                 )
 
             # Heartbeat is still running -- Worker completed first.
-            # Cancel heartbeat and check its outcome.
-            hb_task.cancel()
-            try:
-                await hb_task
-            except asyncio.CancelledError:
-                # Expected -- heartbeat was running, cancellation succeeded.
-                pass
-            except WorkerSlotLeaseError:
-                # Heartbeat renewal was racing with cancellation and lost.
-                # The lease is invalid; do NOT return success.
-                raise
-            except Exception as hb_exc:
-                # Heartbeat failed for unexpected reason -- do NOT swallow.
-                raise WorkflowHeartbeatError(
-                    "heartbeat failed during shutdown"
-                ) from hb_exc
 
             # Worker result (may raise if worker failed).
             worker_result = worker_task.result()
@@ -696,14 +773,67 @@ class WorkflowOrchestrator:
                     "ACK transition was not applied — observer did not run"
                 )
 
-            # -- 12. Compute and validate duration ----------------------------
+            # -- 9. Decode Worker output --------------------------------------
+            worker_output = decode_worker_result(
+                worker_result,
+                request.provider_cli_version,
+            )
+
+            # -- 10. Require delivery receipt ----------------------------------
+            delivery_receipt = require_delivery_receipt(worker_output)
+
+            # -- 11. Construct DELIVERY_SUBMITTED transition -------------------
+            ack_tr = request.acknowledge_transition_request
+            delivery_tr = TransitionRequest(
+                cas=TransitionCAS(
+                    task_id=tr.cas.task_id,
+                    expected_revision=ack_tr.cas.expected_revision,
+                    expected_state="in_progress",
+                    expected_snapshot_commit=tr.cas.expected_snapshot_commit,
+                ),
+                dispatch_cas=ack_tr.dispatch_cas,
+                event_id=request.delivery_event_id,
+                event_type="DELIVERY_SUBMITTED",
+                payload=DeliverySubmittedPayload(
+                    implementation_commit=delivery_receipt.implementation_commit,
+                    report_commit=delivery_receipt.report_commit,
+                ),
+                event_context=request.delivery_event_context,
+            )
+
+            # -- 12. Apply DELIVERY_SUBMITTED under same lease -----------------
+            now_delivery = self.clock.now()
+            delivery_transition_result = ControlPlaneTransitionService(
+                self.project_root
+            ).apply_transition(delivery_tr, lease, now_delivery)
+
+            # -- 13. Stop heartbeat --------------------------------------------
+            hb_task.cancel()
+            try:
+                await hb_task
+            except asyncio.CancelledError:
+                # Expected -- heartbeat was running, cancellation succeeded.
+                pass
+            except WorkerSlotLeaseError:
+                # Heartbeat renewal was racing with cancellation and lost.
+                raise
+            except Exception as hb_exc:
+                # Heartbeat failed for unexpected reason -- do NOT swallow.
+                raise WorkflowHeartbeatError(
+                    "heartbeat failed during shutdown"
+                ) from hb_exc
+
+            # -- 14. Compute and validate duration ----------------------------
             end_mono = self.clock.monotonic()
             duration = _validate_monotonic_delta(start_mono, end_mono)
 
             return DispatchCycleResult(
                 worker_result=worker_result,
+                worker_output=worker_output,
+                delivery_receipt=delivery_receipt,
                 dispatch_transition=dispatch_transition_result,
                 acknowledge_transition=ack_transition_result,
+                delivery_transition=delivery_transition_result,
                 slot_id=lease.slot_id,
                 lease_epoch=lease.lease_epoch,
                 duration_seconds=duration,
@@ -731,7 +861,7 @@ class WorkflowOrchestrator:
                 except (asyncio.CancelledError, Exception):
                     pass
 
-            # -- 11/13. Release (exactly once, if acquired) -------------------
+            # -- 15. Release (exactly once, if acquired) ----------------------
             if acquired:
                 try:
                     now_release = self.clock.now()

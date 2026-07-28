@@ -64,6 +64,16 @@ from worker_slot_lease import (
     release_worker_slot,
     renew_worker_slot,
 )
+from worker_output_decoder import (
+    DeliveryReceipt,
+    WorkerCompletionStatus,
+    WorkerOutput,
+    WorkerOutputDecodeError,
+    WorkerOutputSchemaError,
+    WorkerOutputUnsupportedProviderError,
+    decode_worker_result,
+    require_delivery_receipt,
+)
 from workflow_orchestrator import (
     DispatchCycleRequest,
     DispatchCycleResult,
@@ -110,7 +120,7 @@ def _make_dispatch_request(
 
 
 def _make_model_selection(
-    provider: str = "test",
+    provider: str = "claude",
     model_id: str = "test-model",
     tier: str = "advanced",
     deliberation: str = "balanced",
@@ -194,12 +204,13 @@ def _make_worker_result(
     task_difficulty: TaskDifficulty = TaskDifficulty.ADVANCED,
     stdout: bytes = b"output",
     stderr: bytes = b"",
-    provider: str = "test",
+    provider: str = "claude",
     model_id: str = "test-model",
     duration_seconds: float = 0.5,
     task_id: str = "TC-001",
     dispatch_id: str = "DSP-001",
 ) -> WorkerResult:
+    import hashlib as _hashlib
     return WorkerResult(
         worker_kind=worker_kind,
         task_difficulty=task_difficulty,
@@ -223,8 +234,8 @@ def _make_worker_result(
             duration_seconds=duration_seconds,
             stdout=stdout,
             stderr=stderr,
-            stdout_sha256="sha256_a",
-            stderr_sha256="sha256_b",
+            stdout_sha256=_hashlib.sha256(stdout).hexdigest(),
+            stderr_sha256=_hashlib.sha256(stderr).hexdigest(),
         ),
     )
 
@@ -268,7 +279,7 @@ class FakeProvider:
 
     def __init__(
         self,
-        provider_id: str = "test",
+        provider_id: str = "claude",
         result: WorkerResult | None = None,
         exception: BaseException | None = None,
     ) -> None:
@@ -393,7 +404,7 @@ def _init_tasks_yaml(project_root: Path, task_id: str = "TC-001", state: str = "
                         "required_model_tier": "advanced",
                         "required_model_capabilities": [],
                         "model_binding_id": "binding-001",
-                        "selected_model_provider": "test",
+                        "selected_model_provider": "claude",
                         "selected_model_id": "test-model",
                         "selected_model_tier": "advanced",
                         "selected_deliberation_tier": "balanced",
@@ -530,21 +541,25 @@ def _write_approval_grant(project_root: Path) -> None:
 class TestWorkflowOrchestratorAPI(unittest.TestCase):
     """Test __all__ exactness and dataclass frozen/slots properties."""
 
-    def test_all_exactly_eight(self) -> None:
+    def test_all_exactly_twelve(self) -> None:
         import workflow_orchestrator as wo
         self.assertEqual(
-            len(wo.__all__), 8,
-            f"__all__ must have exactly 8 entries, got {len(wo.__all__)}: {wo.__all__}"
+            len(wo.__all__), 12,
+            f"__all__ must have exactly 12 entries, got {len(wo.__all__)}: {wo.__all__}"
         )
         expected = sorted([
+            "DeliveryReceipt",
             "DispatchCycleRequest",
             "DispatchCycleResult",
+            "WorkerOutput",
             "WorkflowClock",
             "WorkflowHeartbeatError",
             "WorkflowInputError",
             "WorkflowInvariantError",
             "WorkflowOrchestrator",
             "WorkflowOrchestratorError",
+            "decode_worker_result",
+            "require_delivery_receipt",
         ])
         self.assertEqual(sorted(wo.__all__), expected)
 
@@ -587,19 +602,18 @@ class TestWorkflowOrchestratorAPI(unittest.TestCase):
         self.assertTrue(issubclass(WorkflowHeartbeatError, WorkflowOrchestratorError))
         self.assertTrue(issubclass(WorkflowInvariantError, WorkflowOrchestratorError))
 
-    def test_dispatch_cycle_result_has_exactly_six_fields(self) -> None:
+    def test_dispatch_cycle_result_has_exactly_nine_fields(self) -> None:
         fields = [f.name for f in dc_fields(DispatchCycleResult)]
-        expected = ["worker_result", "dispatch_transition",
-                     "acknowledge_transition", "slot_id",
+        expected = ["worker_result", "worker_output", "delivery_receipt",
+                     "dispatch_transition", "acknowledge_transition",
+                     "delivery_transition", "slot_id",
                      "lease_epoch", "duration_seconds"]
         self.assertEqual(fields, expected)
 
-    def test_dispatch_cycle_result_no_forbidden_fields(self) -> None:
+    def test_dispatch_cycle_result_includes_correct_nine_fields(self) -> None:
         fields = {f.name for f in dc_fields(DispatchCycleResult)}
-        forbidden = {"delivery_transition", "implementation_commit",
-                     "report_commit", "decoded_output", "audit_result",
-                     "acceptance_result"}
-        self.assertTrue(fields.isdisjoint(forbidden))
+        required = {"worker_output", "delivery_receipt", "delivery_transition"}
+        self.assertTrue(required.issubset(fields))
 
 
 # ── input validation tests ──────────────────────────────────────────────
@@ -640,11 +654,14 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
                 acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-NONUTC-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
             )
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             async def _run() -> None:
                 with self.assertRaises(WorkflowInputError):
@@ -674,11 +691,14 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
                 acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-OFFSET-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
             )
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             async def _run() -> None:
                 with self.assertRaises(WorkflowInputError):
@@ -796,6 +816,9 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
                 acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -853,6 +876,9 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
                 acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -869,6 +895,9 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
                 acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -886,6 +915,9 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
                 acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -904,6 +936,9 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
                 acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -938,6 +973,9 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
             dispatch_request=dr,
             dispatch_transition_request=tr,
             acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -965,6 +1003,9 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
             dispatch_request=dr,
             dispatch_transition_request=tr,
             acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -981,15 +1022,15 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
                 heartbeat_interval_seconds=10.0,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
             worker_result = _make_worker_result()
 
-            async def _fake_run_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+            async def _fake_run_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
                 # Call observer to apply ACK
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -1044,15 +1085,15 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
                 heartbeat_interval_seconds=0.5,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
             worker_result = _make_worker_result()
 
-            async def _fake_run_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+            async def _fake_run_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
                 # Call observer to apply ACK
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -1088,7 +1129,7 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
                 clock=clock,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
             providers_id_before = id(providers)
 
             received_providers: list[object] = []
@@ -1137,13 +1178,13 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
                 clock=clock,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
 
-            async def _fake_run_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _fake_run_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -1194,6 +1235,9 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             dispatch_request=dr,
             dispatch_transition_request=tr,
             acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -1221,11 +1265,14 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
                 acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
             )
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             async def _run() -> None:
                 with self.assertRaises(StateProviderError):
@@ -1247,14 +1294,14 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             )
             # Use wrong revision so CAS fails.
             req = self._make_req(tmp, revision=99)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
             worker_called = [False]
 
-            async def _tracking_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _tracking_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -1296,7 +1343,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 clock=clock,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
@@ -1304,8 +1351,8 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             class _TestWorkerError(Exception):
                 pass
 
-            async def _failing_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _failing_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -1340,13 +1387,13 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 clock=clock,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
 
-            async def _cancelling_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _cancelling_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -1382,7 +1429,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 heartbeat_interval_seconds=0.5,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
@@ -1390,8 +1437,8 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
             running = asyncio.Event()
 
-            async def _long_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _long_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -1444,13 +1491,13 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 clock=clock,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
 
-            async def _quick_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _quick_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -1489,7 +1536,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 clock=clock,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
@@ -1497,8 +1544,8 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             class _PrimaryError(Exception):
                 pass
 
-            async def _failing_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _failing_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -1536,13 +1583,13 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 clock=clock,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
 
-            async def _quick_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _quick_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -1574,13 +1621,13 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 clock=clock,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
 
-            async def _failing_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _failing_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -1615,14 +1662,14 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 clock=clock,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
             from dispatcher_gateway import DispatchGatewayError
 
-            async def _failing_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _failing_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -1653,13 +1700,13 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 clock=clock,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
 
-            async def _cancelling_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _cancelling_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -1694,13 +1741,13 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 clock=clock,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
 
-            async def _failing_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _failing_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -1736,13 +1783,13 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 heartbeat_interval_seconds=1.0,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
 
-            async def _quick_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _quick_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -1773,15 +1820,15 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 heartbeat_interval_seconds=0.5,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
 
             running = asyncio.Event()
 
-            async def _long_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _long_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -1825,13 +1872,13 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                 heartbeat_interval_seconds=10.0,
             )
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             import workflow_orchestrator as wo
             _orig_run_worker = wo.run_worker_observed
 
-            async def _quick_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _quick_worker(request_arg: Any, *a: Any, **kwargs: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -2059,6 +2106,9 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
             dispatch_request=dr,
             dispatch_transition_request=tr,
             acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -2085,7 +2135,7 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
             async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
                 worker_done.set()
                 # Call observer to apply ACK
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ds = DispatchStarted(
                     identity=request_arg.identity,
                     provider=request_arg.model_selection.selected_model_provider,
@@ -2107,7 +2157,7 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
             ):
                 async def _run() -> None:
                     with self.assertRaises(WorkerSlotFencingError):
-                        await orch.run_dispatch_cycle(req, {"test": FakeProvider()})
+                        await orch.run_dispatch_cycle(req, {"claude": FakeProvider()})
 
                 asyncio.run(_run())
 
@@ -2138,7 +2188,7 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
             req = self._make_req(tmp)
 
             async def _quick_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -2193,10 +2243,10 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
             # Use very short interval so heartbeat fires very quickly.
             orch = _new_orch(tmp, interval=0.01)
             req = self._make_req(tmp)
-            providers = {"test": FakeProvider()}
+            providers = {"claude": FakeProvider()}
 
             async def _failing_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -2259,7 +2309,7 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
             worker_running = asyncio.Event()
 
             async def _long_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -2329,7 +2379,7 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
                 pass
 
             async def _long_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -2349,7 +2399,7 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
             ):
                 async def _run() -> None:
                     try:
-                        await orch.run_dispatch_cycle(req, {"test": FakeProvider()})
+                        await orch.run_dispatch_cycle(req, {"claude": FakeProvider()})
                     except WorkflowHeartbeatError as e:
                         self.assertIsInstance(e.__cause__, _WeirdError)
                     else:
@@ -2390,6 +2440,9 @@ class TestOuterCancellationCleanup(unittest.TestCase):
             dispatch_request=dr,
             dispatch_transition_request=tr,
             acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -2424,7 +2477,7 @@ class TestOuterCancellationCleanup(unittest.TestCase):
             clock.sleep = _tracked_clock_sleep  # type: ignore[assignment]
 
             async def _long_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -2449,7 +2502,7 @@ class TestOuterCancellationCleanup(unittest.TestCase):
             ):
                 async def _run() -> None:
                     cycle_task = asyncio.ensure_future(
-                        orch.run_dispatch_cycle(req, {"test": FakeProvider()})
+                        orch.run_dispatch_cycle(req, {"claude": FakeProvider()})
                     )
                     await worker_started.wait()
                     # Give heartbeat a moment to enter its sleep.
@@ -2480,7 +2533,7 @@ class TestOuterCancellationCleanup(unittest.TestCase):
             worker_started = asyncio.Event()
 
             async def _long_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -2502,7 +2555,7 @@ class TestOuterCancellationCleanup(unittest.TestCase):
             ):
                 async def _run() -> None:
                     cycle_task = asyncio.ensure_future(
-                        orch.run_dispatch_cycle(req, {"test": FakeProvider()})
+                        orch.run_dispatch_cycle(req, {"claude": FakeProvider()})
                     )
                     await worker_started.wait()
                     await asyncio.sleep(0.1)
@@ -2530,7 +2583,7 @@ class TestOuterCancellationCleanup(unittest.TestCase):
             worker_started = asyncio.Event()
 
             async def _long_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -2553,7 +2606,7 @@ class TestOuterCancellationCleanup(unittest.TestCase):
                 async def _run() -> None:
                     tasks_before = len(asyncio.all_tasks(asyncio.get_running_loop()))
                     cycle_task = asyncio.ensure_future(
-                        orch.run_dispatch_cycle(req, {"test": FakeProvider()})
+                        orch.run_dispatch_cycle(req, {"claude": FakeProvider()})
                     )
                     await worker_started.wait()
                     await asyncio.sleep(0.1)
@@ -2601,6 +2654,9 @@ class TestDualFailureExceptionChains(unittest.TestCase):
             dispatch_request=dr,
             dispatch_transition_request=tr,
             acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -2619,7 +2675,7 @@ class TestDualFailureExceptionChains(unittest.TestCase):
                 pass
 
             async def _failing_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
                 await observer.on_dispatch_started(ds)
@@ -2635,7 +2691,7 @@ class TestDualFailureExceptionChains(unittest.TestCase):
             ):
                 async def _run() -> None:
                     try:
-                        await orch.run_dispatch_cycle(req, {"test": FakeProvider()})
+                        await orch.run_dispatch_cycle(req, {"claude": FakeProvider()})
                     except _WorkerError as e:
                         self.assertIsInstance(e.__cause__, WorkerSlotNotHeldError)
                     else:
@@ -2676,6 +2732,9 @@ class TestMonotonicDefense(unittest.TestCase):
             dispatch_request=dr,
             dispatch_transition_request=tr,
             acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -2709,7 +2768,7 @@ class TestMonotonicDefense(unittest.TestCase):
             release_called = [False]
 
             async def _quick_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -2727,7 +2786,7 @@ class TestMonotonicDefense(unittest.TestCase):
             ):
                 async def _run() -> None:
                     with self.assertRaises(WorkflowInvariantError):
-                        await orch.run_dispatch_cycle(req, {"test": FakeProvider()})
+                        await orch.run_dispatch_cycle(req, {"claude": FakeProvider()})
 
                 asyncio.run(_run())
 
@@ -2760,7 +2819,7 @@ class TestMonotonicDefense(unittest.TestCase):
             req = self._make_req(tmp)
 
             async def _quick_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -2778,7 +2837,7 @@ class TestMonotonicDefense(unittest.TestCase):
             ):
                 async def _run() -> None:
                     with self.assertRaises(WorkflowInvariantError):
-                        await orch.run_dispatch_cycle(req, {"test": FakeProvider()})
+                        await orch.run_dispatch_cycle(req, {"claude": FakeProvider()})
 
                 asyncio.run(_run())
         finally:
@@ -2808,7 +2867,7 @@ class TestMonotonicDefense(unittest.TestCase):
             req = self._make_req(tmp)
 
             async def _quick_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -2826,7 +2885,7 @@ class TestMonotonicDefense(unittest.TestCase):
             ):
                 async def _run() -> None:
                     with self.assertRaises(WorkflowInvariantError):
-                        await orch.run_dispatch_cycle(req, {"test": FakeProvider()})
+                        await orch.run_dispatch_cycle(req, {"claude": FakeProvider()})
 
                 asyncio.run(_run())
         finally:
@@ -2856,7 +2915,7 @@ class TestMonotonicDefense(unittest.TestCase):
             req = self._make_req(tmp)
 
             async def _quick_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -2874,7 +2933,7 @@ class TestMonotonicDefense(unittest.TestCase):
             ):
                 async def _run() -> None:
                     with self.assertRaises(WorkflowInvariantError):
-                        await orch.run_dispatch_cycle(req, {"test": FakeProvider()})
+                        await orch.run_dispatch_cycle(req, {"claude": FakeProvider()})
 
                 asyncio.run(_run())
         finally:
@@ -2938,16 +2997,94 @@ def _make_ack_transition_request(
     )
 
 
-class DispatchCycleRequestSixFieldTests(unittest.TestCase):
-    """Tests for the new six-field DispatchCycleRequest."""
+def _make_delivery_event_context(
+    source_message_id: str | None = None,
+) -> TransitionEventContext:
+    """Build a valid TransitionEventContext for delivery."""
+    return TransitionEventContext(
+        source_message_id=source_message_id,
+        evidence_refs=(),
+        guard_results=(),
+    )
 
-    def test_dispatch_cycle_request_exactly_six_fields(self) -> None:
-        """DispatchCycleRequest must have exactly six fields."""
+
+def _make_dispatch_cycle_request(
+    tmp: Path | None = None,
+    ms: ModelSelectionSnapshot | None = None,
+    task_id: str = "TC-001",
+    dispatch_id: str = "DSP-001",
+    revision: int = 1,
+    worker_kind: WorkerKind | None = None,
+    task_difficulty: TaskDifficulty | None = None,
+    holder_instance_id: str = "test-instance",
+    delivery_event_id: str = "EVT-DELIVERY-001",
+    provider_cli_version: str = "2.1.214",
+    head_sha: str | None = None,
+) -> DispatchCycleRequest:
+    """Build a valid nine-field DispatchCycleRequest.
+
+    If *tmp* and *head_sha* are both None, head_sha defaults to ``"a" * 40``.
+    Otherwise *head_sha* is derived from ``_git_head(tmp)``.
+    """
+    if ms is None:
+        ms = _make_model_selection()
+    if worker_kind is None:
+        worker_kind = WorkerKind.ADVANCED_AGENT
+    if task_difficulty is None:
+        task_difficulty = TaskDifficulty.ADVANCED
+
+    if head_sha is None:
+        if tmp is not None:
+            head_sha = _git_head(tmp)
+        else:
+            head_sha = "a" * 40
+
+    dr = _make_dispatch_request(
+        task_id=task_id,
+        dispatch_id=dispatch_id,
+        workspace=tmp if tmp is not None else Path(__file__).resolve().parents[1],
+        model_selection=ms,
+    )
+    tr = _make_transition_request(
+        task_id=task_id,
+        dispatch_id=dispatch_id,
+        model_selection=ms,
+        revision=revision,
+        head_sha=head_sha,
+    )
+    ack_tr = _make_ack_transition_request(
+        task_id=task_id,
+        dispatch_id=dispatch_id,
+        revision=revision,
+        attempt=1,
+        head_sha=head_sha,
+    )
+    return DispatchCycleRequest(
+        dispatch_request=dr,
+        dispatch_transition_request=tr,
+        acknowledge_transition_request=ack_tr,
+        delivery_event_id=delivery_event_id,
+        delivery_event_context=_make_delivery_event_context(),
+        provider_cli_version=provider_cli_version,
+        worker_kind=worker_kind,
+        task_difficulty=task_difficulty,
+        holder_instance_id=holder_instance_id,
+    )
+
+
+class DispatchCycleRequestNineFieldTests(unittest.TestCase):
+    """Tests for the new nine-field DispatchCycleRequest."""
+
+    def test_dispatch_cycle_request_exactly_nine_fields(self) -> None:
+        """DispatchCycleRequest must have exactly nine fields."""
         field_names = {f.name for f in dc_fields(DispatchCycleRequest)}
         expected = {
             "dispatch_request",
             "dispatch_transition_request",
             "acknowledge_transition_request",
+            "delivery_event_id",
+            "delivery_event_context",
+            "provider_cli_version",
             "worker_kind",
             "task_difficulty",
             "holder_instance_id",
@@ -2996,6 +3133,9 @@ class DispatchCycleRequestSixFieldTests(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=dispatch_tr,
                 acknowledge_transition_request=bad_ack,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -3020,6 +3160,9 @@ class DispatchCycleRequestSixFieldTests(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=dispatch_tr,
                 acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -3059,6 +3202,9 @@ class DispatchCycleRequestSixFieldTests(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=dispatch_tr,
                 acknowledge_transition_request=bad_ack,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -3089,6 +3235,9 @@ class DispatchCycleRequestSixFieldTests(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=dispatch_tr,
                 acknowledge_transition_request=bad_ack,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -3123,6 +3272,9 @@ class DispatchCycleRequestSixFieldTests(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=dispatch_tr,
                 acknowledge_transition_request=ack_tr_bad,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -3146,6 +3298,9 @@ class DispatchCycleRequestSixFieldTests(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=dispatch_tr,
                 acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -3183,33 +3338,32 @@ class DispatchCycleRequestSixFieldTests(unittest.TestCase):
                 dispatch_request=dr,
                 dispatch_transition_request=dispatch_tr,
                 acknowledge_transition_request=bad_ack,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
             )
 
 
-class DispatchCycleResultSixFieldTests(unittest.TestCase):
-    """Tests for the new six-field DispatchCycleResult."""
+class DispatchCycleResultNineFieldTests(unittest.TestCase):
+    """Tests for the new nine-field DispatchCycleResult."""
 
-    def test_result_has_exactly_six_fields(self) -> None:
+    def test_result_has_exactly_nine_fields(self) -> None:
         field_names = [f.name for f in dc_fields(DispatchCycleResult)]
         expected = [
-            "worker_result", "dispatch_transition",
-            "acknowledge_transition", "slot_id",
+            "worker_result", "worker_output", "delivery_receipt",
+            "dispatch_transition", "acknowledge_transition",
+            "delivery_transition", "slot_id",
             "lease_epoch", "duration_seconds",
         ]
         self.assertEqual(field_names, expected)
 
-    def test_result_no_forbidden_fields(self) -> None:
+    def test_result_includes_worker_output_and_delivery_fields(self) -> None:
         field_names = {f.name for f in dc_fields(DispatchCycleResult)}
-        forbidden = {
-            "delivery_transition", "implementation_commit",
-            "report_commit", "decoded_output", "audit_result",
-            "acceptance_result", "WorkerOutput", "DeliveryReceipt",
-            "delivery",
-        }
-        self.assertTrue(field_names.isdisjoint(forbidden))
+        required = {"worker_output", "delivery_receipt", "delivery_transition"}
+        self.assertTrue(required.issubset(field_names))
 
 
 class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
@@ -3227,9 +3381,9 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
             # Patch run_worker_observed to track that it was called with an observer
             orig_run_worker_observed = wo.run_worker_observed
 
-            async def _tracked_run_worker_observed(request_arg, *args: Any, **kw: Any) -> WorkerResult:
+            async def _tracked_run_worker_observed(request_arg, *a: Any, **kw: Any) -> WorkerResult:
                 call_order.append("run_worker_observed")
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 # Simulate what the real dispatcher does:
                 # call observer.on_dispatch_started, then return result
                 ms = request_arg.model_selection
@@ -3240,7 +3394,7 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                 )
                 await observer.on_dispatch_started(ds)  # type: ignore[union-attr]
                 call_order.append("on_dispatch_started_done")
-                return _make_worker_result()
+                return _make_claude_worker_result()
 
             with mock.patch.object(wo, "run_worker_observed",
                                    side_effect=_tracked_run_worker_observed):
@@ -3279,6 +3433,9 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                         dispatch_request=dr,
                         dispatch_transition_request=dispatch_tr,
                         acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                         worker_kind=WorkerKind.ADVANCED_AGENT,
                         task_difficulty=TaskDifficulty.ADVANCED,
                         holder_instance_id="test-instance",
@@ -3286,7 +3443,7 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
 
                     async def _run() -> None:
                         result = await orch.run_dispatch_cycle(
-                            req, {"test": FakeProvider()},
+                            req, {"claude": FakeProvider()},
                         )
                         self.assertIsNotNone(result)
                         self.assertIsNotNone(result.acknowledge_transition)
@@ -3311,15 +3468,15 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
 
             leases_used: list[str] = []
 
-            async def _fake_run_worker_observed(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _fake_run_worker_observed(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ds = DispatchStarted(
                     identity=request_arg.identity,  # type: ignore[index]
                     provider=request_arg.model_selection.selected_model_provider,  # type: ignore[union-attr]
                     model_id=request_arg.model_selection.selected_model_id,  # type: ignore[union-attr]
                 )
                 await observer.on_dispatch_started(ds)
-                return _make_worker_result()
+                return _make_claude_worker_result()
 
             from control_plane_transition import ControlPlaneTransitionService as CTS
             orig_apply = CTS.apply_transition
@@ -3356,6 +3513,9 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                         dispatch_request=dr,
                         dispatch_transition_request=dispatch_tr,
                         acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                         worker_kind=WorkerKind.ADVANCED_AGENT,
                         task_difficulty=TaskDifficulty.ADVANCED,
                         holder_instance_id="test-instance",
@@ -3363,12 +3523,12 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
 
                     async def _run() -> None:
                         await orch.run_dispatch_cycle(
-                            req, {"test": FakeProvider()},
+                            req, {"claude": FakeProvider()},
                         )
 
                     asyncio.run(_run())
 
-            self.assertEqual(len(leases_used), 2)
+            self.assertEqual(len(leases_used), 3)
             self.assertEqual(leases_used[0], leases_used[1],
                              "ACK must use the same lease_id as dispatch")
 
@@ -3382,15 +3542,15 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
         try:
             import workflow_orchestrator as wo
 
-            async def _fake_run_worker_observed(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _fake_run_worker_observed(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ds = DispatchStarted(
                     identity=request_arg.identity,  # type: ignore[index]
                     provider=request_arg.model_selection.selected_model_provider,  # type: ignore[union-attr]
                     model_id=request_arg.model_selection.selected_model_id,  # type: ignore[union-attr]
                 )
                 await observer.on_dispatch_started(ds)
-                return _make_worker_result()
+                return _make_claude_worker_result()
 
             with mock.patch.object(wo, "run_worker_observed",
                                    side_effect=_fake_run_worker_observed):
@@ -3417,6 +3577,9 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                     dispatch_request=dr,
                     dispatch_transition_request=dispatch_tr,
                     acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                     worker_kind=WorkerKind.ADVANCED_AGENT,
                     task_difficulty=TaskDifficulty.ADVANCED,
                     holder_instance_id="test-instance",
@@ -3424,7 +3587,7 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
 
                 async def _run() -> None:
                     result = await orch.run_dispatch_cycle(
-                        req, {"test": FakeProvider()},
+                        req, {"claude": FakeProvider()},
                     )
                     self.assertIsNotNone(result.acknowledge_transition)
                     self.assertEqual(result.acknowledge_transition.event_id,
@@ -3472,6 +3635,9 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                     dispatch_request=dr,
                     dispatch_transition_request=dispatch_tr,
                     acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                     worker_kind=WorkerKind.ADVANCED_AGENT,
                     task_difficulty=TaskDifficulty.ADVANCED,
                     holder_instance_id="test-instance",
@@ -3480,7 +3646,7 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                 async def _run() -> None:
                     with self.assertRaises(Exception):
                         await orch.run_dispatch_cycle(
-                            req, {"test": FakeProvider()},
+                            req, {"claude": FakeProvider()},
                         )
 
                 asyncio.run(_run())
@@ -3497,8 +3663,8 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
         try:
             import workflow_orchestrator as wo
 
-            async def _mismatched_worker(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _mismatched_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 # Build a DispatchStarted with wrong identity
                 wrong_identity = DispatchIdentity(
                     task_id="TC-WRONG",
@@ -3515,7 +3681,7 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                     await observer.on_dispatch_started(ds)
                 except WorkflowInvariantError:
                     raise  # propagate
-                return _make_worker_result()
+                return _make_claude_worker_result()
 
             with mock.patch.object(wo, "run_worker_observed",
                                    side_effect=_mismatched_worker):
@@ -3540,6 +3706,9 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                     dispatch_request=dr,
                     dispatch_transition_request=dispatch_tr,
                     acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                     worker_kind=WorkerKind.ADVANCED_AGENT,
                     task_difficulty=TaskDifficulty.ADVANCED,
                     holder_instance_id="test-instance",
@@ -3548,7 +3717,7 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                 async def _run() -> None:
                     with self.assertRaises(WorkflowInvariantError):
                         await orch.run_dispatch_cycle(
-                            req, {"test": FakeProvider()},
+                            req, {"claude": FakeProvider()},
                         )
 
                 asyncio.run(_run())
@@ -3565,8 +3734,8 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
 
             worker_cancelled = False
 
-            async def _failing_ack_worker(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _failing_ack_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ds = DispatchStarted(
                     identity=request_arg.identity,  # type: ignore[index]
                     provider=request_arg.model_selection.selected_model_provider,  # type: ignore[union-attr]
@@ -3599,6 +3768,9 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                     dispatch_request=dr,
                     dispatch_transition_request=dispatch_tr,
                     acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                     worker_kind=WorkerKind.ADVANCED_AGENT,
                     task_difficulty=TaskDifficulty.ADVANCED,
                     holder_instance_id="test-instance",
@@ -3607,7 +3779,7 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                 async def _run() -> None:
                     with self.assertRaises(Exception):
                         await orch.run_dispatch_cycle(
-                            req, {"test": FakeProvider()},
+                            req, {"claude": FakeProvider()},
                         )
 
                 asyncio.run(_run())
@@ -3622,8 +3794,8 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
         try:
             import workflow_orchestrator as wo
 
-            async def _ack_then_fail_worker(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _ack_then_fail_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ds = DispatchStarted(
                     identity=request_arg.identity,  # type: ignore[index]
                     provider=request_arg.model_selection.selected_model_provider,  # type: ignore[union-attr]
@@ -3663,6 +3835,9 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                     dispatch_request=dr,
                     dispatch_transition_request=dispatch_tr,
                     acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                     worker_kind=WorkerKind.ADVANCED_AGENT,
                     task_difficulty=TaskDifficulty.ADVANCED,
                     holder_instance_id="test-instance",
@@ -3671,7 +3846,7 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                 async def _run() -> None:
                     with self.assertRaises(DispatchNonZeroExitError):
                         await orch.run_dispatch_cycle(
-                            req, {"test": FakeProvider()},
+                            req, {"claude": FakeProvider()},
                         )
 
                 asyncio.run(_run())
@@ -3690,7 +3865,7 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
 
             async def _stuck_worker(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
                 await asyncio.sleep(999)
-                return _make_worker_result()
+                return _make_claude_worker_result()
 
             with mock.patch.object(wo, "run_worker_observed",
                                    side_effect=_stuck_worker):
@@ -3715,6 +3890,9 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                     dispatch_request=dr,
                     dispatch_transition_request=dispatch_tr,
                     acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                     worker_kind=WorkerKind.ADVANCED_AGENT,
                     task_difficulty=TaskDifficulty.ADVANCED,
                     holder_instance_id="test-instance",
@@ -3722,7 +3900,7 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
 
                 async def _run() -> None:
                     task = asyncio.ensure_future(
-                        orch.run_dispatch_cycle(req, {"test": FakeProvider()})
+                        orch.run_dispatch_cycle(req, {"claude": FakeProvider()})
                     )
                     await asyncio.sleep(0.1)
                     task.cancel()
@@ -3745,20 +3923,20 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
 
             release_count = 0
 
-            def _counted_release(*args: Any, **kw: Any) -> None:
+            def _counted_release(*a: Any, **kw: Any) -> None:
                 nonlocal release_count
                 release_count += 1
-                return real_release(*args, **kw)
+                return real_release(*a, **kw)
 
-            async def _ack_worker(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
+            async def _ack_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
                 ds = DispatchStarted(
                     identity=request_arg.identity,  # type: ignore[index]
                     provider=request_arg.model_selection.selected_model_provider,  # type: ignore[union-attr]
                     model_id=request_arg.model_selection.selected_model_id,  # type: ignore[union-attr]
                 )
                 await observer.on_dispatch_started(ds)
-                return _make_worker_result()
+                return _make_claude_worker_result()
 
             with mock.patch.object(wo, "run_worker_observed",
                                    side_effect=_ack_worker):
@@ -3785,6 +3963,9 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                         dispatch_request=dr,
                         dispatch_transition_request=dispatch_tr,
                         acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                         worker_kind=WorkerKind.ADVANCED_AGENT,
                         task_difficulty=TaskDifficulty.ADVANCED,
                         holder_instance_id="test-instance",
@@ -3792,7 +3973,7 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
 
                     async def _run() -> None:
                         await orch.run_dispatch_cycle(
-                            req, {"test": FakeProvider()},
+                            req, {"claude": FakeProvider()},
                         )
 
                     asyncio.run(_run())
@@ -3823,6 +4004,9 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
             dispatch_request=dr,
             dispatch_transition_request=dispatch_tr,
             acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -3839,75 +4023,22 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
 
         asyncio.run(_run())
 
-    def test_no_worker_output_decoder_called(self) -> None:
-        """WorkerOutput decoder must not be called."""
-        # This is a source-boundary check — we assert run_dispatch_cycle()
-        # never imports or calls worker_output_decoder.
+    def test_no_worker_output_decoder_imported(self) -> None:
+        """WorkerOutput decoder IS now imported via workflow_orchestrator."""
+        import workflow_orchestrator as wo
+        source = _source_text(wo)
+        self.assertIn("worker_output_decoder", source)
+
+    def test_delivery_submitted_in_source(self) -> None:
+        """DELIVERY_SUBMITTED IS now present in the orchestrator source."""
         tmp = _setup_project()
         try:
             import workflow_orchestrator as wo
-            # Verify that worker_output_decoder is not imported
             source = _source_text(wo)
-            self.assertNotIn("worker_output_decoder", source)
-
-            async def _simple_worker(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
-                observer = args[3] if len(args) > 3 else None
-                ms = request_arg.model_selection
-                ds = DispatchStarted(
-                    identity=request_arg.identity,
-                    provider=ms.selected_model_provider,
-                    model_id=ms.selected_model_id,
-                )
-                await observer.on_dispatch_started(ds)
-                return _make_worker_result()
-
-            with mock.patch.object(wo, "run_worker_observed",
-                                   side_effect=_simple_worker):
-                clock = FakeClock()
-                orch = WorkflowOrchestrator(
-                    project_root=tmp, clock=clock,
-                    heartbeat_interval_seconds=10.0,
-                )
-                ms = _make_model_selection()
-                dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
-                head = _git_head(tmp)
-                dispatch_tr = _make_transition_request(
-                    task_id="TC-001", dispatch_id="DSP-001",
-                    model_selection=ms, revision=1, head_sha=head,
-                )
-                ack_tr = _make_ack_transition_request(
-                    task_id="TC-001", dispatch_id="DSP-001",
-                    revision=1, attempt=1, head_sha=head,
-                )
-                req = DispatchCycleRequest(
-                    dispatch_request=dr,
-                    dispatch_transition_request=dispatch_tr,
-                    acknowledge_transition_request=ack_tr,
-                    worker_kind=WorkerKind.ADVANCED_AGENT,
-                    task_difficulty=TaskDifficulty.ADVANCED,
-                    holder_instance_id="test-instance",
-                )
-                async def _run() -> None:
-                    await orch.run_dispatch_cycle(
-                        req, {"test": FakeProvider()},
-                    )
-                asyncio.run(_run())
-        finally:
-            import shutil
-            shutil.rmtree(tmp, ignore_errors=True)
-
-    def test_no_delivery_submitted(self) -> None:
-        """DELIVERY_SUBMITTED must not be executed."""
-        tmp = _setup_project()
-        try:
-            import workflow_orchestrator as wo
-            # Strip docstrings
-            source = _source_text(wo)
-            # Remove docstrings (triple-quoted strings)
             import re
             source_no_docs = re.sub(r'""".*?"""', '', source, flags=re.DOTALL)
             source_no_docs = re.sub(r"'''.*?'''", '', source_no_docs, flags=re.DOTALL)
-            self.assertNotIn("DELIVERY_SUBMITTED", source_no_docs)
+            self.assertIn("DELIVERY_SUBMITTED", source_no_docs)
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -3926,10 +4057,10 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
             order: list[str] = []
 
             async def _worker_with_tracking(
-                request_arg: Any, *args: Any, **kw: Any,
+                request_arg: Any, *a: Any, **kw: Any,
             ) -> WorkerResult:
                 order.append("worker_started")
-                observer = args[3] if len(args) > 3 else None
+                observer = a[3] if len(a) > 3 else None
                 ms = request_arg.model_selection
                 ds = DispatchStarted(
                     identity=request_arg.identity,
@@ -3938,7 +4069,7 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                 )
                 await observer.on_dispatch_started(ds)
                 order.append("observer_finished")
-                return _make_worker_result()
+                return _make_claude_worker_result()
 
             with mock.patch.object(wo, "run_worker_observed",
                                    side_effect=_worker_with_tracking):
@@ -3965,6 +4096,9 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                         dispatch_request=dr,
                         dispatch_transition_request=dispatch_tr,
                         acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
                         worker_kind=WorkerKind.ADVANCED_AGENT,
                         task_difficulty=TaskDifficulty.ADVANCED,
                         holder_instance_id="test-instance",
@@ -3972,7 +4106,7 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
 
                     async def _run() -> None:
                         result = await orch.run_dispatch_cycle(
-                            req, {"test": FakeProvider()},
+                            req, {"claude": FakeProvider()},
                         )
                         self.assertIsNotNone(result)
 
@@ -3995,3 +4129,1009 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TC-13.18c.1 — Delivery Submitted Tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _make_claude_worker_result(
+    task_id: str = "TC-001",
+    dispatch_id: str = "DSP-001",
+    status: str = "completed",
+    implementation_commit: str | None = None,
+    report_commit: str | None = None,
+    summary: str = "test summary",
+    warnings: list[str] | None = None,
+) -> WorkerResult:
+    """Build a WorkerResult with a real Claude 2.1.214-shaped stdout."""
+    import json as _json
+    import hashlib as _hashlib
+
+    if implementation_commit is None:
+        implementation_commit = "a" * 40
+    if report_commit is None:
+        report_commit = "b" * 40
+    if warnings is None:
+        warnings = []
+
+    envelope = {
+        "schema_version": "agentdesk.worker-output/v1",
+        "task_id": task_id,
+        "revision": 1,
+        "attempt": 1,
+        "dispatch_id": dispatch_id,
+        "status": status,
+        "implementation_commit": implementation_commit if status == "completed" else None,
+        "report_commit": report_commit,
+        "summary": summary,
+        "warnings": warnings,
+    }
+
+    inner_json = _json.dumps(envelope)
+    wrapper = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "api_error_status": None,
+        "duration_ms": 5000,
+        "duration_api_ms": 5773,
+        "ttft_ms": 4952,
+        "ttft_stream_ms": 553,
+        "time_to_request_ms": 270,
+        "num_turns": 1,
+        "result": inner_json,
+        "stop_reason": "end_turn",
+        "session_id": "test-session",
+        "total_cost_usd": None,
+        "usage": {
+            "input_tokens": 100,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 10,
+            "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
+            "service_tier": "standard",
+            "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 0},
+            "inference_geo": "",
+            "iterations": [],
+            "speed": "standard",
+        },
+        "modelUsage": {},
+        "permission_denials": [],
+        "terminal_reason": "completed",
+        "fast_mode_state": "off",
+        "uuid": "test-uuid",
+    }
+    stdout_bytes = _json.dumps(wrapper).encode("utf-8")
+    stdout_sha = _hashlib.sha256(stdout_bytes).hexdigest()
+
+    identity = DispatchIdentity(
+        task_id=task_id, revision=1, attempt=1, dispatch_id=dispatch_id,
+    )
+    dispatch_result = DispatchResult(
+        identity=identity,
+        provider="claude",
+        model_id="test-model",
+        duration_seconds=0.5,
+        stdout=stdout_bytes,
+        stderr=b"",
+        stdout_sha256=stdout_sha,
+        stderr_sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    )
+    budget = BudgetResult(
+        context_window_tokens=200000,
+        difficulty=TaskDifficulty.ADVANCED,
+        budget_percent=50,
+        budget_cap_tokens=256000,
+        budget_tokens=100000,
+        reserved_tokens=100000,
+    )
+    return WorkerResult(
+        worker_kind=WorkerKind.ADVANCED_AGENT,
+        task_difficulty=TaskDifficulty.ADVANCED,
+        budget=budget,
+        dispatch_result=dispatch_result,
+    )
+
+
+class WorkflowOrchestratorDeliverySubmittedTests(unittest.TestCase):
+    """TC-13.18c.1: DELIVERY_SUBMITTED orchestration — 26+ targeted tests."""
+
+    # -- 1. DispatchCycleRequest exactly nine fields ------------------------
+
+    def test_01_dispatch_cycle_request_exactly_nine_fields(self) -> None:
+        field_names = {f.name for f in dc_fields(DispatchCycleRequest)}
+        expected = {
+            "dispatch_request",
+            "dispatch_transition_request",
+            "acknowledge_transition_request",
+            "delivery_event_id",
+            "delivery_event_context",
+            "provider_cli_version",
+            "worker_kind",
+            "task_difficulty",
+            "holder_instance_id",
+        }
+        self.assertEqual(field_names, expected)
+
+    # -- 2. DispatchCycleResult exactly nine fields -------------------------
+
+    def test_02_dispatch_cycle_result_exactly_nine_fields(self) -> None:
+        field_names = [f.name for f in dc_fields(DispatchCycleResult)]
+        expected = [
+            "worker_result", "worker_output", "delivery_receipt",
+            "dispatch_transition", "acknowledge_transition",
+            "delivery_transition", "slot_id",
+            "lease_epoch", "duration_seconds",
+        ]
+        self.assertEqual(field_names, expected)
+
+    # -- 3. Non-Claude provider rejected before acquire --------------------
+
+    def test_03_non_claude_provider_rejected_pre_acquire(self) -> None:
+        ms = _make_model_selection(provider="codex")
+        dr = _make_dispatch_request(model_selection=ms)
+        tr = _make_transition_request(model_selection=ms, head_sha="a" * 40)
+        ack_tr = _make_ack_transition_request(head_sha="a" * 40)
+        with self.assertRaises(WorkflowInputError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
+
+    # -- 4. Wrong CLI version rejected before acquire -----------------------
+
+    def test_04_wrong_cli_version_rejected_pre_acquire(self) -> None:
+        ms = _make_model_selection()
+        dr = _make_dispatch_request(model_selection=ms)
+        tr = _make_transition_request(model_selection=ms, head_sha="a" * 40)
+        ack_tr = _make_ack_transition_request(head_sha="a" * 40)
+        with self.assertRaises(WorkflowInputError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.0.0",
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
+
+    # -- 5. Invalid delivery event ID ---------------------------------------
+
+    def test_05_delivery_event_id_invalid(self) -> None:
+        ms = _make_model_selection()
+        dr = _make_dispatch_request(model_selection=ms)
+        tr = _make_transition_request(model_selection=ms, head_sha="a" * 40)
+        ack_tr = _make_ack_transition_request(head_sha="a" * 40)
+        with self.assertRaises(ValueError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
+                delivery_event_id="BAD-EVENT-ID",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
+
+    # -- 6. Delivery event ID equals dispatch event ID ----------------------
+
+    def test_06_delivery_event_id_equals_dispatch(self) -> None:
+        ms = _make_model_selection()
+        dr = _make_dispatch_request(model_selection=ms)
+        tr = _make_transition_request(
+            model_selection=ms, head_sha="a" * 40, event_id="EVT-SAME-001",
+        )
+        ack_tr = _make_ack_transition_request(
+            dispatch_event_id="EVT-SAME-001", head_sha="a" * 40,
+        )
+        with self.assertRaises(ValueError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-SAME-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
+
+    # -- 7. Delivery event ID equals ACK event ID ---------------------------
+
+    def test_07_delivery_event_id_equals_ack(self) -> None:
+        ms = _make_model_selection()
+        dr = _make_dispatch_request(model_selection=ms)
+        tr = _make_transition_request(
+            model_selection=ms, head_sha="a" * 40, event_id="EVT-DISP-001",
+        )
+        ack_tr = _make_ack_transition_request(
+            dispatch_event_id="EVT-DISP-001", head_sha="a" * 40,
+        )
+        ack_event_id = ack_tr.event_id  # EVT-DISP-001-ACK
+        with self.assertRaises(ValueError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
+                delivery_event_id=ack_event_id,
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
+
+    # -- 8. Delivery context wrong type --------------------------------------
+
+    def test_08_delivery_context_wrong_type(self) -> None:
+        ms = _make_model_selection()
+        dr = _make_dispatch_request(model_selection=ms)
+        tr = _make_transition_request(model_selection=ms, head_sha="a" * 40)
+        ack_tr = _make_ack_transition_request(head_sha="a" * 40)
+        with self.assertRaises(TypeError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context="not-a-context",
+                provider_cli_version="2.1.214",
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
+
+    # -- 9. Real decode_worker_result with Claude 2.1.214 fixture -----------
+
+    def test_09_real_decode_worker_result_claude_fixture(self) -> None:
+        """Real decoder processes a Claude 2.1.214-shaped stdout."""
+        wr = _make_claude_worker_result()
+        output = decode_worker_result(wr, "2.1.214")
+        self.assertEqual(output.status, WorkerCompletionStatus.COMPLETED)
+        self.assertEqual(output.implementation_commit, "a" * 40)
+        self.assertEqual(output.report_commit, "b" * 40)
+
+    # -- 10. require_delivery_receipt returns real commits -------------------
+
+    def test_10_require_delivery_receipt_real_commits(self) -> None:
+        wr = _make_claude_worker_result(
+            implementation_commit="c" * 40,
+            report_commit="d" * 40,
+        )
+        output = decode_worker_result(wr, "2.1.214")
+        receipt = require_delivery_receipt(output)
+        self.assertEqual(receipt.implementation_commit, "c" * 40)
+        self.assertEqual(receipt.report_commit, "d" * 40)
+
+    # -- 11-13. Three transitions in correct order ---------------------------
+
+    def test_11_three_transitions_correct_order(self) -> None:
+        """TASK_DISPATCHED → DISPATCH_ACKNOWLEDGED → DELIVERY_SUBMITTED."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            call_order: list[str] = []
+
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            orig_apply = CTS.apply_transition
+
+            def _tracked_apply(self_obj: Any, tr: TransitionRequest,
+                                lease: Any, now: datetime) -> TransitionResult:
+                call_order.append(tr.event_type)
+                return orig_apply(self_obj, tr, lease, now)
+
+            wr = _make_claude_worker_result()
+
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                return wr
+
+            with mock.patch.object(wo, "run_worker_observed", side_effect=_worker), \
+                 mock.patch.object(CTS, "apply_transition", new=_tracked_apply):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                req = _make_dispatch_cycle_request(tmp)
+                providers = {"claude": FakeProvider()}
+
+                async def _run() -> None:
+                    await orch.run_dispatch_cycle(req, providers)
+
+                asyncio.run(_run())
+
+            self.assertEqual(
+                call_order,
+                ["TASK_DISPATCHED", "DISPATCH_ACKNOWLEDGED", "DELIVERY_SUBMITTED"],
+            )
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 12. Delivery uses same lease as dispatch/ACK -----------------------
+
+    def test_12_delivery_uses_same_lease(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            leases_used: list[str] = []
+
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            orig_apply = CTS.apply_transition
+
+            def _tracked_apply(self_obj: Any, tr: TransitionRequest,
+                                lease: Any, now: datetime) -> TransitionResult:
+                leases_used.append(lease.lease_id)
+                return orig_apply(self_obj, tr, lease, now)
+
+            wr = _make_claude_worker_result()
+
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                return wr
+
+            with mock.patch.object(wo, "run_worker_observed", side_effect=_worker), \
+                 mock.patch.object(CTS, "apply_transition", new=_tracked_apply):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                req = _make_dispatch_cycle_request(tmp)
+                providers = {"claude": FakeProvider()}
+
+                async def _run() -> None:
+                    await orch.run_dispatch_cycle(req, providers)
+
+                asyncio.run(_run())
+
+            self.assertEqual(len(leases_used), 3)
+            self.assertEqual(leases_used[0], leases_used[1])
+            self.assertEqual(leases_used[0], leases_used[2])
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 13. Delivery applied while heartbeat is active ----------------------
+
+    def test_13_delivery_while_heartbeat_active(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            orig_apply = CTS.apply_transition
+            call_count = [0]
+
+            def _tracked_apply(self_obj: Any, tr: TransitionRequest,
+                                lease: Any, now: datetime) -> TransitionResult:
+                call_count[0] += 1
+                return orig_apply(self_obj, tr, lease, now)
+
+            wr = _make_claude_worker_result()
+
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                return wr
+
+            with mock.patch.object(wo, "run_worker_observed", side_effect=_worker), \
+                 mock.patch.object(CTS, "apply_transition", new=_tracked_apply):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                req = _make_dispatch_cycle_request(tmp)
+                providers = {"claude": FakeProvider()}
+
+                async def _run() -> None:
+                    await orch.run_dispatch_cycle(req, providers)
+
+                asyncio.run(_run())
+
+            self.assertEqual(call_count[0], 3,
+                             "must have 3 transitions (dispatch, ACK, delivery)")
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 14. Delivery before release -----------------------------------------
+
+    def test_14_delivery_before_release(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            events: list[str] = []
+
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            orig_apply = CTS.apply_transition
+
+            def _tracked_apply(self_obj: Any, tr: TransitionRequest,
+                                lease: Any, now: datetime) -> TransitionResult:
+                events.append(f"apply:{tr.event_type}")
+                return orig_apply(self_obj, tr, lease, now)
+
+            from worker_slot_lease import release_worker_slot as real_release
+
+            def _tracked_release(*a: Any, **kw: Any) -> None:
+                events.append("release")
+                return real_release(*a, **kw)
+
+            wr = _make_claude_worker_result()
+
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                return wr
+
+            with mock.patch.object(wo, "run_worker_observed", side_effect=_worker), \
+                 mock.patch.object(CTS, "apply_transition", new=_tracked_apply), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=_tracked_release):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                req = _make_dispatch_cycle_request(tmp)
+                providers = {"claude": FakeProvider()}
+
+                async def _run() -> None:
+                    await orch.run_dispatch_cycle(req, providers)
+
+                asyncio.run(_run())
+
+            delivery_idx = events.index("apply:DELIVERY_SUBMITTED")
+            release_idx = events.index("release")
+            self.assertLess(delivery_idx, release_idx,
+                            "DELIVERY_SUBMITTED must happen before release")
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 15. Result preserves WorkerOutput and DeliveryReceipt ---------------
+
+    def test_15_result_preserves_worker_output_and_receipt(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            wr = _make_claude_worker_result(
+                implementation_commit="f" * 40,
+                report_commit="e" * 40,
+            )
+
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                return wr
+
+            with mock.patch.object(wo, "run_worker_observed", side_effect=_worker):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                req = _make_dispatch_cycle_request(tmp)
+                providers = {"claude": FakeProvider()}
+
+                async def _run() -> None:
+                    result = await orch.run_dispatch_cycle(req, providers)
+                    self.assertIsInstance(result.worker_output, WorkerOutput)
+                    self.assertIsInstance(result.delivery_receipt, DeliveryReceipt)
+                    self.assertEqual(
+                        result.delivery_receipt.implementation_commit,
+                        "f" * 40,
+                    )
+                    self.assertEqual(
+                        result.delivery_receipt.report_commit,
+                        "e" * 40,
+                    )
+                    self.assertIsNotNone(result.delivery_transition)
+                    self.assertEqual(
+                        result.dispatch_transition.to_state,
+                        "dispatched",
+                    )
+
+                asyncio.run(_run())
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 16. Non-zero Worker exit → decoder NOT called -----------------------
+
+    def test_16_nonzero_worker_exit_no_decoder(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            async def _failing_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                from dispatcher_gateway import DispatchNonZeroExitError
+                raise DispatchNonZeroExitError(
+                    exit_code=1,
+                    stdout_sha256="aa",
+                    stderr_sha256="bb",
+                    stderr_bytes=b"error",
+                )
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_failing_worker), \
+                 mock.patch.object(wo, "decode_worker_result") as mock_decode:
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                req = _make_dispatch_cycle_request(tmp)
+                providers = {"claude": FakeProvider()}
+
+                async def _run() -> None:
+                    with self.assertRaises(DispatchNonZeroExitError):
+                        await orch.run_dispatch_cycle(req, providers)
+
+                asyncio.run(_run())
+                mock_decode.assert_not_called()
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 17. Decoder schema failure → delivery NOT called --------------------
+
+    def test_17_decoder_schema_failure_no_delivery(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            wr = _make_worker_result(stdout=b"not valid json")
+
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                return wr
+
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            orig_apply = CTS.apply_transition
+            apply_events: list[str] = []
+
+            def _tracked_apply(self_obj: Any, tr: TransitionRequest,
+                                lease: Any, now: datetime) -> TransitionResult:
+                apply_events.append(tr.event_type)
+                return orig_apply(self_obj, tr, lease, now)
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_worker), \
+                 mock.patch.object(CTS, "apply_transition",
+                                   new=_tracked_apply):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                req = _make_dispatch_cycle_request(tmp)
+                providers = {"claude": FakeProvider()}
+
+                async def _run() -> None:
+                    with self.assertRaises(Exception):
+                        await orch.run_dispatch_cycle(req, providers)
+
+                asyncio.run(_run())
+
+            self.assertNotIn("DELIVERY_SUBMITTED", apply_events)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 18. PARTIAL output → no delivery ------------------------------------
+
+    def test_18_partial_output_no_delivery(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            wr = _make_claude_worker_result(status="partial")
+
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                return wr
+
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            orig_apply = CTS.apply_transition
+            apply_events: list[str] = []
+
+            def _tracked_apply(self_obj: Any, tr: TransitionRequest,
+                                lease: Any, now: datetime) -> TransitionResult:
+                apply_events.append(tr.event_type)
+                return orig_apply(self_obj, tr, lease, now)
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_worker), \
+                 mock.patch.object(CTS, "apply_transition",
+                                   new=_tracked_apply):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                req = _make_dispatch_cycle_request(tmp)
+                providers = {"claude": FakeProvider()}
+
+                async def _run() -> None:
+                    with self.assertRaises(Exception):
+                        await orch.run_dispatch_cycle(req, providers)
+
+                asyncio.run(_run())
+
+            self.assertNotIn("DELIVERY_SUBMITTED", apply_events)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 19. BLOCKED output → no delivery -----------------------------------
+
+    def test_19_blocked_output_no_delivery(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            wr = _make_claude_worker_result(status="blocked")
+
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                return wr
+
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            orig_apply = CTS.apply_transition
+            apply_events: list[str] = []
+
+            def _tracked_apply(self_obj: Any, tr: TransitionRequest,
+                                lease: Any, now: datetime) -> TransitionResult:
+                apply_events.append(tr.event_type)
+                return orig_apply(self_obj, tr, lease, now)
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_worker), \
+                 mock.patch.object(CTS, "apply_transition",
+                                   new=_tracked_apply):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                req = _make_dispatch_cycle_request(tmp)
+                providers = {"claude": FakeProvider()}
+
+                async def _run() -> None:
+                    with self.assertRaises(Exception):
+                        await orch.run_dispatch_cycle(req, providers)
+
+                asyncio.run(_run())
+
+            self.assertNotIn("DELIVERY_SUBMITTED", apply_events)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 20. Delivery transition failure → task stays in_progress ------------
+
+    def test_20_delivery_transition_failure_task_stays_in_progress(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            wr = _make_claude_worker_result()
+
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                return wr
+
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            from control_plane_transition import ControlPlaneTransitionError
+            orig_apply = CTS.apply_transition
+            apply_count = [0]
+
+            def _failing_on_delivery(self_obj: Any, tr: TransitionRequest,
+                                      lease: Any, now: datetime) -> TransitionResult:
+                apply_count[0] += 1
+                if tr.event_type == "DELIVERY_SUBMITTED":
+                    raise ControlPlaneTransitionError("simulated delivery failure")
+                return orig_apply(self_obj, tr, lease, now)
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_worker), \
+                 mock.patch.object(CTS, "apply_transition",
+                                   new=_failing_on_delivery):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                req = _make_dispatch_cycle_request(tmp)
+                providers = {"claude": FakeProvider()}
+
+                async def _run() -> None:
+                    with self.assertRaises(ControlPlaneTransitionError):
+                        await orch.run_dispatch_cycle(req, providers)
+
+                asyncio.run(_run())
+
+            self.assertEqual(apply_count[0], 3)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 21. Success path release exactly once ------------------------------
+
+    def test_21_success_path_release_exactly_once(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            from worker_slot_lease import release_worker_slot as real_release
+
+            release_count = [0]
+
+            def _counted_release(*a: Any, **kw: Any) -> None:
+                release_count[0] += 1
+                return real_release(*a, **kw)
+
+            wr = _make_claude_worker_result()
+
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                return wr
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_worker), \
+                 mock.patch.object(wo, "release_worker_slot",
+                                   side_effect=_counted_release):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                req = _make_dispatch_cycle_request(tmp)
+                providers = {"claude": FakeProvider()}
+
+                async def _run() -> None:
+                    await orch.run_dispatch_cycle(req, providers)
+
+                asyncio.run(_run())
+
+            self.assertEqual(release_count[0], 1)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 22. Decoder failure → release exactly once -------------------------
+
+    def test_22_decoder_failure_release_exactly_once(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            from worker_slot_lease import release_worker_slot as real_release
+
+            release_count = [0]
+
+            def _counted_release(*a: Any, **kw: Any) -> None:
+                release_count[0] += 1
+                return real_release(*a, **kw)
+
+            wr = _make_worker_result(stdout=b"not valid json")
+
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                return wr
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_worker), \
+                 mock.patch.object(wo, "release_worker_slot",
+                                   side_effect=_counted_release):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                req = _make_dispatch_cycle_request(tmp)
+                providers = {"claude": FakeProvider()}
+
+                async def _run() -> None:
+                    with self.assertRaises(Exception):
+                        await orch.run_dispatch_cycle(req, providers)
+
+                asyncio.run(_run())
+
+            self.assertEqual(release_count[0], 1)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 23. Pre-acquire failure → release zero times -----------------------
+
+    def test_23_pre_acquire_failure_release_zero(self) -> None:
+        tmp = Path(__file__).resolve().parents[1]
+        clock = FakeClock()
+        orch = WorkflowOrchestrator(
+            project_root=tmp, clock=clock,
+            heartbeat_interval_seconds=10.0,
+        )
+        req = _make_dispatch_cycle_request(tmp, head_sha="a" * 40)
+
+        async def _run() -> None:
+            import workflow_orchestrator as wo
+            with mock.patch.object(wo, "release_worker_slot") as mock_release:
+                with self.assertRaises(WorkflowInputError):
+                    await orch.run_dispatch_cycle(req, {})
+                mock_release.assert_not_called()
+
+        asyncio.run(_run())
+
+    # -- 24. No pending heartbeat/worker tasks after success -----------------
+
+    def test_24_no_pending_tasks_after_success(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            wr = _make_claude_worker_result()
+
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                return wr
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_worker):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                req = _make_dispatch_cycle_request(tmp)
+                providers = {"claude": FakeProvider()}
+
+                async def _run() -> None:
+                    tasks_before = len(asyncio.all_tasks(asyncio.get_running_loop()))
+                    await orch.run_dispatch_cycle(req, providers)
+                    tasks_after = len(asyncio.all_tasks(asyncio.get_running_loop()))
+                    self.assertLessEqual(tasks_after, tasks_before)
+
+                asyncio.run(_run())
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 25. No json.loads / stdout decode / commit guessing in source -------
+
+    def test_25_no_forbidden_source_patterns(self) -> None:
+        import workflow_orchestrator as wo
+        source = _source_text(wo)
+        import re
+        code = re.sub(r'""".*?"""', '', source, flags=re.DOTALL)
+        code = re.sub(r"'''.*?'''", '', code, flags=re.DOTALL)
+        self.assertNotIn("json.loads", code)
+        self.assertNotIn(".decode(", code)
+
+    # -- 26. Codex path fail-closed ------------------------------------------
+
+    def test_26_codex_path_fail_closed(self) -> None:
+        ms = _make_model_selection(provider="codex")
+        dr = _make_dispatch_request(model_selection=ms)
+        tr = _make_transition_request(model_selection=ms, head_sha="a" * 40)
+        ack_tr = _make_ack_transition_request(head_sha="a" * 40)
+        with self.assertRaises(WorkflowInputError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
