@@ -4417,14 +4417,19 @@ def _validate_approval_evidence(
                 )
                 continue
             # Detect Windows junctions/reparse points
+            # Use os.lstat to check for reparse points without
+            # resolving the target, so regular files are unaffected.
             try:
-                if os.path.realpath(str(entry)) != str(entry.resolve()):
+                st = os.lstat(str(entry))
+                import stat
+                if st.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
                     reporter.error(
                         f"approval evidence must not be a reparse point: "
                         f"{entry.relative_to(project).as_posix()}"
                     )
                     continue
-            except OSError:
+            except (OSError, AttributeError):
+                # stat or FILE_ATTRIBUTE_REPARSE_POINT unavailable → skip
                 pass
             if entry.is_dir():
                 continue
