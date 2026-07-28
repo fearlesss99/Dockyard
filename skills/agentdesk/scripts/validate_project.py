@@ -4866,7 +4866,7 @@ def _validate_approval_evidence(
             reporter.error(f"{ctx} task_id must match TC-NNN pattern")
         else:
             in_ledger = task_ledger_index is not None and task_id in task_ledger_index
-            in_history = _event_history_has_task_id(task_id)
+            in_history = _history_has_task_id(task_id)
             if not in_ledger and not in_history:
                 reporter.error(
                     f"{ctx} task_id {task_id} not found in task ledger "

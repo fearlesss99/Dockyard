@@ -986,9 +986,19 @@ class ActiveGrantConflictTests(unittest.TestCase):
     def test_revoked_grant_not_counted_as_active(self) -> None:
         with _temp_project([_make_draft_task()]) as proj:
             head = _git_head(proj)
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            event_yaml = _make_event_yaml(
+                task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-001", event_id="EVT-HIST-0001",
+            )
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                event_yaml, encoding="utf-8",
+            )
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
                 _make_grant_yaml(
                     snapshot_commit=head, approval_id="APR-001", event_id="EVT-0001",
+                        revision=1, attempt=1,
                 ), encoding="utf-8",
             )
             (proj / "docs" / "pm" / "approvals" / "EVT-0002.yaml").write_text(
@@ -999,6 +1009,7 @@ class ActiveGrantConflictTests(unittest.TestCase):
             (proj / "docs" / "pm" / "approvals" / "EVT-0003.yaml").write_text(
                 _make_grant_yaml(
                     snapshot_commit=head, approval_id="APR-002", event_id="EVT-0003",
+                        revision=1, attempt=1,
                 ), encoding="utf-8",
             )
             reporter = validate_project.validate(proj, require_committed=False)
@@ -1366,9 +1377,18 @@ class SnapshotCommitTests(unittest.TestCase):
         """Grant + Revoke with valid ancestor snapshots = 0 errors."""
         with _temp_project([_make_draft_task()]) as proj:
             head = _git_head(proj)
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            event_yaml = _make_event_yaml(
+                task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-001", event_id="EVT-HIST-0001",
+            )
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                event_yaml, encoding="utf-8",
+            )
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
                 _make_grant_yaml(snapshot_commit=head, approval_id="APR-001",
-                                 event_id="EVT-0001"),
+                                 event_id="EVT-0001", revision=1, attempt=1),
                 encoding="utf-8",
             )
             (proj / "docs" / "pm" / "approvals" / "EVT-0002.yaml").write_text(
