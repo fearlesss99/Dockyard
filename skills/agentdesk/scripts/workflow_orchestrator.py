@@ -175,13 +175,15 @@ class DispatchCycleRequest:
                 f"'dispatched', got {ack_tr.cas.expected_state!r}"
             )
 
-        # -- ACK cas.expected_revision == dispatch expected_revision + 1 ----
-        if ack_tr.cas.expected_revision != tr.cas.expected_revision + 1:
+        # -- ACK cas.expected_revision matches dispatch expected_revision ----
+        # TASK_DISPATCHED does NOT increment the task revision in canonical
+        # state.  The ACK CAS must match the post-dispatch task revision,
+        # which is the same as the pre-dispatch revision.
+        if ack_tr.cas.expected_revision != tr.cas.expected_revision:
             raise ValueError(
-                "acknowledge_transition_request expected_revision must be "
-                f"dispatch expected_revision + 1 "
-                f"({tr.cas.expected_revision} + 1 = "
-                f"{tr.cas.expected_revision + 1}), "
+                "acknowledge_transition_request expected_revision must "
+                f"equal dispatch expected_revision "
+                f"({tr.cas.expected_revision}), "
                 f"got {ack_tr.cas.expected_revision}"
             )
 
@@ -490,7 +492,7 @@ class WorkflowOrchestrator:
         5. Apply TASK_DISPATCHED transition
         6. Build ACK observer with identity validation
         7. Start heartbeat + run_worker_observed in parallel
-        8. Dispatcher launches subprocess, calls observer
+        8. Dispatcher launches CLI process, calls observer
         9. Observer validates DispatchStarted, applies DISPATCH_ACKNOWLEDGED
         10. Dispatcher communicates stdin to process
         11. Worker completes
@@ -598,14 +600,35 @@ class WorkflowOrchestrator:
                 self.project_root
             ).apply_transition(tr, lease, now_transition)
 
-            # -- 6-7. Start heartbeat + worker_observed -----------------------
+            # -- 6-7. Start heartbeat first, THEN worker_observed --------------
+
+            heartbeat_started = asyncio.Event()
 
             async def _heartbeat_loop() -> None:
                 """Heartbeat coroutine -- loop until cancelled or error."""
+                heartbeat_started.set()
                 while True:
                     await self.clock.sleep(self.heartbeat_interval_seconds)
                     now_hb = self.clock.now()
                     renew_worker_slot(self.project_root, lease, now_hb)
+
+            hb_task = asyncio.ensure_future(_heartbeat_loop())
+
+            # Wait for heartbeat to confirm it has entered its loop.
+            await heartbeat_started.wait()
+
+            # If heartbeat failed before worker started, propagate immediately.
+            if hb_task.done():
+                hb_exc = hb_task.exception()
+                if hb_exc is not None:
+                    if isinstance(hb_exc, WorkerSlotLeaseError):
+                        raise hb_exc
+                    raise WorkflowHeartbeatError(
+                        "heartbeat task failed before worker started"
+                    ) from hb_exc
+                raise WorkflowHeartbeatError(
+                    "heartbeat task terminated before worker started"
+                )
 
             worker_task = asyncio.ensure_future(
                 run_worker_observed(
@@ -616,7 +639,6 @@ class WorkflowOrchestrator:
                     ack_observer,
                 )
             )
-            hb_task = asyncio.ensure_future(_heartbeat_loop())
 
             # -- 8. Wait for first completion ---------------------------------
             done, _pending = await asyncio.wait(

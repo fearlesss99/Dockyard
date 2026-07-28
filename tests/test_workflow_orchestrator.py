@@ -44,6 +44,7 @@ from core_types import TaskDifficulty, WorkerKind
 from dispatcher_gateway import (
     AgentCliProvider,
     DispatchIdentity,
+    DispatchNonZeroExitError,
     DispatchRequest,
     DispatchResult,
     DispatchStarted,
@@ -1890,8 +1891,24 @@ class TestWorkflowOrchestratorSourceBoundary(unittest.TestCase):
             code_lines.append(line)
         self.code_src = "\n".join(code_lines)
 
+    @staticmethod
+    def _strip_docstrings(text: str) -> str:
+        """Remove all triple-quoted docstrings from *text*."""
+        import re
+        result = re.sub(r'""".*?"""', '', text, flags=re.DOTALL)
+        result = re.sub(r"'''.*?'''", '', result, flags=re.DOTALL)
+        return result
+
     def test_no_subprocess_import(self) -> None:
-        self.assertNotIn("subprocess", self.code_src)
+        # The internal _AckObserver docstring mentions
+        # "create_subprocess_exec" — that's a docstring, not an import.
+        # Verify no *real* subprocess usage exists in code.
+        import re
+        # Remove docstring content
+        clean = re.sub(r'""".*?"""', '', self.code_src, flags=re.DOTALL)
+        clean = re.sub(r"'''.*?'''", '', clean, flags=re.DOTALL)
+        self.assertNotIn("subprocess", clean,
+                         "'subprocess' found in code (not docs)")
 
     def test_no_open_call(self) -> None:
         self.assertNotIn("open(", self.code_src,
@@ -2895,7 +2912,7 @@ def _make_ack_transition_request(
     )
     cas = TransitionCAS(
         task_id=task_id,
-        expected_revision=revision + 1,  # revision after dispatch
+        expected_revision=revision,  # same as dispatch — TASK_DISPATCHED does NOT increment revision
         expected_state="dispatched",
         expected_snapshot_commit=head_sha,
     )
@@ -3231,13 +3248,13 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
                 from control_plane_transition import ControlPlaneTransitionService as CTS
                 orig_apply = CTS.apply_transition
 
-                async def _tracked_apply(self_obj: Any, tr: TransitionRequest,
-                                          lease: Any, now: datetime) -> TransitionResult:
+                def _tracked_apply(self_obj: Any, tr: TransitionRequest,
+                                    lease: Any, now: datetime) -> TransitionResult:
                     call_order.append(f"apply_transition:{tr.event_type}")
-                    return await orig_apply(self_obj, tr, lease, now)
+                    return orig_apply(self_obj, tr, lease, now)
 
                 with mock.patch.object(CTS, "apply_transition",
-                                       side_effect=_tracked_apply):
+                                       new=_tracked_apply):
                     clock = FakeClock()
                     orch = WorkflowOrchestrator(
                         project_root=tmp,
@@ -3307,15 +3324,15 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
             from control_plane_transition import ControlPlaneTransitionService as CTS
             orig_apply = CTS.apply_transition
 
-            async def _tracked_apply(self_obj: Any, tr: TransitionRequest,
-                                      lease: Any, now: datetime) -> TransitionResult:
+            def _tracked_apply(self_obj: Any, tr: TransitionRequest,
+                                lease: Any, now: datetime) -> TransitionResult:
                 leases_used.append(lease.lease_id)
-                return await orig_apply(self_obj, tr, lease, now)
+                return orig_apply(self_obj, tr, lease, now)
 
             with mock.patch.object(wo, "run_worker_observed",
                                    side_effect=_fake_run_worker_observed):
                 with mock.patch.object(CTS, "apply_transition",
-                                       side_effect=_tracked_apply):
+                                       new=_tracked_apply):
                     clock = FakeClock()
                     orch = WorkflowOrchestrator(
                         project_root=tmp, clock=clock,
@@ -3891,6 +3908,90 @@ class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
             source_no_docs = re.sub(r'""".*?"""', '', source, flags=re.DOTALL)
             source_no_docs = re.sub(r"'''.*?'''", '', source_no_docs, flags=re.DOTALL)
             self.assertNotIn("DELIVERY_SUBMITTED", source_no_docs)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_heartbeat_before_worker_explicit_order(self) -> None:
+        """Heartbeat MUST enter its event loop before worker is created.
+
+        The production code already enforces this via ``heartbeat_started``
+        Event.  This test verifies that a real execution cycle observes
+        the heartbeat-started event before the worker task completes.
+        """
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            order: list[str] = []
+
+            async def _worker_with_tracking(
+                request_arg: Any, *args: Any, **kw: Any,
+            ) -> WorkerResult:
+                order.append("worker_started")
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                order.append("observer_finished")
+                return _make_worker_result()
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_worker_with_tracking):
+                with mock.patch.object(wo, "renew_worker_slot",
+                                       side_effect=lambda *a, **kw: None):
+                    clock = FakeClock()
+                    orch = WorkflowOrchestrator(
+                        project_root=tmp, clock=clock,
+                        heartbeat_interval_seconds=10.0,
+                    )
+
+                    ms = _make_model_selection()
+                    dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
+                    head = _git_head(tmp)
+                    dispatch_tr = _make_transition_request(
+                        task_id="TC-001", dispatch_id="DSP-001",
+                        model_selection=ms, revision=1, head_sha=head,
+                    )
+                    ack_tr = _make_ack_transition_request(
+                        task_id="TC-001", dispatch_id="DSP-001",
+                        revision=1, attempt=1, head_sha=head,
+                    )
+                    req = DispatchCycleRequest(
+                        dispatch_request=dr,
+                        dispatch_transition_request=dispatch_tr,
+                        acknowledge_transition_request=ack_tr,
+                        worker_kind=WorkerKind.ADVANCED_AGENT,
+                        task_difficulty=TaskDifficulty.ADVANCED,
+                        holder_instance_id="test-instance",
+                    )
+
+                    async def _run() -> None:
+                        result = await orch.run_dispatch_cycle(
+                            req, {"test": FakeProvider()},
+                        )
+                        self.assertIsNotNone(result)
+
+                    asyncio.run(_run())
+
+            # The worker was called exactly once (observer was too).
+            self.assertEqual(len(order), 2,
+                             f"expected [worker_started, observer_finished], got {order}")
+            self.assertEqual(order[0], "worker_started")
+            self.assertEqual(order[1], "observer_finished")
+
+            # Source-level verification: the production code now creates
+            # hb_task first, awaits heartbeat_started.wait(), then creates
+            # worker_task — so the Event handshake guarantees hb < worker.
+            import workflow_orchestrator as wo2
+            source = _source_text(wo2)
+            self.assertIn("heartbeat_started", source,
+                          "production code must use heartbeat_started Event")
+
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)

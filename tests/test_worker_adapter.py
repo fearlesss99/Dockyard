@@ -52,6 +52,7 @@ DispatchNonZeroExitError = _dg.DispatchNonZeroExitError
 
 WorkerResult = _wa.WorkerResult
 run_worker = _wa.run_worker
+run_worker_observed = _wa.run_worker_observed
 wa_module = _wa
 
 
@@ -1427,8 +1428,12 @@ class ReprNotCalledTests(unittest.IsolatedAsyncioTestCase):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class WorkerAdapterObservedApiTests(unittest.TestCase):
-    """Smoke tests for run_worker_observed API."""
+class WorkerAdapterObservedApiTests(unittest.IsolatedAsyncioTestCase):
+    """Smoke tests for run_worker_observed API.
+
+    Uses IsolatedAsyncioTestCase so that ``async def`` test methods
+    actually execute — not just return unawaited coroutines.
+    """
 
     def test_all_exports_run_worker_observed(self) -> None:
         self.assertIn("run_worker_observed", wa_module.__all__)
@@ -1437,9 +1442,9 @@ class WorkerAdapterObservedApiTests(unittest.TestCase):
         """Budget must be computed exactly once in run_worker_observed."""
         call_count = 0
 
-        async def _fake_compute_budget(ctx_tokens: int,
-                                        difficulty: TaskDifficulty
-                                        ) -> BudgetResult:
+        def _fake_compute_budget(ctx_tokens: int,
+                                  difficulty: TaskDifficulty
+                                  ) -> BudgetResult:
             nonlocal call_count
             call_count += 1
             return BudgetResult(
@@ -1453,7 +1458,8 @@ class WorkerAdapterObservedApiTests(unittest.TestCase):
 
         with mock.patch.object(wa_module, "compute_budget",
                                side_effect=_fake_compute_budget):
-            with mock.patch.object(wa_module, "run_dispatch_observed") as mock_rd:
+            with mock.patch.object(wa_module, "run_dispatch_observed",
+                                   new_callable=mock.AsyncMock) as mock_rd:
                 mock_rd.return_value = DispatchResult(
                     identity=_make_request().identity,
                     provider="fake",
@@ -1477,7 +1483,8 @@ class WorkerAdapterObservedApiTests(unittest.TestCase):
         """Observer must be passed by object identity to run_dispatch_observed."""
         observer = mock.AsyncMock()
 
-        with mock.patch.object(wa_module, "run_dispatch_observed") as mock_rd:
+        with mock.patch.object(wa_module, "run_dispatch_observed",
+                               new_callable=mock.AsyncMock) as mock_rd:
             mock_rd.return_value = DispatchResult(
                 identity=_make_request().identity,
                 provider="fake",
@@ -1495,9 +1502,10 @@ class WorkerAdapterObservedApiTests(unittest.TestCase):
                 providers={"fake": mock.Mock()},
                 observer=observer,
             )
-            # Check observer was passed as the same object
-            _, kwargs = mock_rd.call_args
-            self.assertIs(kwargs["observer"], observer)
+            # observer is 3rd positional arg to run_dispatch_observed
+            args, _kwargs = mock_rd.call_args
+            self.assertEqual(len(args), 3, f"Expected 3 positional args, got {len(args)}")
+            self.assertIs(args[2], observer)
 
     async def test_run_worker_observed_request_passed_by_identity(self) -> None:
         """DispatchRequest must be passed by object identity."""
