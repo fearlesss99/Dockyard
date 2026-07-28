@@ -103,6 +103,8 @@ __all__ = [
     "DispatchCycleResult",
     "EscalatedRedispatchRequest",
     "EscalatedRedispatchResult",
+    "IntegrationFailureRequest",
+    "IntegrationFailureResult",
     "WorkerOutput",
     "WorkflowClock",
     "WorkflowHeartbeatError",
@@ -534,6 +536,31 @@ class EscalatedRedispatchResult:
     escalation_decision: EscalationDecision
     resolve_transition: TransitionResult
     dispatch_cycle_result: DispatchCycleResult
+
+
+# -- IntegrationFailure types (TC-13.18d.4) -----------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationFailureRequest:
+    """Immutable input for recording an integration failure — exactly four fields.
+
+    All identifiers are caller-supplied.
+    """
+
+    acceptance_cycle_request: AcceptanceCycleRequest
+    acceptance_cycle_result: AcceptanceCycleResult
+    dispatch_cycle_result: DispatchCycleResult
+    failure_transition_request: TransitionRequest
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationFailureResult:
+    """Immutable result of integration failure recording — exactly three fields."""
+
+    task_id: str
+    audit_result: MadAuditGatewayResult
+    failure_transition: TransitionResult
 
 
 # -- exception hierarchy ------------------------------------------------------
@@ -2022,3 +2049,222 @@ class WorkflowOrchestrator:
             resolve_transition=resolve_transition,
             dispatch_cycle_result=dispatch_cycle_result,
         )
+
+    async def record_integration_failure(
+        self,
+        request: IntegrationFailureRequest,
+    ) -> IntegrationFailureResult:
+        """Record an integration failure observed externally (TC-13.18d.4).
+
+        Execution order:
+        1. Fail-closed input validation
+        2. clock.now()
+        3. apply_transition(INTEGRATION_FAILED, lease=None, now)
+        4. return IntegrationFailureResult
+
+        Preconditions (enforced in validation):
+        * run_acceptance_cycle() completed with DELIVERY_ACCEPTED.
+        * acceptance_cycle_request.integration_transition_request is None.
+        * Caller observed real integration failure externally.
+        * audit verdict is "pass".
+        * accept_transition is present, integrate_transition is None.
+
+        No MAD audit, no lease operations, no escalation, no auto-retry.
+        """
+        # -- 1. Fail-closed input validation -----------------------------------
+        self._validate_integration_failure_request(request)
+
+        # -- 2. clock.now() ----------------------------------------------------
+        now = self.clock.now()
+
+        # -- 3. Apply INTEGRATION_FAILED with lease=None -----------------------
+        failure_transition = ControlPlaneTransitionService(
+            self.project_root
+        ).apply_transition(
+            request.failure_transition_request,
+            lease=None,
+            now=now,
+        )
+
+        # -- 4. Return result --------------------------------------------------
+        return IntegrationFailureResult(
+            task_id=request.acceptance_cycle_result.task_id,
+            audit_result=request.acceptance_cycle_result.audit_result,
+            failure_transition=failure_transition,
+        )
+
+    # -- private validation helpers -------------------------------------------
+
+    def _validate_integration_failure_request(
+        self,
+        request: IntegrationFailureRequest,
+    ) -> None:
+        """Fail-closed validation — any violation raises before transition.
+
+        Raises TypeError / WorkflowInputError on the first violation;
+        messages never contain paths, prompts, report bodies, issue
+        descriptions, stdout, secrets, or input repr/str.
+        """
+        # -- request must be exactly IntegrationFailureRequest -----------------
+        if type(request) is not IntegrationFailureRequest:
+            raise TypeError(
+                "request must be IntegrationFailureRequest, "
+                f"got {type(request).__name__}"
+            )
+
+        acr = request.acceptance_cycle_request
+        acr_result = request.acceptance_cycle_result
+        dcr = request.dispatch_cycle_result
+        ftr = request.failure_transition_request
+
+        # -- acceptance_cycle_request type ------------------------------------
+        if type(acr) is not AcceptanceCycleRequest:
+            raise TypeError(
+                "acceptance_cycle_request must be AcceptanceCycleRequest, "
+                f"got {type(acr).__name__}"
+            )
+
+        # -- acceptance_cycle_result type -------------------------------------
+        if type(acr_result) is not AcceptanceCycleResult:
+            raise TypeError(
+                "acceptance_cycle_result must be AcceptanceCycleResult, "
+                f"got {type(acr_result).__name__}"
+            )
+
+        # -- dispatch_cycle_result type ---------------------------------------
+        if type(dcr) is not DispatchCycleResult:
+            raise TypeError(
+                "dispatch_cycle_result must be DispatchCycleResult, "
+                f"got {type(dcr).__name__}"
+            )
+
+        # -- failure_transition_request type ----------------------------------
+        if type(ftr) is not TransitionRequest:
+            raise TypeError(
+                "failure_transition_request must be TransitionRequest, "
+                f"got {type(ftr).__name__}"
+            )
+
+        # -- acceptance_cycle_request.integration_transition_request is None --
+        if acr.integration_transition_request is not None:
+            raise WorkflowInputError(
+                "acceptance_cycle_request.integration_transition_request "
+                "must be None"
+            )
+
+        # -- audit verdict must be "pass" -------------------------------------
+        audit_result = acr_result.audit_result
+        if type(audit_result) is not MadAuditGatewayResult:
+            raise TypeError(
+                "audit_result must be MadAuditGatewayResult, "
+                f"got {type(audit_result).__name__}"
+            )
+
+        verdict = audit_result.verdict
+        if verdict != "pass":
+            raise WorkflowInputError(
+                "audit verdict must be 'pass'"
+            )
+
+        # -- accept_transition must be present --------------------------------
+        if acr_result.accept_transition is None:
+            raise WorkflowInputError(
+                "accept_transition must be present"
+            )
+
+        # -- integrate_transition must be None --------------------------------
+        if acr_result.integrate_transition is not None:
+            raise WorkflowInputError(
+                "integrate_transition must be None"
+            )
+
+        # -- task_id consistency across three objects -------------------------
+        receipt = dcr.delivery_receipt
+        task_id = acr_result.task_id
+        if task_id != receipt.identity.task_id:
+            raise WorkflowInputError(
+                "acceptance_cycle_result task_id must match "
+                "delivery receipt task_id"
+            )
+        if acr.dispatch_cycle_result.delivery_receipt.identity.task_id != task_id:
+            raise WorkflowInputError(
+                "acceptance_cycle_request task_id must match "
+                "delivery receipt task_id"
+            )
+
+        # -- revision, attempt, dispatch_id must match delivery receipt --------
+        acr_receipt = acr.dispatch_cycle_result.delivery_receipt
+        if acr_receipt.identity.revision != receipt.identity.revision:
+            raise WorkflowInputError(
+                "revision inconsistency"
+            )
+        if acr_receipt.identity.attempt != receipt.identity.attempt:
+            raise WorkflowInputError(
+                "attempt inconsistency"
+            )
+        if acr_receipt.identity.dispatch_id != receipt.identity.dispatch_id:
+            raise WorkflowInputError(
+                "dispatch_id inconsistency"
+            )
+
+        # -- failure_transition_request checks ---------------------------------
+        # event_type must be INTEGRATION_FAILED
+        if ftr.event_type != "INTEGRATION_FAILED":
+            raise WorkflowInputError(
+                "failure_transition_request event_type must be "
+                "INTEGRATION_FAILED"
+            )
+
+        # payload must be BlockedPayload
+        if type(ftr.payload) is not BlockedPayload:
+            raise WorkflowInputError(
+                "failure_transition_request payload must be "
+                "BlockedPayload"
+            )
+
+        bp = ftr.payload
+
+        # CAS expected_state must be "accepted"
+        if ftr.cas.expected_state != "accepted":
+            raise WorkflowInputError(
+                "failure_transition_request cas.expected_state must be "
+                "'accepted'"
+            )
+
+        # to_state must be "blocked" (TransitionService validates, but
+        # we fail-closed check here)
+        if ftr.cas.task_id != task_id:
+            raise WorkflowInputError(
+                "failure_transition_request cas.task_id must match"
+            )
+
+        # dispatch_cas must be None
+        if ftr.dispatch_cas is not None:
+            raise WorkflowInputError(
+                "failure_transition_request dispatch_cas must be None"
+            )
+
+        # event_id must not duplicate existing event_ids
+        existing_event_ids = {
+            dcr.dispatch_transition.event_id,
+            dcr.acknowledge_transition.event_id,
+            dcr.delivery_transition.event_id,
+            acr_result.accept_transition.event_id,
+        }
+        if ftr.event_id in existing_event_ids:
+            raise WorkflowInputError(
+                "failure event_id must differ from dispatch, ACK, "
+                "delivery, and acceptance event_ids"
+            )
+
+        # BlockedPayload.resume_state must be "accepted"
+        if bp.resume_state != "accepted":
+            raise WorkflowInputError(
+                "BlockedPayload.resume_state must be 'accepted'"
+            )
+
+        # BlockedPayload.blocked_attempt_valid must be True
+        if bp.blocked_attempt_valid is not True:
+            raise WorkflowInputError(
+                "BlockedPayload.blocked_attempt_valid must be True"
+            )

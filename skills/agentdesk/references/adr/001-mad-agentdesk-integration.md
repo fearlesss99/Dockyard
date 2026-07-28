@@ -6455,7 +6455,7 @@ in `ControlPlaneTransitionService._TRANSITION_SPECS` (搂2.14.8):
 | 6 | `DELIVERY_RETURNED` | TC-13.18d.1 return path |
 | 7 | `TASK_REQUEUED` | TC-13.18d.1 requeue path |
 | 8 | `CHANGE_INTEGRATED` | TC-13.18c integration path |
-| 9 | `INTEGRATION_FAILED` | Target — TC-13.18d.3 blocked path |
+| 9 | `INTEGRATION_FAILED` | Current — TC-13.18d.4 blocked path |
 | 10 | `TASK_BLOCKED` | Current — TC-13.18d.2 blocked path |
 | 11 | `BLOCKER_RESOLVED` | TC-13.18d.2 unblock path |
 | 12 | `BLOCKER_RESCOPED` | TC-13.18d.2 rescope path |

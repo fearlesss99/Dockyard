@@ -84,6 +84,8 @@ from workflow_orchestrator import (
     DispatchCycleResult,
     EscalatedRedispatchRequest,
     EscalatedRedispatchResult,
+    IntegrationFailureRequest,
+    IntegrationFailureResult,
     WorkflowClock,
     WorkflowHeartbeatError,
     WorkflowInputError,
@@ -548,18 +550,26 @@ def _write_approval_grant(project_root: Path) -> None:
 class TestWorkflowOrchestratorAPI(unittest.TestCase):
     """Test __all__ exactness and dataclass frozen/slots properties."""
 
-    def test_all_exactly_fourteen(self) -> None:
+    def test_all_exactly_twenty_two(self) -> None:
         import workflow_orchestrator as wo
         self.assertEqual(
-            len(wo.__all__), 14,
-            f"__all__ must have exactly 14 entries, got {len(wo.__all__)}: {wo.__all__}"
+            len(wo.__all__), 22,
+            f"__all__ must have exactly 22 entries, got {len(wo.__all__)}: {wo.__all__}"
         )
         expected = sorted([
             "AcceptanceCycleRequest",
             "AcceptanceCycleResult",
+            "BlockedAuditRequest",
+            "BlockedAuditResult",
             "DeliveryReceipt",
+            "DeliveryRemediationRequest",
+            "DeliveryRemediationResult",
             "DispatchCycleRequest",
             "DispatchCycleResult",
+            "EscalatedRedispatchRequest",
+            "EscalatedRedispatchResult",
+            "IntegrationFailureRequest",
+            "IntegrationFailureResult",
             "WorkerOutput",
             "WorkflowClock",
             "WorkflowHeartbeatError",
@@ -10279,3 +10289,1136 @@ class WorkflowOrchestratorBlockedAuditTests(unittest.TestCase):
             )
         finally:
             import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TC-13.18d.4 — Integration Failure Recording Tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _make_integration_failure_request(
+    task_id: str = "TC-001",
+    dispatch_id: str = "DSP-001",
+    attempt: int = 1,
+    revision: int = 1,
+    implementation_commit: str | None = None,
+    report_commit: str | None = None,
+    worker_kind: WorkerKind | None = None,
+    failure_event_id: str = "EVT-INTFAIL-001",
+    head_sha: str | None = None,
+) -> "IntegrationFailureRequest":
+    """Build a valid IntegrationFailureRequest for INTEGRATION_FAILED recording."""
+    if worker_kind is None:
+        worker_kind = WorkerKind.ADVANCED_AGENT
+    if implementation_commit is None:
+        implementation_commit = "a" * 40
+    if report_commit is None:
+        report_commit = "b" * 40
+    if head_sha is None:
+        head_sha = "a" * 40
+
+    from workflow_orchestrator import (
+        AcceptanceCycleRequest,
+        AcceptanceCycleResult,
+        IntegrationFailureRequest,
+    )
+
+    # Build a DispatchCycleResult
+    identity = DispatchIdentity(
+        task_id=task_id, revision=revision,
+        attempt=attempt, dispatch_id=dispatch_id
+    )
+    wo_ = WorkerOutput(
+        identity=identity, provider="claude", model_id="test-model",
+        status=WorkerCompletionStatus.COMPLETED,
+        implementation_commit=implementation_commit,
+        report_commit=report_commit,
+        summary="test", warnings=(), stdout_sha256="e" * 64,
+    )
+    receipt = DeliveryReceipt(
+        identity=identity, provider="claude", model_id="test-model",
+        implementation_commit=implementation_commit,
+        report_commit=report_commit, stdout_sha256="e" * 64,
+    )
+    wr = _make_claude_worker_result(task_id=task_id, dispatch_id=dispatch_id)
+    if worker_kind is not WorkerKind.ADVANCED_AGENT:
+        wr = WorkerResult(
+            worker_kind=worker_kind,
+            task_difficulty=wr.task_difficulty,
+            budget=wr.budget,
+            dispatch_result=wr.dispatch_result,
+        )
+    dcr = DispatchCycleResult(
+        worker_result=wr,
+        worker_output=wo_, delivery_receipt=receipt,
+        dispatch_transition=TransitionResult(
+            task_id=task_id, event_id="EVT-DISP-001",
+            from_state="ready", to_state="dispatched",
+            occurred_at="2026-07-28T12:00:00Z", outbox_message_id=None,
+        ),
+        acknowledge_transition=TransitionResult(
+            task_id=task_id, event_id="EVT-ACK-001",
+            from_state="dispatched", to_state="in_progress",
+            occurred_at="2026-07-28T12:00:01Z", outbox_message_id=None,
+        ),
+        delivery_transition=TransitionResult(
+            task_id=task_id, event_id="EVT-DEL-001",
+            from_state="in_progress", to_state="review_ready",
+            occurred_at="2026-07-28T12:00:02Z", outbox_message_id=None,
+        ),
+        slot_id="advanced_agent-1", lease_epoch=1, duration_seconds=1.0,
+    )
+
+    # Build Audit result with pass verdict
+    audit_result = _make_fake_audit_result(verdict="pass")
+
+    # Build accept transition result
+    accept_tr = TransitionResult(
+        task_id=task_id, event_id="EVT-ACCEPT-001",
+        from_state="review_ready", to_state="accepted",
+        occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None,
+    )
+
+    acr_result = AcceptanceCycleResult(
+        task_id=task_id,
+        audit_result=audit_result,
+        accept_transition=accept_tr,
+        integrate_transition=None,
+    )
+
+    # Build acceptance_transition_request
+    accepted_commit = implementation_commit
+    accept_cas = TransitionCAS(
+        task_id=task_id,
+        expected_revision=revision,
+        expected_state="review_ready",
+        expected_snapshot_commit=head_sha,
+    )
+    accept_dispatch_cas = DispatchCAS(
+        expected_dispatch_id=dispatch_id,
+        expected_attempt=attempt,
+    )
+    from control_plane_transition import DeliveryAcceptedPayload as DAPayload
+    accept_payload = DAPayload(
+        accepted_commit=accepted_commit,
+        acceptance_path=f"docs/pm/acceptances/{task_id}-r{revision}-a{attempt}-review1.md",
+        residual_risks=(),
+        criteria_evidence=("evidence item 1",),
+        rationale="test acceptance",
+    )
+    acceptance_tr = TransitionRequest(
+        cas=accept_cas,
+        dispatch_cas=accept_dispatch_cas,
+        event_id="EVT-ACCEPT-001",
+        event_type="DELIVERY_ACCEPTED",
+        payload=accept_payload,
+        event_context=TransitionEventContext(
+            source_message_id=None,
+            evidence_refs=(),
+            guard_results=(),
+        ),
+    )
+
+    # Build AcceptanceCycleRequest (without integration_transition_request)
+    acr = AcceptanceCycleRequest(
+        dispatch_cycle_result=dcr,
+        audit_input=_make_mad_audit_gateway_input(
+            task_id=task_id, dispatch_id=dispatch_id,
+            workspace=Path(__file__).resolve().parents[1],
+            implementation_commit=implementation_commit,
+            report_commit=report_commit,
+        ),
+        acceptance_transition_request=acceptance_tr,
+        integration_transition_request=None,
+        worker_kind=worker_kind,
+        holder_instance_id="test-instance",
+    )
+
+    # Build failure_transition_request (INTEGRATION_FAILED)
+    from control_plane_transition import BlockedPayload as BPayload
+    bp = BPayload(
+        blocked_reason="merge conflict",
+        blocked_kind="decision_required",
+        blocked_owner="pm",
+        unblock_condition="manual resolution",
+        resume_state="accepted",
+        blocked_attempt_valid=True,
+    )
+    failure_cas = TransitionCAS(
+        task_id=task_id,
+        expected_revision=revision,
+        expected_state="accepted",
+        expected_snapshot_commit=head_sha,
+    )
+    ftr = TransitionRequest(
+        cas=failure_cas,
+        dispatch_cas=None,
+        event_id=failure_event_id,
+        event_type="INTEGRATION_FAILED",
+        payload=bp,
+        event_context=TransitionEventContext(
+            source_message_id=None,
+            evidence_refs=(),
+            guard_results=(),
+        ),
+    )
+
+    return IntegrationFailureRequest(
+        acceptance_cycle_request=acr,
+        acceptance_cycle_result=acr_result,
+        dispatch_cycle_result=dcr,
+        failure_transition_request=ftr,
+    )
+
+
+# ── IntegrationFailureRequest Four-Field Tests ──────────────────────────────
+
+
+class IntegrationFailureRequestFourFieldTests(unittest.TestCase):
+    """IntegrationFailureRequest: exactly four fields, frozen, slots, no __dict__."""
+
+    def test_exactly_four_fields(self) -> None:
+        from workflow_orchestrator import IntegrationFailureRequest
+        field_names = {f.name for f in dc_fields(IntegrationFailureRequest)}
+        expected = {
+            "acceptance_cycle_request",
+            "acceptance_cycle_result",
+            "dispatch_cycle_result",
+            "failure_transition_request",
+        }
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import IntegrationFailureRequest
+        self.assertTrue(IntegrationFailureRequest.__dataclass_params__.frozen)
+        self.assertTrue(hasattr(IntegrationFailureRequest, "__slots__"))
+
+    def test_no_dict(self) -> None:
+        from workflow_orchestrator import IntegrationFailureRequest
+        # Must construct with all four fields — use _make helper
+        req = _make_integration_failure_request()
+        self.assertFalse(hasattr(req, "__dict__"))
+
+
+# ── IntegrationFailureResult Three-Field Tests ─────────────────────────────
+
+
+class IntegrationFailureResultThreeFieldTests(unittest.TestCase):
+    """IntegrationFailureResult: exactly three fields, frozen, slots, no __dict__."""
+
+    def test_exactly_three_fields(self) -> None:
+        from workflow_orchestrator import IntegrationFailureResult
+        field_names = {f.name for f in dc_fields(IntegrationFailureResult)}
+        expected = {"task_id", "audit_result", "failure_transition"}
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import IntegrationFailureResult
+        self.assertTrue(IntegrationFailureResult.__dataclass_params__.frozen)
+        self.assertTrue(hasattr(IntegrationFailureResult, "__slots__"))
+
+    def test_no_dict(self) -> None:
+        from workflow_orchestrator import IntegrationFailureResult
+        result = IntegrationFailureResult(
+            task_id="TC-001",
+            audit_result=_make_fake_audit_result(verdict="pass"),
+            failure_transition=TransitionResult(
+                task_id="TC-001", event_id="EVT-INTFAIL-001",
+                from_state="accepted", to_state="blocked",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            ),
+        )
+        self.assertFalse(hasattr(result, "__dict__"))
+
+
+# ── WorkflowOrchestratorIntegrationFailure Tests ───────────────────────────
+
+
+class WorkflowOrchestratorIntegrationFailureTests(unittest.TestCase):
+    """TC-13.18d.4: integration failure recording — targeted tests."""
+
+    @staticmethod
+    def _setup_orch(tmp: Path) -> "WorkflowOrchestrator":
+        return _new_orch(tmp)
+
+    # -- 1. successful acceptance → INTEGRATION_FAILED -----------------------
+
+    def test_01_successful_integration_failure_recording(self) -> None:
+        """Valid acceptance result + INTEGRATION_FAILED → IntegrationFailureResult."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            failure_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-INTFAIL-001",
+                from_state="accepted", to_state="blocked",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                self.assertIsNone(lease, "INTEGRATION_FAILED must have lease=None")
+                return failure_tr
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.record_integration_failure(req)
+                    self.assertEqual(result.task_id, "TC-001")
+                    self.assertEqual(
+                        result.audit_result.verdict, "pass",
+                    )
+                    self.assertEqual(
+                        result.failure_transition, failure_tr,
+                    )
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 2. transition uses lease=None ---------------------------------------
+
+    def test_02_lease_none_passed_to_transition(self) -> None:
+        """INTEGRATION_FAILED must pass lease=None to apply_transition."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            lease_values = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                lease_values.append(lease)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-INTFAIL-001",
+                    from_state="accepted", to_state="blocked",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.record_integration_failure(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(lease_values), 1)
+            self.assertIsNone(lease_values[0])
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 3. exact call order -------------------------------------------------
+
+    def test_03_exact_call_order(self) -> None:
+        """validate → clock.now() → apply_transition."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            call_order = []
+
+            # Intercept both clock.now and apply_transition
+            orig_now = orch.clock.now
+            def _tracked_now() -> datetime:
+                call_order.append("clock.now")
+                return orig_now()
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                call_order.append("apply_transition")
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-INTFAIL-001",
+                    from_state="accepted", to_state="blocked",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            orch.clock.now = _tracked_now  # type: ignore[method-assign]
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.record_integration_failure(req)
+                asyncio.run(_run())
+
+            self.assertEqual(call_order, ["clock.now", "apply_transition"])
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 4. audit result identity maintained ---------------------------------
+
+    def test_04_audit_result_identity_preserved(self) -> None:
+        """result.audit_result is request.acceptance_cycle_result.audit_result."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-INTFAIL-001",
+                    from_state="accepted", to_state="blocked",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.record_integration_failure(req)
+                    self.assertIs(
+                        result.audit_result,
+                        req.acceptance_cycle_result.audit_result,
+                    )
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 5. non-pass verdict rejected ----------------------------------------
+
+    def test_05_non_pass_verdict_rejected(self) -> None:
+        """Audit verdict not 'pass' must be rejected before any transition."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            # Build an acr_result with fail verdict
+            from workflow_orchestrator import AcceptanceCycleResult
+            bad_acr_result = AcceptanceCycleResult(
+                task_id="TC-001",
+                audit_result=_make_fake_audit_result(verdict="fail"),
+                accept_transition=None,
+                integrate_transition=None,
+            )
+            from workflow_orchestrator import IntegrationFailureRequest
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=req.acceptance_cycle_request,
+                acceptance_cycle_result=bad_acr_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=req.failure_transition_request,
+            )
+
+            transition_called = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_called.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id=tr.event_id,
+                    from_state="accepted", to_state="blocked",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                with self.assertRaises(WorkflowInputError):
+                    async def _run() -> None:
+                        await orch.record_integration_failure(bad_req)
+                    asyncio.run(_run())
+
+            self.assertEqual(transition_called, [])
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 6. accept_transition missing rejected -------------------------------
+
+    def test_06_accept_transition_missing_rejected(self) -> None:
+        """Missing accept_transition must be rejected before any transition."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import (
+                AcceptanceCycleResult,
+                IntegrationFailureRequest,
+            )
+            bad_acr_result = AcceptanceCycleResult(
+                task_id="TC-001",
+                audit_result=_make_fake_audit_result(verdict="pass"),
+                accept_transition=None,
+                integrate_transition=None,
+            )
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=req.acceptance_cycle_request,
+                acceptance_cycle_result=bad_acr_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=req.failure_transition_request,
+            )
+
+            transition_called = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_called.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id=tr.event_id,
+                    from_state="accepted", to_state="blocked",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                with self.assertRaises(WorkflowInputError):
+                    async def _run() -> None:
+                        await orch.record_integration_failure(bad_req)
+                    asyncio.run(_run())
+
+            self.assertEqual(transition_called, [])
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 7. integrate_transition already present rejected --------------------
+
+    def test_07_integrate_transition_present_rejected(self) -> None:
+        """Existing integrate_transition must be rejected before any transition."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import (
+                AcceptanceCycleResult,
+                IntegrationFailureRequest,
+            )
+            bad_acr_result = AcceptanceCycleResult(
+                task_id="TC-001",
+                audit_result=_make_fake_audit_result(verdict="pass"),
+                accept_transition=req.acceptance_cycle_result.accept_transition,
+                integrate_transition=TransitionResult(
+                    task_id="TC-001", event_id="EVT-INTEGRATE-001",
+                    from_state="accepted", to_state="integrated",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                ),
+            )
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=req.acceptance_cycle_request,
+                acceptance_cycle_result=bad_acr_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=req.failure_transition_request,
+            )
+
+            transition_called = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_called.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id=tr.event_id,
+                    from_state="accepted", to_state="blocked",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                with self.assertRaises(WorkflowInputError):
+                    async def _run() -> None:
+                        await orch.record_integration_failure(bad_req)
+                    asyncio.run(_run())
+
+            self.assertEqual(transition_called, [])
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 8. original acceptance request had integration request → rejected ---
+
+    def test_08_acceptance_with_integration_request_rejected(self) -> None:
+        """AcceptanceCycleRequest with integration_transition_request must be rejected."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import (
+                AcceptanceCycleRequest as ACReq,
+                IntegrationFailureRequest,
+            )
+            bad_acr = ACReq(
+                dispatch_cycle_result=req.acceptance_cycle_request.dispatch_cycle_result,
+                audit_input=req.acceptance_cycle_request.audit_input,
+                acceptance_transition_request=req.acceptance_cycle_request.acceptance_transition_request,
+                integration_transition_request=_make_integration_transition_request(),
+                worker_kind=req.acceptance_cycle_request.worker_kind,
+                holder_instance_id=req.acceptance_cycle_request.holder_instance_id,
+            )
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=bad_acr,
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=req.failure_transition_request,
+            )
+
+            transition_called = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_called.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id=tr.event_id,
+                    from_state="accepted", to_state="blocked",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                with self.assertRaises(WorkflowInputError):
+                    async def _run() -> None:
+                        await orch.record_integration_failure(bad_req)
+                    asyncio.run(_run())
+
+            self.assertEqual(transition_called, [])
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 9-12. task/revision/attempt/dispatch mismatch each rejected ---------
+
+    def test_09_task_id_mismatch_rejected(self) -> None:
+        """Mismatched task_id between acr_result and dcr rejected."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import (
+                AcceptanceCycleResult,
+                IntegrationFailureRequest,
+            )
+            bad_acr_result = AcceptanceCycleResult(
+                task_id="TC-999",
+                audit_result=req.acceptance_cycle_result.audit_result,
+                accept_transition=req.acceptance_cycle_result.accept_transition,
+                integrate_transition=None,
+            )
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=req.acceptance_cycle_request,
+                acceptance_cycle_result=bad_acr_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=req.failure_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_integration_failure(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_10_revision_mismatch_rejected(self) -> None:
+        """Revision mismatch between acr receipt and dcr receipt rejected."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import IntegrationFailureRequest
+            # Use altered dcr with different revision
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=_make_integration_failure_request(revision=2).acceptance_cycle_request,
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=req.failure_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_integration_failure(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_11_attempt_mismatch_rejected(self) -> None:
+        """Attempt mismatch between acr receipt and dcr receipt rejected."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import IntegrationFailureRequest
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=_make_integration_failure_request(attempt=2).acceptance_cycle_request,
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=req.failure_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_integration_failure(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_12_dispatch_id_mismatch_rejected(self) -> None:
+        """Dispatch ID mismatch between acr receipt and dcr receipt rejected."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import IntegrationFailureRequest
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=_make_integration_failure_request(dispatch_id="DSP-999").acceptance_cycle_request,
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=req.failure_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_integration_failure(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 13. wrong event type rejected ---------------------------------------
+
+    def test_13_wrong_event_type_rejected(self) -> None:
+        """event_type != INTEGRATION_FAILED must be rejected."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import IntegrationFailureRequest
+            bad_ftr = TransitionRequest(
+                cas=req.failure_transition_request.cas,
+                dispatch_cas=None,
+                event_id="EVT-BAD",
+                event_type="TASK_BLOCKED",
+                payload=req.failure_transition_request.payload,
+                event_context=req.failure_transition_request.event_context,
+            )
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=req.acceptance_cycle_request,
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_integration_failure(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 14. wrong payload type rejected -------------------------------------
+
+    def test_14_wrong_payload_type_rejected(self) -> None:
+        """payload not BlockedPayload must be rejected."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import IntegrationFailureRequest
+            # Build a valid INTEGRATION_FAILED TransitionRequest first,
+            # then use object.__setattr__ to swap the payload.
+            bad_ftr = TransitionRequest(
+                cas=req.failure_transition_request.cas,
+                dispatch_cas=None,
+                event_id="EVT-BAD",
+                event_type="INTEGRATION_FAILED",
+                payload=req.failure_transition_request.payload,
+                event_context=req.failure_transition_request.event_context,
+            )
+            from control_plane_transition import IntegrationPayload
+            bad_payload = IntegrationPayload(
+                integrated_commit="d" * 40,
+                equivalence_method="patch_id",
+                equivalence_evidence_ref=None,
+            )
+            object.__setattr__(bad_ftr, "payload", bad_payload)
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=req.acceptance_cycle_request,
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_integration_failure(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 15. wrong CAS expected_state rejected -------------------------------
+
+    def test_15_wrong_expected_state_rejected(self) -> None:
+        """CAS expected_state != 'accepted' must be rejected."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import IntegrationFailureRequest
+            bad_cas = TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="review_ready",
+                expected_snapshot_commit="a" * 40,
+            )
+            bad_ftr = TransitionRequest(
+                cas=bad_cas,
+                dispatch_cas=None,
+                event_id="EVT-BAD",
+                event_type="INTEGRATION_FAILED",
+                payload=req.failure_transition_request.payload,
+                event_context=req.failure_transition_request.event_context,
+            )
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=req.acceptance_cycle_request,
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_integration_failure(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 16. dispatch_cas not None rejected ----------------------------------
+
+    def test_16_dispatch_cas_not_none_rejected(self) -> None:
+        """dispatch_cas must be None; non-None must be rejected."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import IntegrationFailureRequest
+            # Build a valid INTEGRATION_FAILED TransitionRequest first,
+            # then use object.__setattr__ to set dispatch_cas.
+            bad_ftr = TransitionRequest(
+                cas=req.failure_transition_request.cas,
+                dispatch_cas=None,
+                event_id="EVT-BAD",
+                event_type="INTEGRATION_FAILED",
+                payload=req.failure_transition_request.payload,
+                event_context=req.failure_transition_request.event_context,
+            )
+            object.__setattr__(
+                bad_ftr, "dispatch_cas",
+                DispatchCAS(expected_dispatch_id="DSP-001", expected_attempt=1),
+            )
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=req.acceptance_cycle_request,
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_integration_failure(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 17. event_id conflict rejected --------------------------------------
+
+    def test_17_event_id_conflict_rejected(self) -> None:
+        """event_id must not duplicate dispatch/ACK/delivery/acceptance event_id."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import IntegrationFailureRequest
+            # Use the acceptance event_id as the failure event_id
+            bad_ftr = TransitionRequest(
+                cas=req.failure_transition_request.cas,
+                dispatch_cas=None,
+                event_id="EVT-ACCEPT-001",  # duplicates accept event_id
+                event_type="INTEGRATION_FAILED",
+                payload=req.failure_transition_request.payload,
+                event_context=req.failure_transition_request.event_context,
+            )
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=req.acceptance_cycle_request,
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_integration_failure(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 18. resume_state != "accepted" rejected -----------------------------
+
+    def test_18_resume_state_not_accepted_rejected(self) -> None:
+        """BlockedPayload.resume_state != 'accepted' must be rejected."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import IntegrationFailureRequest
+            from control_plane_transition import BlockedPayload as BPayload
+            bp = BPayload(
+                blocked_reason="merge conflict",
+                blocked_kind="decision_required",
+                blocked_owner="pm",
+                unblock_condition="manual resolution",
+                resume_state="ready",
+                blocked_attempt_valid=True,
+            )
+            bad_ftr = TransitionRequest(
+                cas=req.failure_transition_request.cas,
+                dispatch_cas=None,
+                event_id="EVT-BAD",
+                event_type="INTEGRATION_FAILED",
+                payload=bp,
+                event_context=req.failure_transition_request.event_context,
+            )
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=req.acceptance_cycle_request,
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_integration_failure(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 19. blocked_attempt_valid not True rejected -------------------------
+
+    def test_19_blocked_attempt_valid_not_true_rejected(self) -> None:
+        """BlockedPayload.blocked_attempt_valid must be exactly True."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import IntegrationFailureRequest
+            from control_plane_transition import BlockedPayload as BPayload
+            bp = BPayload(
+                blocked_reason="merge conflict",
+                blocked_kind="decision_required",
+                blocked_owner="pm",
+                unblock_condition="manual resolution",
+                resume_state="accepted",
+                blocked_attempt_valid=False,
+            )
+            bad_ftr = TransitionRequest(
+                cas=req.failure_transition_request.cas,
+                dispatch_cas=None,
+                event_id="EVT-BAD",
+                event_type="INTEGRATION_FAILED",
+                payload=bp,
+                event_context=req.failure_transition_request.event_context,
+            )
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=req.acceptance_cycle_request,
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_integration_failure(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 20. transition failure propagates as-is -----------------------------
+
+    def test_20_transition_failure_propagates_as_is(self) -> None:
+        """Transition exceptions must propagate unchanged."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            class TestTransitionError(Exception):
+                pass
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                side_effect=TestTransitionError("transition failed"),
+            ):
+                with self.assertRaises(TestTransitionError):
+                    async def _run() -> None:
+                        await orch.record_integration_failure(req)
+                    asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 21. cancellation propagates as-is -----------------------------------
+
+    def test_21_cancellation_propagates(self) -> None:
+        """asyncio.CancelledError must propagate unchanged."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            async def _test_cancel() -> None:
+                task = asyncio.ensure_future(
+                    orch.record_integration_failure(req)
+                )
+                # Cancel immediately — the method is async so
+                # CancelledError will be raised at the first await.
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True,
+            ):
+                asyncio.run(_test_cancel())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 22. failure path: zero audit, zero lease ops, zero extra transition
+
+    def test_22_no_side_operations_on_failure(self) -> None:
+        """All validation rejections: 0 audit, 0 lease, 0 transition, 0 escalation."""
+        tmp = _setup_project(state="accepted")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_integration_failure_request()
+
+            from workflow_orchestrator import (
+                AcceptanceCycleResult,
+                IntegrationFailureRequest,
+            )
+            bad_acr_result = AcceptanceCycleResult(
+                task_id="TC-001",
+                audit_result=_make_fake_audit_result(verdict="fail"),
+                accept_transition=None,
+                integrate_transition=None,
+            )
+            bad_req = IntegrationFailureRequest(
+                acceptance_cycle_request=req.acceptance_cycle_request,
+                acceptance_cycle_result=bad_acr_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                failure_transition_request=req.failure_transition_request,
+            )
+
+            with mock.patch.object(wo, "acquire_worker_slot") as mock_acquire, \
+                 mock.patch.object(wo, "release_worker_slot") as mock_release, \
+                 mock.patch.object(wo, "renew_worker_slot") as mock_renew, \
+                 mock.patch.object(wo, "run_worker_observed") as mock_run_worker, \
+                 mock.patch.object(wo, "run_audit_gateway") as mock_audit, \
+                 mock.patch.object(wo, "evaluate_escalation") as mock_esc, \
+                 mock.patch.object(
+                     wo.ControlPlaneTransitionService, "apply_transition",
+                     autospec=True,
+                 ) as mock_transition:
+                with self.assertRaises(WorkflowInputError):
+                    async def _run() -> None:
+                        await orch.record_integration_failure(bad_req)
+                    asyncio.run(_run())
+
+            mock_acquire.assert_not_called()
+            mock_release.assert_not_called()
+            mock_renew.assert_not_called()
+            mock_run_worker.assert_not_called()
+            mock_audit.assert_not_called()
+            mock_esc.assert_not_called()
+            mock_transition.assert_not_called()
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 23. malicious repr not called, exception messages don't leak input
+
+    def test_23_malicious_repr_not_called_exception_safe(self) -> None:
+        """Malicious __repr__ not invoked; exception messages safe."""
+        import workflow_orchestrator as wo
+        orch = _new_orch(Path(__file__).resolve().parents[1])
+        req = _make_integration_failure_request()
+
+        from workflow_orchestrator import (
+            AcceptanceCycleResult,
+            IntegrationFailureRequest,
+        )
+        # Use verdict that will fail validation — "fail" instead of "pass"
+        bad_acr_result = AcceptanceCycleResult(
+            task_id="TC-001",
+            audit_result=_make_fake_audit_result(verdict="fail"),
+            accept_transition=req.acceptance_cycle_result.accept_transition,
+            integrate_transition=None,
+        )
+        bad_req = IntegrationFailureRequest(
+            acceptance_cycle_request=req.acceptance_cycle_request,
+            acceptance_cycle_result=bad_acr_result,
+            dispatch_cycle_result=req.dispatch_cycle_result,
+            failure_transition_request=req.failure_transition_request,
+        )
+
+        try:
+            async def _run() -> None:
+                await orch.record_integration_failure(bad_req)
+            asyncio.run(_run())
+        except WorkflowInputError as e:
+            msg = str(e)
+            self.assertNotIn("TC-001", msg)
+            self.assertNotIn("DSP-001", msg)
+            self.assertNotIn("merge conflict", msg)
+        except Exception as e:
+            msg = str(e)
+            self.assertNotIn("TC-001", msg)
