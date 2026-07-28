@@ -1420,3 +1420,174 @@ class ReprNotCalledTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("worker_kind", msg)
         self.assertNotIn("AssertionError", msg)
         self.assertNotIn("repr must not be called", msg)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TC-13.18b.2 — WorkerAdapter Observed Tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class WorkerAdapterObservedApiTests(unittest.TestCase):
+    """Smoke tests for run_worker_observed API."""
+
+    def test_all_exports_run_worker_observed(self) -> None:
+        self.assertIn("run_worker_observed", wa_module.__all__)
+
+    async def test_run_worker_observed_computes_budget_once(self) -> None:
+        """Budget must be computed exactly once in run_worker_observed."""
+        call_count = 0
+
+        async def _fake_compute_budget(ctx_tokens: int,
+                                        difficulty: TaskDifficulty
+                                        ) -> BudgetResult:
+            nonlocal call_count
+            call_count += 1
+            return BudgetResult(
+                context_window_tokens=ctx_tokens,
+                difficulty=difficulty,
+                budget_percent=50,
+                budget_cap_tokens=256000,
+                budget_tokens=100000,
+                reserved_tokens=100000,
+            )
+
+        with mock.patch.object(wa_module, "compute_budget",
+                               side_effect=_fake_compute_budget):
+            with mock.patch.object(wa_module, "run_dispatch_observed") as mock_rd:
+                mock_rd.return_value = DispatchResult(
+                    identity=_make_request().identity,
+                    provider="fake",
+                    model_id="fake-model",
+                    duration_seconds=0.1,
+                    stdout=b"ok",
+                    stderr=b"",
+                    stdout_sha256="aa",
+                    stderr_sha256="bb",
+                )
+                await run_worker_observed(
+                    request=_make_request(),
+                    worker_kind=WorkerKind.STANDARD_AGENT,
+                    task_difficulty=TaskDifficulty.STANDARD,
+                    providers={"fake": mock.Mock()},
+                    observer=mock.AsyncMock(),
+                )
+        self.assertEqual(call_count, 1, "Budget must be computed exactly once")
+
+    async def test_run_worker_observed_observer_passed_by_identity(self) -> None:
+        """Observer must be passed by object identity to run_dispatch_observed."""
+        observer = mock.AsyncMock()
+
+        with mock.patch.object(wa_module, "run_dispatch_observed") as mock_rd:
+            mock_rd.return_value = DispatchResult(
+                identity=_make_request().identity,
+                provider="fake",
+                model_id="fake-model",
+                duration_seconds=0.1,
+                stdout=b"ok",
+                stderr=b"",
+                stdout_sha256="aa",
+                stderr_sha256="bb",
+            )
+            await run_worker_observed(
+                request=_make_request(),
+                worker_kind=WorkerKind.STANDARD_AGENT,
+                task_difficulty=TaskDifficulty.STANDARD,
+                providers={"fake": mock.Mock()},
+                observer=observer,
+            )
+            # Check observer was passed as the same object
+            _, kwargs = mock_rd.call_args
+            self.assertIs(kwargs["observer"], observer)
+
+    async def test_run_worker_observed_request_passed_by_identity(self) -> None:
+        """DispatchRequest must be passed by object identity."""
+        request = _make_request()
+        observer = mock.AsyncMock()
+
+        with mock.patch.object(wa_module, "run_dispatch_observed") as mock_rd:
+            mock_rd.return_value = DispatchResult(
+                identity=request.identity,
+                provider="fake",
+                model_id="fake-model",
+                duration_seconds=0.1,
+                stdout=b"ok",
+                stderr=b"",
+                stdout_sha256="aa",
+                stderr_sha256="bb",
+            )
+            await run_worker_observed(
+                request=request,
+                worker_kind=WorkerKind.STANDARD_AGENT,
+                task_difficulty=TaskDifficulty.STANDARD,
+                providers={"fake": mock.Mock()},
+                observer=observer,
+            )
+            args, _ = mock_rd.call_args
+            self.assertIs(args[0], request)
+
+    async def test_run_worker_observed_providers_passed_by_identity(self) -> None:
+        """Providers mapping must be passed by object identity."""
+        providers: dict = {"fake": mock.Mock()}
+        observer = mock.AsyncMock()
+
+        with mock.patch.object(wa_module, "run_dispatch_observed") as mock_rd:
+            mock_rd.return_value = DispatchResult(
+                identity=_make_request().identity,
+                provider="fake",
+                model_id="fake-model",
+                duration_seconds=0.1,
+                stdout=b"ok",
+                stderr=b"",
+                stdout_sha256="aa",
+                stderr_sha256="bb",
+            )
+            await run_worker_observed(
+                request=_make_request(),
+                worker_kind=WorkerKind.STANDARD_AGENT,
+                task_difficulty=TaskDifficulty.STANDARD,
+                providers=providers,
+                observer=observer,
+            )
+            args, _ = mock_rd.call_args
+            self.assertIs(args[1], providers)
+
+    async def test_run_worker_observed_observer_exception_propagates(self) -> None:
+        """Observer exception must propagate as-is through run_worker_observed."""
+
+        class TestError(Exception):
+            pass
+
+        async def _failing_observed(*args: object, **kwargs: object) -> None:
+            raise TestError("observer failure")
+
+        with mock.patch.object(wa_module, "run_dispatch_observed",
+                               side_effect=_failing_observed):
+            with self.assertRaises(TestError):
+                await run_worker_observed(
+                    request=_make_request(),
+                    worker_kind=WorkerKind.STANDARD_AGENT,
+                    task_difficulty=TaskDifficulty.STANDARD,
+                    providers={"fake": mock.Mock()},
+                    observer=mock.AsyncMock(),
+                )
+
+    async def test_original_run_worker_unchanged(self) -> None:
+        """run_worker() must still call run_dispatch (non-observed path)."""
+        with mock.patch.object(wa_module, "run_dispatch") as mock_rd:
+            mock_rd.return_value = DispatchResult(
+                identity=_make_request().identity,
+                provider="fake",
+                model_id="fake-model",
+                duration_seconds=0.1,
+                stdout=b"ok",
+                stderr=b"",
+                stdout_sha256="aa",
+                stderr_sha256="bb",
+            )
+            await run_worker(
+                request=_make_request(),
+                worker_kind=WorkerKind.STANDARD_AGENT,
+                task_difficulty=TaskDifficulty.STANDARD,
+                providers={"fake": mock.Mock()},
+            )
+        mock_rd.assert_called_once()

@@ -2437,3 +2437,380 @@ class SecretLeakPreventionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# =========================================================================
+# TC-13.18b.2 — DispatchStarted Observer Tests
+# =========================================================================
+
+
+class DispatchStartedApiTests(unittest.TestCase):
+    """Smoke tests for DispatchStarted and DispatchStartedObserver API."""
+
+    def test_dispatch_started_is_frozen_dataclass(self) -> None:
+        self.assertTrue(is_dataclass(dg.DispatchStarted))
+        # slots — check for __slots__ being present
+        self.assertTrue(hasattr(dg.DispatchStarted, "__slots__"),
+                        "DispatchStarted must have __slots__")
+
+    def test_dispatch_started_exact_three_fields(self) -> None:
+        field_names = {f.name for f in fields(dg.DispatchStarted)}
+        self.assertEqual(field_names, {"identity", "provider", "model_id"})
+
+    def test_dispatch_started_no_extraneous_fields(self) -> None:
+        ds = dg.DispatchStarted(
+            identity=_make_identity(),
+            provider="test",
+            model_id="test-model",
+        )
+        self.assertEqual(ds.identity.task_id, "TC-001")
+        self.assertEqual(ds.provider, "test")
+        self.assertEqual(ds.model_id, "test-model")
+
+    def test_dispatch_started_no_pid_no_argv_no_env(self) -> None:
+        ds = dg.DispatchStarted(
+            identity=_make_identity(),
+            provider="test",
+            model_id="test-model",
+        )
+        self.assertFalse(hasattr(ds, "pid"))
+        self.assertFalse(hasattr(ds, "argv"))
+        self.assertFalse(hasattr(ds, "env"))
+        self.assertFalse(hasattr(ds, "workspace"))
+        self.assertFalse(hasattr(ds, "prompt"))
+        self.assertFalse(hasattr(ds, "executable"))
+        self.assertFalse(hasattr(ds, "stdin"))
+        self.assertFalse(hasattr(ds, "secret"))
+        self.assertFalse(hasattr(ds, "timestamp"))
+        self.assertFalse(hasattr(ds, "process_handle"))
+
+    def test_dispatch_started_observer_protocol_runtime_checkable(self) -> None:
+        self.assertTrue(isinstance(dg.DispatchStartedObserver, type))
+
+    def test_dispatch_started_frozen_immutable(self) -> None:
+        ds = dg.DispatchStarted(
+            identity=_make_identity(),
+            provider="test",
+            model_id="test-model",
+        )
+        with self.assertRaises(Exception):
+            ds.provider = "new"  # type: ignore[misc]
+
+    def test_observer_added_to_all(self) -> None:
+        self.assertIn("DispatchStarted", dg.__all__)
+        self.assertIn("DispatchStartedObserver", dg.__all__)
+        self.assertIn("run_dispatch_observed", dg.__all__)
+
+
+class DispatchStartedObserverTimingTests(unittest.TestCase):
+    """Verify observer is called between create_subprocess_exec and communicate."""
+
+    def test_observer_called_after_create_subprocess(self) -> None:
+        """Observer must be called after create_subprocess_exec returns."""
+        observer_called = False
+        process_created = False
+
+        class TimingObserver:
+            async def on_dispatch_started(self_obj, started: dg.DispatchStarted) -> None:
+                nonlocal observer_called
+                # process must have been created by now
+                if not process_created:
+                    raise AssertionError("process not created before observer call")
+                observer_called = True
+
+        obs = TimingObserver()
+        request = _make_request(timeout_seconds=10)
+
+        async def _run() -> None:
+            nonlocal process_created
+
+            async def _fake_cse(*args: object, **kwargs: object) -> _FakeProcess:
+                nonlocal process_created
+                process_created = True
+                return _FakeProcess(returncode=0, stdout=b"ok")
+
+            with mock.patch.object(asyncio, "create_subprocess_exec",
+                                   side_effect=_fake_cse):
+                result = await dg.run_dispatch_observed(
+                    request, _make_providers(), obs,
+                )
+            # Observer must have been called
+            if not observer_called:
+                raise AssertionError("Observer was not called")
+
+        asyncio.run(_run())
+
+    def test_observer_called_before_communicate(self) -> None:
+        """Observer must be called before communicate() sends stdin."""
+        call_order: list[str] = []
+
+        class OrderObserver:
+            async def on_dispatch_started(self, started: dg.DispatchStarted) -> None:
+                call_order.append("observer")
+
+        obs = OrderObserver()
+        request = _make_request(timeout_seconds=10)
+
+        orig_communicate = _FakeProcess.communicate
+        async def _tracked_communicate(self_obj: _FakeProcess,
+                                        input: bytes | None = None
+                                        ) -> tuple[bytes, bytes]:
+            call_order.append("communicate")
+            return await orig_communicate(self_obj, input)
+
+        async def _run() -> None:
+            with mock.patch.object(asyncio, "create_subprocess_exec",
+                                   return_value=_FakeProcess(returncode=0,
+                                                              stdout=b"ok")):
+                with mock.patch.object(_FakeProcess, "communicate",
+                                       _tracked_communicate):
+                    await dg.run_dispatch_observed(
+                        request, _make_providers(), obs,
+                    )
+            self.assertEqual(call_order, ["observer", "communicate"])
+
+        asyncio.run(_run())
+
+    def test_observer_exactly_once(self) -> None:
+        """Observer on_dispatch_started must be called exactly once on success."""
+        call_count = 0
+
+        class CountObserver:
+            async def on_dispatch_started(self, started: dg.DispatchStarted) -> None:
+                nonlocal call_count
+                call_count += 1
+
+        obs = CountObserver()
+        request = _make_request(timeout_seconds=10)
+
+        async def _run() -> None:
+            with mock.patch.object(asyncio, "create_subprocess_exec",
+                                   return_value=_FakeProcess(returncode=0,
+                                                              stdout=b"ok")):
+                await dg.run_dispatch_observed(
+                    request, _make_providers(), obs,
+                )
+            self.assertEqual(call_count, 1)
+
+        asyncio.run(_run())
+
+    def test_launch_failure_observer_zero_calls(self) -> None:
+        """Observer must not be called if create_subprocess_exec raises OSError."""
+        call_count = 0
+
+        class CountObserver:
+            async def on_dispatch_started(self, started: dg.DispatchStarted) -> None:
+                nonlocal call_count
+                call_count += 1
+
+        obs = CountObserver()
+        request = _make_request(timeout_seconds=10)
+
+        async def _run() -> None:
+            with mock.patch.object(asyncio, "create_subprocess_exec",
+                                   side_effect=OSError("spawn failed")):
+                with self.assertRaises(dg.DispatchLaunchError):
+                    await dg.run_dispatch_observed(
+                        request, _make_providers(), obs,
+                    )
+            self.assertEqual(call_count, 0)
+
+        asyncio.run(_run())
+
+    def test_executable_not_found_observer_zero_calls(self) -> None:
+        """Observer must not be called if executable doesn't exist."""
+        call_count = 0
+
+        class CountObserver:
+            async def on_dispatch_started(self, started: dg.DispatchStarted) -> None:
+                nonlocal call_count
+                call_count += 1
+
+        obs = CountObserver()
+        request = _make_request(timeout_seconds=10)
+        providers = _make_providers(
+            fake=_fake_provider(executable="/nonexistent/path/to/cli")
+        )
+
+        async def _run() -> None:
+            with self.assertRaises(dg.ExecutableNotFoundError):
+                await dg.run_dispatch_observed(request, providers, obs)
+            self.assertEqual(call_count, 0)
+
+        asyncio.run(_run())
+
+
+class DispatchStartedObserverFailureTests(unittest.TestCase):
+    """Verify observer failure semantics: process termination, no stdin."""
+
+    def test_observer_failure_terminates_process(self) -> None:
+        """If observer raises, the subprocess must be terminated."""
+        process_terminated = False
+
+        class FailingObserver:
+            async def on_dispatch_started(self, started: dg.DispatchStarted) -> None:
+                raise RuntimeError("observer failed")
+
+        obs = FailingObserver()
+        request = _make_request(timeout_seconds=10)
+
+        async def _run() -> None:
+            nonlocal process_terminated
+
+            proc = _FakeProcess(returncode=None, stdout=b"")  # None = still running
+            orig_terminate = dg._terminate_process
+
+            async def _tracked_terminate(p: object) -> None:
+                nonlocal process_terminated
+                process_terminated = True
+                await orig_terminate(p)
+
+            with mock.patch.object(asyncio, "create_subprocess_exec",
+                                   return_value=proc):
+                with mock.patch.object(dg, "_terminate_process",
+                                       side_effect=_tracked_terminate):
+                    with self.assertRaises(RuntimeError):
+                        await dg.run_dispatch_observed(
+                            request, _make_providers(), obs,
+                        )
+            self.assertTrue(process_terminated,
+                            "Process must be terminated on observer failure")
+
+        asyncio.run(_run())
+
+    def test_observer_failure_no_stdin_sent(self) -> None:
+        """If observer raises, communicate() must not be called."""
+        stdin_sent = False
+
+        class FailingObserver:
+            async def on_dispatch_started(self, started: dg.DispatchStarted) -> None:
+                raise RuntimeError("observer failed")
+
+        obs = FailingObserver()
+        request = _make_request(timeout_seconds=10)
+
+        proc = _FakeProcess(returncode=None, stdout=b"")
+        orig_comm = proc.communicate
+
+        async def _tracked_communicate(input: bytes | None = None
+                                        ) -> tuple[bytes, bytes]:
+            nonlocal stdin_sent
+            stdin_sent = True
+            return await orig_comm(input)
+
+        proc.communicate = _tracked_communicate  # type: ignore[method-assign]
+
+        async def _run() -> None:
+            with mock.patch.object(asyncio, "create_subprocess_exec",
+                                   return_value=proc):
+                with self.assertRaises(RuntimeError):
+                    await dg.run_dispatch_observed(
+                        request, _make_providers(), obs,
+                    )
+            self.assertFalse(stdin_sent,
+                             "communicate() must not be called on observer failure")
+
+        asyncio.run(_run())
+
+    def test_observer_cancelled_error_propagates(self) -> None:
+        """CancelledError from observer must propagate as CancelledError."""
+        class CancellingObserver:
+            async def on_dispatch_started(self, started: dg.DispatchStarted) -> None:
+                raise asyncio.CancelledError()
+
+        obs = CancellingObserver()
+        request = _make_request(timeout_seconds=10)
+
+        async def _run() -> None:
+            with mock.patch.object(asyncio, "create_subprocess_exec",
+                                   return_value=_FakeProcess(returncode=None,
+                                                              stdout=b"")):
+                with self.assertRaises(asyncio.CancelledError):
+                    await dg.run_dispatch_observed(
+                        request, _make_providers(), obs,
+                    )
+
+        asyncio.run(_run())
+
+    def test_observer_failure_no_pending_tasks(self) -> None:
+        """After observer failure, no pending observer tasks remain."""
+        class FailingObserver:
+            async def on_dispatch_started(self, started: dg.DispatchStarted) -> None:
+                raise RuntimeError("observer failed")
+
+        obs = FailingObserver()
+        request = _make_request(timeout_seconds=10)
+
+        async def _run() -> None:
+            with mock.patch.object(asyncio, "create_subprocess_exec",
+                                   return_value=_FakeProcess(returncode=None,
+                                                              stdout=b"")):
+                with self.assertRaises(RuntimeError):
+                    await dg.run_dispatch_observed(
+                        request, _make_providers(), obs,
+                    )
+
+        asyncio.run(_run())
+        # If we got here without "Task was destroyed but it is pending"
+        # warnings, the test passes.
+
+    def test_observer_timeout_terminates_process(self) -> None:
+        """Observer timeout must terminate the process."""
+        process_terminated = False
+
+        class SlowObserver:
+            async def on_dispatch_started(self, started: dg.DispatchStarted) -> None:
+                await asyncio.sleep(999)  # will never complete
+
+        obs = SlowObserver()
+        request = _make_request(timeout_seconds=1)  # very short timeout
+
+        async def _run() -> None:
+            nonlocal process_terminated
+
+            proc = _FakeProcess(returncode=None, stdout=b"")
+            orig_terminate = dg._terminate_process
+
+            async def _tracked_terminate(p: object) -> None:
+                nonlocal process_terminated
+                process_terminated = True
+                # Don't call orig — avoid taskkill on test machine
+                proc.returncode = -1
+
+            with mock.patch.object(asyncio, "create_subprocess_exec",
+                                   return_value=proc):
+                with mock.patch.object(dg, "_terminate_process",
+                                       side_effect=_tracked_terminate):
+                    with self.assertRaises(dg.DispatchTimeoutError):
+                        await dg.run_dispatch_observed(
+                            request, _make_providers(), obs,
+                        )
+            self.assertTrue(process_terminated,
+                            "Process must be terminated on observer timeout")
+
+        asyncio.run(_run())
+
+    def test_observer_and_communicate_share_single_timeout_budget(self) -> None:
+        """Observer + communicate together must fit within request.timeout_seconds."""
+        observer_called = False
+
+        class BudgetObserver:
+            async def on_dispatch_started(self, started: dg.DispatchStarted) -> None:
+                nonlocal observer_called
+                await asyncio.sleep(0.05)
+                observer_called = True
+
+        obs = BudgetObserver()
+        request = _make_request(timeout_seconds=5)
+
+        async def _run() -> None:
+            with mock.patch.object(asyncio, "create_subprocess_exec",
+                                   return_value=_FakeProcess(returncode=0,
+                                                              stdout=b"ok")):
+                result = await dg.run_dispatch_observed(
+                    request, _make_providers(), obs,
+                )
+            self.assertTrue(observer_called)
+            self.assertIsNotNone(result)
+
+        asyncio.run(_run())

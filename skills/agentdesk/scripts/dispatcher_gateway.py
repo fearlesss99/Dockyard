@@ -67,11 +67,14 @@ __all__ = [
     "DispatchRequest",
     "DispatchResult",
     "DispatchSnapshotError",
+    "DispatchStarted",
+    "DispatchStartedObserver",
     "DispatchTimeoutError",
     "ExecutableNotFoundError",
     "ModelSelectionSnapshot",
     "ProviderNotSupportedError",
     "run_dispatch",
+    "run_dispatch_observed",
 ]
 
 # ── constants ─────────────────────────────────────────────────────────────
@@ -465,6 +468,30 @@ class AgentCliProvider(Protocol):
 
     def build_invocation(self, request: DispatchRequest) -> AgentCliInvocation:
         """Build a fully‑resolved ``AgentCliInvocation`` from a validated request."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchStarted:
+    """Frozen three-field process-start receipt — no PID, argv, env, or prompt."""
+
+    identity: DispatchIdentity
+    provider: str
+    model_id: str
+
+
+@runtime_checkable
+class DispatchStartedObserver(Protocol):
+    """Observer Protocol for dispatch process-start notifications.
+
+    Called exactly once after ``create_subprocess_exec`` returns
+    successfully and before ``communicate()`` sends stdin.
+    """
+
+    async def on_dispatch_started(
+        self,
+        started: DispatchStarted,
+    ) -> None:
         ...
 
 
@@ -934,6 +961,180 @@ async def run_dispatch(
         )
 
     # ── 11. Exit 0 → DispatchResult ───────────────────────────────────
+    return DispatchResult(
+        identity=request.identity,
+        provider=snapshot.selected_model_provider,
+        model_id=snapshot.selected_model_id,
+        duration_seconds=duration,
+        stdout=out,
+        stderr=err,
+        stdout_sha256=stdout_sha256,
+        stderr_sha256=stderr_sha256,
+    )
+
+
+# ── observed entry point ────────────────────────────────────────────────────
+
+
+async def run_dispatch_observed(
+    request: DispatchRequest,
+    providers: Mapping[str, AgentCliProvider],
+    observer: DispatchStartedObserver,
+) -> DispatchResult:
+    """Execute a single agent CLI subprocess dispatch with process-start observation.
+
+    Same validation and launch as ``run_dispatch()``, but calls
+    ``observer.on_dispatch_started()`` after ``create_subprocess_exec``
+    succeeds and before ``communicate()`` sends stdin.
+
+    Observer and process communication share ``request.timeout_seconds``
+    as a single total timeout budget — the observer does not get its own
+    fresh timeout window.
+
+    If the observer raises, the subprocess is terminated, stdin is never
+    sent, and the observer exception propagates unchanged (including
+    ``asyncio.CancelledError``).
+    """
+    # ── 1. Validate request ───────────────────────────────────────────
+    _validate_request(request)
+    snapshot = request.model_selection
+
+    # ── 1b. Re‑validate snapshot ──────────────────────────────────────
+    _validate_snapshot(snapshot)
+
+    # ── 2. Validate providers mapping ─────────────────────────────────
+    selected_provider = snapshot.selected_model_provider
+    adapter = _validate_providers(providers, selected_provider)
+
+    # ── 3. Build invocation via adapter ───────────────────────────────
+    try:
+        invocation = adapter.build_invocation(request)
+    except Exception as exc:
+        raise DispatchInvocationError(
+            f"adapter.build_invocation raised {type(exc).__name__}"
+        ) from exc
+
+    # ── 4. Validate invocation ────────────────────────────────────────
+    _validate_invocation(invocation)
+
+    # ── 5. Resolve executable ─────────────────────────────────────────
+    resolved_executable = _resolve_executable(invocation.executable)
+
+    # ── 6. Build environment ──────────────────────────────────────────
+    env = _build_env(invocation.env_overrides)
+
+    # ── 7. Launch subprocess ──────────────────────────────────────────
+    started_mono = _time_module.monotonic()
+
+    workspace = str(request.workspace)
+
+    try:
+        if sys.platform == "win32":
+            process = await asyncio.create_subprocess_exec(
+                resolved_executable,
+                *invocation.argv,
+                stdin=asyncio.subprocess.PIPE if invocation.stdin is not None
+                else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                cwd=workspace,
+            )
+        else:
+            process = await asyncio.create_subprocess_exec(
+                resolved_executable,
+                *invocation.argv,
+                stdin=asyncio.subprocess.PIPE if invocation.stdin is not None
+                else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                cwd=workspace,
+                start_new_session=True,
+            )
+    except OSError as exc:
+        raise DispatchLaunchError(
+            f"failed to launch dispatch subprocess: {exc}"
+        ) from exc
+
+    # ── 8. Notify observer (before communicate) ───────────────────────
+    dispatch_started = DispatchStarted(
+        identity=request.identity,
+        provider=snapshot.selected_model_provider,
+        model_id=snapshot.selected_model_id,
+    )
+
+    observer_task: asyncio.Task[None] | None = None
+
+    try:
+        observer_task = asyncio.ensure_future(
+            observer.on_dispatch_started(dispatch_started)
+        )
+
+        # ── 9. Wait for observer (shared timeout budget) ──────────────
+        elapsed = _time_module.monotonic() - started_mono
+        remaining = request.timeout_seconds - elapsed
+        if remaining <= 0:
+            await _terminate_process(process)
+            raise DispatchTimeoutError(request.timeout_seconds)
+
+        await asyncio.wait_for(observer_task, timeout=remaining)
+
+    except (TimeoutError, asyncio.TimeoutError):
+        await _terminate_process(process)
+        raise DispatchTimeoutError(request.timeout_seconds) from None
+    except asyncio.CancelledError:
+        await _terminate_process(process)
+        if observer_task is not None and not observer_task.done():
+            observer_task.cancel()
+            try:
+                await observer_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        raise
+    except BaseException:
+        # Observer raised — terminate process and propagate as-is.
+        await _terminate_process(process)
+        raise
+
+    # Observer completed without error — now communicate with the process.
+    # Compute remaining timeout budget.
+    elapsed = _time_module.monotonic() - started_mono
+    remaining = request.timeout_seconds - elapsed
+    if remaining <= 0:
+        await _terminate_process(process)
+        raise DispatchTimeoutError(request.timeout_seconds)
+
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            process.communicate(input=invocation.stdin),
+            timeout=remaining,
+        )
+    except (TimeoutError, asyncio.TimeoutError):
+        await _terminate_process(process)
+        raise DispatchTimeoutError(request.timeout_seconds) from None
+    except asyncio.CancelledError:
+        await _terminate_process(process)
+        raise DispatchCancelledError() from None
+
+    duration = _time_module.monotonic() - started_mono
+
+    out = stdout_bytes if stdout_bytes is not None else b""
+    err = stderr_bytes if stderr_bytes is not None else b""
+
+    exit_code = process.returncode if process.returncode is not None else -1
+
+    stdout_sha256 = _sha256(out)
+    stderr_sha256 = _sha256(err)
+
+    if exit_code != 0:
+        raise DispatchNonZeroExitError(
+            exit_code=exit_code,
+            stdout_sha256=stdout_sha256,
+            stderr_sha256=stderr_sha256,
+            stderr_bytes=err,
+        )
+
     return DispatchResult(
         identity=request.identity,
         provider=snapshot.selected_model_provider,

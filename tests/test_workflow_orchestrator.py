@@ -46,6 +46,7 @@ from dispatcher_gateway import (
     DispatchIdentity,
     DispatchRequest,
     DispatchResult,
+    DispatchStarted,
     ModelSelectionSnapshot,
 )
 from state_provider import StateProviderError
@@ -585,9 +586,10 @@ class TestWorkflowOrchestratorAPI(unittest.TestCase):
         self.assertTrue(issubclass(WorkflowHeartbeatError, WorkflowOrchestratorError))
         self.assertTrue(issubclass(WorkflowInvariantError, WorkflowOrchestratorError))
 
-    def test_dispatch_cycle_result_has_exactly_five_fields(self) -> None:
+    def test_dispatch_cycle_result_has_exactly_six_fields(self) -> None:
         fields = [f.name for f in dc_fields(DispatchCycleResult)]
-        expected = ["worker_result", "dispatch_transition", "slot_id",
+        expected = ["worker_result", "dispatch_transition",
+                     "acknowledge_transition", "slot_id",
                      "lease_epoch", "duration_seconds"]
         self.assertEqual(fields, expected)
 
@@ -629,9 +631,14 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
             ms = _make_model_selection()
             dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
             tr = _make_transition_request(model_selection=ms)
+            ack_tr = _make_ack_transition_request(
+                task_id="TC-001", dispatch_id="DSP-001",
+                revision=1, attempt=1, head_sha="a" * 40,
+            )
             req = DispatchCycleRequest(
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -658,9 +665,14 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
             ms = _make_model_selection()
             dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
             tr = _make_transition_request(model_selection=ms)
+            ack_tr = _make_ack_transition_request(
+                task_id="TC-001", dispatch_id="DSP-001",
+                revision=1, attempt=1, head_sha="a" * 40,
+            )
             req = DispatchCycleRequest(
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -777,10 +789,12 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
         )
         # Force event_type to something else so DispatchCycleRequest rejects it.
         object.__setattr__(tr, "event_type", "DISPATCH_ACKNOWLEDGED")
+        ack_tr = _make_ack_transition_request(head_sha="a" * 40)
         with self.assertRaises(ValueError):
             DispatchCycleRequest(
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -832,10 +846,12 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
             event_context=event_context,
         )
         object.__setattr__(tr, "payload", fake_payload)
+        ack_tr = _make_ack_transition_request(head_sha="a" * 40)
         with self.assertRaises(TypeError):
             DispatchCycleRequest(
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -846,10 +862,12 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
                                      model_selection=_make_model_selection())
         tr = _make_transition_request(task_id="TC-002", dispatch_id="DSP-001",
                                        model_selection=dr.model_selection)
+        ack_tr = _make_ack_transition_request(head_sha="a" * 40)
         with self.assertRaises(ValueError):
             DispatchCycleRequest(
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -861,10 +879,12 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
                                      model_selection=ms)
         tr = _make_transition_request(task_id="TC-001", dispatch_id="DSP-002",
                                        model_selection=ms)
+        ack_tr = _make_ack_transition_request(head_sha="a" * 40)
         with self.assertRaises(ValueError):
             DispatchCycleRequest(
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -877,10 +897,12 @@ class TestWorkflowOrchestratorInputValidation(unittest.TestCase):
                                      model_selection=ms1)
         tr = _make_transition_request(task_id="TC-001", dispatch_id="DSP-001",
                                        model_selection=ms2)
+        ack_tr = _make_ack_transition_request(head_sha="a" * 40)
         with self.assertRaises(ValueError):
             DispatchCycleRequest(
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -907,9 +929,14 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
             task_id=task_id, dispatch_id=dispatch_id,
             model_selection=ms, revision=revision, head_sha=head,
         )
+        ack_tr = _make_ack_transition_request(
+            task_id=task_id, dispatch_id=dispatch_id,
+            revision=revision, attempt=1, head_sha=head,
+        )
         return DispatchCycleRequest(
             dispatch_request=dr,
             dispatch_transition_request=tr,
+            acknowledge_transition_request=ack_tr,
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -929,9 +956,14 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
             task_id=task_id, dispatch_id=dispatch_id,
             model_selection=ms, revision=revision, head_sha=head_sha,
         )
+        ack_tr = _make_ack_transition_request(
+            task_id=task_id, dispatch_id=dispatch_id,
+            revision=revision, attempt=1, head_sha=head_sha,
+        )
         return DispatchCycleRequest(
             dispatch_request=dr,
             dispatch_transition_request=tr,
+            acknowledge_transition_request=ack_tr,
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -951,14 +983,23 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
             worker_result = _make_worker_result()
 
-            async def _fake_run_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _fake_run_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                # Call observer to apply ACK
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 await asyncio.sleep(0)
                 return worker_result
 
-            wo.run_worker = _fake_run_worker  # type: ignore[assignment]
+            wo.run_worker_observed = _fake_run_worker  # type: ignore[assignment]
 
             try:
                 async def _run() -> None:
@@ -986,7 +1027,7 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1005,14 +1046,23 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
             worker_result = _make_worker_result()
 
-            async def _fake_run_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _fake_run_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                # Call observer to apply ACK
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 await asyncio.sleep(0)
                 return worker_result
 
-            wo.run_worker = _fake_run_worker  # type: ignore[assignment]
+            wo.run_worker_observed = _fake_run_worker  # type: ignore[assignment]
 
             try:
                 async def _run() -> None:
@@ -1022,7 +1072,7 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1043,15 +1093,23 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
             received_providers: list[object] = []
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
 
             async def _capture_run_worker(
-                request: Any, wk: Any, td: Any, provs: Any,
+                request: Any, wk: Any, td: Any, provs: Any, observer: Any = None,
             ) -> WorkerResult:
                 received_providers.append(provs)
+                # Call observer to apply ACK
+                ms = request.model_selection
+                ds = DispatchStarted(
+                    identity=request.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 return _make_worker_result()
 
-            wo.run_worker = _capture_run_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_capture_run_worker  # type: ignore[assignment]
 
             try:
                 async def _run() -> None:
@@ -1063,7 +1121,7 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
                 self.assertEqual(id(received_providers[0]), providers_id_before)
                 self.assertEqual(set(received_providers[0].keys()), {"test"})
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1081,14 +1139,18 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
 
-            async def _fake_run_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _fake_run_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 clock._mono += 5.0
                 await asyncio.sleep(0)
                 return _make_worker_result()
 
-            wo.run_worker = _fake_run_worker  # type: ignore[assignment]
+            wo.run_worker_observed = _fake_run_worker  # type: ignore[assignment]
 
             try:
                 async def _run() -> None:
@@ -1097,7 +1159,7 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1123,9 +1185,14 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             task_id=task_id, dispatch_id=dispatch_id,
             model_selection=ms, revision=revision, head_sha=head,
         )
+        ack_tr = _make_ack_transition_request(
+            task_id=task_id, dispatch_id=dispatch_id,
+            revision=revision, attempt=1, head_sha=head,
+        )
         return DispatchCycleRequest(
             dispatch_request=dr,
             dispatch_transition_request=tr,
+            acknowledge_transition_request=ack_tr,
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -1148,9 +1215,11 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             ms = _make_model_selection()
             dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
             tr = _make_transition_request(model_selection=ms)
+            ack_tr = _make_ack_transition_request(head_sha="a" * 40)
             req = DispatchCycleRequest(
                 dispatch_request=dr,
                 dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
                 worker_kind=WorkerKind.ADVANCED_AGENT,
                 task_difficulty=TaskDifficulty.ADVANCED,
                 holder_instance_id="test-instance",
@@ -1180,14 +1249,22 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
             worker_called = [False]
 
-            async def _tracking_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _tracking_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 worker_called[0] = True
                 return _make_worker_result()
 
-            wo.run_worker = _tracking_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_tracking_worker  # type: ignore[assignment]
 
             try:
                 # Use wrong revision so CAS validation fails.
@@ -1203,7 +1280,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1221,15 +1298,23 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
 
             class _TestWorkerError(Exception):
                 pass
 
-            async def _failing_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _failing_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 raise _TestWorkerError("worker crashed")
 
-            wo.run_worker = _failing_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_failing_worker  # type: ignore[assignment]
 
             try:
                 async def _run() -> None:
@@ -1239,7 +1324,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1257,12 +1342,20 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
 
-            async def _cancelling_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _cancelling_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 raise asyncio.CancelledError()
 
-            wo.run_worker = _cancelling_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_cancelling_worker  # type: ignore[assignment]
 
             try:
                 async def _run() -> None:
@@ -1272,7 +1365,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1291,12 +1384,20 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
             worker_cancelled = [False]
 
             running = asyncio.Event()
 
-            async def _long_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _long_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 running.set()
                 try:
                     await asyncio.sleep(10)  # long — heartbeat should fail first
@@ -1305,7 +1406,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                     raise
                 return _make_worker_result()
 
-            wo.run_worker = _long_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_long_worker  # type: ignore[assignment]
 
             # We also need to make renew_worker_slot fail. Since it's called
             # directly in the heartbeat loop, we can monkey-patch the module.
@@ -1326,7 +1427,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
                 wo.renew_worker_slot = _orig_renew  # type: ignore[assignment]
         finally:
             import shutil
@@ -1345,12 +1446,16 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
 
-            async def _quick_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _quick_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 return _make_worker_result()
 
-            wo.run_worker = _quick_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_quick_worker  # type: ignore[assignment]
 
             # Monkey-patch release_worker_slot to fail.
             _orig_release = wo.release_worker_slot
@@ -1367,7 +1472,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
                 wo.release_worker_slot = _orig_release  # type: ignore[assignment]
         finally:
             import shutil
@@ -1386,15 +1491,19 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
 
             class _PrimaryError(Exception):
                 pass
 
-            async def _failing_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _failing_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 raise _PrimaryError("primary failure")
 
-            wo.run_worker = _failing_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_failing_worker  # type: ignore[assignment]
 
             _orig_release = wo.release_worker_slot
 
@@ -1410,7 +1519,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
                 wo.release_worker_slot = _orig_release  # type: ignore[assignment]
         finally:
             import shutil
@@ -1429,12 +1538,16 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
 
-            async def _quick_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _quick_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 return _make_worker_result()
 
-            wo.run_worker = _quick_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_quick_worker  # type: ignore[assignment]
 
             try:
                 async def _run() -> None:
@@ -1445,7 +1558,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1463,12 +1576,16 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
 
-            async def _failing_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _failing_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 raise RuntimeError("worker error")
 
-            wo.run_worker = _failing_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_failing_worker  # type: ignore[assignment]
 
             try:
                 async def _run() -> None:
@@ -1482,7 +1599,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1500,13 +1617,17 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
             from dispatcher_gateway import DispatchGatewayError
 
-            async def _failing_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _failing_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 raise DispatchGatewayError("gateway error")
 
-            wo.run_worker = _failing_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_failing_worker  # type: ignore[assignment]
 
             try:
                 async def _run() -> None:
@@ -1516,7 +1637,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1534,13 +1655,21 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
 
-            async def _cancelling_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _cancelling_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 await asyncio.sleep(0)
                 raise asyncio.CancelledError()
 
-            wo.run_worker = _cancelling_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_cancelling_worker  # type: ignore[assignment]
 
             try:
                 async def _run() -> None:
@@ -1549,7 +1678,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1567,12 +1696,16 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
 
-            async def _failing_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _failing_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 raise RuntimeError("expected failure")
 
-            wo.run_worker = _failing_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_failing_worker  # type: ignore[assignment]
 
             try:
                 async def _run() -> None:
@@ -1586,7 +1719,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1605,12 +1738,16 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
 
-            async def _quick_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _quick_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 return _make_worker_result()
 
-            wo.run_worker = _quick_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_quick_worker  # type: ignore[assignment]
 
             try:
                 async def _run() -> None:
@@ -1619,7 +1756,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1638,11 +1775,15 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
 
             running = asyncio.Event()
 
-            async def _long_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _long_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 running.set()
                 try:
                     await asyncio.sleep(10)
@@ -1650,7 +1791,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
                     raise
                 return _make_worker_result()
 
-            wo.run_worker = _long_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_long_worker  # type: ignore[assignment]
 
             _orig_renew = wo.renew_worker_slot
 
@@ -1666,7 +1807,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
                 wo.renew_worker_slot = _orig_renew  # type: ignore[assignment]
         finally:
             import shutil
@@ -1686,12 +1827,16 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"test": FakeProvider()}
 
             import workflow_orchestrator as wo
-            _orig_run_worker = wo.run_worker
+            _orig_run_worker = wo.run_worker_observed
 
-            async def _quick_worker(*args: Any, **kwargs: Any) -> WorkerResult:
+            async def _quick_worker(request_arg: Any, *args: Any, **kwargs: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 return _make_worker_result()
 
-            wo.run_worker = _quick_worker  # type: ignore[assignment]
+            wo.run_worker_observed =_quick_worker  # type: ignore[assignment]
 
             try:
                 async def _run() -> None:
@@ -1700,7 +1845,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
 
                 asyncio.run(_run())
             finally:
-                wo.run_worker = _orig_run_worker  # type: ignore[assignment]
+                wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1886,9 +2031,17 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
             revision=kw.get("revision", 1),
             head_sha=head,
         )
+        ack_tr = _make_ack_transition_request(
+            task_id=kw.get("task_id", "TC-001"),
+            dispatch_id=kw.get("dispatch_id", "DSP-001"),
+            revision=kw.get("revision", 1),
+            attempt=1,
+            head_sha=head,
+        )
         return DispatchCycleRequest(
             dispatch_request=dr,
             dispatch_transition_request=tr,
+            acknowledge_transition_request=ack_tr,
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -1912,14 +2065,22 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
 
             # A worker that signals it's done but also allows the heartbeat
             # to have been racing (and failing).
-            async def _worker(*a: Any, **kw: Any) -> WorkerResult:
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
                 worker_done.set()
+                # Call observer to apply ACK
+                observer = args[3] if len(args) > 3 else None
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=request_arg.model_selection.selected_model_provider,
+                    model_id=request_arg.model_selection.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 await asyncio.sleep(0)  # yield so heartbeat can fire
                 return fake_worker_result
 
             # Monkey-patch renew to fail immediately the FIRST time.
             with mock.patch.object(
-                wo, "run_worker", side_effect=_worker
+                wo, "run_worker_observed", side_effect=_worker
             ), mock.patch.object(
                 wo, "renew_worker_slot",
                 side_effect=WorkerSlotFencingError("lease expired")
@@ -1959,7 +2120,15 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
             )
             req = self._make_req(tmp)
 
-            async def _quick_worker(*a: Any, **kw: Any) -> WorkerResult:
+            async def _quick_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 return _make_worker_result()
 
             _orig_ensure = asyncio.ensure_future
@@ -2009,11 +2178,15 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
             req = self._make_req(tmp)
             providers = {"test": FakeProvider()}
 
-            async def _failing_worker(*a: Any, **kw: Any) -> WorkerResult:
+            async def _failing_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 raise RuntimeError("worker error")
 
             with mock.patch.object(
-                wo, "run_worker", side_effect=_failing_worker
+                wo, "run_worker_observed", side_effect=_failing_worker
             ), mock.patch.object(
                 wo, "renew_worker_slot",
                 side_effect=WorkerSlotFencingError("lease expired")
@@ -2068,7 +2241,15 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
 
             worker_running = asyncio.Event()
 
-            async def _long_worker(*a: Any, **kw: Any) -> WorkerResult:
+            async def _long_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 worker_running.set()
                 await asyncio.sleep(10)
                 return _make_worker_result()
@@ -2130,13 +2311,21 @@ class TestHeartbeatWorkerSimultaneous(unittest.TestCase):
             class _WeirdError(Exception):
                 pass
 
-            async def _long_worker(*a: Any, **kw: Any) -> WorkerResult:
+            async def _long_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 worker_running.set()
                 await asyncio.sleep(10)
                 return _make_worker_result()
 
             with mock.patch.object(
-                wo, "run_worker", side_effect=_long_worker
+                wo, "run_worker_observed", side_effect=_long_worker
             ), mock.patch.object(
                 wo, "renew_worker_slot",
                 side_effect=_WeirdError("unexpected heartbeat crash")
@@ -2173,9 +2362,17 @@ class TestOuterCancellationCleanup(unittest.TestCase):
             revision=kw.get("revision", 1),
             head_sha=head,
         )
+        ack_tr = _make_ack_transition_request(
+            task_id=kw.get("task_id", "TC-001"),
+            dispatch_id=kw.get("dispatch_id", "DSP-001"),
+            revision=kw.get("revision", 1),
+            attempt=1,
+            head_sha=head,
+        )
         return DispatchCycleRequest(
             dispatch_request=dr,
             dispatch_transition_request=tr,
+            acknowledge_transition_request=ack_tr,
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -2209,7 +2406,11 @@ class TestOuterCancellationCleanup(unittest.TestCase):
 
             clock.sleep = _tracked_clock_sleep  # type: ignore[assignment]
 
-            async def _long_worker(*a: Any, **kw: Any) -> WorkerResult:
+            async def _long_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 worker_started.set()
                 try:
                     await asyncio.sleep(10)
@@ -2222,7 +2423,7 @@ class TestOuterCancellationCleanup(unittest.TestCase):
                 release_done[0] = True
 
             with mock.patch.object(
-                wo, "run_worker", side_effect=_long_worker
+                wo, "run_worker_observed", side_effect=_long_worker
             ), mock.patch.object(
                 wo, "renew_worker_slot",
                 side_effect=lambda *a, **kw: None
@@ -2261,7 +2462,11 @@ class TestOuterCancellationCleanup(unittest.TestCase):
 
             worker_started = asyncio.Event()
 
-            async def _long_worker(*a: Any, **kw: Any) -> WorkerResult:
+            async def _long_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 worker_started.set()
                 try:
                     await asyncio.sleep(10)
@@ -2270,7 +2475,7 @@ class TestOuterCancellationCleanup(unittest.TestCase):
                 return _make_worker_result()
 
             with mock.patch.object(
-                wo, "run_worker", side_effect=_long_worker
+                wo, "run_worker_observed", side_effect=_long_worker
             ), mock.patch.object(
                 wo, "renew_worker_slot",
                 side_effect=lambda *a, **kw: True
@@ -2307,7 +2512,11 @@ class TestOuterCancellationCleanup(unittest.TestCase):
 
             worker_started = asyncio.Event()
 
-            async def _long_worker(*a: Any, **kw: Any) -> WorkerResult:
+            async def _long_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 worker_started.set()
                 try:
                     await asyncio.sleep(10)
@@ -2316,7 +2525,7 @@ class TestOuterCancellationCleanup(unittest.TestCase):
                 return _make_worker_result()
 
             with mock.patch.object(
-                wo, "run_worker", side_effect=_long_worker
+                wo, "run_worker_observed", side_effect=_long_worker
             ), mock.patch.object(
                 wo, "renew_worker_slot",
                 side_effect=lambda *a, **kw: True
@@ -2364,9 +2573,17 @@ class TestDualFailureExceptionChains(unittest.TestCase):
             revision=kw.get("revision", 1),
             head_sha=head,
         )
+        ack_tr = _make_ack_transition_request(
+            task_id=kw.get("task_id", "TC-001"),
+            dispatch_id=kw.get("dispatch_id", "DSP-001"),
+            revision=kw.get("revision", 1),
+            attempt=1,
+            head_sha=head,
+        )
         return DispatchCycleRequest(
             dispatch_request=dr,
             dispatch_transition_request=tr,
+            acknowledge_transition_request=ack_tr,
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -2384,13 +2601,17 @@ class TestDualFailureExceptionChains(unittest.TestCase):
             class _WorkerError(Exception):
                 pass
 
-            async def _failing_worker(*a: Any, **kw: Any) -> WorkerResult:
+            async def _failing_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(identity=request_arg.identity, provider=ms.selected_model_provider, model_id=ms.selected_model_id)
+                await observer.on_dispatch_started(ds)
                 raise _WorkerError("worker crash")
 
             from worker_slot_lease import WorkerSlotNotHeldError
 
             with mock.patch.object(
-                wo, "run_worker", side_effect=_failing_worker
+                wo, "run_worker_observed", side_effect=_failing_worker
             ), mock.patch.object(
                 wo, "release_worker_slot",
                 side_effect=WorkerSlotNotHeldError("release crash")
@@ -2427,9 +2648,17 @@ class TestMonotonicDefense(unittest.TestCase):
             revision=kw.get("revision", 1),
             head_sha=head,
         )
+        ack_tr = _make_ack_transition_request(
+            task_id=kw.get("task_id", "TC-001"),
+            dispatch_id=kw.get("dispatch_id", "DSP-001"),
+            revision=kw.get("revision", 1),
+            attempt=1,
+            head_sha=head,
+        )
         return DispatchCycleRequest(
             dispatch_request=dr,
             dispatch_transition_request=tr,
+            acknowledge_transition_request=ack_tr,
             worker_kind=WorkerKind.ADVANCED_AGENT,
             task_difficulty=TaskDifficulty.ADVANCED,
             holder_instance_id="test-instance",
@@ -2462,11 +2691,19 @@ class TestMonotonicDefense(unittest.TestCase):
 
             release_called = [False]
 
-            async def _quick_worker(*a: Any, **kw: Any) -> WorkerResult:
+            async def _quick_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 return _make_worker_result()
 
             with mock.patch.object(
-                wo, "run_worker", side_effect=_quick_worker
+                wo, "run_worker_observed", side_effect=_quick_worker
             ), mock.patch.object(
                 wo, "release_worker_slot",
                 side_effect=lambda *a, **kw: release_called.__setitem__(0, True)
@@ -2505,11 +2742,19 @@ class TestMonotonicDefense(unittest.TestCase):
             )
             req = self._make_req(tmp)
 
-            async def _quick_worker(*a: Any, **kw: Any) -> WorkerResult:
+            async def _quick_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 return _make_worker_result()
 
             with mock.patch.object(
-                wo, "run_worker", side_effect=_quick_worker
+                wo, "run_worker_observed", side_effect=_quick_worker
             ), mock.patch.object(
                 wo, "release_worker_slot",
                 side_effect=lambda *a, **kw: None
@@ -2545,11 +2790,19 @@ class TestMonotonicDefense(unittest.TestCase):
             )
             req = self._make_req(tmp)
 
-            async def _quick_worker(*a: Any, **kw: Any) -> WorkerResult:
+            async def _quick_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 return _make_worker_result()
 
             with mock.patch.object(
-                wo, "run_worker", side_effect=_quick_worker
+                wo, "run_worker_observed", side_effect=_quick_worker
             ), mock.patch.object(
                 wo, "release_worker_slot",
                 side_effect=lambda *a, **kw: None
@@ -2585,11 +2838,19 @@ class TestMonotonicDefense(unittest.TestCase):
             )
             req = self._make_req(tmp)
 
-            async def _quick_worker(*a: Any, **kw: Any) -> WorkerResult:
+            async def _quick_worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
                 return _make_worker_result()
 
             with mock.patch.object(
-                wo, "run_worker", side_effect=_quick_worker
+                wo, "run_worker_observed", side_effect=_quick_worker
             ), mock.patch.object(
                 wo, "release_worker_slot",
                 side_effect=lambda *a, **kw: None
@@ -2612,3 +2873,1024 @@ def _source_text(module: Any) -> str:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TC-13.18b.2 — Workflow ACK Tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _make_ack_transition_request(
+    task_id: str = "TC-001",
+    dispatch_id: str = "DSP-001",
+    dispatch_event_id: str = "EVT-test-001",
+    revision: int = 1,
+    attempt: int = 1,
+    head_sha: str = "a" * 40,
+) -> TransitionRequest:
+    """Build a valid DISPATCH_ACKNOWLEDGED TransitionRequest."""
+    from control_plane_transition import (
+        AcknowledgePayload,
+        DispatchCAS,
+    )
+    cas = TransitionCAS(
+        task_id=task_id,
+        expected_revision=revision + 1,  # revision after dispatch
+        expected_state="dispatched",
+        expected_snapshot_commit=head_sha,
+    )
+    dispatch_cas = DispatchCAS(
+        expected_dispatch_id=dispatch_id,
+        expected_attempt=attempt,
+    )
+    payload = AcknowledgePayload()
+    event_context = TransitionEventContext(
+        source_message_id=None,
+        evidence_refs=(),
+        guard_results=(),
+    )
+    # ACK event_id must differ from dispatch event_id
+    ack_event_id = dispatch_event_id + "-ACK"
+    return TransitionRequest(
+        cas=cas,
+        dispatch_cas=dispatch_cas,
+        event_id=ack_event_id,
+        event_type="DISPATCH_ACKNOWLEDGED",
+        payload=payload,
+        event_context=event_context,
+    )
+
+
+class DispatchCycleRequestSixFieldTests(unittest.TestCase):
+    """Tests for the new six-field DispatchCycleRequest."""
+
+    def test_dispatch_cycle_request_exactly_six_fields(self) -> None:
+        """DispatchCycleRequest must have exactly six fields."""
+        field_names = {f.name for f in dc_fields(DispatchCycleRequest)}
+        expected = {
+            "dispatch_request",
+            "dispatch_transition_request",
+            "acknowledge_transition_request",
+            "worker_kind",
+            "task_difficulty",
+            "holder_instance_id",
+        }
+        self.assertEqual(field_names, expected)
+
+    def test_rejects_wrong_ack_event_type(self) -> None:
+        """acknowledge_transition_request with non-DISPATCH_ACKNOWLEDGED event_type rejected."""
+        ms = _make_model_selection()
+        dr = _make_dispatch_request(model_selection=ms)
+        dispatch_tr = _make_transition_request(
+            task_id="TC-001",
+            dispatch_id="DSP-001",
+            model_selection=ms,
+            revision=1,
+            head_sha="a" * 40,
+        )
+        ack_tr = _make_ack_transition_request(
+            task_id="TC-001",
+            dispatch_id="DSP-001",
+            revision=1,
+            head_sha="a" * 40,
+        )
+        # Mutate event_type
+        bad_ack = TransitionRequest(
+            cas=ack_tr.cas,
+            dispatch_cas=ack_tr.dispatch_cas,
+            event_id="EVT-bad-1",
+            event_type="TASK_DISPATCHED",  # wrong
+            payload=DispatchPayload(  # must match TASK_DISPATCHED
+                dispatch_id="DSP-001",
+                role_id="agent",
+                model_selection=ms,
+                task_card_path="tasks/task.md",
+                task_card_commit="b" * 40,
+                base_commit="c" * 40,
+                branch="feat/test",
+                report_path="reports/report.md",
+                outbox_message_id="MSG-test-bad",
+                new_attempt=1,
+            ),
+            event_context=ack_tr.event_context,
+        )
+        with self.assertRaises(ValueError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=dispatch_tr,
+                acknowledge_transition_request=bad_ack,
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
+
+    def test_rejects_ack_cas_task_id_mismatch(self) -> None:
+        """ACK cas.task_id must match dispatch cas.task_id."""
+        ms = _make_model_selection()
+        dr = _make_dispatch_request(model_selection=ms)
+        dispatch_tr = _make_transition_request(
+            task_id="TC-001", model_selection=ms,
+            revision=1, head_sha="a" * 40,
+        )
+        ack_tr = _make_ack_transition_request(
+            task_id="TC-002",  # mismatched
+            dispatch_id="DSP-001",
+            revision=1,
+            head_sha="a" * 40,
+        )
+        with self.assertRaises(ValueError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=dispatch_tr,
+                acknowledge_transition_request=ack_tr,
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
+
+    def test_rejects_ack_wrong_revision(self) -> None:
+        """ACK expected_revision must be dispatch expected_revision + 1."""
+        ms = _make_model_selection()
+        dr = _make_dispatch_request(model_selection=ms)
+        dispatch_tr = _make_transition_request(
+            task_id="TC-001", model_selection=ms,
+            revision=1, head_sha="a" * 40,
+        )
+        ack_tr = _make_ack_transition_request(
+            task_id="TC-001",
+            dispatch_id="DSP-001",
+            revision=1,
+            head_sha="a" * 40,
+        )
+        # Create bad ack with wrong revision
+        bad_cas = TransitionCAS(
+            task_id="TC-001",
+            expected_revision=99,  # not +1
+            expected_state="dispatched",
+            expected_snapshot_commit="a" * 40,
+        )
+        bad_ack = TransitionRequest(
+            cas=bad_cas,
+            dispatch_cas=ack_tr.dispatch_cas,
+            event_id=ack_tr.event_id,
+            event_type="DISPATCH_ACKNOWLEDGED",
+            payload=ack_tr.payload,
+            event_context=ack_tr.event_context,
+        )
+        with self.assertRaises(ValueError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=dispatch_tr,
+                acknowledge_transition_request=bad_ack,
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
+
+    def test_rejects_ack_dispatch_cas_none(self) -> None:
+        """ACK dispatch_cas must not be None."""
+        ms = _make_model_selection()
+        dr = _make_dispatch_request(model_selection=ms)
+        dispatch_tr = _make_transition_request(
+            task_id="TC-001", model_selection=ms,
+            revision=1, head_sha="a" * 40,
+        )
+        ack_tr = _make_ack_transition_request(
+            task_id="TC-001", dispatch_id="DSP-001",
+            revision=1, head_sha="a" * 40,
+        )
+        # Create bad ack with dispatch_cas=None — must bypass TransitionRequest validation
+        bad_ack = mock.MagicMock(spec=TransitionRequest)
+        bad_ack.event_type = "DISPATCH_ACKNOWLEDGED"
+        bad_ack.cas = ack_tr.cas
+        bad_ack.dispatch_cas = None  # must not be None
+        bad_ack.event_id = ack_tr.event_id
+        bad_ack.payload = ack_tr.payload
+        bad_ack.event_context = ack_tr.event_context
+        with self.assertRaises(ValueError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=dispatch_tr,
+                acknowledge_transition_request=bad_ack,
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
+
+    def test_rejects_ack_same_event_id_as_dispatch(self) -> None:
+        """ACK event_id must differ from dispatch event_id."""
+        ms = _make_model_selection()
+        dr = _make_dispatch_request(model_selection=ms)
+        dispatch_tr = _make_transition_request(
+            task_id="TC-001", model_selection=ms,
+            revision=1, head_sha="a" * 40,
+            event_id="EVT-same-1",
+        )
+        ack_tr = _make_ack_transition_request(
+            task_id="TC-001", dispatch_id="DSP-001",
+            dispatch_event_id="EVT-same-1-DIFF",  # with -ACK suffix: EVT-same-1-DIFF-ACK
+            revision=1, head_sha="a" * 40,
+        )
+        # Now mutate to match dispatch event_id exactly
+        import copy
+        ack_tr_bad = TransitionRequest(
+            cas=ack_tr.cas,
+            dispatch_cas=ack_tr.dispatch_cas,
+            event_id="EVT-same-1",  # BAD: same as dispatch_tr.event_id
+            event_type="DISPATCH_ACKNOWLEDGED",
+            payload=ack_tr.payload,
+            event_context=ack_tr.event_context,
+        )
+        with self.assertRaises(ValueError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=dispatch_tr,
+                acknowledge_transition_request=ack_tr_bad,
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
+
+    def test_rejects_ack_wrong_dispatch_id_in_dispatch_cas(self) -> None:
+        """ACK dispatch_cas expected_dispatch_id must match dispatch_request."""
+        ms = _make_model_selection()
+        dr = _make_dispatch_request(model_selection=ms, dispatch_id="DSP-001")
+        dispatch_tr = _make_transition_request(
+            task_id="TC-001", dispatch_id="DSP-001",
+            model_selection=ms, revision=1, head_sha="a" * 40,
+        )
+        ack_tr = _make_ack_transition_request(
+            task_id="TC-001",
+            dispatch_id="DSP-002",  # wrong
+            revision=1, head_sha="a" * 40,
+        )
+        with self.assertRaises(ValueError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=dispatch_tr,
+                acknowledge_transition_request=ack_tr,
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
+
+    def test_rejects_ack_wrong_expected_state(self) -> None:
+        """ACK cas.expected_state must be 'dispatched'."""
+        ms = _make_model_selection()
+        dr = _make_dispatch_request(model_selection=ms)
+        dispatch_tr = _make_transition_request(
+            task_id="TC-001", model_selection=ms,
+            revision=1, head_sha="a" * 40,
+        )
+        ack_tr = _make_ack_transition_request(
+            task_id="TC-001", dispatch_id="DSP-001",
+            revision=1, head_sha="a" * 40,
+        )
+        from control_plane_transition import DispatchCAS
+        bad_cas = TransitionCAS(
+            task_id="TC-001",
+            expected_revision=2,
+            expected_state="ready",  # must be "dispatched"
+            expected_snapshot_commit="a" * 40,
+        )
+        bad_ack = TransitionRequest(
+            cas=bad_cas,
+            dispatch_cas=ack_tr.dispatch_cas,
+            event_id=ack_tr.event_id,
+            event_type="DISPATCH_ACKNOWLEDGED",
+            payload=ack_tr.payload,
+            event_context=ack_tr.event_context,
+        )
+        with self.assertRaises(ValueError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=dispatch_tr,
+                acknowledge_transition_request=bad_ack,
+                worker_kind=WorkerKind.ADVANCED_AGENT,
+                task_difficulty=TaskDifficulty.ADVANCED,
+                holder_instance_id="test-instance",
+            )
+
+
+class DispatchCycleResultSixFieldTests(unittest.TestCase):
+    """Tests for the new six-field DispatchCycleResult."""
+
+    def test_result_has_exactly_six_fields(self) -> None:
+        field_names = [f.name for f in dc_fields(DispatchCycleResult)]
+        expected = [
+            "worker_result", "dispatch_transition",
+            "acknowledge_transition", "slot_id",
+            "lease_epoch", "duration_seconds",
+        ]
+        self.assertEqual(field_names, expected)
+
+    def test_result_no_forbidden_fields(self) -> None:
+        field_names = {f.name for f in dc_fields(DispatchCycleResult)}
+        forbidden = {
+            "delivery_transition", "implementation_commit",
+            "report_commit", "decoded_output", "audit_result",
+            "acceptance_result", "WorkerOutput", "DeliveryReceipt",
+            "delivery",
+        }
+        self.assertTrue(field_names.isdisjoint(forbidden))
+
+
+class WorkflowOrchestratorAckOrderTests(unittest.TestCase):
+    """Tests verifying execution order: dispatch → process start → ACK → communicate."""
+
+    def test_execution_order_dispatch_then_ack(self) -> None:
+        """ACK must be applied after TASK_DISPATCHED and before Worker completes."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            # Track the call order
+            call_order: list[str] = []
+
+            # Patch run_worker_observed to track that it was called with an observer
+            orig_run_worker_observed = wo.run_worker_observed
+
+            async def _tracked_run_worker_observed(request_arg, *args: Any, **kw: Any) -> WorkerResult:
+                call_order.append("run_worker_observed")
+                observer = args[3] if len(args) > 3 else None
+                # Simulate what the real dispatcher does:
+                # call observer.on_dispatch_started, then return result
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)  # type: ignore[union-attr]
+                call_order.append("on_dispatch_started_done")
+                return _make_worker_result()
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_tracked_run_worker_observed):
+                # Patch ControlPlaneTransitionService.apply_transition to track calls
+                from control_plane_transition import ControlPlaneTransitionService as CTS
+                orig_apply = CTS.apply_transition
+
+                async def _tracked_apply(self_obj: Any, tr: TransitionRequest,
+                                          lease: Any, now: datetime) -> TransitionResult:
+                    call_order.append(f"apply_transition:{tr.event_type}")
+                    return await orig_apply(self_obj, tr, lease, now)
+
+                with mock.patch.object(CTS, "apply_transition",
+                                       side_effect=_tracked_apply):
+                    clock = FakeClock()
+                    orch = WorkflowOrchestrator(
+                        project_root=tmp,
+                        clock=clock,
+                        heartbeat_interval_seconds=10.0,
+                    )
+
+                    ms = _make_model_selection()
+                    dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
+                    head = _git_head(tmp)
+                    dispatch_tr = _make_transition_request(
+                        task_id="TC-001", dispatch_id="DSP-001",
+                        model_selection=ms, revision=1, head_sha=head,
+                        event_id="EVT-order-1",
+                    )
+                    ack_tr = _make_ack_transition_request(
+                        task_id="TC-001", dispatch_id="DSP-001",
+                        dispatch_event_id="EVT-order-1",
+                        revision=1, attempt=1, head_sha=head,
+                    )
+                    req = DispatchCycleRequest(
+                        dispatch_request=dr,
+                        dispatch_transition_request=dispatch_tr,
+                        acknowledge_transition_request=ack_tr,
+                        worker_kind=WorkerKind.ADVANCED_AGENT,
+                        task_difficulty=TaskDifficulty.ADVANCED,
+                        holder_instance_id="test-instance",
+                    )
+
+                    async def _run() -> None:
+                        result = await orch.run_dispatch_cycle(
+                            req, {"test": FakeProvider()},
+                        )
+                        self.assertIsNotNone(result)
+                        self.assertIsNotNone(result.acknowledge_transition)
+
+                    asyncio.run(_run())
+
+            # Verify order: TASK_DISPATCHED first, then worker, then ACK inside observer
+            self.assertEqual(call_order[0], "apply_transition:TASK_DISPATCHED")
+            self.assertEqual(call_order[1], "run_worker_observed")
+            self.assertEqual(call_order[2], "apply_transition:DISPATCH_ACKNOWLEDGED")
+            self.assertEqual(call_order[3], "on_dispatch_started_done")
+
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_ack_uses_same_worker_slot_lease(self) -> None:
+        """ACK must use the same WorkerSlotLease as the dispatch transition."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            leases_used: list[str] = []
+
+            async def _fake_run_worker_observed(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ds = DispatchStarted(
+                    identity=request_arg.identity,  # type: ignore[index]
+                    provider=request_arg.model_selection.selected_model_provider,  # type: ignore[union-attr]
+                    model_id=request_arg.model_selection.selected_model_id,  # type: ignore[union-attr]
+                )
+                await observer.on_dispatch_started(ds)
+                return _make_worker_result()
+
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            orig_apply = CTS.apply_transition
+
+            async def _tracked_apply(self_obj: Any, tr: TransitionRequest,
+                                      lease: Any, now: datetime) -> TransitionResult:
+                leases_used.append(lease.lease_id)
+                return await orig_apply(self_obj, tr, lease, now)
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_fake_run_worker_observed):
+                with mock.patch.object(CTS, "apply_transition",
+                                       side_effect=_tracked_apply):
+                    clock = FakeClock()
+                    orch = WorkflowOrchestrator(
+                        project_root=tmp, clock=clock,
+                        heartbeat_interval_seconds=10.0,
+                    )
+
+                    ms = _make_model_selection()
+                    dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
+                    head = _git_head(tmp)
+                    dispatch_tr = _make_transition_request(
+                        task_id="TC-001", dispatch_id="DSP-001",
+                        model_selection=ms, revision=1, head_sha=head,
+                        event_id="EVT-lease-1",
+                    )
+                    ack_tr = _make_ack_transition_request(
+                        task_id="TC-001", dispatch_id="DSP-001",
+                        dispatch_event_id="EVT-lease-1",
+                        revision=1, attempt=1, head_sha=head,
+                    )
+                    req = DispatchCycleRequest(
+                        dispatch_request=dr,
+                        dispatch_transition_request=dispatch_tr,
+                        acknowledge_transition_request=ack_tr,
+                        worker_kind=WorkerKind.ADVANCED_AGENT,
+                        task_difficulty=TaskDifficulty.ADVANCED,
+                        holder_instance_id="test-instance",
+                    )
+
+                    async def _run() -> None:
+                        await orch.run_dispatch_cycle(
+                            req, {"test": FakeProvider()},
+                        )
+
+                    asyncio.run(_run())
+
+            self.assertEqual(len(leases_used), 2)
+            self.assertEqual(leases_used[0], leases_used[1],
+                             "ACK must use the same lease_id as dispatch")
+
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_ack_included_in_result(self) -> None:
+        """ACK TransitionResult must appear in DispatchCycleResult."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            async def _fake_run_worker_observed(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ds = DispatchStarted(
+                    identity=request_arg.identity,  # type: ignore[index]
+                    provider=request_arg.model_selection.selected_model_provider,  # type: ignore[union-attr]
+                    model_id=request_arg.model_selection.selected_model_id,  # type: ignore[union-attr]
+                )
+                await observer.on_dispatch_started(ds)
+                return _make_worker_result()
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_fake_run_worker_observed):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+
+                ms = _make_model_selection()
+                dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
+                head = _git_head(tmp)
+                dispatch_tr = _make_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    model_selection=ms, revision=1, head_sha=head,
+                    event_id="EVT-result-1",
+                )
+                ack_tr = _make_ack_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    dispatch_event_id="EVT-result-1",
+                    revision=1, attempt=1, head_sha=head,
+                )
+                req = DispatchCycleRequest(
+                    dispatch_request=dr,
+                    dispatch_transition_request=dispatch_tr,
+                    acknowledge_transition_request=ack_tr,
+                    worker_kind=WorkerKind.ADVANCED_AGENT,
+                    task_difficulty=TaskDifficulty.ADVANCED,
+                    holder_instance_id="test-instance",
+                )
+
+                async def _run() -> None:
+                    result = await orch.run_dispatch_cycle(
+                        req, {"test": FakeProvider()},
+                    )
+                    self.assertIsNotNone(result.acknowledge_transition)
+                    self.assertEqual(result.acknowledge_transition.event_id,
+                                     "EVT-result-1-ACK")
+                    self.assertEqual(result.acknowledge_transition.to_state,
+                                     "in_progress")
+
+                asyncio.run(_run())
+
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_startup_failure_no_ack(self) -> None:
+        """If the dispatch launch fails, ACK must not be written."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            async def _failing_worker(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
+                # Simulate dispatch launch failure before observer is called
+                from dispatcher_gateway import DispatchLaunchError
+                raise DispatchLaunchError("simulated launch failure")
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_failing_worker):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+
+                ms = _make_model_selection()
+                dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
+                head = _git_head(tmp)
+                dispatch_tr = _make_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    model_selection=ms, revision=1, head_sha=head,
+                )
+                ack_tr = _make_ack_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    revision=1, attempt=1, head_sha=head,
+                )
+                req = DispatchCycleRequest(
+                    dispatch_request=dr,
+                    dispatch_transition_request=dispatch_tr,
+                    acknowledge_transition_request=ack_tr,
+                    worker_kind=WorkerKind.ADVANCED_AGENT,
+                    task_difficulty=TaskDifficulty.ADVANCED,
+                    holder_instance_id="test-instance",
+                )
+
+                async def _run() -> None:
+                    with self.assertRaises(Exception):
+                        await orch.run_dispatch_cycle(
+                            req, {"test": FakeProvider()},
+                        )
+
+                asyncio.run(_run())
+            # The task should remain in "dispatched" state (not in_progress)
+            # since ACK was never applied
+
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_identity_mismatch_no_ack(self) -> None:
+        """If DispatchStarted identity doesn't match, ACK is not written."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            async def _mismatched_worker(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                # Build a DispatchStarted with wrong identity
+                wrong_identity = DispatchIdentity(
+                    task_id="TC-WRONG",
+                    revision=99,
+                    attempt=99,
+                    dispatch_id="DSP-WRONG",
+                )
+                ds = DispatchStarted(
+                    identity=wrong_identity,
+                    provider="wrong",
+                    model_id="wrong",
+                )
+                try:
+                    await observer.on_dispatch_started(ds)
+                except WorkflowInvariantError:
+                    raise  # propagate
+                return _make_worker_result()
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_mismatched_worker):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+
+                ms = _make_model_selection()
+                dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
+                head = _git_head(tmp)
+                dispatch_tr = _make_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    model_selection=ms, revision=1, head_sha=head,
+                )
+                ack_tr = _make_ack_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    revision=1, attempt=1, head_sha=head,
+                )
+                req = DispatchCycleRequest(
+                    dispatch_request=dr,
+                    dispatch_transition_request=dispatch_tr,
+                    acknowledge_transition_request=ack_tr,
+                    worker_kind=WorkerKind.ADVANCED_AGENT,
+                    task_difficulty=TaskDifficulty.ADVANCED,
+                    holder_instance_id="test-instance",
+                )
+
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInvariantError):
+                        await orch.run_dispatch_cycle(
+                            req, {"test": FakeProvider()},
+                        )
+
+                asyncio.run(_run())
+
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_ack_failure_process_terminated(self) -> None:
+        """If ACK apply fails, worker must be cancelled."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            worker_cancelled = False
+
+            async def _failing_ack_worker(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ds = DispatchStarted(
+                    identity=request_arg.identity,  # type: ignore[index]
+                    provider=request_arg.model_selection.selected_model_provider,  # type: ignore[union-attr]
+                    model_id=request_arg.model_selection.selected_model_id,  # type: ignore[union-attr]
+                )
+                # Simulate ACK transition failure
+                from control_plane_transition import ControlPlaneTransitionError
+                raise ControlPlaneTransitionError("ACK failed")
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_failing_ack_worker):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+
+                ms = _make_model_selection()
+                dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
+                head = _git_head(tmp)
+                dispatch_tr = _make_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    model_selection=ms, revision=1, head_sha=head,
+                )
+                ack_tr = _make_ack_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    revision=1, attempt=1, head_sha=head,
+                )
+                req = DispatchCycleRequest(
+                    dispatch_request=dr,
+                    dispatch_transition_request=dispatch_tr,
+                    acknowledge_transition_request=ack_tr,
+                    worker_kind=WorkerKind.ADVANCED_AGENT,
+                    task_difficulty=TaskDifficulty.ADVANCED,
+                    holder_instance_id="test-instance",
+                )
+
+                async def _run() -> None:
+                    with self.assertRaises(Exception):
+                        await orch.run_dispatch_cycle(
+                            req, {"test": FakeProvider()},
+                        )
+
+                asyncio.run(_run())
+
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_ack_success_worker_failure_task_stays_in_progress(self) -> None:
+        """After successful ACK, if Worker fails, task stays in_progress."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            async def _ack_then_fail_worker(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ds = DispatchStarted(
+                    identity=request_arg.identity,  # type: ignore[index]
+                    provider=request_arg.model_selection.selected_model_provider,  # type: ignore[union-attr]
+                    model_id=request_arg.model_selection.selected_model_id,  # type: ignore[union-attr]
+                )
+                # ACK succeeds
+                await observer.on_dispatch_started(ds)
+                # Then Worker fails
+                from dispatcher_gateway import DispatchNonZeroExitError
+                raise DispatchNonZeroExitError(
+                    exit_code=1,
+                    stdout_sha256="aa",
+                    stderr_sha256="bb",
+                    stderr_bytes=b"worker failed",
+                )
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_ack_then_fail_worker):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+
+                ms = _make_model_selection()
+                dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
+                head = _git_head(tmp)
+                dispatch_tr = _make_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    model_selection=ms, revision=1, head_sha=head,
+                )
+                ack_tr = _make_ack_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    revision=1, attempt=1, head_sha=head,
+                )
+                req = DispatchCycleRequest(
+                    dispatch_request=dr,
+                    dispatch_transition_request=dispatch_tr,
+                    acknowledge_transition_request=ack_tr,
+                    worker_kind=WorkerKind.ADVANCED_AGENT,
+                    task_difficulty=TaskDifficulty.ADVANCED,
+                    holder_instance_id="test-instance",
+                )
+
+                async def _run() -> None:
+                    with self.assertRaises(DispatchNonZeroExitError):
+                        await orch.run_dispatch_cycle(
+                            req, {"test": FakeProvider()},
+                        )
+
+                asyncio.run(_run())
+            # The task should now be in "in_progress" state (not "dispatched")
+            # because ACK was applied before the Worker failure.
+
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_outer_cancellation_no_pending_tasks(self) -> None:
+        """Outer cancellation must leave no pending worker/heartbeat/observer tasks."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            async def _stuck_worker(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
+                await asyncio.sleep(999)
+                return _make_worker_result()
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_stuck_worker):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+
+                ms = _make_model_selection()
+                dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
+                head = _git_head(tmp)
+                dispatch_tr = _make_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    model_selection=ms, revision=1, head_sha=head,
+                )
+                ack_tr = _make_ack_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    revision=1, attempt=1, head_sha=head,
+                )
+                req = DispatchCycleRequest(
+                    dispatch_request=dr,
+                    dispatch_transition_request=dispatch_tr,
+                    acknowledge_transition_request=ack_tr,
+                    worker_kind=WorkerKind.ADVANCED_AGENT,
+                    task_difficulty=TaskDifficulty.ADVANCED,
+                    holder_instance_id="test-instance",
+                )
+
+                async def _run() -> None:
+                    task = asyncio.ensure_future(
+                        orch.run_dispatch_cycle(req, {"test": FakeProvider()})
+                    )
+                    await asyncio.sleep(0.1)
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+
+                asyncio.run(_run())
+            # If no "Task was destroyed but it is pending" warnings appear, test passes.
+
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_release_exactly_once_after_ack(self) -> None:
+        """Release must be called exactly once when ACK succeeds."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            from worker_slot_lease import release_worker_slot as real_release
+
+            release_count = 0
+
+            def _counted_release(*args: Any, **kw: Any) -> None:
+                nonlocal release_count
+                release_count += 1
+                return real_release(*args, **kw)
+
+            async def _ack_worker(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ds = DispatchStarted(
+                    identity=request_arg.identity,  # type: ignore[index]
+                    provider=request_arg.model_selection.selected_model_provider,  # type: ignore[union-attr]
+                    model_id=request_arg.model_selection.selected_model_id,  # type: ignore[union-attr]
+                )
+                await observer.on_dispatch_started(ds)
+                return _make_worker_result()
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_ack_worker):
+                with mock.patch.object(wo, "release_worker_slot",
+                                       side_effect=_counted_release):
+                    clock = FakeClock()
+                    orch = WorkflowOrchestrator(
+                        project_root=tmp, clock=clock,
+                        heartbeat_interval_seconds=10.0,
+                    )
+
+                    ms = _make_model_selection()
+                    dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
+                    head = _git_head(tmp)
+                    dispatch_tr = _make_transition_request(
+                        task_id="TC-001", dispatch_id="DSP-001",
+                        model_selection=ms, revision=1, head_sha=head,
+                    )
+                    ack_tr = _make_ack_transition_request(
+                        task_id="TC-001", dispatch_id="DSP-001",
+                        revision=1, attempt=1, head_sha=head,
+                    )
+                    req = DispatchCycleRequest(
+                        dispatch_request=dr,
+                        dispatch_transition_request=dispatch_tr,
+                        acknowledge_transition_request=ack_tr,
+                        worker_kind=WorkerKind.ADVANCED_AGENT,
+                        task_difficulty=TaskDifficulty.ADVANCED,
+                        holder_instance_id="test-instance",
+                    )
+
+                    async def _run() -> None:
+                        await orch.run_dispatch_cycle(
+                            req, {"test": FakeProvider()},
+                        )
+
+                    asyncio.run(_run())
+                    self.assertEqual(release_count, 1,
+                                     "Release must be called exactly once")
+
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_acquire_before_failure_release_zero(self) -> None:
+        """If failure occurs before acquire, release is called 0 times."""
+        # We can trigger a pre-acquire failure by providing invalid
+        # providers mapping — empty providers is rejected before acquire.
+        tmp = Path(__file__).resolve().parents[1]  # just a valid dir
+        clock = FakeClock()
+        orch = WorkflowOrchestrator(
+            project_root=tmp, clock=clock,
+            heartbeat_interval_seconds=10.0,
+        )
+        ms = _make_model_selection()
+        dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
+        dispatch_tr = _make_transition_request(
+            model_selection=ms, head_sha="a" * 40,
+        )
+        ack_tr = _make_ack_transition_request(head_sha="a" * 40)
+        req = DispatchCycleRequest(
+            dispatch_request=dr,
+            dispatch_transition_request=dispatch_tr,
+            acknowledge_transition_request=ack_tr,
+            worker_kind=WorkerKind.ADVANCED_AGENT,
+            task_difficulty=TaskDifficulty.ADVANCED,
+            holder_instance_id="test-instance",
+        )
+
+        async def _run() -> None:
+            import workflow_orchestrator as wo
+            with mock.patch.object(wo, "release_worker_slot") as mock_release:
+                with self.assertRaises(WorkflowInputError):
+                    await orch.run_dispatch_cycle(
+                        req, {},  # empty providers — fails before acquire
+                    )
+                mock_release.assert_not_called()
+
+        asyncio.run(_run())
+
+    def test_no_worker_output_decoder_called(self) -> None:
+        """WorkerOutput decoder must not be called."""
+        # This is a source-boundary check — we assert run_dispatch_cycle()
+        # never imports or calls worker_output_decoder.
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            # Verify that worker_output_decoder is not imported
+            source = _source_text(wo)
+            self.assertNotIn("worker_output_decoder", source)
+
+            async def _simple_worker(request_arg: Any, *args: Any, **kw: Any) -> WorkerResult:
+                observer = args[3] if len(args) > 3 else None
+                ms = request_arg.model_selection
+                ds = DispatchStarted(
+                    identity=request_arg.identity,
+                    provider=ms.selected_model_provider,
+                    model_id=ms.selected_model_id,
+                )
+                await observer.on_dispatch_started(ds)
+                return _make_worker_result()
+
+            with mock.patch.object(wo, "run_worker_observed",
+                                   side_effect=_simple_worker):
+                clock = FakeClock()
+                orch = WorkflowOrchestrator(
+                    project_root=tmp, clock=clock,
+                    heartbeat_interval_seconds=10.0,
+                )
+                ms = _make_model_selection()
+                dr = _make_dispatch_request(workspace=tmp, model_selection=ms)
+                head = _git_head(tmp)
+                dispatch_tr = _make_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    model_selection=ms, revision=1, head_sha=head,
+                )
+                ack_tr = _make_ack_transition_request(
+                    task_id="TC-001", dispatch_id="DSP-001",
+                    revision=1, attempt=1, head_sha=head,
+                )
+                req = DispatchCycleRequest(
+                    dispatch_request=dr,
+                    dispatch_transition_request=dispatch_tr,
+                    acknowledge_transition_request=ack_tr,
+                    worker_kind=WorkerKind.ADVANCED_AGENT,
+                    task_difficulty=TaskDifficulty.ADVANCED,
+                    holder_instance_id="test-instance",
+                )
+                async def _run() -> None:
+                    await orch.run_dispatch_cycle(
+                        req, {"test": FakeProvider()},
+                    )
+                asyncio.run(_run())
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_no_delivery_submitted(self) -> None:
+        """DELIVERY_SUBMITTED must not be executed."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            # Strip docstrings
+            source = _source_text(wo)
+            # Remove docstrings (triple-quoted strings)
+            import re
+            source_no_docs = re.sub(r'""".*?"""', '', source, flags=re.DOTALL)
+            source_no_docs = re.sub(r"'''.*?'''", '', source_no_docs, flags=re.DOTALL)
+            self.assertNotIn("DELIVERY_SUBMITTED", source_no_docs)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)

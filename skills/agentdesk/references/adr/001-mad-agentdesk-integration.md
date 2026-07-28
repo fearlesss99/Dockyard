@@ -6303,24 +6303,32 @@ out-of-band mechanism supplies the two commit SHAs.
 
 ---
 
-#### 2.19.3 DISPATCH_ACKNOWLEDGED 鈥?ACK Semantics
+#### 2.19.3 DISPATCH_ACKNOWLEDGED — ACK Semantics
 
 The true point at which a CLI subprocess has started and is ready to
-receive input is **not observable** via the current `run_worker()` API.
-`run_worker()` calls `run_dispatch()`, which calls
-`asyncio.create_subprocess_exec` and then `process.communicate()` 鈥?the
-function returns only after the subprocess exits.
+receive input is now observable via the `run_dispatch_observed()` API
+added in TC-13.18b.2.  The `DispatcherAgentGateway` calls a
+`DispatchStartedObserver` Protocol callback after
+`asyncio.create_subprocess_exec()` succeeds and before
+`process.communicate()` sends stdin.  The `WorkflowOrchestrator` holds
+an internal `_AckObserver` that validates the `DispatchStarted` identity
+and applies `DISPATCH_ACKNOWLEDGED` under the same `WorkerSlotLease`.
 
-Decision for TC-13.18 v1: **ACK is excluded from the automated dispatch
-cycle.**  The `DISPATCH_ACKNOWLEDGED` transition requires an external
-reliable start signal.  When the DispatcherAgentGateway gains a
-process-started callback (future task card), the ACK transition will be
-integrated.  Until then, the automated cycle skips
-`DISPATCH_ACKNOWLEDGED` 鈥?task remains `dispatched` until a Worker
-explicitly reports in-progress.
+Decision — TC-13.18b.2: **DISPATCH_ACKNOWLEDGED → Current.**
+
+* The `DispatchCycleRequest` now carries a 6th field
+  `acknowledge_transition_request` (a `TransitionRequest` with
+  `event_type == "DISPATCH_ACKNOWLEDGED"` and `AcknowledgePayload`).
+* `DispatchCycleResult` carries a 6th field `acknowledge_transition`
+  (the `TransitionResult` from the ACK write).
+* The ACK is applied under the same `WorkerSlotLease` while the
+  heartbeat is active, before `communicate()` sends stdin.
+* `DispatchStarted` carries exactly three fields: `identity`,
+  `provider`, `model_id` — no PID, argv, env, workspace, or prompt.
+* TC-13.18c (DELIVERY_SUBMITTED) remains Target.
 
 This decision does **not** alter the existing `DISPATCH_ACKNOWLEDGED`
-event schema or semantics 鈥?it merely defers its automated production.
+event schema — it adds automated production.
 
 ---
 

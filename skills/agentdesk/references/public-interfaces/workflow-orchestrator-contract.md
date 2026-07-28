@@ -133,21 +133,46 @@ WorkflowOrchestrator must delegate output decoding to
 ## 5. DISPATCH_ACKNOWLEDGED — ACK Semantics
 
 The true point at which a CLI subprocess has started and is ready to receive
-input is **not observable** via the current `run_worker()` API.
-`run_worker()` → `run_dispatch()` → `asyncio.create_subprocess_exec` →
-`process.communicate()` returns only after the subprocess exits.
+input is observable via the `DispatcherAgentGateway.run_dispatch_observed()` API
+added in TC-13.18b.2.  The Gateway calls a `DispatchStartedObserver` Protocol
+callback after `asyncio.create_subprocess_exec()` succeeds and before
+`process.communicate()` sends stdin.  The `WorkflowOrchestrator` holds an
+internal `_AckObserver` that validates the `DispatchStarted` identity against
+the `DispatchRequest` and applies `DISPATCH_ACKNOWLEDGED` under the same
+`WorkerSlotLease` while the heartbeat is still active.
 
-### Decision for TC-13.18 v1
+### Process-Start Receipt Timing
 
-**ACK is EXCLUDED from the automated dispatch cycle.**
+```text
+create_subprocess_exec → process returned
+    ↓
+observer.on_dispatch_started(DispatchStarted(identity, provider, model_id))
+    ↓  (observer validates identity, applies DISPATCH_ACKNOWLEDGED in same lease)
+    ↓
+observer returns (ACK is now committed to canonical state)
+    ↓
+process.communicate(input=stdin)  ← stdin is only sent AFTER ACK succeeds
+```
 
-- The `DISPATCH_ACKNOWLEDGED` transition is deferred to a future task card
-  that adds a process-started callback to the DispatcherAgentGateway.
-- Until then, the automated cycle transitions `ready → dispatched` only.
-  The task remains in `dispatched` state until a Worker explicitly reports
-  in-progress.
-- This does **not** alter the existing `DISPATCH_ACKNOWLEDGED` event schema
-  or semantics — it merely defers its automated production.
+`DispatchStarted` carries exactly three fields: `identity` (the original
+`DispatchIdentity`), `provider` (the selected provider mapping key), and
+`model_id` (the `selected_model_id` from the snapshot).  It carries no PID,
+argv, env, workspace, prompt, stdin, secret, timestamp, or process handle.
+
+### Decision — TC-13.18b.2
+
+**DISPATCH_ACKNOWLEDGED → Current — TC-13.18b.2.**
+
+- The `DISPATCH_ACKNOWLEDGED` transition is now produced automatically
+  by the `WorkflowOrchestrator` via an internal `DispatchStartedObserver`
+  wired into `run_worker_observed()` → `run_dispatch_observed()`.
+- The `DispatchCycleRequest` carries a 6th field `acknowledge_transition_request`
+  (a `TransitionRequest` with `event_type == "DISPATCH_ACKNOWLEDGED"` and
+  `AcknowledgePayload`).
+- `DispatchCycleResult` carries a 6th field `acknowledge_transition`
+  (the `TransitionResult` from the ACK write).
+- The ACK is applied under the same `WorkerSlotLease` and while the
+  heartbeat is active.
 
 ### Prohibited Fake ACK Patterns
 
@@ -275,7 +300,7 @@ defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
 |---|-----------|---------------------|
 | 1 | `TASK_SPECIFIED` | TC-13.18b (PM gate) |
 | 2 | `TASK_DISPATCHED` | TC-13.18b (dispatch path) |
-| 3 | `DISPATCH_ACKNOWLEDGED` | Deferred (§5 of this doc) |
+| 3 | `DISPATCH_ACKNOWLEDGED` | Current — TC-13.18b.2 (§5 of this doc) |
 | 4 | `DELIVERY_SUBMITTED` | TC-13.18c (delivery path) |
 | 5 | `DELIVERY_ACCEPTED` | TC-13.18c (acceptance path) |
 | 6 | `DELIVERY_RETURNED` | TC-13.18c (return path) |

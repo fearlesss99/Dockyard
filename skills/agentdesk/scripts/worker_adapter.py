@@ -25,10 +25,12 @@ from dispatcher_gateway import (
     AgentCliProvider,
     DispatchRequest,
     DispatchResult,
+    DispatchStartedObserver,
     run_dispatch,
+    run_dispatch_observed,
 )
 
-__all__ = ["WorkerResult", "run_worker"]
+__all__ = ["WorkerResult", "run_worker", "run_worker_observed"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +108,80 @@ async def run_worker(
 
     # ── 6. Dispatch via Gateway ──────────────────────────────────────
     dispatch_result = await run_dispatch(request, providers)
+
+    # ── 7. Return frozen result ──────────────────────────────────────
+    return WorkerResult(
+        worker_kind=worker_kind,
+        task_difficulty=task_difficulty,
+        budget=budget,
+        dispatch_result=dispatch_result,
+    )
+
+
+async def run_worker_observed(
+    request: DispatchRequest,
+    worker_kind: WorkerKind,
+    task_difficulty: TaskDifficulty,
+    providers: Mapping[str, AgentCliProvider],
+    observer: DispatchStartedObserver,
+) -> WorkerResult:
+    """Execute a single Worker dispatch with process-start observation.
+
+    Args:
+        request: Frozen dispatch input.
+        worker_kind: Logical Worker tier label.
+        task_difficulty: Task-intrinsic difficulty.
+        providers: Call-level explicit provider mapping.
+        observer: Observer notified when the subprocess starts.
+
+    Returns:
+        ``WorkerResult`` on complete success.
+
+    Raises:
+        TypeError: If any input has the wrong type.
+        ValueError: If ``providers`` is empty.
+        DispatchGatewayError: Any Gateway error propagated as-is.
+        asyncio.CancelledError: Propagated without wrapping.
+        Observer exceptions: Propagated as-is, not captured or wrapped.
+    """
+    # ── 1. Validate request type ─────────────────────────────────────
+    if not isinstance(request, DispatchRequest):
+        raise TypeError(
+            f"request must be a DispatchRequest, "
+            f"got {type(request).__name__}"
+        )
+
+    # ── 2. Validate worker_kind ──────────────────────────────────────
+    if not isinstance(worker_kind, WorkerKind):
+        raise TypeError(
+            "worker_kind must be a WorkerKind member; "
+            f"got type {type(worker_kind).__name__}"
+        )
+
+    # ── 3. Validate task_difficulty ───────────────────────────────────
+    if not isinstance(task_difficulty, TaskDifficulty):
+        raise TypeError(
+            "task_difficulty must be a TaskDifficulty member; "
+            f"got type {type(task_difficulty).__name__}"
+        )
+
+    # ── 4. Validate providers ────────────────────────────────────────
+    if not isinstance(providers, Mapping):
+        raise TypeError(
+            f"providers must be a Mapping, "
+            f"got {type(providers).__name__}"
+        )
+    if len(providers) == 0:
+        raise ValueError("providers must not be empty")
+
+    # ── 5. Compute budget from task_difficulty (once) ────────────────
+    budget = compute_budget(
+        request.model_selection.selected_context_window_tokens,
+        task_difficulty,
+    )
+
+    # ── 6. Dispatch via Gateway (observed path) ──────────────────────
+    dispatch_result = await run_dispatch_observed(request, providers, observer)
 
     # ── 7. Return frozen result ──────────────────────────────────────
     return WorkerResult(
