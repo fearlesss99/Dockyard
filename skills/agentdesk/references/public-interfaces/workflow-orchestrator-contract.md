@@ -1,17 +1,20 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18c.2)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.1)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
 DELIVERY_SUBMITTED.  TC-13.18c.2 extends it with MAD audit,
 DELIVERY_ACCEPTED, and optional CHANGE_INTEGRATED.
+TC-13.18d.1 extends it with DELIVERY_RETURNED and TASK_REQUEUED.
 
 ## Status
 
-**Current** as of TC-13.18c.2.  The dispatch cycle (snapshot → acquire →
+**Current** as of TC-13.18d.1.  The dispatch cycle (snapshot → acquire →
 TASK_DISPATCHED → heartbeat + run_worker →
 DISPATCH_ACKNOWLEDGED → decode_worker_result →
 require_delivery_receipt → DELIVERY_SUBMITTED → stop heartbeat → release
-→ result) is implemented and callable.
+→ result) and delivery remediation (audit fail → acquire remediation lease →
+DELIVERY_RETURNED → release lease → TASK_REQUEUED (lease=None) →
+DeliveryRemediationResult) are implemented and callable.
 
 This document is the authoritative frozen specification for the
 WorkflowOrchestrator public API, ownership boundaries, hard dependencies,
@@ -307,16 +310,16 @@ defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
 | 3 | `DISPATCH_ACKNOWLEDGED` | Current — TC-13.18b.2 (§5 of this doc) |
 | 4 | `DELIVERY_SUBMITTED` | Current — TC-13.18c.1 (§13 of this doc) |
 | 5 | `DELIVERY_ACCEPTED` | Current — TC-13.18c.2 (acceptance path) |
-| 6 | `DELIVERY_RETURNED` | Target — TC-13.18d (return path) |
-| 7 | `TASK_REQUEUED` | Target — TC-13.18d (requeue path) |
+| 6 | `DELIVERY_RETURNED` | Current — TC-13.18d.1 (return path) |
+| 7 | `TASK_REQUEUED` | Current — TC-13.18d.1 (requeue path) |
 | 8 | `CHANGE_INTEGRATED` | Current — TC-13.18c.2 (integration path) |
-| 9 | `INTEGRATION_FAILED` | Target — TC-13.18d (blocked path) |
-| 10 | `TASK_BLOCKED` | TC-13.18d (blocked path) |
-| 11 | `BLOCKER_RESOLVED` | TC-13.18d (unblock path) |
-| 12 | `BLOCKER_RESCOPED` | TC-13.18d (rescope path) |
-| 13 | `BLOCKER_CANCELLED` | TC-13.18d (cancel path) |
-| 14 | `TASK_CANCELLED` | TC-13.18d (cancel path) |
-| 15 | `TASK_SUPERSEDED` | TC-13.18d (supersede path) |
+| 9 | `INTEGRATION_FAILED` | Target — TC-13.18d.2 (blocked path) |
+| 10 | `TASK_BLOCKED` | TC-13.18d.2 (blocked path) |
+| 11 | `BLOCKER_RESOLVED` | TC-13.18d.2 (unblock path) |
+| 12 | `BLOCKER_RESCOPED` | TC-13.18d.2 (rescope path) |
+| 13 | `BLOCKER_CANCELLED` | TC-13.18d.2 (cancel path) |
+| 14 | `TASK_CANCELLED` | TC-13.18d.2 (cancel path) |
+| 15 | `TASK_SUPERSEDED` | TC-13.18d.2 (supersede path) |
 
 The orchestrator does **not** duplicate `_TRANSITION_SPECS`.  It constructs
 typed `TransitionRequest` objects and passes them to `apply_transition()`.
@@ -478,16 +481,19 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18c** | DeliverySubmitted + MAD audit + Acceptance + Integration | TC-13.18b, TC-13.16b | Production |
 | **TC-13.18c.1** | DELIVERY_SUBMITTED via decode_worker_result + require_delivery_receipt | TC-13.18b.2, TC-13.9c.1 | Production — Current |
 | **TC-13.18c.2** | MAD audit + Acceptance + Integration | TC-13.18c.1 | Current |
+| **TC-13.18d.1** | DELIVERY_RETURNED + TASK_REQUEUED (fail remediation) | TC-13.18c.2 | Current |
+| **TC-13.18d.2** | Escalation + retry + cancellation + replay + fault recovery | TC-13.18d.1 | Target |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
-| **TC-13.18d** | Escalation + retry + cancellation + replay + fault recovery | TC-13.18c | Production |
-| **TC-13.19** | Real E2E closed-loop tests | TC-13.18d | Tests |
+| **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.2 | Target |
 | **TC-13.20** | HTML Dashboard | TC-13.17, TC-13.19 | Read-only UI |
 
 ---
 
 ## 13. Explicit Non-Goals
 
-TC-13.18c.1 does **not** implement:
+TC-13.18d.1 does **not** implement:
 
-- `DELIVERY_RETURNED`, `TASK_REQUEUED` → TC-13.18d
-- Retry, escalation, and cancellation execution → TC-13.18d
+- Automatic `run_dispatch_cycle()` on requeue → TC-13.18d.2
+- Auto-retry → TC-13.18d.2
+- `TASK_BLOCKED` / `INTEGRATION_FAILED` → TC-13.18d.2
+- Escalation, cancellation, supersede paths → TC-13.18d.2

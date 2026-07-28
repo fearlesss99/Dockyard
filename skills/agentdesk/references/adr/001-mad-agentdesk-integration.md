@@ -32,7 +32,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 19 | AgentDesk RateLimit service | **Target** | TC-13.14 | Provider rate-limit handling independent of escalation |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
-| 22 | AgentDesk WorkflowOrchestrator | **Target** | TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Target — TC-13.18d) |
+| 22 | AgentDesk WorkflowOrchestrator | **Target** | TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; escalation, retry, cancellation: Target — TC-13.18d.2) |
 | 23 | E2E / Recovery tests | **Target** | TC-13.19 | End-to-end validation and recovery scenarios |
 | 24 | AgentDesk HTML Dashboard | **Target** | TC-13.20 | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target 鈫?Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
@@ -6452,16 +6452,16 @@ in `ControlPlaneTransitionService._TRANSITION_SPECS` (搂2.14.8):
 | 3 | `DISPATCH_ACKNOWLEDGED` | Deferred (see 搂2.19.3) |
 | 4 | `DELIVERY_SUBMITTED` | TC-13.18c delivery path |
 | 5 | `DELIVERY_ACCEPTED` | TC-13.18c acceptance path |
-| 6 | `DELIVERY_RETURNED` | TC-13.18c return path |
-| 7 | `TASK_REQUEUED` | TC-13.18c requeue path |
+| 6 | `DELIVERY_RETURNED` | TC-13.18d.1 return path |
+| 7 | `TASK_REQUEUED` | TC-13.18d.1 requeue path |
 | 8 | `CHANGE_INTEGRATED` | TC-13.18c integration path |
-| 9 | `INTEGRATION_FAILED` | TC-13.18d blocked path |
-| 10 | `TASK_BLOCKED` | TC-13.18d blocked path |
-| 11 | `BLOCKER_RESOLVED` | TC-13.18d unblock path |
-| 12 | `BLOCKER_RESCOPED` | TC-13.18d rescope path |
-| 13 | `BLOCKER_CANCELLED` | TC-13.18d cancel path |
-| 14 | `TASK_CANCELLED` | TC-13.18d cancel path |
-| 15 | `TASK_SUPERSEDED` | TC-13.18d supersede path |
+| 9 | `INTEGRATION_FAILED` | TC-13.18d.2 blocked path |
+| 10 | `TASK_BLOCKED` | TC-13.18d.2 blocked path |
+| 11 | `BLOCKER_RESOLVED` | TC-13.18d.2 unblock path |
+| 12 | `BLOCKER_RESCOPED` | TC-13.18d.2 rescope path |
+| 13 | `BLOCKER_CANCELLED` | TC-13.18d.2 cancel path |
+| 14 | `TASK_CANCELLED` | TC-13.18d.2 cancel path |
+| 15 | `TASK_SUPERSEDED` | TC-13.18d.2 supersede path |
 
 WorkflowOrchestrator does **not** duplicate `_TRANSITION_SPECS` 鈥?it
 constructs typed `TransitionRequest` objects and passes them to
@@ -6479,7 +6479,7 @@ TC-13.18a does **not** implement:
 * Rate-limit handling 鈥?TC-13.14.
 * Git worktree lifecycle 鈥?deferred to a future task card.
 * HTML Dashboard 鈥?TC-13.20.
-* Retry, escalation, and cancellation execution 鈥?deferred to TC-13.18d.
+* Retry, escalation, and cancellation execution 鈥?deferred to TC-13.18d.2.
 * E2E / recovery tests 鈥?TC-13.19.
 * `DISPATCH_ACKNOWLEDGED` automated production 鈥?deferred to a future
   DispatcherGateway start-receipt task card.
@@ -6493,7 +6493,8 @@ TC-13.18a 鈥?this frozen contract (搂2.19)
 TC-13.9c  鈥?typed WorkerOutput / DeliveryReceipt decoding
 TC-13.18b 鈥?lease, heartbeat, Worker execution, bounded cleanup
 TC-13.18c 鈥?DeliverySubmitted, MAD audit, Acceptance, Integration
-TC-13.18d 鈥?Escalation, retry, cancellation, replay, fault recovery
+TC-13.18d.1 鈥?DELIVERY_RETURNED + TASK_REQUEUED (fail remediation)
+TC-13.18d.2 鈥?Escalation, retry, cancellation, replay, fault recovery
 TC-13.19  鈥?real E2E closed-loop tests
 TC-13.20  鈥?HTML Dashboard
 ```
@@ -6503,8 +6504,9 @@ TC-13.20  鈥?HTML Dashboard
 | TC-13.18a | This ADR | Contract only | **Target** |
 | TC-13.18b | TC-13.18a, TC-13.10c, TC-13.11c, TC-13.12d, TC-13.13b, TC-13.17b | Lease + heartbeat + run_worker + cleanup | **Current** |
 | TC-13.18c | TC-13.18b, TC-13.16b | Delivery + audit + accept + integrate | **Current** |
-| TC-13.18d | TC-13.18c | Escalation + retry + cancel + replay | **Target** |
-| TC-13.19 | TC-13.18d | E2E / recovery tests | **Target** 鈫?**Current** |
+| TC-13.18d.1 | TC-13.18c | Return + requeue (fail remediation) | **Current** |
+| TC-13.18d.2 | TC-13.18d.1 | Escalation + retry + cancel + replay | **Target** |
+| TC-13.19 | TC-13.18d.2 | E2E / recovery tests | **Target** 鈫?**Current** |
 
 ---
 
@@ -6863,8 +6865,9 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.18a | WorkflowOrchestrator frozen contract (搂2.19) | This ADR |
 | TC-13.18b | Lease + heartbeat + Worker execution + bounded cleanup | TC-13.18a, TC-13.10c, TC-13.11c, TC-13.12d, TC-13.13b, TC-13.17b |
 | TC-13.18c | DeliverySubmitted + MAD audit + Acceptance + Integration | TC-13.18b, TC-13.16b |
-| TC-13.18d | Escalation + retry + cancellation + replay + fault recovery | TC-13.18c |
-| TC-13.19 | E2E / Recovery tests | TC-13.18d |
+| TC-13.18d.1 | DELIVERY_RETURNED + TASK_REQUEUED (fail remediation) | TC-13.18c |
+| TC-13.18d.2 | Escalation + retry + cancellation + replay + fault recovery | TC-13.18d.1 |
+| TC-13.19 | E2E / Recovery tests | TC-13.18d.2 |
 | TC-13.20 | HTML Dashboard | TC-13.17, TC-13.19 |
 | TC-13.21 | ADR status update (Target 鈫?Current) | TC-13.19 |
 

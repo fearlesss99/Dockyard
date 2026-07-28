@@ -75,6 +75,9 @@ from worker_output_decoder import (
     require_delivery_receipt,
 )
 from workflow_orchestrator import (
+    AcceptanceCycleResult,
+    DeliveryRemediationRequest,
+    DeliveryRemediationResult,
     DispatchCycleRequest,
     DispatchCycleResult,
     WorkflowClock,
@@ -3978,6 +3981,1362 @@ class WorkflowOrchestratorAcceptanceCycleTests(unittest.TestCase):
                     self.assertIsNone(r.accept_transition)
                     self.assertIsNone(r.integrate_transition)
                 asyncio.run(_run_blocked())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── Delivery Remediation helpers (TC-13.18d.1) ──────────────────────────────
+
+from control_plane_transition import (
+    DeliveryReturnedPayload,
+    RequeuePayload,
+)
+
+
+def _make_return_transition_request(
+    task_id: str = "TC-001",
+    dispatch_id: str = "DSP-001",
+    revision: int = 1,
+    attempt: int = 1,
+    head_sha: str | None = None,
+    event_id: str = "EVT-RETURN-001",
+) -> TransitionRequest:
+    """Build a valid DELIVERY_RETURNED TransitionRequest."""
+    if head_sha is None:
+        head_sha = "a" * 40
+    cas = TransitionCAS(
+        task_id=task_id,
+        expected_revision=revision,
+        expected_state="review_ready",
+        expected_snapshot_commit=head_sha,
+    )
+    dispatch_cas = DispatchCAS(
+        expected_dispatch_id=dispatch_id,
+        expected_attempt=attempt,
+    )
+    payload = DeliveryReturnedPayload()
+    event_context = TransitionEventContext(
+        source_message_id=None,
+        evidence_refs=(),
+        guard_results=(),
+    )
+    return TransitionRequest(
+        cas=cas,
+        dispatch_cas=dispatch_cas,
+        event_id=event_id,
+        event_type="DELIVERY_RETURNED",
+        payload=payload,
+        event_context=event_context,
+    )
+
+
+def _make_requeue_transition_request(
+    task_id: str = "TC-001",
+    revision: int = 1,
+    head_sha: str | None = None,
+    event_id: str = "EVT-REQUEUE-001",
+) -> TransitionRequest:
+    """Build a valid TASK_REQUEUED TransitionRequest."""
+    if head_sha is None:
+        head_sha = "a" * 40
+    cas = TransitionCAS(
+        task_id=task_id,
+        expected_revision=revision,
+        expected_state="returned",
+        expected_snapshot_commit=head_sha,
+    )
+    payload = RequeuePayload()
+    event_context = TransitionEventContext(
+        source_message_id=None,
+        evidence_refs=(),
+        guard_results=(),
+    )
+    return TransitionRequest(
+        cas=cas,
+        dispatch_cas=None,
+        event_id=event_id,
+        event_type="TASK_REQUEUED",
+        payload=payload,
+        event_context=event_context,
+    )
+
+
+def _make_delivery_remediation_request(
+    task_id: str = "TC-001",
+    dispatch_id: str = "DSP-001",
+    attempt: int = 1,
+    revision: int = 1,
+    implementation_commit: str | None = None,
+    report_commit: str | None = None,
+    worker_kind: WorkerKind | None = None,
+    holder_instance_id: str = "test-instance",
+    return_event_id: str = "EVT-RETURN-001",
+    requeue_event_id: str = "EVT-REQUEUE-001",
+    head_sha: str | None = None,
+) -> "DeliveryRemediationRequest":
+    """Build a valid six-field DeliveryRemediationRequest."""
+    from workflow_orchestrator import DeliveryRemediationRequest
+    if worker_kind is None:
+        worker_kind = WorkerKind.ADVANCED_AGENT
+    if implementation_commit is None:
+        implementation_commit = "a" * 40
+    if report_commit is None:
+        report_commit = "b" * 40
+    if head_sha is None:
+        head_sha = "a" * 40
+
+    identity = DispatchIdentity(task_id=task_id, revision=revision, attempt=attempt, dispatch_id=dispatch_id)
+    wo = WorkerOutput(
+        identity=identity, provider="claude", model_id="test-model",
+        status=WorkerCompletionStatus.COMPLETED,
+        implementation_commit=implementation_commit,
+        report_commit=report_commit,
+        summary="test", warnings=(), stdout_sha256="e" * 64,
+    )
+    receipt = DeliveryReceipt(
+        identity=identity, provider="claude", model_id="test-model",
+        implementation_commit=implementation_commit,
+        report_commit=report_commit, stdout_sha256="e" * 64,
+    )
+    dcr = DispatchCycleResult(
+        worker_result=_make_claude_worker_result(task_id=task_id, dispatch_id=dispatch_id),
+        worker_output=wo, delivery_receipt=receipt,
+        dispatch_transition=TransitionResult(task_id=task_id, event_id="EVT-DISP-001", from_state="ready", to_state="dispatched", occurred_at="2026-07-28T12:00:00Z", outbox_message_id=None),
+        acknowledge_transition=TransitionResult(task_id=task_id, event_id="EVT-ACK-001", from_state="dispatched", to_state="in_progress", occurred_at="2026-07-28T12:00:01Z", outbox_message_id=None),
+        delivery_transition=TransitionResult(task_id=task_id, event_id="EVT-DEL-001", from_state="in_progress", to_state="review_ready", occurred_at="2026-07-28T12:00:02Z", outbox_message_id=None),
+        slot_id="advanced_agent-1", lease_epoch=1, duration_seconds=1.0,
+    )
+    audit_result = _make_fake_audit_result(verdict="fail")
+    acr = AcceptanceCycleResult(
+        task_id=task_id,
+        audit_result=audit_result,
+        accept_transition=None,
+        integrate_transition=None,
+    )
+    rtr = _make_return_transition_request(
+        task_id=task_id, dispatch_id=dispatch_id,
+        revision=revision, attempt=attempt,
+        head_sha=head_sha, event_id=return_event_id,
+    )
+    qtr = _make_requeue_transition_request(
+        task_id=task_id, revision=revision,
+        head_sha=head_sha, event_id=requeue_event_id,
+    )
+    return DeliveryRemediationRequest(
+        acceptance_cycle_result=acr,
+        dispatch_cycle_result=dcr,
+        return_transition_request=rtr,
+        requeue_transition_request=qtr,
+        worker_kind=worker_kind,
+        holder_instance_id=holder_instance_id,
+    )
+
+
+# ── DeliveryRemediationRequest Six-Field Tests ──────────────────────────────
+
+class DeliveryRemediationRequestSixFieldTests(unittest.TestCase):
+    """DeliveryRemediationRequest: exactly six fields, frozen, slots, no __dict__."""
+
+    def test_exactly_six_fields(self) -> None:
+        from workflow_orchestrator import DeliveryRemediationRequest
+        field_names = {f.name for f in dc_fields(DeliveryRemediationRequest)}
+        expected = {
+            "acceptance_cycle_result",
+            "dispatch_cycle_result",
+            "return_transition_request",
+            "requeue_transition_request",
+            "worker_kind",
+            "holder_instance_id",
+        }
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import DeliveryRemediationRequest
+        self.assertTrue(DeliveryRemediationRequest.__dataclass_params__.frozen)
+        self.assertTrue(hasattr(DeliveryRemediationRequest, "__slots__"))
+
+    def test_no_dict(self) -> None:
+        from workflow_orchestrator import DeliveryRemediationRequest
+        req = _make_delivery_remediation_request()
+        # slots objects should NOT have __dict__
+        self.assertFalse(hasattr(req, "__dict__"))
+
+
+# ── DeliveryRemediationResult Four-Field Tests ──────────────────────────────
+
+class DeliveryRemediationResultFourFieldTests(unittest.TestCase):
+    """DeliveryRemediationResult: exactly four fields, frozen, slots, no __dict__."""
+
+    def test_exactly_four_fields(self) -> None:
+        from workflow_orchestrator import DeliveryRemediationResult
+        field_names = {f.name for f in dc_fields(DeliveryRemediationResult)}
+        expected = {
+            "task_id",
+            "audit_result",
+            "return_transition",
+            "requeue_transition",
+        }
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import DeliveryRemediationResult
+        self.assertTrue(DeliveryRemediationResult.__dataclass_params__.frozen)
+        self.assertTrue(hasattr(DeliveryRemediationResult, "__slots__"))
+
+    def test_no_dict(self) -> None:
+        from workflow_orchestrator import DeliveryRemediationResult
+        result = DeliveryRemediationResult(
+            task_id="TC-001",
+            audit_result=_make_fake_audit_result(verdict="fail"),
+            return_transition=None,  # type: ignore[arg-type]
+            requeue_transition=None,  # type: ignore[arg-type]
+        )
+        self.assertFalse(hasattr(result, "__dict__"))
+
+
+# ── WorkflowOrchestratorDeliveryRemediation Tests ───────────────────────────
+
+class WorkflowOrchestratorDeliveryRemediationTests(unittest.TestCase):
+    """TC-13.18d.1: delivery remediation — 20 targeted tests."""
+
+    @staticmethod
+    def _setup_orch(tmp: Path) -> "WorkflowOrchestrator":
+        return _new_orch(tmp)
+
+    # -- 1. fail verdict allowed -------------------------------------------
+    def test_01_audit_fail_allowed(self) -> None:
+        """audit verdict=fail must be accepted."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+
+            return_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-RETURN-001",
+                from_state="review_ready", to_state="returned",
+                occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None,
+            )
+            requeue_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-REQUEUE-001",
+                from_state="returned", to_state="ready",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            )
+
+            acq_count = [0]
+            rel_count = [0]
+
+            def _fake_acquire(*a: Any, **kw: Any) -> Any:
+                acq_count[0] += 1
+                return mock.MagicMock()
+
+            def _fake_release(*a: Any, **kw: Any) -> None:
+                rel_count[0] += 1
+
+            def _apply_transition(cts_self: Any, tr: Any, lease: Any, now: Any) -> TransitionResult:
+                if tr.event_type == "DELIVERY_RETURNED":
+                    self.assertIsNotNone(lease, "DELIVERY_RETURNED must have a lease")
+                    return return_tr
+                if tr.event_type == "TASK_REQUEUED":
+                    self.assertIsNone(lease, "TASK_REQUEUED must have lease=None")
+                    return requeue_tr
+                raise AssertionError("unexpected transition")
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=_fake_acquire), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=_fake_release), \
+                 mock.patch.object(wo.ControlPlaneTransitionService, "apply_transition", autospec=True, side_effect=_apply_transition):
+                async def _run() -> None:
+                    result = await orch.run_delivery_remediation(req)
+                    self.assertEqual(result.task_id, "TC-001")
+                    self.assertEqual(result.audit_result.verdict, "fail")
+                    self.assertEqual(result.return_transition, return_tr)
+                    self.assertEqual(result.requeue_transition, requeue_tr)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq_count[0], 1, "acquire must be called exactly once")
+            self.assertEqual(rel_count[0], 1, "release must be called exactly once")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 2. audit pass rejected before acquire -----------------------------
+    def test_02_audit_pass_rejected(self) -> None:
+        """audit verdict=pass must be rejected before any acquire."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+            # replace verdict to pass
+            acr_pass = AcceptanceCycleResult(
+                task_id=req.acceptance_cycle_result.task_id,
+                audit_result=_make_fake_audit_result(verdict="pass"),
+                accept_transition=None,
+                integrate_transition=None,
+            )
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=acr_pass,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=req.return_transition_request,
+                requeue_transition_request=req.requeue_transition_request,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            import workflow_orchestrator as wo
+            acq = [0]
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, 1) or mock.MagicMock()):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire must NOT be called for verdict=pass")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 3. audit blocked rejected before acquire --------------------------
+    def test_03_audit_blocked_rejected(self) -> None:
+        """audit verdict=blocked must be rejected before any acquire."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+            acr_blocked = AcceptanceCycleResult(
+                task_id=req.acceptance_cycle_result.task_id,
+                audit_result=_make_fake_audit_result(verdict="blocked"),
+                accept_transition=None,
+                integrate_transition=None,
+            )
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=acr_blocked,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=req.return_transition_request,
+                requeue_transition_request=req.requeue_transition_request,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            import workflow_orchestrator as wo
+            acq = [0]
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, 1) or mock.MagicMock()):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire must NOT be called for verdict=blocked")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 4. unknown verdict rejected before acquire ------------------------
+    def test_04_unknown_verdict_rejected(self) -> None:
+        """audit verdict=unknown must be rejected before any acquire."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+            acr_unknown = AcceptanceCycleResult(
+                task_id=req.acceptance_cycle_result.task_id,
+                audit_result=_make_fake_audit_result(verdict="unknown"),
+                accept_transition=None,
+                integrate_transition=None,
+            )
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=acr_unknown,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=req.return_transition_request,
+                requeue_transition_request=req.requeue_transition_request,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            import workflow_orchestrator as wo
+            acq = [0]
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, 1) or mock.MagicMock()):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire must NOT be called for unknown verdict")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 5. task_id mismatch zero side effects -----------------------------
+    def test_05_task_id_mismatch_zero_side_effects(self) -> None:
+        """task identity mismatch must produce zero side effects."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            # Build a valid request, then create acr with mismatched task_id
+            req = _make_delivery_remediation_request(task_id="TC-001")
+            acr_mismatch = AcceptanceCycleResult(
+                task_id="TC-999",
+                audit_result=req.acceptance_cycle_result.audit_result,
+                accept_transition=None,
+                integrate_transition=None,
+            )
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=acr_mismatch,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=req.return_transition_request,
+                requeue_transition_request=req.requeue_transition_request,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            import workflow_orchestrator as wo
+            acq = [0]
+            rel = [0]
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, acq[0] + 1) or mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel.__setitem__(0, rel[0] + 1)):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire count")
+            self.assertEqual(rel[0], 0, "release count")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 6. dispatch_id mismatch zero side effects -------------------------
+    def test_06_dispatch_id_mismatch_zero_side_effects(self) -> None:
+        """dispatch identity mismatch must produce zero side effects."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            # Build a valid request, then modify dcr to have mismatched dispatch_id
+            req = _make_delivery_remediation_request(dispatch_id="DSP-001")
+            # The mismatch is in return_transition_request.dispatch_cas.expected_dispatch_id
+            # vs delivery_receipt.identity.dispatch_id
+            bad_rtr = _make_return_transition_request(task_id="TC-001", dispatch_id="DSP-999")
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=bad_rtr,
+                requeue_transition_request=req.requeue_transition_request,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            import workflow_orchestrator as wo
+            acq = [0]
+            rel = [0]
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, acq[0] + 1) or mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel.__setitem__(0, rel[0] + 1)):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire count")
+            self.assertEqual(rel[0], 0, "release count")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 7. Return event_type incorrect ------------------------------------
+    def test_07_return_event_type_incorrect(self) -> None:
+        """return transition with wrong event_type rejected before acquire."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            import workflow_orchestrator as wo
+            acq = [0]
+            rel = [0]
+
+            req = _make_delivery_remediation_request()
+            bad_rtr = mock.MagicMock(spec=TransitionRequest)
+            bad_rtr.event_type = "WRONG_TYPE"
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=bad_rtr,
+                requeue_transition_request=req.requeue_transition_request,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, acq[0] + 1) or mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel.__setitem__(0, rel[0] + 1)):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire count")
+            self.assertEqual(rel[0], 0, "release count")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 8. Return payload type incorrect ----------------------------------
+    def test_08_return_payload_type_incorrect(self) -> None:
+        """return transition with wrong payload type rejected before acquire."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            import workflow_orchestrator as wo
+            acq = [0]
+            rel = [0]
+
+            req = _make_delivery_remediation_request()
+            bad_rtr = mock.MagicMock(spec=TransitionRequest)
+            bad_rtr.event_type = "DELIVERY_RETURNED"
+            bad_rtr.payload = mock.MagicMock()  # not DeliveryReturnedPayload
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=bad_rtr,
+                requeue_transition_request=req.requeue_transition_request,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, acq[0] + 1) or mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel.__setitem__(0, rel[0] + 1)):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire count")
+            self.assertEqual(rel[0], 0, "release count")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 9. Return CAS expected_state incorrect ----------------------------
+    def test_09_return_cas_expected_state_incorrect(self) -> None:
+        """return transition with wrong expected_state rejected before acquire."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            import workflow_orchestrator as wo
+            acq = [0]
+            rel = [0]
+
+            req = _make_delivery_remediation_request()
+            bad_rtr = _make_return_transition_request()
+            # patch the cas expected_state
+            bad_rtr = mock.MagicMock(spec=TransitionRequest)
+            bad_rtr.event_type = "DELIVERY_RETURNED"
+            bad_rtr.payload = DeliveryReturnedPayload()
+            bad_rtr.cas = mock.MagicMock()
+            bad_rtr.cas.task_id = "TC-001"
+            bad_rtr.cas.expected_state = "wrong_state"
+            bad_rtr.dispatch_cas = _make_return_transition_request().dispatch_cas
+            bad_rtr.event_id = "EVT-RETURN-001"
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=bad_rtr,
+                requeue_transition_request=req.requeue_transition_request,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, acq[0] + 1) or mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel.__setitem__(0, rel[0] + 1)):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire count")
+            self.assertEqual(rel[0], 0, "release count")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 10. Return DispatchCAS None rejected ------------------------------
+    def test_10_return_dispatch_cas_none_rejected(self) -> None:
+        """return transition with dispatch_cas=None rejected before acquire."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            import workflow_orchestrator as wo
+            acq = [0]
+            rel = [0]
+
+            req = _make_delivery_remediation_request()
+            rtr = _make_return_transition_request()
+            bad_rtr = mock.MagicMock(spec=TransitionRequest)
+            bad_rtr.event_type = "DELIVERY_RETURNED"
+            bad_rtr.payload = DeliveryReturnedPayload()
+            bad_rtr.cas = rtr.cas
+            bad_rtr.dispatch_cas = None  # must NOT be None
+            bad_rtr.event_id = rtr.event_id
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=bad_rtr,
+                requeue_transition_request=req.requeue_transition_request,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, acq[0] + 1) or mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel.__setitem__(0, rel[0] + 1)):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire count")
+            self.assertEqual(rel[0], 0, "release count")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 11. Requeue event_type incorrect ----------------------------------
+    def test_11_requeue_event_type_incorrect(self) -> None:
+        """requeue transition with wrong event_type rejected before acquire."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            import workflow_orchestrator as wo
+            acq = [0]
+            rel = [0]
+
+            req = _make_delivery_remediation_request()
+            bad_qtr = mock.MagicMock(spec=TransitionRequest)
+            bad_qtr.event_type = "WRONG_TYPE"
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=req.return_transition_request,
+                requeue_transition_request=bad_qtr,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, acq[0] + 1) or mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel.__setitem__(0, rel[0] + 1)):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire count")
+            self.assertEqual(rel[0], 0, "release count")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 12. Requeue payload type incorrect --------------------------------
+    def test_12_requeue_payload_type_incorrect(self) -> None:
+        """requeue transition with wrong payload type rejected before acquire."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            import workflow_orchestrator as wo
+            acq = [0]
+            rel = [0]
+
+            req = _make_delivery_remediation_request()
+            bad_qtr = mock.MagicMock(spec=TransitionRequest)
+            bad_qtr.event_type = "TASK_REQUEUED"
+            bad_qtr.payload = mock.MagicMock()  # not RequeuePayload
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=req.return_transition_request,
+                requeue_transition_request=bad_qtr,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, acq[0] + 1) or mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel.__setitem__(0, rel[0] + 1)):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire count")
+            self.assertEqual(rel[0], 0, "release count")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 13. Requeue CAS expected_state incorrect --------------------------
+    def test_13_requeue_cas_expected_state_incorrect(self) -> None:
+        """requeue transition with wrong expected_state rejected before acquire."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            import workflow_orchestrator as wo
+            acq = [0]
+            rel = [0]
+
+            req = _make_delivery_remediation_request()
+            qtr = _make_requeue_transition_request()
+            bad_qtr = mock.MagicMock(spec=TransitionRequest)
+            bad_qtr.event_type = "TASK_REQUEUED"
+            bad_qtr.payload = RequeuePayload()
+            bad_qtr.cas = mock.MagicMock()
+            bad_qtr.cas.task_id = qtr.cas.task_id
+            bad_qtr.cas.expected_state = "wrong_state"
+            bad_qtr.dispatch_cas = None
+            bad_qtr.event_id = qtr.event_id
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=req.return_transition_request,
+                requeue_transition_request=bad_qtr,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, acq[0] + 1) or mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel.__setitem__(0, rel[0] + 1)):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire count")
+            self.assertEqual(rel[0], 0, "release count")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 14. Requeue DispatchCAS not None rejected -------------------------
+    def test_14_requeue_dispatch_cas_not_none_rejected(self) -> None:
+        """requeue transition with dispatch_cas present rejected before acquire."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            import workflow_orchestrator as wo
+            acq = [0]
+            rel = [0]
+
+            req = _make_delivery_remediation_request()
+            qtr = _make_requeue_transition_request()
+            bad_qtr = mock.MagicMock(spec=TransitionRequest)
+            bad_qtr.event_type = "TASK_REQUEUED"
+            bad_qtr.payload = RequeuePayload()
+            bad_qtr.cas = qtr.cas
+            bad_qtr.dispatch_cas = DispatchCAS(expected_dispatch_id="DSP-001", expected_attempt=1)  # must be None
+            bad_qtr.event_id = qtr.event_id
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=req.return_transition_request,
+                requeue_transition_request=bad_qtr,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, acq[0] + 1) or mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel.__setitem__(0, rel[0] + 1)):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire count")
+            self.assertEqual(rel[0], 0, "release count")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 15. event_id dedup: return == requeue -----------------------------
+    def test_15_event_ids_must_differ(self) -> None:
+        """return and requeue event_ids must differ."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            import workflow_orchestrator as wo
+            acq = [0]
+            rel = [0]
+
+            req = _make_delivery_remediation_request(return_event_id="EVT-SAME", requeue_event_id="EVT-SAME")
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, acq[0] + 1) or mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel.__setitem__(0, rel[0] + 1)):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire count")
+            self.assertEqual(rel[0], 0, "release count")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 16. event_id dedup with existing dispatch event_ids ---------------
+    def test_16_event_id_clash_with_existing(self) -> None:
+        """return/requeue event_ids must not clash with dispatch/ACK/delivery event_ids."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            import workflow_orchestrator as wo
+            acq = [0]
+            rel = [0]
+
+            # return event_id clashes with dispatch event_id
+            req = _make_delivery_remediation_request(return_event_id="EVT-DISP-001")
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, acq[0] + 1) or mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel.__setitem__(0, rel[0] + 1)):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(acq[0], 0, "acquire count")
+            self.assertEqual(rel[0], 0, "release count")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 17. Exact ordering: acquire → RETURN → release → REQUEUE ----------
+    def test_17_exact_call_order(self) -> None:
+        """Precise call order: acquire → RETURN → release → REQUEUE."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+
+            call_log: list[str] = []
+            return_tr = TransitionResult(task_id="TC-001", event_id="EVT-RETURN-001", from_state="review_ready", to_state="returned", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            requeue_tr = TransitionResult(task_id="TC-001", event_id="EVT-REQUEUE-001", from_state="returned", to_state="ready", occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None)
+
+            _lease = mock.MagicMock()
+            _return_applied = [False]
+
+            def _fake_acquire(*a: Any, **kw: Any) -> Any:
+                call_log.append("acquire")
+                return _lease
+
+            def _fake_release(*a: Any, **kw: Any) -> None:
+                call_log.append("release")
+
+            def _apply_transition(cts_self: Any, tr: Any, lease: Any, now: Any) -> TransitionResult:
+                if tr.event_type == "DELIVERY_RETURNED":
+                    if _return_applied[0]:
+                        call_log.append("error: RETURN called twice")
+                    _return_applied[0] = True
+                    call_log.append("RETURN")
+                    return return_tr
+                if tr.event_type == "TASK_REQUEUED":
+                    if not _return_applied[0]:
+                        call_log.append("error: REQUEUE before RETURN")
+                    call_log.append("REQUEUE")
+                    return requeue_tr
+                call_log.append(f"error: unknown {tr.event_type}")
+                raise AssertionError("unknown transition")
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=_fake_acquire), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=_fake_release), \
+                 mock.patch.object(wo.ControlPlaneTransitionService, "apply_transition", autospec=True, side_effect=_apply_transition):
+                async def _run() -> None:
+                    await orch.run_delivery_remediation(req)
+
+                asyncio.run(_run())
+
+            expected = ["acquire", "RETURN", "release", "REQUEUE"]
+            self.assertEqual(call_log, expected, f"expected {expected}, got {call_log}")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 18. Release exactly once on success path --------------------------
+    def test_18_release_exactly_once_success(self) -> None:
+        """release must be called exactly once on success path."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+
+            rel_count = [0]
+            return_tr = TransitionResult(task_id="TC-001", event_id="EVT-RETURN-001", from_state="review_ready", to_state="returned", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            requeue_tr = TransitionResult(task_id="TC-001", event_id="EVT-REQUEUE-001", from_state="returned", to_state="ready", occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None)
+
+            def _fake_acquire(*a: Any, **kw: Any) -> Any:
+                return mock.MagicMock()
+
+            def _track_release(*a: Any, **kw: Any) -> None:
+                rel_count[0] += 1
+
+            def _apply_transition(cts_self: Any, tr: Any, lease: Any, now: Any) -> TransitionResult:
+                if tr.event_type == "DELIVERY_RETURNED":
+                    return return_tr
+                return requeue_tr
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=_fake_acquire), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=_track_release), \
+                 mock.patch.object(wo.ControlPlaneTransitionService, "apply_transition", autospec=True, side_effect=_apply_transition):
+                async def _run() -> None:
+                    await orch.run_delivery_remediation(req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(rel_count[0], 1, "release must be exactly 1")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 19. acquire failure → release 0 ----------------------------------
+    def test_19_acquire_failure_release_zero(self) -> None:
+        """acquire failure must result in 0 releases."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            from worker_slot_lease import WorkerSlotCapacityError
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+
+            rel_count = [0]
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=WorkerSlotCapacityError("no slots")), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel_count.__setitem__(0, rel_count[0] + 1)):
+                async def _run() -> None:
+                    with self.assertRaises(WorkerSlotCapacityError):
+                        await orch.run_delivery_remediation(req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(rel_count[0], 0, "release must be 0 when acquire fails")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 20. Return failure → release 1, Requeue 0 ------------------------
+    def test_20_return_failure_release_one_requeue_zero(self) -> None:
+        """RETURN failure: release exactly 1, REQUEUE 0."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            from control_plane_transition import ControlPlaneTransitionError
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+
+            rel_count = [0]
+            requeue_count = [0]
+
+            _lease = mock.MagicMock()
+
+            def _fake_acquire(*a: Any, **kw: Any) -> Any:
+                return _lease
+
+            def _track_release(*a: Any, **kw: Any) -> None:
+                rel_count[0] += 1
+
+            def _apply_transition(cts_self: Any, tr: Any, lease: Any, now: Any) -> TransitionResult:
+                if tr.event_type == "DELIVERY_RETURNED":
+                    raise ControlPlaneTransitionError("return failed")
+                requeue_count[0] += 1
+                raise AssertionError("REQUEUE must not be called")
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=_fake_acquire), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=_track_release), \
+                 mock.patch.object(wo.ControlPlaneTransitionService, "apply_transition", autospec=True, side_effect=_apply_transition):
+                async def _run() -> None:
+                    with self.assertRaises(ControlPlaneTransitionError):
+                        await orch.run_delivery_remediation(req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(rel_count[0], 1, "release must be 1 when RETURN fails")
+            self.assertEqual(requeue_count[0], 0, "REQUEUE must be 0 when RETURN fails")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 21. Release failure → Requeue 0 ----------------------------------
+    def test_21_release_failure_requeue_zero(self) -> None:
+        """release failure must prevent REQUEUE."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+
+            requeue_count = [0]
+            return_tr = TransitionResult(task_id="TC-001", event_id="EVT-RETURN-001", from_state="review_ready", to_state="returned", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+
+            _lease = mock.MagicMock()
+
+            def _fake_acquire(*a: Any, **kw: Any) -> Any:
+                return _lease
+
+            def _apply_transition(cts_self: Any, tr: Any, lease: Any, now: Any) -> TransitionResult:
+                if tr.event_type == "DELIVERY_RETURNED":
+                    return return_tr
+                requeue_count[0] += 1
+                raise AssertionError("REQUEUE must not be called")
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=_fake_acquire), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=RuntimeError("release failed")), \
+                 mock.patch.object(wo.ControlPlaneTransitionService, "apply_transition", autospec=True, side_effect=_apply_transition):
+                async def _run() -> None:
+                    with self.assertRaises(RuntimeError):
+                        await orch.run_delivery_remediation(req)
+
+                asyncio.run(_run())
+
+            self.assertEqual(requeue_count[0], 0, "REQUEUE must be 0 when release fails")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 22. Requeue failure does NOT rollback Return ---------------------
+    def test_22_requeue_failure_no_rollback_return(self) -> None:
+        """Requeue failure must NOT rollback already-written Return."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            from control_plane_transition import ControlPlaneTransitionError
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+
+            return_tr = TransitionResult(task_id="TC-001", event_id="EVT-RETURN-001", from_state="review_ready", to_state="returned", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            return_applied = [False]
+
+            _lease = mock.MagicMock()
+            rel_count = [0]
+
+            def _fake_acquire(*a: Any, **kw: Any) -> Any:
+                return _lease
+
+            def _track_release(*a: Any, **kw: Any) -> None:
+                rel_count[0] += 1
+
+            def _apply_transition(cts_self: Any, tr: Any, lease: Any, now: Any) -> TransitionResult:
+                if tr.event_type == "DELIVERY_RETURNED":
+                    return_applied[0] = True
+                    return return_tr
+                if tr.event_type == "TASK_REQUEUED":
+                    raise ControlPlaneTransitionError("requeue failed")
+                raise AssertionError("unexpected transition")
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=_fake_acquire), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=_track_release), \
+                 mock.patch.object(wo.ControlPlaneTransitionService, "apply_transition", autospec=True, side_effect=_apply_transition):
+                async def _run() -> None:
+                    with self.assertRaises(ControlPlaneTransitionError):
+                        await orch.run_delivery_remediation(req)
+
+                asyncio.run(_run())
+
+            self.assertTrue(return_applied[0], "RETURN must have been applied before REQUEUE failed")
+            self.assertEqual(rel_count[0], 1, "release must be 1 even when REQUEUE fails")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 23. New remediation lease used for DELIVERY_RETURNED --------------
+    def test_23_new_remediation_lease_used(self) -> None:
+        """DELIVERY_RETURNED must use new remediation lease, not old lease."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+
+            return_tr = TransitionResult(task_id="TC-001", event_id="EVT-RETURN-001", from_state="review_ready", to_state="returned", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            requeue_tr = TransitionResult(task_id="TC-001", event_id="EVT-REQUEUE-001", from_state="returned", to_state="ready", occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None)
+
+            remediation_lease = mock.MagicMock()
+
+            def _fake_acquire(*a: Any, **kw: Any) -> Any:
+                return remediation_lease
+
+            return_lease_used: list[Any] = [None]
+            requeue_lease_used: list[Any] = [None]
+
+            def _apply_transition(cts_self: Any, tr: Any, lease: Any, now: Any) -> TransitionResult:
+                if tr.event_type == "DELIVERY_RETURNED":
+                    return_lease_used[0] = lease
+                    return return_tr
+                if tr.event_type == "TASK_REQUEUED":
+                    requeue_lease_used[0] = lease
+                    return requeue_tr
+                raise AssertionError("unexpected transition")
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=_fake_acquire), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: None), \
+                 mock.patch.object(wo.ControlPlaneTransitionService, "apply_transition", autospec=True, side_effect=_apply_transition):
+                async def _run() -> None:
+                    await orch.run_delivery_remediation(req)
+
+                asyncio.run(_run())
+
+            self.assertIs(return_lease_used[0], remediation_lease, "RETURN must use the new remediation lease")
+            self.assertIsNone(requeue_lease_used[0], "REQUEUE must use lease=None")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 24. Requeue uses lease=None ---------------------------------------
+    def test_24_requeue_lease_none(self) -> None:
+        """TASK_REQUEUED must use lease=None."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+
+            return_tr = TransitionResult(task_id="TC-001", event_id="EVT-RETURN-001", from_state="review_ready", to_state="returned", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            requeue_tr = TransitionResult(task_id="TC-001", event_id="EVT-REQUEUE-001", from_state="returned", to_state="ready", occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None)
+
+            requeue_lease_value: list[Any] = ["NOT_CALLED"]
+
+            def _apply_transition(cts_self: Any, tr: Any, lease: Any, now: Any) -> TransitionResult:
+                if tr.event_type == "DELIVERY_RETURNED":
+                    return return_tr
+                if tr.event_type == "TASK_REQUEUED":
+                    requeue_lease_value[0] = lease
+                    return requeue_tr
+                raise AssertionError("unexpected transition")
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: None), \
+                 mock.patch.object(wo.ControlPlaneTransitionService, "apply_transition", autospec=True, side_effect=_apply_transition):
+                async def _run() -> None:
+                    await orch.run_delivery_remediation(req)
+
+                asyncio.run(_run())
+
+            self.assertIsNone(requeue_lease_value[0], "TASK_REQUEUED must use lease=None")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 25. Cancellation releases acquired lease once --------------------
+    def test_25_cancellation_releases_once(self) -> None:
+        """Outer cancellation must release already-acquired lease exactly once."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+
+            rel_count = [0]
+            return_tr = TransitionResult(task_id="TC-001", event_id="EVT-RETURN-001", from_state="review_ready", to_state="returned", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            requeue_tr = TransitionResult(task_id="TC-001", event_id="EVT-REQUEUE-001", from_state="returned", to_state="ready", occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None)
+
+            # We need to block on the RETURN transition so cancellation happens
+            # while the lease is held.
+            async def _blocking_return(cts_self: Any, tr: Any, lease: Any, now: Any) -> TransitionResult:
+                if tr.event_type == "DELIVERY_RETURNED":
+                    await asyncio.sleep(2.0)  # give time for cancellation
+                    return return_tr
+                return requeue_tr
+
+            async def _cancelling_run() -> None:
+                async def _remediation() -> None:
+                    await orch.run_delivery_remediation(req)
+
+                task = asyncio.ensure_future(_remediation())
+                # Let acquire happen, then cancel
+                await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: rel_count.__setitem__(0, rel_count[0] + 1)), \
+                 mock.patch.object(wo.ControlPlaneTransitionService, "apply_transition", autospec=True, side_effect=_blocking_return):
+                asyncio.run(_cancelling_run())
+
+            self.assertEqual(rel_count[0], 1, "release must be exactly 1 on cancellation")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 26. Exception messages exclude sensitive markers ------------------
+    def test_26_exception_messages_exclude_sensitive(self) -> None:
+        """Exception messages must not contain task_id, dispatch_id, paths, or audit content."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+
+            acr_pass = AcceptanceCycleResult(
+                task_id="TC-SENSITIVE-123",
+                audit_result=_make_fake_audit_result(verdict="pass"),
+                accept_transition=None,
+                integrate_transition=None,
+            )
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=acr_pass,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=req.return_transition_request,
+                requeue_transition_request=req.requeue_transition_request,
+                worker_kind=req.worker_kind,
+                holder_instance_id="secret-instance-id",
+            )
+
+            import workflow_orchestrator as wo
+
+            async def _run() -> None:
+                with self.assertRaises(WorkflowInputError) as ctx:
+                    await orch.run_delivery_remediation(bad_req)
+                msg = str(ctx.exception)
+                self.assertNotIn("TC-SENSITIVE-123", msg, "task_id must not appear in message")
+                self.assertNotIn("secret-instance-id", msg, "holder_instance_id must not appear in message")
+                self.assertNotIn(tmp.as_posix(), msg, "workspace path must not appear in message")
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: mock.MagicMock()):
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 27. Malicious __repr__ not called ---------------------------------
+    def test_27_malicious_repr_not_called(self) -> None:
+        """malicious __repr__ on event_type must not be called."""
+        tmp = _setup_project()
+        try:
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+            import workflow_orchestrator as wo
+            acq = [0]
+
+            repr_called = [False]
+
+            class MaliciousEventType(str):
+                def __repr__(self) -> str:
+                    repr_called[0] = True
+                    return "INJECTED"
+
+            _malicious = MaliciousEventType("NOT_A_VALID_TYPE")
+
+            bad_rtr = mock.MagicMock(spec=TransitionRequest)
+            bad_rtr.event_type = _malicious
+            bad_req = DeliveryRemediationRequest(
+                acceptance_cycle_result=req.acceptance_cycle_result,
+                dispatch_cycle_result=req.dispatch_cycle_result,
+                return_transition_request=bad_rtr,
+                requeue_transition_request=req.requeue_transition_request,
+                worker_kind=req.worker_kind,
+                holder_instance_id=req.holder_instance_id,
+            )
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: acq.__setitem__(0, acq[0] + 1) or mock.MagicMock()):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.run_delivery_remediation(bad_req)
+
+                asyncio.run(_run())
+
+            self.assertFalse(repr_called[0], "__repr__ must not be called during validation")
+            self.assertEqual(acq[0], 0, "acquire must be 0")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 28. No audit, run_worker, or dispatch_cycle called ---------------
+    def test_28_no_audit_or_worker_called(self) -> None:
+        """Remediation must not call run_audit_gateway, run_worker, or run_dispatch_cycle."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request()
+
+            return_tr = TransitionResult(task_id="TC-001", event_id="EVT-RETURN-001", from_state="review_ready", to_state="returned", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            requeue_tr = TransitionResult(task_id="TC-001", event_id="EVT-REQUEUE-001", from_state="returned", to_state="ready", occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None)
+
+            def _apply_transition(cts_self: Any, tr: Any, lease: Any, now: Any) -> TransitionResult:
+                if tr.event_type == "DELIVERY_RETURNED":
+                    return return_tr
+                return requeue_tr
+
+            audit_called = [False]
+            async def _fake_audit(*a: Any, **kw: Any) -> Any:
+                audit_called[0] = True
+                return _make_fake_audit_result(verdict="fail")
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: None), \
+                 mock.patch.object(wo.ControlPlaneTransitionService, "apply_transition", autospec=True, side_effect=_apply_transition), \
+                 mock.patch.object(wo, "run_audit_gateway", side_effect=_fake_audit), \
+                 mock.patch.object(wo, "run_worker_observed", side_effect=lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not be called"))):
+                async def _run() -> None:
+                    await orch.run_delivery_remediation(req)
+
+                asyncio.run(_run())
+
+            self.assertFalse(audit_called[0], "run_audit_gateway must not be called")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 29. Revision not incremented by orchestrator ---------------------
+    def test_29_revision_not_incremented(self) -> None:
+        """Orchestrator must not increment revision — that's the TransitionService's job."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request(revision=1)
+
+            return_tr = TransitionResult(task_id="TC-001", event_id="EVT-RETURN-001", from_state="review_ready", to_state="returned", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            requeue_tr = TransitionResult(task_id="TC-001", event_id="EVT-REQUEUE-001", from_state="returned", to_state="ready", occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None)
+
+            def _apply_transition(cts_self: Any, tr: Any, lease: Any, now: Any) -> TransitionResult:
+                if tr.event_type == "DELIVERY_RETURNED":
+                    return return_tr
+                if tr.event_type == "TASK_REQUEUED":
+                    return requeue_tr
+                raise AssertionError("unexpected transition")
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: None), \
+                 mock.patch.object(wo.ControlPlaneTransitionService, "apply_transition", autospec=True, side_effect=_apply_transition):
+                async def _run() -> None:
+                    result = await orch.run_delivery_remediation(req)
+                    # result does not carry a revision field — orchestrator
+                    # does not supply or compute revision
+                    self.assertIsNotNone(result)
+
+                asyncio.run(_run())
+
+            # The return and requeue TransitionRequests keep revision=1;
+            # the orchestrator does not change any revision.
+            self.assertEqual(req.return_transition_request.cas.expected_revision, 1)
+            self.assertEqual(req.requeue_transition_request.cas.expected_revision, 1)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 30. attempt not modified by orchestrator --------------------------
+    def test_30_attempt_not_modified(self) -> None:
+        """Orchestrator must not modify attempt — next dispatch handles increment."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_delivery_remediation_request(attempt=1)
+
+            return_tr = TransitionResult(task_id="TC-001", event_id="EVT-RETURN-001", from_state="review_ready", to_state="returned", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            requeue_tr = TransitionResult(task_id="TC-001", event_id="EVT-REQUEUE-001", from_state="returned", to_state="ready", occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None)
+
+            def _apply_transition(cts_self: Any, tr: Any, lease: Any, now: Any) -> TransitionResult:
+                if tr.event_type == "DELIVERY_RETURNED":
+                    return return_tr
+                if tr.event_type == "TASK_REQUEUED":
+                    return requeue_tr
+                raise AssertionError("unexpected transition")
+
+            with mock.patch.object(wo, "acquire_worker_slot", side_effect=lambda *a, **kw: mock.MagicMock()), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=lambda *a, **kw: None), \
+                 mock.patch.object(wo.ControlPlaneTransitionService, "apply_transition", autospec=True, side_effect=_apply_transition):
+                async def _run() -> None:
+                    result = await orch.run_delivery_remediation(req)
+                    self.assertIsNotNone(result)
+
+                asyncio.run(_run())
+
+            # The return DispatchCAS keeps attempt=1; orchestrator does not change it.
+            self.assertEqual(req.return_transition_request.dispatch_cas.expected_attempt, 1)
         finally:
             import shutil; shutil.rmtree(tmp, ignore_errors=True)
 

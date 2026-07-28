@@ -1,4 +1,4 @@
-"""AgentDesk WorkflowOrchestrator — TC-13.18b / TC-13.18b.2 / TC-13.18c.1 / TC-13.18c.2.
+"""AgentDesk WorkflowOrchestrator — TC-13.18b / TC-13.18b.2 / TC-13.18c.1 / TC-13.18c.2 / TC-13.18d.1.
 
 Single dispatch-cycle execution: snapshot -> acquire lease ->
 TASK_DISPATCHED -> heartbeat + run_worker_observed ->
@@ -10,8 +10,11 @@ Acceptance cycle (TC-13.18c.2): run_audit_gateway → verdict=pass →
 acquire review lease → DELIVERY_ACCEPTED → release lease →
 optional CHANGE_INTEGRATED → AcceptanceCycleResult.
 
+Delivery remediation (TC-13.18d.1): audit verdict=fail →
+acquire remediation lease → DELIVERY_RETURNED → release lease →
+TASK_REQUEUED (lease=None) → DeliveryRemediationResult.
+
 Non-goals (explicitly excluded):
-* DELIVERY_RETURNED, TASK_REQUEUED
 * Escalation, retry, automatic blocked/fail remediation
 * Codex output decoding (blocked until TC-13.9c.2)
 * Parsing stdout/stderr manually, guessing commits from Git HEAD
@@ -35,10 +38,12 @@ from control_plane_transition import (
     AcknowledgePayload,
     ControlPlaneTransitionService,
     DeliveryAcceptedPayload,
+    DeliveryReturnedPayload,
     DeliverySubmittedPayload,
     DispatchCAS,
     DispatchPayload,
     IntegrationPayload,
+    RequeuePayload,
     TransitionCAS,
     TransitionEventContext,
     TransitionRequest,
@@ -78,6 +83,8 @@ __all__ = [
     "AcceptanceCycleRequest",
     "AcceptanceCycleResult",
     "DeliveryReceipt",
+    "DeliveryRemediationRequest",
+    "DeliveryRemediationResult",
     "DispatchCycleRequest",
     "DispatchCycleResult",
     "WorkerOutput",
@@ -431,6 +438,34 @@ class AcceptanceCycleResult:
     audit_result: MadAuditGatewayResult
     accept_transition: TransitionResult | None
     integrate_transition: TransitionResult | None
+
+
+# -- DeliveryRemediation types (TC-13.18d.1) ----------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryRemediationRequest:
+    """Immutable input for delivery remediation — exactly six fields.
+
+    All identifiers are caller-supplied.
+    """
+
+    acceptance_cycle_result: AcceptanceCycleResult
+    dispatch_cycle_result: DispatchCycleResult
+    return_transition_request: TransitionRequest
+    requeue_transition_request: TransitionRequest
+    worker_kind: WorkerKind
+    holder_instance_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryRemediationResult:
+    """Immutable result of delivery remediation — exactly four fields."""
+
+    task_id: str
+    audit_result: MadAuditGatewayResult
+    return_transition: TransitionResult
+    requeue_transition: TransitionResult
 
 
 # -- exception hierarchy ------------------------------------------------------
@@ -1239,4 +1274,239 @@ class WorkflowOrchestrator:
             audit_result=audit_result,
             accept_transition=accept_result,
             integrate_transition=integrate_result,
+        )
+
+    async def run_delivery_remediation(
+        self,
+        request: DeliveryRemediationRequest,
+    ) -> DeliveryRemediationResult:
+        """Execute delivery remediation for audit fail verdet (TC-13.18d.1).
+
+        Execution order:
+        1. validate DeliveryRemediationRequest
+        2. clock.now()
+        3. acquire_worker_slot() for remediation lease
+        4. apply_transition(DELIVERY_RETURNED, remediation_lease, now)
+        5. release_worker_slot() exactly once
+        6. apply_transition(TASK_REQUEUED, lease=None, now)
+        7. return DeliveryRemediationResult
+        """
+        # -- 1. Validate request type -----------------------------------------
+        if not isinstance(request, DeliveryRemediationRequest):
+            raise WorkflowInputError(
+                "request must be DeliveryRemediationRequest, "
+                f"got {type(request).__name__}"
+            )
+
+        acr = request.acceptance_cycle_result
+        dcr = request.dispatch_cycle_result
+        receipt = dcr.delivery_receipt
+
+        # -- 1a. Validate audit result: must be "fail" -----------------------
+        if not isinstance(acr.audit_result, MadAuditGatewayResult):
+            raise WorkflowInputError(
+                "acceptance_cycle_result.audit_result must be "
+                "MadAuditGatewayResult"
+            )
+
+        verdict = acr.audit_result.verdict
+        if verdict != "fail":
+            raise WorkflowInputError(
+                "acceptance_cycle_result audit verdict must be 'fail'"
+            )
+
+        # -- 1b. Fail-closed: accept/integrate transitions must be None ------
+        if acr.accept_transition is not None:
+            raise WorkflowInvariantError(
+                "accept_transition must be None for fail verdet"
+            )
+        if acr.integrate_transition is not None:
+            raise WorkflowInvariantError(
+                "integrate_transition must be None for fail verdet"
+            )
+
+        # -- 1c. Validate worker_kind ----------------------------------------
+        if not isinstance(request.worker_kind, WorkerKind):
+            raise WorkflowInputError(
+                "worker_kind must be WorkerKind, "
+                f"got {type(request.worker_kind).__name__}"
+            )
+
+        # -- 1d. Validate holder_instance_id ---------------------------------
+        if not isinstance(request.holder_instance_id, str) or \
+           not request.holder_instance_id:
+            raise WorkflowInputError(
+                "holder_instance_id must be a non-empty str"
+            )
+
+        # -- 1e. Identity binding: task_id must be consistent ----------------
+        task_id = acr.task_id
+        if task_id != receipt.identity.task_id:
+            raise WorkflowInputError(
+                "acceptance_cycle_result task_id must match "
+                "dispatch cycle delivery receipt task_id"
+            )
+
+        # -- 1f. Validate return_transition_request --------------------------
+        rtr = request.return_transition_request
+
+        # event_type must be DELIVERY_RETURNED
+        if rtr.event_type != "DELIVERY_RETURNED":
+            raise WorkflowInputError(
+                "return_transition_request event_type must be "
+                "DELIVERY_RETURNED"
+            )
+
+        # payload must be DeliveryReturnedPayload
+        if not isinstance(rtr.payload, DeliveryReturnedPayload):
+            raise WorkflowInputError(
+                "return_transition_request payload must be "
+                "DeliveryReturnedPayload"
+            )
+
+        # CAS task_id must match
+        if rtr.cas.task_id != task_id:
+            raise WorkflowInputError(
+                "return_transition_request task_id must match"
+            )
+
+        # CAS expected_state must be review_ready
+        if rtr.cas.expected_state != "review_ready":
+            raise WorkflowInputError(
+                "return_transition_request expected_state must be "
+                "'review_ready'"
+            )
+
+        # DispatchCAS must be present and match delivery receipt identity
+        if rtr.dispatch_cas is None:
+            raise WorkflowInputError(
+                "return_transition_request dispatch_cas must not be None"
+            )
+        rtr_dcas = rtr.dispatch_cas
+        if rtr_dcas.expected_dispatch_id != receipt.identity.dispatch_id:
+            raise WorkflowInputError(
+                "return dispatch_cas expected_dispatch_id must match "
+                "delivery receipt dispatch_id"
+            )
+        if rtr_dcas.expected_attempt != receipt.identity.attempt:
+            raise WorkflowInputError(
+                "return dispatch_cas expected_attempt must match "
+                "delivery receipt attempt"
+            )
+
+        # -- 1g. Validate requeue_transition_request -------------------------
+        qtr = request.requeue_transition_request
+
+        # event_type must be TASK_REQUEUED
+        if qtr.event_type != "TASK_REQUEUED":
+            raise WorkflowInputError(
+                "requeue_transition_request event_type must be "
+                "TASK_REQUEUED"
+            )
+
+        # payload must be RequeuePayload
+        if not isinstance(qtr.payload, RequeuePayload):
+            raise WorkflowInputError(
+                "requeue_transition_request payload must be "
+                "RequeuePayload"
+            )
+
+        # CAS task_id must match
+        if qtr.cas.task_id != task_id:
+            raise WorkflowInputError(
+                "requeue_transition_request task_id must match"
+            )
+
+        # CAS expected_state must be "returned"
+        if qtr.cas.expected_state != "returned":
+            raise WorkflowInputError(
+                "requeue_transition_request expected_state must be "
+                "'returned'"
+            )
+
+        # dispatch_cas must be None (PM-only transition)
+        if qtr.dispatch_cas is not None:
+            raise WorkflowInputError(
+                "requeue_transition_request dispatch_cas must be None"
+            )
+
+        # -- 1h. event_id dedup: both must differ from each other -----------
+        if rtr.event_id == qtr.event_id:
+            raise WorkflowInputError(
+                "return and requeue event_ids must differ"
+            )
+
+        # event_ids must also differ from already-used event_ids
+        existing_event_ids = {
+            dcr.dispatch_transition.event_id,
+            dcr.acknowledge_transition.event_id,
+            dcr.delivery_transition.event_id,
+        }
+        if rtr.event_id in existing_event_ids:
+            raise WorkflowInputError(
+                "return event_id must differ from existing event_ids"
+            )
+        if qtr.event_id in existing_event_ids:
+            raise WorkflowInputError(
+                "requeue event_id must differ from existing event_ids"
+            )
+
+        # -- 2. clock.now() ---------------------------------------------------
+        now_start = self.clock.now()
+
+        # -- 3. Acquire new remediation WorkerSlotLease -----------------------
+        remediation_acquired = False
+        remediation_lease = None
+        body_error: BaseException | None = None
+        return_result: TransitionResult | None = None
+        requeue_result: TransitionResult | None = None
+
+        try:
+            now_remediation_acquire = self.clock.now()
+            remediation_lease = acquire_worker_slot(
+                self.project_root,
+                request.worker_kind,
+                receipt.identity.dispatch_id,
+                request.holder_instance_id,
+                self.project_root,  # workspace — remediation is control-plane only
+                now_remediation_acquire,
+            )
+            remediation_acquired = True
+
+            # -- 4. Apply DELIVERY_RETURNED under remediation lease ----------
+            now_return = self.clock.now()
+            return_result = ControlPlaneTransitionService(
+                self.project_root
+            ).apply_transition(rtr, remediation_lease, now_return)
+
+        except BaseException as exc:
+            body_error = exc
+            raise
+        finally:
+            # -- 5. Release remediation lease exactly once -------------------
+            if remediation_acquired:
+                try:
+                    now_release = self.clock.now()
+                    release_worker_slot(
+                        self.project_root,
+                        remediation_lease,
+                        now_release,
+                    )
+                except BaseException as release_exc:
+                    if body_error is None:
+                        raise
+                    raise body_error from release_exc
+
+        # -- 6. Apply TASK_REQUEUED with lease=None ---------------------------
+        now_requeue = self.clock.now()
+        requeue_result = ControlPlaneTransitionService(
+            self.project_root
+        ).apply_transition(qtr, lease=None, now=now_requeue)
+
+        # -- 7. Return result -------------------------------------------------
+        return DeliveryRemediationResult(
+            task_id=task_id,
+            audit_result=acr.audit_result,
+            return_transition=return_result,
+            requeue_transition=requeue_result,
         )
