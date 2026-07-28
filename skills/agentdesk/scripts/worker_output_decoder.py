@@ -143,6 +143,116 @@ class WorkerOutput:
     warnings: tuple[str, ...]
     stdout_sha256: str
 
+    def __post_init__(self) -> None:
+        """Validate every field at construction time.
+
+        Raises :exc:`TypeError` or :exc:`ValueError` on illegal values.
+        """
+        # ── identity ────────────────────────────────────────────────────
+        if not isinstance(self.identity, DispatchIdentity):
+            raise TypeError(
+                f"identity must be DispatchIdentity, "
+                f"got {type(self.identity).__name__}"
+            )
+
+        # ── provider ────────────────────────────────────────────────────
+        if self.provider not in ("claude", "claudecode"):
+            raise ValueError(
+                f"provider must be 'claude' or 'claudecode'"
+            )
+
+        # ── model_id ────────────────────────────────────────────────────
+        if not isinstance(self.model_id, str) or not self.model_id:
+            raise ValueError("model_id must be a non-empty str")
+        if self.model_id != self.model_id.strip():
+            raise ValueError("model_id must not have leading/trailing whitespace")
+        if "\x00" in self.model_id or "\r" in self.model_id or "\n" in self.model_id:
+            raise ValueError("model_id must not contain NUL, CR, or LF")
+
+        # ── status ──────────────────────────────────────────────────────
+        if not isinstance(self.status, WorkerCompletionStatus):
+            raise TypeError(
+                f"status must be WorkerCompletionStatus, "
+                f"got {type(self.status).__name__}"
+            )
+
+        # ── report_commit ───────────────────────────────────────────────
+        if not isinstance(self.report_commit, str):
+            raise TypeError(
+                f"report_commit must be str, "
+                f"got {type(self.report_commit).__name__}"
+            )
+        if len(self.report_commit) != 40:
+            raise ValueError("report_commit must be 40 hex chars")
+        if not all(c in "0123456789abcdef" for c in self.report_commit):
+            raise ValueError("report_commit must be lowercase hex")
+
+        # ── stdout_sha256 ───────────────────────────────────────────────
+        if not isinstance(self.stdout_sha256, str):
+            raise TypeError(
+                f"stdout_sha256 must be str, "
+                f"got {type(self.stdout_sha256).__name__}"
+            )
+        if len(self.stdout_sha256) != 64:
+            raise ValueError("stdout_sha256 must be 64 hex chars")
+        if not all(c in "0123456789abcdef" for c in self.stdout_sha256):
+            raise ValueError("stdout_sha256 must be lowercase hex")
+
+        # ── summary ─────────────────────────────────────────────────────
+        if not isinstance(self.summary, str) or not self.summary:
+            raise ValueError("summary must be a non-empty str")
+        if "\x00" in self.summary:
+            raise ValueError("summary must not contain NUL")
+
+        # ── warnings ────────────────────────────────────────────────────
+        if not isinstance(self.warnings, tuple):
+            raise TypeError(
+                f"warnings must be tuple, got {type(self.warnings).__name__}"
+            )
+        seen: set[str] = set()
+        for i, w in enumerate(self.warnings):
+            if not isinstance(w, str):
+                raise TypeError(
+                    f"warnings[{i}] must be str, got {type(w).__name__}"
+                )
+            if not w:
+                raise ValueError(f"warnings[{i}] must not be empty")
+            if not w.strip() or w.strip() != w:
+                raise ValueError(
+                    f"warnings[{i}] must not be blank or have "
+                    f"leading/trailing whitespace"
+                )
+            if "\x00" in w:
+                raise ValueError(f"warnings[{i}] must not contain NUL")
+            if w in seen:
+                raise ValueError(f"warnings[{i}] must not be a duplicate")
+            seen.add(w)
+
+        # ── implementation_commit ───────────────────────────────────────
+        if self.implementation_commit is not None:
+            if not isinstance(self.implementation_commit, str):
+                raise TypeError(
+                    f"implementation_commit must be str or None, "
+                    f"got {type(self.implementation_commit).__name__}"
+                )
+            if len(self.implementation_commit) != 40:
+                raise ValueError("implementation_commit must be 40 hex chars")
+            if not all(
+                c in "0123456789abcdef" for c in self.implementation_commit
+            ):
+                raise ValueError("implementation_commit must be lowercase hex")
+
+        # ── status-specific invariants ──────────────────────────────────
+        if self.status is WorkerCompletionStatus.COMPLETED:
+            if self.implementation_commit is None:
+                raise ValueError(
+                    "completed status requires implementation_commit"
+                )
+            if self.implementation_commit == self.report_commit:
+                raise ValueError(
+                    "implementation_commit and report_commit must differ"
+                )
+
 
 @dataclass(frozen=True, slots=True)
 class DeliveryReceipt:
@@ -163,6 +273,71 @@ class DeliveryReceipt:
     implementation_commit: str
     report_commit: str
     stdout_sha256: str
+
+    def __post_init__(self) -> None:
+        """Validate every field at construction time.
+
+        Raises :exc:`TypeError` or :exc:`ValueError` on illegal values.
+        """
+        # ── identity ────────────────────────────────────────────────────
+        if not isinstance(self.identity, DispatchIdentity):
+            raise TypeError(
+                f"identity must be DispatchIdentity, "
+                f"got {type(self.identity).__name__}"
+            )
+
+        # ── provider ────────────────────────────────────────────────────
+        if self.provider not in ("claude", "claudecode"):
+            raise ValueError(
+                f"provider must be 'claude' or 'claudecode'"
+            )
+
+        # ── model_id ────────────────────────────────────────────────────
+        if not isinstance(self.model_id, str) or not self.model_id:
+            raise ValueError("model_id must be a non-empty str")
+        if self.model_id != self.model_id.strip():
+            raise ValueError("model_id must not have leading/trailing whitespace")
+        if "\x00" in self.model_id or "\r" in self.model_id or "\n" in self.model_id:
+            raise ValueError("model_id must not contain NUL, CR, or LF")
+
+        # ── implementation_commit ───────────────────────────────────────
+        if not isinstance(self.implementation_commit, str):
+            raise TypeError(
+                f"implementation_commit must be str, "
+                f"got {type(self.implementation_commit).__name__}"
+            )
+        if len(self.implementation_commit) != 40:
+            raise ValueError("implementation_commit must be 40 hex chars")
+        if not all(c in "0123456789abcdef" for c in self.implementation_commit):
+            raise ValueError("implementation_commit must be lowercase hex")
+
+        # ── report_commit ───────────────────────────────────────────────
+        if not isinstance(self.report_commit, str):
+            raise TypeError(
+                f"report_commit must be str, "
+                f"got {type(self.report_commit).__name__}"
+            )
+        if len(self.report_commit) != 40:
+            raise ValueError("report_commit must be 40 hex chars")
+        if not all(c in "0123456789abcdef" for c in self.report_commit):
+            raise ValueError("report_commit must be lowercase hex")
+
+        # ── commits must differ ─────────────────────────────────────────
+        if self.implementation_commit == self.report_commit:
+            raise ValueError(
+                "implementation_commit and report_commit must differ"
+            )
+
+        # ── stdout_sha256 ───────────────────────────────────────────────
+        if not isinstance(self.stdout_sha256, str):
+            raise TypeError(
+                f"stdout_sha256 must be str, "
+                f"got {type(self.stdout_sha256).__name__}"
+            )
+        if len(self.stdout_sha256) != 64:
+            raise ValueError("stdout_sha256 must be 64 hex chars")
+        if not all(c in "0123456789abcdef" for c in self.stdout_sha256):
+            raise ValueError("stdout_sha256 must be lowercase hex")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -791,6 +966,9 @@ def require_delivery_receipt(
     Only ``COMPLETED`` status is allowed — ``PARTIAL`` and ``BLOCKED``
     raise ``WorkerOutputSchemaError``.
 
+    Defensively re-validates all trustable fields of *output* so that
+    even a hand-crafted frozen object with illegal values is fail-closed.
+
     Args:
         output: A validated ``WorkerOutput``.
 
@@ -799,14 +977,49 @@ def require_delivery_receipt(
 
     Raises:
         TypeError: If *output* is not a ``WorkerOutput``.
-        WorkerOutputSchemaError: If status is not ``COMPLETED`` or
-            commits are missing/invalid.
+        WorkerOutputSchemaError: If status is not ``COMPLETED``,
+            commits are missing/invalid, or any field violates the
+            trust boundary.
     """
     if not isinstance(output, WorkerOutput):
         raise TypeError(
             f"output must be WorkerOutput, got {type(output).__name__}"
         )
 
+    # ── Full defensive re-validation ────────────────────────────────────
+    # Catch hand-crafted frozen objects that bypass __post_init__.
+
+    # identity
+    if not isinstance(output.identity, DispatchIdentity):
+        raise WorkerOutputSchemaError(
+            "identity is not DispatchIdentity"
+        )
+
+    # provider
+    if output.provider not in ("claude", "claudecode"):
+        raise WorkerOutputSchemaError(
+            "provider must be claude or claudecode"
+        )
+
+    # model_id
+    if not isinstance(output.model_id, str) or not output.model_id:
+        raise WorkerOutputSchemaError(
+            "model_id must be a non-empty str"
+        )
+    if output.model_id != output.model_id.strip():
+        raise WorkerOutputSchemaError(
+            "model_id must not have leading/trailing whitespace"
+        )
+    if "\x00" in output.model_id or "\r" in output.model_id or "\n" in output.model_id:
+        raise WorkerOutputSchemaError(
+            "model_id must not contain NUL, CR, or LF"
+        )
+
+    # status
+    if not isinstance(output.status, WorkerCompletionStatus):
+        raise WorkerOutputSchemaError(
+            "status must be WorkerCompletionStatus"
+        )
     if output.status is not WorkerCompletionStatus.COMPLETED:
         raise WorkerOutputSchemaError(
             f"Cannot produce DeliveryReceipt: "
@@ -814,10 +1027,58 @@ def require_delivery_receipt(
             f"not {WorkerCompletionStatus.COMPLETED.value!r}"
         )
 
-    # Both commits must be present for completed
+    # implementation_commit — must be present and valid
     if output.implementation_commit is None:
         raise WorkerOutputSchemaError(
             "Cannot produce DeliveryReceipt: implementation_commit is None"
+        )
+    if not isinstance(output.implementation_commit, str):
+        raise WorkerOutputSchemaError(
+            "implementation_commit must be str"
+        )
+    if len(output.implementation_commit) != 40:
+        raise WorkerOutputSchemaError(
+            "implementation_commit must be 40 hex chars"
+        )
+    if not all(
+        c in "0123456789abcdef" for c in output.implementation_commit
+    ):
+        raise WorkerOutputSchemaError(
+            "implementation_commit must be lowercase hex"
+        )
+
+    # report_commit
+    if not isinstance(output.report_commit, str):
+        raise WorkerOutputSchemaError(
+            "report_commit must be str"
+        )
+    if len(output.report_commit) != 40:
+        raise WorkerOutputSchemaError(
+            "report_commit must be 40 hex chars"
+        )
+    if not all(c in "0123456789abcdef" for c in output.report_commit):
+        raise WorkerOutputSchemaError(
+            "report_commit must be lowercase hex"
+        )
+
+    # Commits must differ
+    if output.implementation_commit == output.report_commit:
+        raise WorkerOutputSchemaError(
+            "implementation_commit and report_commit must differ"
+        )
+
+    # stdout_sha256
+    if not isinstance(output.stdout_sha256, str):
+        raise WorkerOutputSchemaError(
+            "stdout_sha256 must be str"
+        )
+    if len(output.stdout_sha256) != 64:
+        raise WorkerOutputSchemaError(
+            "stdout_sha256 must be 64 hex chars"
+        )
+    if not all(c in "0123456789abcdef" for c in output.stdout_sha256):
+        raise WorkerOutputSchemaError(
+            "stdout_sha256 must be lowercase hex"
         )
 
     return DeliveryReceipt(

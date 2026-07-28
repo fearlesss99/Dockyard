@@ -1203,3 +1203,535 @@ class TestEnvelopeNestedDecode(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 17. Construction integrity — WorkerOutput illegal direct construction
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestWorkerOutputConstructionIntegrity(unittest.TestCase):
+    """WorkerOutput __post_init__ must reject illegal direct construction."""
+
+    def test_1300_illegal_report_commit_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="bad",
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1301_illegal_stdout_sha256_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=(),
+                stdout_sha256="bad",
+            )
+
+    def test_1302_same_commit_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="a" * 40,  # same as impl
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1303_non_dispatch_identity_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            WorkerOutput(
+                identity="not-an-identity",  # type: ignore[arg-type]
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1304_unknown_provider_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="unknown",
+                model_id="m",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1305_illegal_model_id_empty_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1306_illegal_model_id_whitespace_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id=" spaced ",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1307_model_id_with_nul_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="bad\x00",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1308_bare_string_status_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status="completed",  # type: ignore[arg-type]
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1309_warnings_is_list_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=[],  # type: ignore[arg-type]
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1310_warning_empty_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=("",),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1311_warning_duplicate_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=("dup", "dup"),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1312_warning_with_nul_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=("bad\x00",),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1313_completed_missing_impl_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit=None,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1314_partial_with_illegal_non_null_impl_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.PARTIAL,
+                implementation_commit="bad",
+                report_commit="b" * 40,
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1315_blocked_with_illegal_non_null_impl_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.BLOCKED,
+                implementation_commit="ZZZ",
+                report_commit="b" * 40,
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1316_summary_empty_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1317_summary_nul_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="bad\x00text",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 18. Construction integrity — DeliveryReceipt illegal direct construction
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestDeliveryReceiptConstructionIntegrity(unittest.TestCase):
+    """DeliveryReceipt __post_init__ must reject illegal direct construction."""
+
+    def test_1400_illegal_report_commit_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            DeliveryReceipt(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                implementation_commit="a" * 40,
+                report_commit="bad",
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1401_illegal_impl_commit_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            DeliveryReceipt(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                implementation_commit="bad",
+                report_commit="b" * 40,
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1402_same_commits_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            DeliveryReceipt(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                implementation_commit="a" * 40,
+                report_commit="a" * 40,
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1403_illegal_stdout_sha_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            DeliveryReceipt(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                stdout_sha256="bad",
+            )
+
+    def test_1404_non_dispatch_identity_rejected(self) -> None:
+        with self.assertRaises(TypeError):
+            DeliveryReceipt(
+                identity="nope",  # type: ignore[arg-type]
+                provider="claude",
+                model_id="m",
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                stdout_sha256="0" * 64,
+            )
+
+    def test_1405_unknown_provider_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            DeliveryReceipt(
+                identity=_identity(),
+                provider="unknown",
+                model_id="m",
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                stdout_sha256="0" * 64,
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 19. Defensive re-validation — forged WorkerOutput bypasses __post_init__
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestForgedWorkerOutputDefense(unittest.TestCase):
+    """require_delivery_receipt must reject hand-crafted frozen objects
+    that bypass WorkerOutput.__post_init__."""
+
+    @staticmethod
+    def _forge_worker_output(
+        provider: object = "claude",
+        model_id: object = "test-model",
+        status: object = WorkerCompletionStatus.COMPLETED,
+        impl_commit: object = "a" * 40,
+        report_commit: object = "b" * 40,
+        stdout_sha256: object = "0" * 64,
+    ) -> WorkerOutput:
+        """Forge a WorkerOutput bypassing __post_init__ using object.__new__."""
+        wo = object.__new__(WorkerOutput)
+        object.__setattr__(wo, "identity", _identity())
+        object.__setattr__(wo, "provider", provider)
+        object.__setattr__(wo, "model_id", model_id)
+        object.__setattr__(wo, "status", status)
+        object.__setattr__(wo, "implementation_commit", impl_commit)
+        object.__setattr__(wo, "report_commit", report_commit)
+        object.__setattr__(wo, "summary", "s")
+        object.__setattr__(wo, "warnings", ())
+        object.__setattr__(wo, "stdout_sha256", stdout_sha256)
+        return wo
+
+    def test_1500_forged_illegal_report_commit_rejected(self) -> None:
+        wo = self._forge_worker_output(report_commit="bad")
+        with self.assertRaises(WorkerOutputSchemaError):
+            require_delivery_receipt(wo)
+
+    def test_1501_forged_illegal_impl_commit_rejected(self) -> None:
+        wo = self._forge_worker_output(impl_commit="bad")
+        with self.assertRaises(WorkerOutputSchemaError):
+            require_delivery_receipt(wo)
+
+    def test_1502_forged_same_commits_rejected(self) -> None:
+        wo = self._forge_worker_output(
+            impl_commit="a" * 40, report_commit="a" * 40
+        )
+        with self.assertRaises(WorkerOutputSchemaError):
+            require_delivery_receipt(wo)
+
+    def test_1503_forged_illegal_stdout_sha_rejected(self) -> None:
+        wo = self._forge_worker_output(stdout_sha256="bad")
+        with self.assertRaises(WorkerOutputSchemaError):
+            require_delivery_receipt(wo)
+
+    def test_1504_forged_unknown_provider_rejected(self) -> None:
+        wo = self._forge_worker_output(provider="unknown")
+        with self.assertRaises(WorkerOutputSchemaError):
+            require_delivery_receipt(wo)
+
+    def test_1505_forged_illegal_model_id_rejected(self) -> None:
+        wo = self._forge_worker_output(model_id="")
+        with self.assertRaises(WorkerOutputSchemaError):
+            require_delivery_receipt(wo)
+
+    def test_1506_forged_non_enum_status_rejected(self) -> None:
+        wo = self._forge_worker_output(status="completed")
+        with self.assertRaises(WorkerOutputSchemaError):
+            require_delivery_receipt(wo)
+
+    def test_1507_forged_partial_status_rejected(self) -> None:
+        wo = self._forge_worker_output(
+            status=WorkerCompletionStatus.PARTIAL, impl_commit=None
+        )
+        with self.assertRaises(WorkerOutputSchemaError):
+            require_delivery_receipt(wo)
+
+    def test_1508_forged_non_identity_rejected(self) -> None:
+        wo = self._forge_worker_output()
+        object.__setattr__(wo, "identity", "not-an-identity")
+        with self.assertRaises(WorkerOutputSchemaError):
+            require_delivery_receipt(wo)
+
+    def test_1509_forged_missing_impl_commit_rejected(self) -> None:
+        wo = self._forge_worker_output(impl_commit=None)
+        with self.assertRaises(WorkerOutputSchemaError):
+            require_delivery_receipt(wo)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 20. Construction error message safety
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestConstructionErrorMessageSafety(unittest.TestCase):
+    """__post_init__ and require_delivery_receipt error messages must not
+    leak illegal commit values, model IDs, or field content."""
+
+    def test_1600_worker_output_commit_error_no_leak(self) -> None:
+        try:
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="my-evil-commit-that-must-not-leak-xxxx",
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+        except ValueError as e:
+            msg = str(e)
+            self.assertNotIn("my-evil-commit", msg)
+
+    def test_1601_receipt_commit_error_no_leak(self) -> None:
+        try:
+            DeliveryReceipt(
+                identity=_identity(),
+                provider="claude",
+                model_id="m",
+                implementation_commit="a" * 40,
+                report_commit="my-evil-commit-that-must-not-leak-xxxx",
+                stdout_sha256="0" * 64,
+            )
+        except ValueError as e:
+            msg = str(e)
+            self.assertNotIn("my-evil-commit", msg)
+
+    def test_1602_require_receipt_commit_error_no_leak(self) -> None:
+        """Even when forged object has bad commit, the value must not leak."""
+        wo = TestForgedWorkerOutputDefense._forge_worker_output(
+            report_commit="my-evil-commit-that-must-not-leak-xxxx"
+        )
+        try:
+            require_delivery_receipt(wo)
+        except WorkerOutputSchemaError as e:
+            msg = str(e)
+            self.assertNotIn("my-evil-commit", msg)
+
+    def test_1603_model_id_error_no_leak(self) -> None:
+        try:
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id="secret-model-name",
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+        except ValueError as e:
+            msg = str(e)
+            self.assertNotIn("secret-model-name", msg)
+
+    def test_1604_evil_repr_not_called_in_worker_output(self) -> None:
+        class _EvilModelId:
+            def __repr__(self) -> str:
+                raise RuntimeError("evil __repr__ called!")
+
+        evil = _EvilModelId()
+        try:
+            WorkerOutput(
+                identity=_identity(),
+                provider="claude",
+                model_id=evil,  # type: ignore[arg-type]
+                status=WorkerCompletionStatus.COMPLETED,
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                summary="s",
+                warnings=(),
+                stdout_sha256="0" * 64,
+            )
+        except (TypeError, ValueError):
+            pass  # Must not call __repr__
+        # If we got here, __repr__ was not called
+
+    def test_1605_evil_repr_not_called_in_receipt(self) -> None:
+        class _EvilModelId:
+            def __repr__(self) -> str:
+                raise RuntimeError("evil __repr__ called!")
+
+        evil = _EvilModelId()
+        try:
+            DeliveryReceipt(
+                identity=_identity(),
+                provider="claude",
+                model_id=evil,  # type: ignore[arg-type]
+                implementation_commit="a" * 40,
+                report_commit="b" * 40,
+                stdout_sha256="0" * 64,
+            )
+        except (TypeError, ValueError):
+            pass  # Must not call __repr__
