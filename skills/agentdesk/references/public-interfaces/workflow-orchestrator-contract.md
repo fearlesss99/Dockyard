@@ -1,4 +1,4 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.5)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.6)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
@@ -9,10 +9,11 @@ TC-13.18d.2 extends it with TASK_BLOCKED (audit blocked → escalation).
 TC-13.18d.3 extends it with BLOCKER_RESOLVED (escalation resume → single redispatch).
 TC-13.18d.4 extends it with INTEGRATION_FAILED (accepted → blocked for external integration failure).
 TC-13.18d.5 extends it with BLOCKER_RESCOPED (expert blocked task rescope to draft).
+TC-13.18d.6 extends it with BLOCKER_CANCELLED (expert blocked task cancellation).
 
 ## Status
 
-**Current** as of TC-13.18d.5.  The dispatch cycle (snapshot → acquire →
+**Current** as of TC-13.18d.6.  The dispatch cycle (snapshot → acquire →
 TASK_DISPATCHED → heartbeat + run_worker →
 DISPATCH_ACKNOWLEDGED → decode_worker_result →
 require_delivery_receipt → DELIVERY_SUBMITTED → stop heartbeat → release
@@ -25,7 +26,9 @@ run_dispatch_cycle with next_worker_kind → EscalatedRedispatchResult),
 integration failure recording (INTEGRATION_FAILED (lease=None) →
 IntegrationFailureResult),
 and expert blocked task rescope (BLOCKER_RESCOPED (lease=None) →
-BlockedRescopeResult)
+BlockedRescopeResult),
+and expert blocked task cancellation (BLOCKER_CANCELLED (lease=None) →
+BlockedCancellationResult)
 are implemented and callable.
 
 This document is the authoritative frozen specification for the
@@ -329,7 +332,7 @@ defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
 | 10 | `TASK_BLOCKED` | Current — TC-13.18d.2 (blocked path) |
 | 11 | `BLOCKER_RESOLVED` | Current — TC-13.18d.3 (escalation resume → ready → single redispatch) |
 | 12 | `BLOCKER_RESCOPED` | Current — TC-13.18d.5 (expert blocked → draft rescope) |
-| 13 | `BLOCKER_CANCELLED` | Target |
+| 13 | `BLOCKER_CANCELLED` | Current — TC-13.18d.6 (expert blocked → cancelled) |
 | 14 | `TASK_CANCELLED` | Target |
 | 15 | `TASK_SUPERSEDED` | Target |
 
@@ -497,6 +500,7 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18d.2** | Blocked audit escalation (TASK_BLOCKED + EscalationDecision) | TC-13.18d.1 | Current |
 | **TC-13.18d.4** | INTEGRATION_FAILED recording (accepted → blocked) | TC-13.18d.3 | Current |
 | **TC-13.18d.5** | BLOCKER_RESCOPED (expert blocked → draft rescope) | TC-13.18d.2 | Current |
+| **TC-13.18d.6** | BLOCKER_CANCELLED (expert blocked → cancelled) | TC-13.18d.2 | Current |
 | **TC-13.18d-ext** | Retry loop, escalation replay, cancellation, fault recovery | TC-13.18d.3 | Target |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Target |

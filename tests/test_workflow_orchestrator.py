@@ -78,6 +78,8 @@ from workflow_orchestrator import (
     AcceptanceCycleResult,
     BlockedAuditRequest,
     BlockedAuditResult,
+    BlockedCancellationRequest,
+    BlockedCancellationResult,
     BlockedRescopeRequest,
     BlockedRescopeResult,
     DeliveryRemediationRequest,
@@ -11549,7 +11551,196 @@ def _make_blocked_rescope_request(
     )
 
 
-# ── BlockedRescopeRequest Three-Field Tests ─────────────────────────────────
+def _make_blocked_cancellation_request(
+    task_id: str = "TC-001",
+    dispatch_id: str = "DSP-001",
+    attempt: int = 1,
+    revision: int = 1,
+    implementation_commit: str | None = None,
+    report_commit: str | None = None,
+    worker_kind: WorkerKind = WorkerKind.EXPERT_AGENT,
+    block_event_id: str = "EVT-BLOCK-001",
+    cancel_event_id: str = "EVT-CANCEL-001",
+    head_sha: str | None = None,
+) -> "BlockedCancellationRequest":
+    """Build a valid BlockedCancellationRequest for expert blocked task cancellation."""
+    if implementation_commit is None:
+        implementation_commit = "a" * 40
+    if report_commit is None:
+        report_commit = "b" * 40
+    if head_sha is None:
+        head_sha = "a" * 40
+
+    from workflow_orchestrator import (
+        BlockedAuditRequest,
+        BlockedCancellationRequest,
+    )
+
+    # Build BlockedAuditRequest with Expert REQUEST_USER_DECISION
+    # BlockedPayload: resume_state="draft", blocked_attempt_valid=False
+    bar = _make_blocked_audit_request(
+        task_id=task_id,
+        dispatch_id=dispatch_id,
+        attempt=attempt,
+        revision=revision,
+        implementation_commit=implementation_commit,
+        report_commit=report_commit,
+        worker_kind=worker_kind,
+        block_event_id=block_event_id,
+    )
+
+    # Override the BlockedPayload to have resume_state="draft", blocked_attempt_valid=False
+    from control_plane_transition import BlockedPayload as BPayload
+    bp = BPayload(
+        blocked_reason="test blocked reason",
+        blocked_kind="decision_required",
+        blocked_owner="pm",
+        unblock_condition="manual override",
+        resume_state="draft",
+        blocked_attempt_valid=False,
+    )
+    new_btr = TransitionRequest(
+        cas=bar.block_transition_request.cas,
+        dispatch_cas=None,
+        event_id=bar.block_transition_request.event_id,
+        event_type="TASK_BLOCKED",
+        payload=bp,
+        event_context=bar.block_transition_request.event_context,
+    )
+    bar = BlockedAuditRequest(
+        acceptance_cycle_result=bar.acceptance_cycle_result,
+        dispatch_cycle_result=bar.dispatch_cycle_result,
+        block_transition_request=new_btr,
+        current_worker_kind=bar.current_worker_kind,
+    )
+
+    # Build BlockedAuditResult with REQUEST_USER_DECISION, Expert
+    from escalation_service import (
+        EscalationAction,
+        EscalationDecision,
+    )
+    ed = EscalationDecision(
+        action=EscalationAction.REQUEST_USER_DECISION,
+        current_worker_kind=worker_kind,
+        next_worker_kind=None,
+    )
+    bar_result = BlockedAuditResult(
+        task_id=task_id,
+        audit_result=bar.acceptance_cycle_result.audit_result,
+        escalation_decision=ed,
+        block_transition=TransitionResult(
+            task_id=task_id,
+            event_id=block_event_id,
+            from_state="review_ready",
+            to_state="blocked",
+            occurred_at="2026-07-28T12:00:03Z",
+            outbox_message_id=None,
+        ),
+    )
+
+    # Build BLOCKER_CANCELLED TransitionRequest
+    from control_plane_transition import (
+        BlockerCancelledPayload as BCPayload,
+        DispatchCAS as DCAS,
+    )
+    cancel_payload = BCPayload()
+    cancel_cas = TransitionCAS(
+        task_id=task_id,
+        expected_revision=revision,
+        expected_state="blocked",
+        expected_snapshot_commit=head_sha,
+    )
+    cancel_tr = TransitionRequest(
+        cas=cancel_cas,
+        dispatch_cas=None,
+        event_id=cancel_event_id,
+        event_type="BLOCKER_CANCELLED",
+        payload=cancel_payload,
+        event_context=TransitionEventContext(
+            source_message_id=None,
+            evidence_refs=(),
+            guard_results=(),
+        ),
+    )
+
+    return BlockedCancellationRequest(
+        blocked_audit_request=bar,
+        blocked_audit_result=bar_result,
+        cancellation_transition_request=cancel_tr,
+    )
+
+
+# ── BlockedCancellationRequest Three-Field Tests ──────────────────────────────
+
+
+class BlockedCancellationRequestThreeFieldTests(unittest.TestCase):
+    """BlockedCancellationRequest: exactly three fields, frozen, slots, no __dict__."""
+
+    def test_exactly_three_fields(self) -> None:
+        from workflow_orchestrator import BlockedCancellationRequest
+        field_names = {f.name for f in dc_fields(BlockedCancellationRequest)}
+        expected = {
+            "blocked_audit_request",
+            "blocked_audit_result",
+            "cancellation_transition_request",
+        }
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import BlockedCancellationRequest
+        self.assertTrue(BlockedCancellationRequest.__dataclass_params__.frozen)
+        self.assertTrue(hasattr(BlockedCancellationRequest, "__slots__"))
+
+    def test_no_dict(self) -> None:
+        from workflow_orchestrator import BlockedCancellationRequest
+        req = _make_blocked_cancellation_request()
+        self.assertFalse(hasattr(req, "__dict__"))
+
+
+# ── BlockedCancellationResult Three-Field Tests ───────────────────────────────
+
+
+class BlockedCancellationResultThreeFieldTests(unittest.TestCase):
+    """BlockedCancellationResult: exactly three fields, frozen, slots, no __dict__."""
+
+    def test_exactly_three_fields(self) -> None:
+        from workflow_orchestrator import BlockedCancellationResult
+        field_names = {f.name for f in dc_fields(BlockedCancellationResult)}
+        expected = {
+            "task_id",
+            "escalation_decision",
+            "cancellation_transition",
+        }
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import BlockedCancellationResult
+        self.assertTrue(BlockedCancellationResult.__dataclass_params__.frozen)
+        self.assertTrue(hasattr(BlockedCancellationResult, "__slots__"))
+
+    def test_no_dict(self) -> None:
+        from workflow_orchestrator import BlockedCancellationResult
+        from escalation_service import (
+            EscalationAction,
+            EscalationDecision,
+        )
+        result = BlockedCancellationResult(
+            task_id="TC-001",
+            escalation_decision=EscalationDecision(
+                action=EscalationAction.REQUEST_USER_DECISION,
+                current_worker_kind=WorkerKind.EXPERT_AGENT,
+                next_worker_kind=None,
+            ),
+            cancellation_transition=TransitionResult(
+                task_id="TC-001", event_id="EVT-CANCEL-001",
+                from_state="blocked", to_state="cancelled",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            ),
+        )
+        self.assertFalse(hasattr(result, "__dict__"))
+
+
+# -- BlockedRescopeRequest Three-Field Tests ----------------------------------
 
 
 class BlockedRescopeRequestThreeFieldTests(unittest.TestCase):
@@ -12560,5 +12751,897 @@ class WorkflowOrchestratorBlockedRescopeTests(unittest.TestCase):
             mock_audit.assert_not_called()
             mock_esc.assert_not_called()
             mock_dispatch.assert_not_called()
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── WorkflowOrchestratorBlockedCancellation Tests ─────────────────────────────
+
+
+class WorkflowOrchestratorBlockedCancellationTests(unittest.TestCase):
+    """TC-13.18d.6: expert blocked task cancellation — targeted tests."""
+
+    @staticmethod
+    def _setup_orch(tmp: Path) -> "WorkflowOrchestrator":
+        return _new_orch(tmp)
+
+    # -- 1. Expert REQUEST_USER_DECISION normal cancellation -------------------
+
+    def test_01_expert_request_user_decision_cancellation_success(self) -> None:
+        """Expert blocked task with REQUEST_USER_DECISION → successful cancellation."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            cancel_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-CANCEL-001",
+                from_state="blocked", to_state="cancelled",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                self.assertIsNone(lease, "BLOCKER_CANCELLED must have lease=None")
+                return cancel_tr
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.record_blocked_cancellation(req)
+                    self.assertEqual(result.task_id, "TC-001")
+                    self.assertIs(
+                        result.escalation_decision,
+                        req.blocked_audit_result.escalation_decision,
+                    )
+                    self.assertEqual(result.cancellation_transition, cancel_tr)
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 2. lease=None ----------------------------------------------------------
+
+    def test_02_lease_none_passed_to_transition(self) -> None:
+        """BLOCKER_CANCELLED must pass lease=None to apply_transition."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            lease_values = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                lease_values.append(lease)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-CANCEL-001",
+                    from_state="blocked", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(lease_values), 1)
+            self.assertIsNone(lease_values[0])
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 3. transition exactly once ----------------------------------------------
+
+    def test_03_transition_exactly_once(self) -> None:
+        """apply_transition must be called exactly once."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            call_count = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                call_count.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-CANCEL-001",
+                    from_state="blocked", to_state="cancelled",
+                    occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(call_count), 1)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 4. escalation_decision object identity preserved ------------------------
+
+    def test_04_escalation_decision_object_identity_preserved(self) -> None:
+        """Result must hold the exact same EscalationDecision object."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            cancel_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-CANCEL-001",
+                from_state="blocked", to_state="cancelled",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return cancel_tr
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.record_blocked_cancellation(req)
+                    self.assertIs(
+                        result.escalation_decision,
+                        req.blocked_audit_result.escalation_decision,
+                    )
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 5. non-EXPERT current_worker_kind rejected ------------------------------
+
+    def test_05_basic_worker_kind_rejected(self) -> None:
+        """BASIC current_worker_kind must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from escalation_service import (
+                EscalationAction,
+                EscalationDecision,
+            )
+            ed = object.__new__(EscalationDecision)
+            object.__setattr__(ed, "action", EscalationAction.REQUEST_USER_DECISION)
+            object.__setattr__(ed, "current_worker_kind", WorkerKind.BASIC_AGENT)
+            object.__setattr__(ed, "next_worker_kind", None)
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            bad_bar_result = BlockedAuditResult(
+                task_id=req.blocked_audit_result.task_id,
+                audit_result=req.blocked_audit_result.audit_result,
+                escalation_decision=ed,
+                block_transition=req.blocked_audit_result.block_transition,
+            )
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                cancellation_transition_request=req.cancellation_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_05b_standard_worker_kind_rejected(self) -> None:
+        """STANDARD current_worker_kind must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from escalation_service import (
+                EscalationAction,
+                EscalationDecision,
+            )
+            ed = object.__new__(EscalationDecision)
+            object.__setattr__(ed, "action", EscalationAction.REQUEST_USER_DECISION)
+            object.__setattr__(ed, "current_worker_kind", WorkerKind.STANDARD_AGENT)
+            object.__setattr__(ed, "next_worker_kind", None)
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            bad_bar_result = BlockedAuditResult(
+                task_id=req.blocked_audit_result.task_id,
+                audit_result=req.blocked_audit_result.audit_result,
+                escalation_decision=ed,
+                block_transition=req.blocked_audit_result.block_transition,
+            )
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                cancellation_transition_request=req.cancellation_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_05c_advanced_worker_kind_rejected(self) -> None:
+        """ADVANCED current_worker_kind must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from escalation_service import (
+                EscalationAction,
+                EscalationDecision,
+            )
+            ed = object.__new__(EscalationDecision)
+            object.__setattr__(ed, "action", EscalationAction.REQUEST_USER_DECISION)
+            object.__setattr__(ed, "current_worker_kind", WorkerKind.ADVANCED_AGENT)
+            object.__setattr__(ed, "next_worker_kind", None)
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            bad_bar_result = BlockedAuditResult(
+                task_id=req.blocked_audit_result.task_id,
+                audit_result=req.blocked_audit_result.audit_result,
+                escalation_decision=ed,
+                block_transition=req.blocked_audit_result.block_transition,
+            )
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                cancellation_transition_request=req.cancellation_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 6. wrong escalation action rejected ------------------------------------
+
+    def test_06_wrong_escalation_action_rejected(self) -> None:
+        """ESCALATE action must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from escalation_service import (
+                EscalationAction,
+                EscalationDecision,
+            )
+            ed = object.__new__(EscalationDecision)
+            object.__setattr__(ed, "action", EscalationAction.ESCALATE)
+            object.__setattr__(ed, "current_worker_kind", WorkerKind.EXPERT_AGENT)
+            object.__setattr__(ed, "next_worker_kind", WorkerKind.STANDARD_AGENT)
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            bad_bar_result = BlockedAuditResult(
+                task_id=req.blocked_audit_result.task_id,
+                audit_result=req.blocked_audit_result.audit_result,
+                escalation_decision=ed,
+                block_transition=req.blocked_audit_result.block_transition,
+            )
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                cancellation_transition_request=req.cancellation_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 7. next_worker_kind not None rejected -----------------------------------
+
+    def test_07_next_worker_kind_not_none_rejected(self) -> None:
+        """next_worker_kind must be None."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from escalation_service import (
+                EscalationAction,
+                EscalationDecision,
+            )
+            ed = object.__new__(EscalationDecision)
+            object.__setattr__(ed, "action", EscalationAction.REQUEST_USER_DECISION)
+            object.__setattr__(ed, "current_worker_kind", WorkerKind.EXPERT_AGENT)
+            object.__setattr__(ed, "next_worker_kind", WorkerKind.EXPERT_AGENT)
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            bad_bar_result = BlockedAuditResult(
+                task_id=req.blocked_audit_result.task_id,
+                audit_result=req.blocked_audit_result.audit_result,
+                escalation_decision=ed,
+                block_transition=req.blocked_audit_result.block_transition,
+            )
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                cancellation_transition_request=req.cancellation_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 8. wrong request type rejected ------------------------------------------
+
+    def test_08_wrong_request_type_rejected(self) -> None:
+        """Request must be exactly BlockedCancellationRequest."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+
+            with self.assertRaises(TypeError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation("not a request")
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 9. wrong nested type rejected -------------------------------------------
+
+    def test_09_wrong_blocked_audit_request_type_rejected(self) -> None:
+        """blocked_audit_request must be exactly BlockedAuditRequest."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            bad_req = object.__new__(BlockedCancellationRequest)
+            object.__setattr__(bad_req, "blocked_audit_request", "not a BlockedAuditRequest")
+            object.__setattr__(bad_req, "blocked_audit_result", req.blocked_audit_result)
+            object.__setattr__(bad_req, "cancellation_transition_request", req.cancellation_transition_request)
+
+            with self.assertRaises(TypeError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_09b_wrong_blocked_audit_result_type_rejected(self) -> None:
+        """blocked_audit_result must be exactly BlockedAuditResult."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            bad_req = object.__new__(BlockedCancellationRequest)
+            object.__setattr__(bad_req, "blocked_audit_request", req.blocked_audit_request)
+            object.__setattr__(bad_req, "blocked_audit_result", "not a BlockedAuditResult")
+            object.__setattr__(bad_req, "cancellation_transition_request", req.cancellation_transition_request)
+
+            with self.assertRaises(TypeError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_09c_wrong_transition_request_type_rejected(self) -> None:
+        """cancellation_transition_request must be exactly TransitionRequest."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            bad_req = object.__new__(BlockedCancellationRequest)
+            object.__setattr__(bad_req, "blocked_audit_request", req.blocked_audit_request)
+            object.__setattr__(bad_req, "blocked_audit_result", req.blocked_audit_result)
+            object.__setattr__(bad_req, "cancellation_transition_request", "not a TransitionRequest")
+
+            with self.assertRaises(TypeError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 10. block_transition.to_state != "blocked" rejected ---------------------
+
+    def test_10_block_transition_wrong_to_state_rejected(self) -> None:
+        """block_transition.to_state must be 'blocked'."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            bad_block_tr = TransitionResult(
+                task_id=req.blocked_audit_result.block_transition.task_id,
+                event_id=req.blocked_audit_result.block_transition.event_id,
+                from_state="review_ready",
+                to_state="ready",
+                occurred_at="2026-07-28T12:00:03Z",
+                outbox_message_id=None,
+            )
+            bad_bar_result = BlockedAuditResult(
+                task_id=req.blocked_audit_result.task_id,
+                audit_result=req.blocked_audit_result.audit_result,
+                escalation_decision=req.blocked_audit_result.escalation_decision,
+                block_transition=bad_block_tr,
+            )
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                cancellation_transition_request=req.cancellation_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 11. wrong event_type rejected -------------------------------------------
+
+    def test_11_wrong_event_type_rejected(self) -> None:
+        """event_type != BLOCKER_CANCELLED must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            bad_ftr = object.__new__(TransitionRequest)
+            object.__setattr__(bad_ftr, "cas", req.cancellation_transition_request.cas)
+            object.__setattr__(bad_ftr, "dispatch_cas", None)
+            object.__setattr__(bad_ftr, "event_id", "EVT-BAD")
+            object.__setattr__(bad_ftr, "event_type", "BLOCKER_RESOLVED")
+            object.__setattr__(bad_ftr, "payload", req.cancellation_transition_request.payload)
+            object.__setattr__(bad_ftr, "event_context", req.cancellation_transition_request.event_context)
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                cancellation_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 12. wrong payload type rejected -----------------------------------------
+
+    def test_12_wrong_payload_type_rejected(self) -> None:
+        """payload not BlockerCancelledPayload must be rejected."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            bad_ftr = TransitionRequest(
+                cas=req.cancellation_transition_request.cas,
+                dispatch_cas=None,
+                event_id="EVT-BAD",
+                event_type="BLOCKER_CANCELLED",
+                payload=req.cancellation_transition_request.payload,
+                event_context=req.cancellation_transition_request.event_context,
+            )
+            from control_plane_transition import BlockerResolvedPayload
+            bad_payload = BlockerResolvedPayload(resume_to_state="draft")
+            object.__setattr__(bad_ftr, "payload", bad_payload)
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                cancellation_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 13. CAS expected_state != "blocked" rejected ----------------------------
+
+    def test_13_cas_expected_state_not_blocked_rejected(self) -> None:
+        """cancellation cas.expected_state must be 'blocked'."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            bad_cas = TransitionCAS(
+                task_id=req.cancellation_transition_request.cas.task_id,
+                expected_revision=req.cancellation_transition_request.cas.expected_revision,
+                expected_state="ready",
+                expected_snapshot_commit=req.cancellation_transition_request.cas.expected_snapshot_commit,
+            )
+            bad_ftr = TransitionRequest(
+                cas=bad_cas,
+                dispatch_cas=None,
+                event_id="EVT-BAD",
+                event_type="BLOCKER_CANCELLED",
+                payload=req.cancellation_transition_request.payload,
+                event_context=req.cancellation_transition_request.event_context,
+            )
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                cancellation_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 14. dispatch_cas not None rejected --------------------------------------
+
+    def test_14_dispatch_cas_not_none_rejected(self) -> None:
+        """cancellation dispatch_cas must be None."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            from control_plane_transition import DispatchCAS as DCAS
+            # Bypass TransitionRequest.__post_init__ (BLOCKER_CANCELLED is PM-only)
+            bad_ftr = object.__new__(TransitionRequest)
+            object.__setattr__(bad_ftr, "cas", req.cancellation_transition_request.cas)
+            object.__setattr__(bad_ftr, "dispatch_cas", DCAS(expected_dispatch_id="DSP-001", expected_attempt=1))
+            object.__setattr__(bad_ftr, "event_id", "EVT-BAD")
+            object.__setattr__(bad_ftr, "event_type", "BLOCKER_CANCELLED")
+            object.__setattr__(bad_ftr, "payload", req.cancellation_transition_request.payload)
+            object.__setattr__(bad_ftr, "event_context", req.cancellation_transition_request.event_context)
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                cancellation_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 15. event_id conflict rejected ------------------------------------------
+
+    def test_15_event_id_conflict_rejected(self) -> None:
+        """cancellation event_id must differ from dispatch, ACK, delivery, block."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            bad_ftr = TransitionRequest(
+                cas=req.cancellation_transition_request.cas,
+                dispatch_cas=None,
+                event_id="EVT-BLOCK-001",
+                event_type="BLOCKER_CANCELLED",
+                payload=req.cancellation_transition_request.payload,
+                event_context=req.cancellation_transition_request.event_context,
+            )
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                cancellation_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 16. task_id mismatch rejected -------------------------------------------
+
+    def test_16_task_id_mismatch_rejected(self) -> None:
+        """cancellation cas.task_id must match blocked task_id."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            # Bypass TransitionCAS.__post_init__ for task_id validation
+            bad_cas = object.__new__(TransitionCAS)
+            object.__setattr__(bad_cas, "task_id", "TC-002")
+            object.__setattr__(bad_cas, "expected_revision", req.cancellation_transition_request.cas.expected_revision)
+            object.__setattr__(bad_cas, "expected_state", "blocked")
+            object.__setattr__(bad_cas, "expected_snapshot_commit", req.cancellation_transition_request.cas.expected_snapshot_commit)
+            bad_ftr = object.__new__(TransitionRequest)
+            object.__setattr__(bad_ftr, "cas", bad_cas)
+            object.__setattr__(bad_ftr, "dispatch_cas", None)
+            object.__setattr__(bad_ftr, "event_id", "EVT-BAD")
+            object.__setattr__(bad_ftr, "event_type", "BLOCKER_CANCELLED")
+            object.__setattr__(bad_ftr, "payload", req.cancellation_transition_request.payload)
+            object.__setattr__(bad_ftr, "event_context", req.cancellation_transition_request.event_context)
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                cancellation_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 17. no audit re-run, no escalation, no dispatch, no slot operations ------
+
+    def test_17_no_side_effects_beyond_transition(self) -> None:
+        """record_blocked_cancellation must not run audit, escalation, or dispatch."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            cancel_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-CANCEL-001",
+                from_state="blocked", to_state="cancelled",
+                occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return cancel_tr
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ), mock.patch.object(wo, "run_audit_gateway") as mock_audit, \
+               mock.patch.object(wo, "evaluate_escalation") as mock_esc, \
+               mock.patch.object(
+                   wo.WorkflowOrchestrator, "run_dispatch_cycle",
+               ) as mock_dispatch, \
+               mock.patch.object(wo, "acquire_worker_slot") as mock_acquire, \
+               mock.patch.object(wo, "release_worker_slot") as mock_release, \
+               mock.patch.object(wo, "renew_worker_slot") as mock_renew:
+                async def _run() -> None:
+                    result = await orch.record_blocked_cancellation(req)
+                    self.assertEqual(result.task_id, "TC-001")
+
+                asyncio.run(_run())
+
+            mock_audit.assert_not_called()
+            mock_esc.assert_not_called()
+            mock_dispatch.assert_not_called()
+            mock_acquire.assert_not_called()
+            mock_release.assert_not_called()
+            mock_renew.assert_not_called()
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 18. transition failure propagates as-is ---------------------------------
+
+    def test_18_transition_failure_propagates_as_is(self) -> None:
+        """Transition exceptions must propagate unchanged."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            class TestTransitionError(Exception):
+                pass
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                raise TestTransitionError("transition failed")
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                with self.assertRaises(TestTransitionError):
+                    async def _run() -> None:
+                        await orch.record_blocked_cancellation(req)
+                    asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 19. revision mismatch rejected ------------------------------------------
+
+    def test_19_revision_mismatch_rejected(self) -> None:
+        """cancellation cas.expected_revision must match delivery receipt revision."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            bad_cas = TransitionCAS(
+                task_id=req.cancellation_transition_request.cas.task_id,
+                expected_revision=999,
+                expected_state="blocked",
+                expected_snapshot_commit=req.cancellation_transition_request.cas.expected_snapshot_commit,
+            )
+            bad_ftr = TransitionRequest(
+                cas=bad_cas,
+                dispatch_cas=None,
+                event_id="EVT-BAD",
+                event_type="BLOCKER_CANCELLED",
+                payload=req.cancellation_transition_request.payload,
+                event_context=req.cancellation_transition_request.event_context,
+            )
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=req.blocked_audit_result,
+                cancellation_transition_request=bad_ftr,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 20. audit verdict not "blocked" rejected --------------------------------
+
+    def test_20_audit_verdict_not_blocked_rejected(self) -> None:
+        """Audit verdict must be 'blocked'."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from workflow_orchestrator import (
+                AcceptanceCycleResult,
+                BlockedAuditRequest,
+                BlockedCancellationRequest,
+            )
+            from mad_audit_gateway import (
+                MadAuditGatewayInput,
+                MadAuditGatewayResult,
+                MadAuditPlan,
+                MadDeliberationDepth,
+            )
+            fail_audit = MadAuditGatewayResult(
+                deliberation_id="DELIB-test-001",
+                status="completed",
+                verdict="fail",
+                issues=(),
+                evidence=(),
+                warnings=(),
+                report="audit report",
+                archive_path="/tmp/audit",
+                participants=("agent-1",),
+                plan=MadAuditPlan(depth=MadDeliberationDepth.BALANCED),
+                stdout_sha256="e" * 64,
+                report_sha256="f" * 64,
+            )
+            bad_acr = AcceptanceCycleResult(
+                task_id="TC-001",
+                audit_result=fail_audit,
+                accept_transition=None,
+                integrate_transition=None,
+            )
+            bad_bar = BlockedAuditRequest(
+                acceptance_cycle_result=bad_acr,
+                dispatch_cycle_result=req.blocked_audit_request.dispatch_cycle_result,
+                block_transition_request=req.blocked_audit_request.block_transition_request,
+                current_worker_kind=req.blocked_audit_request.current_worker_kind,
+            )
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=bad_bar,
+                blocked_audit_result=req.blocked_audit_result,
+                cancellation_transition_request=req.cancellation_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 21. BlockedAuditRequest/Result audit_result binding rejected ------------
+
+    def test_21_audit_result_object_identity_binding_rejected(self) -> None:
+        """blocked_audit_result.audit_result must be the same object as request."""
+        tmp = _setup_project(state="blocked")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = _make_blocked_cancellation_request()
+
+            from workflow_orchestrator import BlockedCancellationRequest
+            from mad_audit_gateway import (
+                MadAuditGatewayResult,
+                MadAuditPlan,
+                MadDeliberationDepth,
+            )
+            # Create a *new* audit result object that is equal but not identical
+            different_audit = MadAuditGatewayResult(
+                deliberation_id="DELIB-test-001",
+                status="completed",
+                verdict="blocked",
+                issues=(),
+                evidence=(),
+                warnings=(),
+                report="audit report",
+                archive_path="/tmp/audit",
+                participants=("agent-1",),
+                plan=MadAuditPlan(depth=MadDeliberationDepth.BALANCED),
+                stdout_sha256="e" * 64,
+                report_sha256="f" * 64,
+            )
+            bad_bar_result = BlockedAuditResult(
+                task_id=req.blocked_audit_result.task_id,
+                audit_result=different_audit,
+                escalation_decision=req.blocked_audit_result.escalation_decision,
+                block_transition=req.blocked_audit_result.block_transition,
+            )
+            bad_req = BlockedCancellationRequest(
+                blocked_audit_request=req.blocked_audit_request,
+                blocked_audit_result=bad_bar_result,
+                cancellation_transition_request=req.cancellation_transition_request,
+            )
+
+            with self.assertRaises(WorkflowInputError):
+                async def _run() -> None:
+                    await orch.record_blocked_cancellation(bad_req)
+                asyncio.run(_run())
         finally:
             import shutil; shutil.rmtree(tmp, ignore_errors=True)

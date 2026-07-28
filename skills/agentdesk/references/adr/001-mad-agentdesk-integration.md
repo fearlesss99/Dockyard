@@ -6459,7 +6459,7 @@ in `ControlPlaneTransitionService._TRANSITION_SPECS` (搂2.14.8):
 | 10 | `TASK_BLOCKED` | Current — TC-13.18d.2 blocked path |
 | 11 | `BLOCKER_RESOLVED` | TC-13.18d.2 unblock path |
 | 12 | `BLOCKER_RESCOPED` | Current — TC-13.18d.5 rescope path |
-| 13 | `BLOCKER_CANCELLED` | TC-13.18d.2 cancel path |
+| 13 | `BLOCKER_CANCELLED` | Current — TC-13.18d.6 cancel path |
 | 14 | `TASK_CANCELLED` | TC-13.18d.2 cancel path |
 | 15 | `TASK_SUPERSEDED` | TC-13.18d.2 supersede path |
 

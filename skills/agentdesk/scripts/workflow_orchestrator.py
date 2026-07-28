@@ -41,6 +41,7 @@ from typing import Protocol
 from control_plane_transition import (
     AcknowledgePayload,
     BlockedPayload,
+    BlockerCancelledPayload,
     BlockerRescopedPayload,
     BlockerResolvedPayload,
     ControlPlaneTransitionService,
@@ -97,6 +98,8 @@ __all__ = [
     "AcceptanceCycleResult",
     "BlockedAuditRequest",
     "BlockedAuditResult",
+    "BlockedCancellationRequest",
+    "BlockedCancellationResult",
     "BlockedRescopeRequest",
     "BlockedRescopeResult",
     "DeliveryReceipt",
@@ -589,6 +592,30 @@ class BlockedRescopeResult:
     previous_revision: int
     new_revision: int
     rescope_transition: TransitionResult
+
+
+# -- BlockedCancellation types (TC-13.18d.6) -----------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BlockedCancellationRequest:
+    """Immutable input for expert blocked task cancellation — exactly three fields.
+
+    All identifiers are caller-supplied.
+    """
+
+    blocked_audit_request: BlockedAuditRequest
+    blocked_audit_result: BlockedAuditResult
+    cancellation_transition_request: TransitionRequest
+
+
+@dataclass(frozen=True, slots=True)
+class BlockedCancellationResult:
+    """Immutable result of a blocked cancellation — exactly three fields."""
+
+    task_id: str
+    escalation_decision: EscalationDecision
+    cancellation_transition: TransitionResult
 
 
 # -- exception hierarchy ------------------------------------------------------
@@ -2163,6 +2190,46 @@ class WorkflowOrchestrator:
             rescope_transition=rescope_transition,
         )
 
+    async def record_blocked_cancellation(
+        self,
+        request: BlockedCancellationRequest,
+    ) -> BlockedCancellationResult:
+        """Cancel an expert blocked task via BLOCKER_CANCELLED (TC-13.18d.6).
+
+        Execution order:
+        1. Fail-closed input validation
+        2. clock.now()
+        3. apply_transition(BLOCKER_CANCELLED, lease=None, now)
+        4. return BlockedCancellationResult
+
+        Does NOT re-run MAD audit, evaluate_escalation, auto-dispatch,
+        or any WorkerSlotLease operations.
+
+        Transition exceptions and asyncio.CancelledError propagate
+        unchanged.
+        """
+        # -- 1. Fail-closed input validation -----------------------------------
+        self._validate_blocked_cancellation_request(request)
+
+        # -- 2. clock.now() ----------------------------------------------------
+        now = self.clock.now()
+
+        # -- 3. Apply BLOCKER_CANCELLED with lease=None ------------------------
+        cancellation_transition = ControlPlaneTransitionService(
+            self.project_root
+        ).apply_transition(
+            request.cancellation_transition_request,
+            lease=None,
+            now=now,
+        )
+
+        # -- 4. Return result --------------------------------------------------
+        return BlockedCancellationResult(
+            task_id=request.blocked_audit_result.task_id,
+            escalation_decision=request.blocked_audit_result.escalation_decision,
+            cancellation_transition=cancellation_transition,
+        )
+
     # -- private validation helpers -------------------------------------------
 
     def _validate_integration_failure_request(
@@ -2543,6 +2610,205 @@ class WorkflowOrchestrator:
             )
 
         # -- bool must not be revision ----------------------------------------
+        if isinstance(revision, bool):
+            raise WorkflowInputError(
+                "revision must not be bool"
+            )
+
+    def _validate_blocked_cancellation_request(
+        self,
+        request: BlockedCancellationRequest,
+    ) -> None:
+        """Fail-closed validation — any violation raises before transition.
+
+        Raises TypeError / WorkflowInputError on the first violation;
+        messages never contain paths, prompts, report bodies, issue
+        descriptions, stdout, secrets, dispatch_id, task_id,
+        blocked_reason, or input repr/str.
+        """
+        # -- request must be exactly BlockedCancellationRequest ----------------
+        if type(request) is not BlockedCancellationRequest:
+            raise TypeError(
+                "request must be BlockedCancellationRequest, "
+                f"got {type(request).__name__}"
+            )
+
+        bar = request.blocked_audit_request
+        bar_result = request.blocked_audit_result
+        ctr = request.cancellation_transition_request
+
+        # -- blocked_audit_request must be exactly BlockedAuditRequest ---------
+        if type(bar) is not BlockedAuditRequest:
+            raise TypeError(
+                "blocked_audit_request must be BlockedAuditRequest, "
+                f"got {type(bar).__name__}"
+            )
+
+        # -- blocked_audit_result must be exactly BlockedAuditResult -----------
+        if type(bar_result) is not BlockedAuditResult:
+            raise TypeError(
+                "blocked_audit_result must be BlockedAuditResult, "
+                f"got {type(bar_result).__name__}"
+            )
+
+        # -- cancellation_transition_request must be exactly TransitionRequest --
+        if type(ctr) is not TransitionRequest:
+            raise TypeError(
+                "cancellation_transition_request must be TransitionRequest, "
+                f"got {type(ctr).__name__}"
+            )
+
+        # -- blocked_audit_result must bind to blocked_audit_request -----------
+        # result.audit_result is request.acceptance_cycle_result.audit_result
+        if bar_result.audit_result is not bar.acceptance_cycle_result.audit_result:
+            raise WorkflowInputError(
+                "blocked_audit_result.audit_result must be the same object "
+                "as blocked_audit_request.acceptance_cycle_result.audit_result"
+            )
+
+        # result.escalation_decision.current_worker_kind == request.current_worker_kind
+        if bar_result.escalation_decision.current_worker_kind is not bar.current_worker_kind:
+            raise WorkflowInputError(
+                "escalation_decision.current_worker_kind must exactly equal "
+                "blocked_audit_request.current_worker_kind"
+            )
+
+        # result.block_transition.task_id == result.task_id
+        if bar_result.block_transition.task_id != bar_result.task_id:
+            raise WorkflowInputError(
+                "block_transition.task_id must match blocked_audit_result.task_id"
+            )
+
+        # result.block_transition.to_state == "blocked"
+        if bar_result.block_transition.to_state != "blocked":
+            raise WorkflowInputError(
+                "block_transition.to_state must be 'blocked'"
+            )
+
+        # -- Audit verdict must be "blocked" -----------------------------------
+        verdict = bar.acceptance_cycle_result.audit_result.verdict
+        if verdict != "blocked":
+            raise WorkflowInputError(
+                "audit verdict must be 'blocked'"
+            )
+
+        # -- accept/integrate transitions must be None -------------------------
+        if bar.acceptance_cycle_result.accept_transition is not None:
+            raise WorkflowInvariantError(
+                "accept_transition must be None for blocked verdict"
+            )
+        if bar.acceptance_cycle_result.integrate_transition is not None:
+            raise WorkflowInvariantError(
+                "integrate_transition must be None for blocked verdict"
+            )
+
+        # -- current_worker_kind must be EXPERT_AGENT --------------------------
+        decision = bar_result.escalation_decision
+        if decision.current_worker_kind is not WorkerKind.EXPERT_AGENT:
+            raise WorkflowInputError(
+                "current_worker_kind must be EXPERT_AGENT"
+            )
+
+        # -- escalation action must be REQUEST_USER_DECISION -------------------
+        if decision.action is not EscalationAction.REQUEST_USER_DECISION:
+            raise WorkflowInputError(
+                "escalation action must be REQUEST_USER_DECISION"
+            )
+
+        # -- next_worker_kind must be None -------------------------------------
+        if decision.next_worker_kind is not None:
+            raise WorkflowInputError(
+                "next_worker_kind must be None for REQUEST_USER_DECISION"
+            )
+
+        # -- task_id consistency across bound objects ---------------------------
+        dcr = bar.dispatch_cycle_result
+        task_id = bar_result.task_id
+        receipt = dcr.delivery_receipt
+
+        if task_id != receipt.identity.task_id:
+            raise WorkflowInputError(
+                "task_id must match delivery receipt task_id"
+            )
+
+        # -- revision, attempt, dispatch_id must match DeliveryReceipt ----------
+        # (task_id already checked above; block_transition task_id matches too)
+        if bar_result.block_transition.task_id != task_id:
+            raise WorkflowInputError(
+                "block transition task_id inconsistency"
+            )
+
+        if ctr.cas.task_id != task_id:
+            raise WorkflowInputError(
+                "cancellation cas.task_id must match task_id"
+            )
+
+        # -- CAS expected_revision must match delivery receipt revision ---------
+        revision = receipt.identity.revision
+        if ctr.cas.expected_revision != revision:
+            raise WorkflowInputError(
+                "cancellation cas.expected_revision must match "
+                "delivery receipt revision"
+            )
+
+        # -- Original block transition must be TASK_BLOCKED --------------------
+        btr = bar.block_transition_request
+        if btr.event_type != "TASK_BLOCKED":
+            raise WorkflowInputError(
+                "original block transition request event_type must be "
+                "TASK_BLOCKED"
+            )
+
+        # -- Original BlockedPayload validation --------------------------------
+        bp = btr.payload
+        if not isinstance(bp, BlockedPayload):
+            raise WorkflowInputError(
+                "original block transition payload must be BlockedPayload"
+            )
+
+        # -- cancellation_transition_request validation ------------------------
+        # event_type must be BLOCKER_CANCELLED
+        if ctr.event_type != "BLOCKER_CANCELLED":
+            raise WorkflowInputError(
+                "cancellation_transition_request event_type must be "
+                "BLOCKER_CANCELLED"
+            )
+
+        # payload must be BlockerCancelledPayload
+        if not isinstance(ctr.payload, BlockerCancelledPayload):
+            raise WorkflowInputError(
+                "cancellation_transition_request payload must be "
+                "BlockerCancelledPayload"
+            )
+
+        # CAS expected_state must be "blocked"
+        if ctr.cas.expected_state != "blocked":
+            raise WorkflowInputError(
+                "cancellation_transition_request cas.expected_state must be "
+                "'blocked'"
+            )
+
+        # to_state must be "cancelled" (checked against event_type spec)
+        # dispatch_cas must be None
+        if ctr.dispatch_cas is not None:
+            raise WorkflowInputError(
+                "cancellation_transition_request dispatch_cas must be None"
+            )
+
+        # -- event_id dedup: must differ from dispatch, ACK, delivery, block --
+        existing_event_ids = {
+            dcr.dispatch_transition.event_id,
+            dcr.acknowledge_transition.event_id,
+            dcr.delivery_transition.event_id,
+            bar_result.block_transition.event_id,
+        }
+        if ctr.event_id in existing_event_ids:
+            raise WorkflowInputError(
+                "cancellation event_id must differ from dispatch, ACK, "
+                "delivery, and block event_ids"
+            )
+
+        # -- bool must not be revision -----------------------------------------
         if isinstance(revision, bool):
             raise WorkflowInputError(
                 "revision must not be bool"
