@@ -17,7 +17,7 @@ a Target interface as if it were Current.
 | `mad deliberate --format json` | **Current** | N/A (MVP) | Informal (`RunResult.to_dict()`) |
 | `mad deliberate --format json` (formal) | **Target** | TC-13.2 | `mad.run-result/v1` |
 | `mad resume --format json` | **Current** | N/A (MVP) | Informal (same shape as deliberate) |
-| `mad audit` | **Target** | TC-13.15 | `mad.audit-result/v1` |
+| `mad audit` | **Current** | TC-13.15 | `mad.audit-result/v1` |
 | `agentdesk.mad-refs/v1` | **Current** | TC-13.6 | Runtime MAD invocation record |
 
 ---
@@ -129,6 +129,98 @@ Argparse-level parameter errors (e.g. missing `deliberation_id`) produce exit
 code `2` (Python `argparse` default).  Uncaught configuration exceptions must
 not be documented as stable public exit semantics for `resume`.
 
+### 2.4 `mad audit` → `mad.audit-result/v1`
+
+**Status: Current — implemented by TC-13.15**
+
+```bash
+mad audit "<question>" \
+  --workspace <path> \
+  --task-card-commit <sha> \
+  --task-card-path <relpath> \
+  --delivery-report-path <relpath> \
+  --report-commit <sha> \
+  --base-commit <sha> \
+  --implementation-commit <sha> \
+  --agents <id1,id2,...> \
+  --report-agent <id> \
+  --depth <fast|balanced|deep> \
+  --convergence auto \
+  --confirm-plan \
+  --format json
+```
+
+`--agents` is a **single CSV parameter** (e.g. `--agents id1,id2,id3`), not
+a repeated flag.  This matches the existing `mad deliberate --agents` convention.
+
+Stdout (`mad.audit-result/v1`):
+
+```json
+{
+  "schema_version": "mad.audit-result/v1",
+  "deliberation_id": "<uuid-or-archive-id>",
+  "status": "completed",
+  "verdict": "pass | fail | blocked",
+  "issues": [
+    {
+      "id": "ISS-<unique>",
+      "severity": "critical | high | medium | low | info",
+      "category": "security | correctness | completeness | consistency | evidence | process",
+      "title": "<one-line>",
+      "description": "<detailed-finding>",
+      "location": {
+        "file": "<relative-path>",
+        "line": "<optional-line-number>",
+        "commit": "<sha>"
+      },
+      "recommendation": "<actionable-fix>"
+    }
+  ],
+  "evidence": [
+    {
+      "ref": "<evidence-id>",
+      "type": "git-ancestry | git-diff | file-content | commit-message | check-output | model-output",
+      "source": "<path-or-sha>",
+      "summary": "<one-line>",
+      "verified": true
+    }
+  ],
+  "warnings": ["<human-readable-warning>"],
+  "report": "<full-audit-report-markdown>",
+  "archive_path": "<absolute-path-to-archive>",
+  "participants": ["<agent-id>", "..."],
+  "plan": {"depth": "fast|balanced|deep"}
+}
+```
+
+Key semantics:
+
+- `status` describes the audit **process** outcome.  When exit code is `0`,
+  `status` is **fixed** to the exact string `"completed"`.
+- `verdict` is a mutually-exclusive enum (`pass`, `fail`, or `blocked`)
+  describing the **business finding**.  `verdict` may be `pass`, `fail`, or
+  `blocked` even when exit is `0`.
+- `verdict: "blocked"` is not an infrastructure failure — the process completed
+  but could not reach a pass/fail conclusion due to missing evidence.
+- Infrastructure failures are not encoded as `verdict` values.
+- When `verdict` is `fail` or `blocked` but the process completed normally,
+  exit code is still `0`.
+- `participants` is `list[str]` (agent ID strings), matching
+  `mad.run-result/v1` shape.
+- The root object has exactly **11** keys: `schema_version`, `deliberation_id`,
+  `status`, `verdict`, `issues`, `evidence`, `warnings`, `report`,
+  `archive_path`, `participants`, `plan`.
+
+**Exit codes for `mad audit`**:
+
+| Exit | Condition |
+|------|-----------|
+| `0` | Audit process completed — `status: "completed"`; `verdict` may be `pass`, `fail`, or `blocked` |
+| `1` | Parse failure, model invocation failure, or evidence verification failure |
+| `2` | Parameter, configuration, or workspace validation failure (caller error) |
+| `3` | Insufficient available participants |
+| `130` | User cancellation or SIGINT |
+
 ---
 
 ## 3. Target Interfaces
@@ -220,111 +312,6 @@ If future versions need English status strings, object-typed participants,
 or restructured convergence/plan, they must use `mad.run-result/v2`.
 
 Exit codes are the same as Current `mad deliberate`.
-
-### 3.3 `mad audit` → `mad.audit-result/v1`
-
-**Status: Target — to be implemented by TC-13.15**
-
-```bash
-mad audit "<question>" \
-  --workspace <path> \
-  --task-card-commit <sha> \
-  --task-card-path <relpath> \
-  --delivery-report-path <relpath> \
-  --report-commit <sha> \
-  --base-commit <sha> \
-  --implementation-commit <sha> \
-  --agents <id1,id2,...> \
-  --report-agent <id> \
-  --depth deep \
-  --convergence auto \
-  --confirm-plan \
-  --format json
-```
-
-`--agents` is a **single CSV parameter** (e.g. `--agents id1,id2,id3`), not
-a repeated flag.  This matches the existing `mad deliberate --agents` convention.
-
-Stdout (`mad.audit-result/v1`):
-
-```json
-{
-  "schema_version": "mad.audit-result/v1",
-  "deliberation_id": "<uuid-or-archive-id>",
-  "status": "completed | failed | blocked",
-  "verdict": "pass | fail | blocked",
-  "issues": [
-    {
-      "id": "ISS-<unique>",
-      "severity": "critical | high | medium | low | info",
-      "category": "security | correctness | completeness | consistency | evidence | process",
-      "title": "<one-line>",
-      "description": "<detailed-finding>",
-      "location": {
-        "file": "<relative-path>",
-        "line": "<optional-line-number>",
-        "commit": "<sha>"
-      },
-      "recommendation": "<actionable-fix>"
-    }
-  ],
-  "evidence": [
-    {
-      "ref": "<evidence-id>",
-      "type": "git-ancestry | git-diff | file-content | commit-message | check-output | model-output",
-      "source": "<path-or-sha>",
-      "summary": "<one-line>",
-      "verified": true
-    }
-  ],
-  "warnings": ["<human-readable-warning>"],
-  "report": "<full-audit-report-markdown>",
-  "archive_path": "<absolute-path-to-archive>",
-  "participants": ["<agent-id>", "..."],
-  "plan": {
-    "participants": ["..."],
-    "report_agent_id": "<id>",
-    "organizer_agent_id": "<id-or-null>",
-    "source": "organizer | manual",
-    "depth": "fast | balanced | deep",
-    "critic_agent_id": "<id-or-null>",
-    "audit_specific": {
-      "task_card_commit": "<sha>",
-      "task_card_path": "<relative-path>",
-      "delivery_report_path": "<relative-path>",
-      "base_commit": "<sha>",
-      "implementation_commit": "<sha>",
-      "report_commit": "<sha>",
-      "workspace": "<absolute-path>"
-    }
-  }
-}
-```
-
-Key semantics:
-
-- `status` describes the audit **process** outcome.  When exit code is `0`,
-  `status` is fixed to `"completed"`.  `"failed"` and `"blocked"` are only
-  used when the process itself did not finish normally.
-- `verdict` is a mutually-exclusive enum (`pass | fail | blocked`) describing
-  the **business finding**.
-- `verdict: "blocked"` is not an infrastructure failure — the process completed
-  but could not reach a pass/fail conclusion due to missing evidence.
-- Infrastructure failures are not encoded as `verdict` values.
-- When `verdict` is `fail` or `blocked` but the process completed normally,
-  exit code is still `0`.
-- `participants` is `list[str]` (agent ID strings), matching
-  `mad.run-result/v1` shape.
-
-**Exit codes for `mad audit`**:
-
-| Exit | Condition |
-|------|-----------|
-| `0` | Audit process completed — `status: "completed"`; `verdict` may be `pass`, `fail`, or `blocked` |
-| `1` | Parse failure, model invocation failure, or evidence verification failure |
-| `2` | Parameter, configuration, or workspace validation failure (caller error) |
-| `3` | Insufficient available participants |
-| `130` | User cancellation or SIGINT |
 
 ---
 
@@ -478,3 +465,4 @@ unvalidated data to downstream systems, and alert the PM.
 |------|----------|--------|---------|
 | 2026-07-26 | 1 (Target) | PM | Initial contract.  All Target interfaces pending future TC numbers. |
 | 2026-07-26 | 2 (Target) | PM | Corrected Implemented-by references (→TC-13.2, TC-13.15, etc.). Added `mad.agents/v1` root object. Added `mad.run-result/v1` backward-compat rules. Split exit codes by sub-command. Added `agentdesk.mad-refs/v1` runtime schema. Clarified `verdict: blocked` vs infrastructure failure. |
+| 2026-07-28 | 3 (Current) | PM | TC-13.16a: `mad audit` → Current (TC-13.15); moved to §2.4. Frozen MadAuditGateway contract (§2.17 in ADR). Fixed `--depth <fast|balanced|deep>`, `status: "completed"` on exit 0, `plan` exact shape as `{"depth": "fast|balanced|deep"}`, 11-key root object. |

@@ -15,7 +15,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 2 | `mad agents --format json` | **Target** | TC-13.2 | `mad.agents/v1` — root object with `schema_version` + `agents` array |
 | 3 | `mad deliberate --format json` | **Current** | N/A (MVP) | `RunResult.to_dict()` to stdout; no public `schema_version` |
 | 4 | `mad.run-result/v1` schema | **Target** | TC-13.2 | Add `schema_version` only; keep all existing field shapes |
-| 5 | `mad audit` sub-command | **Target** | TC-13.15 | `mad.audit-result/v1`; structured audit of a delivery |
+| 5 | `mad audit` sub-command | **Current** | TC-13.15 | `mad.audit-result/v1`; structured audit of a delivery |
 | 6 | `MAD_HOME` environment variable | **Current** | N/A (MVP) | Override data directory; read by `app_home()` |
 | 7 | `MAD_PARTICIPANT` recursion guard | **Current** | N/A (MVP) | Set to `"1"` in subprocess env to prevent re-entry |
 | 8 | Claude CliAdapter (read-only) | **Current** | N/A (MVP) | `--permission-mode plan`, tools limited to Read/Glob/Grep/WebSearch/WebFetch |
@@ -60,7 +60,8 @@ marked **Current** exist and are callable today; interfaces marked
   - `participants` is a flat `list[str]` of agent IDs.
   - `convergence` and `plan` use their current shapes as produced by the engine.
 - **`mad resume --format json`** prints the same shape as `deliberate`.
-- **`mad audit` does not exist.**  There is no audit sub-command.
+- **`mad audit` sub-command** (`mad.audit-result/v1`) is **Current** as of TC-13.15.
+  See §3.3 of the CLI contract for the full schema.
 - **`MAD_HOME`** is read by `config.app_home()`; when set, it overrides the
   default platform data directory.  This is the mechanism for isolating MAD
   state per project or per Gateway instance.
@@ -100,6 +101,20 @@ exit semantics.
 |------|---------|
 | `0` | Normal output |
 | `2` | Argparse parameter error |
+
+**Current exit codes (`mad audit`)**:
+
+| Exit | Condition |
+|------|-----------|
+| `0` | Audit process completed — `status: "completed"`; `verdict` may be `pass`, `fail`, or `blocked` |
+| `1` | Parse failure, model invocation failure, or evidence verification failure |
+| `2` | Parameter, configuration, or workspace validation failure (caller error) |
+| `3` | Insufficient available participants |
+| `130` | User cancellation or SIGINT |
+
+When exit is 0, `status` is always the string `"completed"`.  When exit is 0,
+`verdict` is one of `"pass"`, `"fail"`, or `"blocked"` — it is a mutually-exclusive
+enum describing the business finding, not the process outcome.
 
 MAD does **not**:
 - Create, remove, or prune Git worktrees.
@@ -222,7 +237,7 @@ V1 explicitly does **not**:
 If future versions need English status strings or object-typed participants,
 they must use `mad.run-result/v2`.
 
-**`mad.audit-result/v1` (Target — TC-13.15)**:
+**`mad.audit-result/v1` (Current — TC-13.15)**:
 
 ```bash
 mad audit "<question>" \
@@ -235,7 +250,7 @@ mad audit "<question>" \
   --implementation-commit <sha> \
   --agents <id1,id2,...> \
   --report-agent <id> \
-  --depth deep \
+  --depth <fast|balanced|deep> \
   --convergence auto \
   --confirm-plan \
   --format json
@@ -249,7 +264,7 @@ Stdout (`mad.audit-result/v1`):
 {
   "schema_version": "mad.audit-result/v1",
   "deliberation_id": "<uuid-or-archive-id>",
-  "status": "completed | failed | blocked",
+  "status": "completed",
   "verdict": "pass | fail | blocked",
   "issues": [
     {
@@ -279,25 +294,13 @@ Stdout (`mad.audit-result/v1`):
   "report": "<full-audit-report-markdown>",
   "archive_path": "<absolute-path-to-archive>",
   "participants": ["<agent-id>", "..."],
-  "plan": {
-    "participants": ["..."],
-    "report_agent_id": "<id>",
-    "organizer_agent_id": "<id-or-null>",
-    "source": "organizer | manual",
-    "depth": "fast | balanced | deep",
-    "critic_agent_id": "<id-or-null>",
-    "audit_specific": {
-      "task_card_commit": "<sha>",
-      "task_card_path": "<relative-path>",
-      "delivery_report_path": "<relative-path>",
-      "base_commit": "<sha>",
-      "implementation_commit": "<sha>",
-      "report_commit": "<sha>",
-      "workspace": "<absolute-path>"
-    }
-  }
+  "plan": {"depth": "fast|balanced|deep"}
 }
 ```
+
+The root object has exactly **11** keys:
+`schema_version`, `deliberation_id`, `status`, `verdict`, `issues`,
+`evidence`, `warnings`, `report`, `archive_path`, `participants`, `plan`.
 
 Key semantics:
 
@@ -5803,6 +5806,284 @@ intermediate "Current (contract frozen)" sub-status is permitted.
   implementation are complete.
 * TC-13.4 (``WorkerKind`` enum) is **Current** — no changes required.
 * TC-13.14 and all subsequent Target interfaces remain **Target**.
+
+---
+
+### 2.17 MadAuditGateway — Frozen Contract (Target — TC-13.16a)
+
+TC-13.16a freezes the **MadAuditGateway contract** for subprocess invocation
+of `mad audit` with worktree validation.  No production module is shipped
+under TC-13.16a — the contract itself is the deliverable and must be
+implemented by TC-13.16b.
+
+---
+
+#### 2.17.1 Module Public Surface
+
+Module: `skills/agentdesk/scripts/mad_audit_gateway.py`
+
+```python
+__all__ = [
+    "MadAuditGatewayInput",
+    "MadAuditIssueLocation",
+    "MadAuditIssue",
+    "MadAuditEvidence",
+    "MadAuditPlan",
+    "MadAuditGatewayResult",
+    "run_audit_gateway",
+]
+```
+
+Exactly **7** public symbols — no more, no less.
+
+---
+
+#### 2.17.2 Public Entry Point
+
+```python
+async def run_audit_gateway(
+    config: MadGatewayConfig,
+    inp: MadAuditGatewayInput,
+) -> MadAuditGatewayResult:
+    ...
+```
+
+**Frozen parameter order (exact, positional):**
+
+| # | Parameter | Type | Rule |
+|---|-----------|------|------|
+| 1 | `config` | `MadGatewayConfig` | Gateway configuration (from `.agentdesk/runtime/gateway.yaml`) |
+| 2 | `inp` | `MadAuditGatewayInput` | Frozen audit gateway input |
+
+---
+
+#### 2.17.3 MadAuditGatewayInput — Exact Fields
+
+```python
+@dataclass(frozen=True, slots=True)
+class MadAuditGatewayInput:
+    project_root: str          # absolute Path-like string
+    task_id: str                # non-empty
+    dispatch_id: str            # non-empty
+    question: str               # the audit question
+    workspace: str              # absolute Path-like string — authoritative audit worktree
+    task_card_commit: str       # 40-char hex SHA
+    task_card_path: str         # repo-relative path
+    delivery_report_path: str   # repo-relative path
+    report_commit: str          # 40-char hex SHA
+    base_commit: str            # 40-char hex SHA
+    implementation_commit: str  # 40-char hex SHA
+    depth: str                  # "fast" | "balanced" | "deep"
+```
+
+Exactly **12** fields — no more, no less.
+
+Agent lists are taken **only** from `config.audit_agent_ids` and
+`config.audit_report_agent_id`.  The caller must not supply agent IDs or a
+report agent ID through `MadAuditGatewayInput`.
+
+All public models use `@dataclass(frozen=True, slots=True)`.  Every
+collection field is converted to an immutable `tuple` — no public `dict`
+or `list` mutable objects are exposed.
+
+---
+
+#### 2.17.4 MadAuditIssueLocation
+
+```python
+@dataclass(frozen=True, slots=True)
+class MadAuditIssueLocation:
+    file: str      # relative path
+    line: str | None   # optional line number
+    commit: str    # 40-char hex SHA
+```
+
+Exactly **3** fields — no more, no less.
+
+---
+
+#### 2.17.5 MadAuditIssue
+
+```python
+@dataclass(frozen=True, slots=True)
+class MadAuditIssue:
+    id: str              # "ISS-<unique>"
+    severity: str         # "critical" | "high" | "medium" | "low" | "info"
+    category: str         # "security" | "correctness" | "completeness" | "consistency" | "evidence" | "process"
+    title: str            # one-line summary
+    description: str      # detailed finding
+    location: MadAuditIssueLocation
+    recommendation: str   # actionable fix
+```
+
+Exactly **7** fields — no more, no less.
+
+---
+
+#### 2.17.6 MadAuditEvidence
+
+```python
+@dataclass(frozen=True, slots=True)
+class MadAuditEvidence:
+    ref: str        # evidence ID
+    type: str        # "git-ancestry" | "git-diff" | "file-content" | "commit-message" | "check-output" | "model-output"
+    source: str      # path or SHA
+    summary: str     # one-line
+    verified: bool   # must be bool, not truthy/falsy
+```
+
+Exactly **5** fields — no more, no less.  `verified` must be a strict `bool`
+(`True` or `False`), not a truthy/falsy value.
+
+---
+
+#### 2.17.7 MadAuditPlan
+
+```python
+@dataclass(frozen=True, slots=True)
+class MadAuditPlan:
+    participants: tuple[str, ...]       # agent ID strings
+    report_agent_id: str
+    organizer_agent_id: str | None
+    source: str                          # "organizer" | "manual"
+    depth: str                           # "fast" | "balanced" | "deep"
+    critic_agent_id: str | None
+```
+
+Exactly **6** fields — no more, no less.
+
+---
+
+#### 2.17.8 MadAuditGatewayResult
+
+```python
+@dataclass(frozen=True, slots=True)
+class MadAuditGatewayResult:
+    deliberation_id: str
+    status: str                  # "completed" on exit 0
+    verdict: str                 # "pass" | "fail" | "blocked"
+    issues: tuple[MadAuditIssue, ...]
+    evidence: tuple[MadAuditEvidence, ...]
+    warnings: tuple[str, ...]
+    report: str                  # full audit report markdown
+    archive_path: str            # absolute path (runtime only)
+    participants: tuple[str, ...]
+    plan: MadAuditPlan
+    stdout_sha256: str           # SHA-256 of raw stdout bytes
+    report_sha256: str           # SHA-256 of report UTF-8 bytes
+```
+
+Exactly **12** fields — no more, no less.
+
+---
+
+#### 2.17.9 Precise argv
+
+```text
+mad audit <question>
+--workspace <workspace>
+--task-card-commit <sha>
+--task-card-path <repo-relative-path>
+--delivery-report-path <repo-relative-path>
+--report-commit <sha>
+--base-commit <sha>
+--implementation-commit <sha>
+--agents <config.audit_agent_ids CSV>
+--report-agent <config.audit_report_agent_id>
+--depth <fast|balanced|deep>
+--convergence auto
+--confirm-plan
+--format json
+```
+
+Must use an argv array; shell concatenation is forbidden.
+
+---
+
+#### 2.17.10 Execution Bounds
+
+- `cwd=str(inp.workspace)` — workspace is the authoritative audit worktree.
+- Environment inherits the parent process; only `MAD_HOME` is set.
+- `MAD_PARTICIPANT` is **not** set by the Gateway.
+- The Gateway does **not** create or remove worktrees.
+- The Gateway does **not** read files inside the MAD archive.
+- The Gateway does **not** call `git fetch`, `git pull`, or `git push`.
+- The Gateway does **not** write tasks, events, outbox, or acceptance records.
+- On success, the Gateway writes `agentdesk.mad-refs/v1` with
+  `purpose="audit"` (runtime-only, gitignored).
+- `verdict` and `issues` are returned **only** in memory; subsequent state
+  writes belong to TC-13.18.
+
+---
+
+#### 2.17.11 Output Validation
+
+`mad.audit-result/v1` root object has exactly **11** keys:
+
+1. `schema_version`
+2. `deliberation_id`
+3. `status`
+4. `verdict`
+5. `issues`
+6. `evidence`
+7. `warnings`
+8. `report`
+9. `archive_path`
+10. `participants`
+11. `plan`
+
+Rules:
+
+- Raw stdout bytes are SHA-256 hashed first, then UTF-8 decoded and JSON parsed.
+- Non-zero exit must never be parsed as a successful result or written to mad-ref.
+- `issues` must have exactly seven fields; `location` exactly three.
+- `evidence` must have exactly five fields; `verified` must be `bool`.
+- `archive_path` must be absolute — it enters only runtime mad-ref, never Git.
+- `report_sha256` is computed on UTF-8 bytes of the parsed `report` field.
+- Missing keys, extra keys, wrong types, or unknown enum values → fail-closed.
+- Exception messages must never contain: report text, issue descriptions,
+  raw stdout, workspace paths, or secrets.
+
+---
+
+#### 2.17.12 Error Handling
+
+Reuses the existing `mad_gateway` Gateway exception hierarchy — no parallel
+AuditGateway exception classes are created.
+
+Exit code mapping:
+
+| Exit | Exception |
+|------|-----------|
+| `1` | `GatewayExit1Error` |
+| `2` | `GatewayExit2Error` |
+| `3` | `GatewayExit3Error` |
+| `130` | `GatewayExit130Error` |
+| Other | `GatewayUnknownExitError` |
+
+The Gateway only raises exceptions — it does **not** self-write a
+Git-tracked audit failure event.
+
+---
+
+#### 2.17.13 Dependencies
+
+```text
+TC-13.16a → TC-13.6  (MadGatewayConfig, mad-refs)
+TC-13.16a → TC-13.15 (mad audit CLI contract)
+TC-13.16b → TC-13.16a (this contract)
+```
+
+---
+
+#### 2.17.14 Status
+
+* ADR Interface Status row #20 "AgentDesk MadAuditGateway"
+  remains **Target** — TC-13.16a freezes the contract; TC-13.16b
+  (production implementation) is not yet complete.
+* This section (§2.17) is the Frozen Contract for TC-13.16a.
+* TC-13.15 (`mad audit` sub-command) is **Current**.
+* TC-13.16b (production module `mad_audit_gateway.py`) is **Target**.
 
 ---
 

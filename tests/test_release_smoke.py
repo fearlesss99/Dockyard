@@ -7789,3 +7789,302 @@ class ReleaseSmokeTests(unittest.TestCase):
                       .lower().replace(" ", ""),
                       section.lower().replace(" ", ""),
                       "§2.16.5 must state no custom exception classes")
+
+
+class TC1316aContractFreezeTests(unittest.TestCase):
+    """TC-13.16a — MadAuditGateway contract freeze smoke tests.
+
+    Covers: Current/Target status consistency, public API field precision,
+    agent-source-is-config-only, precise argv and cwd, 11-key output,
+    typed issue/evidence/plan, purpose="audit", Gateway zero-state-write,
+    no stale docs, no production module.
+    """
+
+    def setUp(self) -> None:
+        self.adr_path = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        )
+        self.cli_contract_path = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "mad-cli-contract.md"
+        )
+        self.adr_text = self.adr_path.read_text(encoding="utf-8")
+        self.cli_text = self.cli_contract_path.read_text(encoding="utf-8")
+
+    # -- 1. Current/Target status consistency --
+
+    def test_mad_audit_is_current_in_both_docs(self) -> None:
+        """`mad audit` must be marked Current in both ADR and CLI contract."""
+        # ADR interface table row 5
+        self.assertIn("| 5 | `mad audit` sub-command | **Current**",
+                      self.adr_text,
+                      "ADR: row 5 (mad audit) must be Current")
+        # CLI contract status table
+        self.assertIn("| `mad audit` | **Current**",
+                      self.cli_text,
+                      "CLI contract: mad audit must be Current")
+
+    def test_mad_audit_result_v1_is_current_in_adr(self) -> None:
+        """§2.1: `mad.audit-result/v1` heading must be Current."""
+        self.assertIn("**`mad.audit-result/v1` (Current — TC-13.15)**",
+                      self.adr_text,
+                      "ADR: mad.audit-result/v1 heading must be Current")
+
+    def test_stale_mad_audit_does_not_exist_is_removed(self) -> None:
+        """The stale 'mad audit does not exist' text must be removed from ADR."""
+        self.assertNotIn("mad audit` does not exist.",
+                         self.adr_text,
+                         "ADR: stale 'mad audit does not exist' text must be removed")
+        self.assertNotIn("mad audit` does not exist.",
+                         self.cli_text,
+                         "CLI contract: stale 'mad audit does not exist' text must be removed")
+
+    def test_mad_audit_not_in_target_section_of_cli_contract(self) -> None:
+        """mad audit must NOT appear under §3 (Target Interfaces) in CLI contract."""
+        # Find the Target section
+        target_start = self.cli_text.find("## 3. Target Interfaces")
+        self.assertGreater(target_start, -1, "CLI contract must have §3 Target Interfaces")
+        target_section = self.cli_text[target_start:]
+        # The next ## heading ends the target section
+        next_section = re.search(r"\n## \d", target_section)
+        if next_section:
+            target_section = target_section[: next_section.start()]
+        self.assertNotIn("### 3.3 `mad audit`",
+                         target_section,
+                         "CLI contract: mad audit must not be in §3 Target Interfaces")
+
+    def test_mad_auditgateway_remains_target_in_adr_table(self) -> None:
+        """Interface #20 MadAuditGateway must remain Target."""
+        self.assertIn("| 20 | AgentDesk MadAuditGateway | **Target** | TC-13.16",
+                      self.adr_text,
+                      "ADR: row 20 (MadAuditGateway) must remain Target")
+
+    # -- 2. Public API field precision --
+
+    def test_section_217_frozen_contract_exists(self) -> None:
+        """§2.17 MadAuditGateway Frozen Contract must exist."""
+        self.assertIn("### 2.17 MadAuditGateway — Frozen Contract",
+                      self.adr_text,
+                      "ADR: §2.17 MadAuditGateway Frozen Contract must exist")
+
+    def test_run_audit_gateway_signature(self) -> None:
+        """§2.17.2: run_audit_gateway(config, inp) signature must be present."""
+        self.assertIn("async def run_audit_gateway(", self.adr_text,
+                      "ADR: run_audit_gateway signature must be present")
+        self.assertIn("config: MadGatewayConfig", self.adr_text,
+                      "ADR: run_audit_gateway must take config param")
+        self.assertIn("inp: MadAuditGatewayInput", self.adr_text,
+                      "ADR: run_audit_gateway must take inp param")
+
+    def test_mad_audit_gateway_input_exact_fields(self) -> None:
+        """§2.17.3: MadAuditGatewayInput must declare exactly 12 fields."""
+        for f in (
+            "project_root", "task_id", "dispatch_id", "question",
+            "workspace", "task_card_commit", "task_card_path",
+            "delivery_report_path", "report_commit", "base_commit",
+            "implementation_commit", "depth",
+        ):
+            self.assertIn(f"    {f}:", self.adr_text,
+                          f"ADR: MadAuditGatewayInput must have field '{f}'")
+        self.assertIn("Exactly **12** fields", self.adr_text,
+                      "ADR: MadAuditGatewayInput must claim exactly 12 fields")
+
+    def test_mad_audit_issue_location_exact_3_fields(self) -> None:
+        """§2.17.4: MadAuditIssueLocation must have exactly 3 fields."""
+        for f in ("file", "line", "commit"):
+            self.assertIn(f"    {f}:", self.adr_text,
+                          f"ADR: MadAuditIssueLocation must have field '{f}'")
+        self.assertIn("Exactly **3** fields", self.adr_text,
+                      "ADR: MadAuditIssueLocation must claim exactly 3 fields")
+
+    def test_mad_audit_issue_exact_7_fields(self) -> None:
+        """§2.17.5: MadAuditIssue must have exactly 7 fields."""
+        for f in ("id", "severity", "category", "title", "description",
+                   "location", "recommendation"):
+            self.assertIn(f, self.adr_text,
+                          f"ADR: MadAuditIssue must reference '{f}'")
+        self.assertIn("Exactly **7** fields", self.adr_text,
+                      "ADR: MadAuditIssue must claim exactly 7 fields")
+
+    def test_mad_audit_evidence_exact_5_fields(self) -> None:
+        """§2.17.6: MadAuditEvidence must have exactly 5 fields; verified is bool."""
+        for f in ("ref", "type", "source", "summary", "verified"):
+            self.assertIn(f, self.adr_text,
+                          f"ADR: MadAuditEvidence must reference '{f}'")
+        self.assertIn("Exactly **5** fields", self.adr_text,
+                      "ADR: MadAuditEvidence must claim exactly 5 fields")
+        self.assertIn("verified", self.adr_text,
+                      "ADR: MadAuditEvidence.verified must be documented as bool")
+
+    def test_mad_audit_plan_exact_6_fields(self) -> None:
+        """§2.17.7: MadAuditPlan must have exactly 6 fields."""
+        for f in ("participants", "report_agent_id", "organizer_agent_id",
+                   "source", "depth", "critic_agent_id"):
+            self.assertIn(f, self.adr_text,
+                          f"ADR: MadAuditPlan must reference '{f}'")
+        self.assertIn("Exactly **6** fields", self.adr_text,
+                      "ADR: MadAuditPlan must claim exactly 6 fields")
+
+    # -- 3. Agent source is config only --
+
+    def test_agent_ids_only_from_config_not_input(self) -> None:
+        """§2.17.3: agent lists come from config, not MadAuditGatewayInput."""
+        self.assertIn("config.audit_agent_ids", self.adr_text,
+                      "ADR: agent IDs must come from config.audit_agent_ids")
+        self.assertIn("config.audit_report_agent_id", self.adr_text,
+                      "ADR: report agent ID must come from config.audit_report_agent_id")
+
+    # -- 4. Precise argv and cwd --
+
+    def test_precise_argv_in_contract(self) -> None:
+        """§2.17.9: argv must show all required flags."""
+        required_flags = [
+            "--workspace",
+            "--task-card-commit",
+            "--task-card-path",
+            "--delivery-report-path",
+            "--report-commit",
+            "--base-commit",
+            "--implementation-commit",
+            "--agents",
+            "--report-agent",
+            "--depth",
+            "--convergence auto",
+            "--confirm-plan",
+            "--format json",
+        ]
+        for flag in required_flags:
+            self.assertIn(flag, self.adr_text,
+                          f"ADR §2.17.9: argv must contain '{flag}'")
+
+    def test_argv_must_be_array_not_shell(self) -> None:
+        """§2.17.9: must state argv array, shell forbidden."""
+        self.assertIn("argv array", self.adr_text.lower(),
+                      "ADR §2.17.9: must require argv array")
+
+    def test_cwd_is_workspace(self) -> None:
+        """§2.17.10: cwd=str(inp.workspace)."""
+        self.assertIn("cwd=str(inp.workspace)", self.adr_text,
+                      "ADR §2.17.10: cwd must be str(inp.workspace)")
+
+    # -- 5. Precise 11-key output --
+
+    def test_audit_result_v1_11_keys(self) -> None:
+        """§2.17.11: mad.audit-result/v1 root must have exactly 11 keys."""
+        self.assertIn("exactly **11** keys", self.adr_text.lower(),
+                      "ADR §2.17.11: mad.audit-result/v1 must declare 11 keys")
+        # Verify all 11 keys are listed
+        required_keys = [
+            "schema_version",
+            "deliberation_id",
+            "status",
+            "verdict",
+            "issues",
+            "evidence",
+            "warnings",
+            "report",
+            "archive_path",
+            "participants",
+            "plan",
+        ]
+        for key in required_keys:
+            self.assertIn(f"`{key}`", self.adr_text,
+                          f"ADR §2.17.11: must list key '{key}'")
+
+    # -- 6. Typed issue/evidence/plan --
+
+    def test_issue_location_3_fields_in_typed_model(self) -> None:
+        """MadAuditIssueLocation has exactly 3 fields."""
+        self.assertIn("class MadAuditIssueLocation:", self.adr_text,
+                      "ADR: MadAuditIssueLocation dataclass must be present")
+
+    def test_evidence_verified_is_bool_not_truthy(self) -> None:
+        """verified must be strict bool."""
+        self.assertIn("verified", self.adr_text,
+                      "ADR: verified must be documented")
+
+    # -- 7. purpose="audit" --
+
+    def test_mad_refs_purpose_audit(self) -> None:
+        """§2.17.10: mad-refs written with purpose='audit'."""
+        self.assertIn('purpose="audit"', self.adr_text,
+                      "ADR §2.17.10: mad-refs must use purpose='audit'")
+
+    # -- 8. Gateway zero-state-write --
+
+    def test_gateway_zero_file_writes(self) -> None:
+        """§2.17.10: Gateway must not write tasks, events, outbox, acceptances."""
+        no_write = [
+            "does **not** write tasks",
+            "does **not** create or remove worktrees",
+            "does **not** read files inside the MAD archive",
+            "does **not** call `git fetch`",
+        ]
+        for phrase in no_write:
+            self.assertIn(phrase.lower(), self.adr_text.lower(),
+                          f"ADR §2.17.10: must state '{phrase}'")
+
+    def test_gateway_only_throws_exceptions_no_self_write_event(self) -> None:
+        """§2.17.12: Gateway only raises exceptions, no self-written audit event."""
+        self.assertIn("only raises exceptions", self.adr_text.lower(),
+                      "ADR §2.17.12: Gateway must only raise exceptions")
+        self.assertIn("does **not** self-write", self.adr_text.lower(),
+                      "ADR §2.17.12: Gateway must not self-write audit failure event")
+
+    def test_gateway_reuses_existing_exception_hierarchy(self) -> None:
+        """§2.17.12: Reuses mad_gateway exception hierarchy, no parallel AuditGateway exceptions."""
+        self.assertIn("no parallel", self.adr_text.lower(),
+                      "ADR §2.17.12: must state no parallel AuditGateway exceptions")
+
+    # -- 9. No stale docs --
+
+    def test_no_stale_staged_text(self) -> None:
+        """No stale 'staged' or Target-claiming-Current text in the audit sections."""
+        # The ADR should not claim mad.audit-result/v1 is Target anymore
+        audit_v1_references = [
+            m for m in re.finditer(
+                r'mad\.audit-result/v1.*Target',
+                self.adr_text,
+            )
+        ]
+        self.assertEqual(
+            [], audit_v1_references,
+            "ADR: no instance of 'mad.audit-result/v1 ... Target' should remain"
+        )
+
+    def test_no_stale_old_plan_structure_in_audit_json(self) -> None:
+        """The old complex plan structure with audit_specific must not remain."""
+        self.assertNotIn("audit_specific", self.cli_text,
+                         "CLI contract: stale audit_specific plan must be removed")
+        self.assertNotIn("audit_specific", self.adr_text,
+                         "ADR: stale audit_specific plan must be removed")
+
+    def test_status_is_completed_on_exit_0(self) -> None:
+        """Both docs must state status='completed' on exit 0."""
+        self.assertIn('"completed"', self.cli_text,
+                      "CLI contract: must show status as 'completed'")
+        self.assertIn('"completed"', self.adr_text,
+                      "ADR: must show status as 'completed'")
+
+    # -- 10. No production module --
+
+    def test_no_mad_audit_gateway_production_module(self) -> None:
+        """mad_audit_gateway.py must NOT exist in production scripts."""
+        production_path = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "scripts"
+            / "mad_audit_gateway.py"
+        )
+        self.assertFalse(
+            production_path.exists(),
+            "TC-13.16a: mad_audit_gateway.py must NOT exist yet"
+        )
+
+    def test_section_217_status_states_target(self) -> None:
+        """§2.17.14 must state that TC-13.16a freezes the contract; TC-13.16b is Target."""
+        self.assertIn("TC-13.16b (production module `mad_audit_gateway.py`) is **Target**",
+                      self.adr_text,
+                      "ADR §2.17.14: must state TC-13.16b is Target")
