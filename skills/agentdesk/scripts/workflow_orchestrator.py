@@ -41,6 +41,7 @@ from typing import Protocol
 from control_plane_transition import (
     AcknowledgePayload,
     BlockedPayload,
+    BlockerResolvedPayload,
     ControlPlaneTransitionService,
     DeliveryAcceptedPayload,
     DeliveryReturnedPayload,
@@ -62,6 +63,7 @@ from dispatcher_gateway import (
     DispatchStartedObserver,
 )
 from escalation_service import (
+    EscalationAction,
     EscalationDecision,
     EscalationRequest,
     evaluate_escalation,
@@ -99,6 +101,8 @@ __all__ = [
     "DeliveryRemediationResult",
     "DispatchCycleRequest",
     "DispatchCycleResult",
+    "EscalatedRedispatchRequest",
+    "EscalatedRedispatchResult",
     "WorkerOutput",
     "WorkflowClock",
     "WorkflowHeartbeatError",
@@ -506,6 +510,32 @@ class BlockedAuditResult:
     block_transition: TransitionResult
 
 
+# -- EscalatedRedispatch types (TC-13.18d.3) -----------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class EscalatedRedispatchRequest:
+    """Immutable input for escalated single redispatch — exactly four fields.
+
+    All identifiers are caller-supplied.
+    """
+
+    blocked_audit_request: BlockedAuditRequest
+    blocked_audit_result: BlockedAuditResult
+    resolve_transition_request: TransitionRequest
+    next_dispatch_cycle_request: DispatchCycleRequest
+
+
+@dataclass(frozen=True, slots=True)
+class EscalatedRedispatchResult:
+    """Immutable result of a single escalated redispatch — exactly four fields."""
+
+    task_id: str
+    escalation_decision: EscalationDecision
+    resolve_transition: TransitionResult
+    dispatch_cycle_result: DispatchCycleResult
+
+
 # -- exception hierarchy ------------------------------------------------------
 
 
@@ -559,6 +589,226 @@ def _validate_monotonic_delta(start: float, end: float) -> float:
             "monotonic clock went backwards"
         )
     return end - start
+
+
+# -- Escalated redispatch validation helpers (TC-13.18d.3) ---------------------
+
+
+def _validate_blocked_audit_binding(
+    bar: BlockedAuditRequest,
+    bar_result: BlockedAuditResult,
+) -> None:
+    """Validate BlockedAuditRequest/Result binding (ref §4.1)."""
+    # result.task_id == request 中原 task_id
+    if bar_result.task_id != bar.acceptance_cycle_result.task_id:
+        raise WorkflowInputError(
+            "blocked_audit_result task_id must match "
+            "blocked_audit_request acceptance_cycle_result task_id"
+        )
+
+    # result.audit_result is blocked_audit_request.acceptance_cycle_result.audit_result
+    if bar_result.audit_result is not bar.acceptance_cycle_result.audit_result:
+        raise WorkflowInputError(
+            "blocked_audit_result.audit_result must be the same object "
+            "as blocked_audit_request.acceptance_cycle_result.audit_result"
+        )
+
+    # result.escalation_decision.current_worker_kind == blocked_audit_request.current_worker_kind
+    if bar_result.escalation_decision.current_worker_kind is not bar.current_worker_kind:
+        raise WorkflowInputError(
+            "escalation_decision.current_worker_kind must exactly equal "
+            "blocked_audit_request.current_worker_kind"
+        )
+
+    # result.block_transition.task_id == result.task_id
+    if bar_result.block_transition.task_id != bar_result.task_id:
+        raise WorkflowInputError(
+            "block_transition.task_id must match blocked_audit_result.task_id"
+        )
+
+    # result.block_transition.to_state == "blocked"
+    if bar_result.block_transition.to_state != "blocked":
+        raise WorkflowInputError(
+            "block_transition.to_state must be 'blocked'"
+        )
+
+
+def _validate_escalation_decision_for_redispatch(
+    decision: EscalationDecision,
+) -> None:
+    """Validate EscalationDecision for redispatch (ref §4.2)."""
+    if decision.action != EscalationAction.ESCALATE:
+        raise WorkflowInputError(
+            "escalation_decision.action must be ESCALATE"
+        )
+    if decision.next_worker_kind is None:
+        raise WorkflowInputError(
+            "escalation_decision.next_worker_kind must not be None "
+            "for ESCALATE action"
+        )
+
+
+def _validate_blocked_payload_for_redispatch(
+    block_transition_request: TransitionRequest,
+) -> None:
+    """Validate original BlockedPayload fields for safe redispatch (ref §4.3)."""
+    bp = block_transition_request.payload
+    if not isinstance(bp, BlockedPayload):
+        raise WorkflowInputError(
+            "block_transition_request payload must be BlockedPayload"
+        )
+    if getattr(bp, "blocked_attempt_valid", None) is not False:
+        raise WorkflowInputError(
+            "BlockedPayload.blocked_attempt_valid must be False"
+        )
+    if getattr(bp, "resume_state", None) != "ready":
+        raise WorkflowInputError(
+            "BlockedPayload.resume_state must be 'ready'"
+        )
+
+
+def _validate_blocker_resolved_for_redispatch(
+    rtr: TransitionRequest,
+    bar: BlockedAuditRequest,
+    bar_result: BlockedAuditResult,
+) -> None:
+    """Validate BLOCKER_RESOLVED TransitionRequest (ref §4.4)."""
+    # event_type must be BLOCKER_RESOLVED
+    if rtr.event_type != "BLOCKER_RESOLVED":
+        raise WorkflowInputError(
+            "resolve_transition_request event_type must be "
+            "BLOCKER_RESOLVED"
+        )
+
+    # payload must be BlockerResolvedPayload
+    if not isinstance(rtr.payload, BlockerResolvedPayload):
+        raise WorkflowInputError(
+            "resolve_transition_request payload must be "
+            "BlockerResolvedPayload"
+        )
+
+    brp = rtr.payload
+
+    # resume_to_state must be "ready"
+    if brp.resume_to_state != "ready":
+        raise WorkflowInputError(
+            "BlockerResolvedPayload.resume_to_state must be 'ready'"
+        )
+
+    # CAS expected_state must be "blocked"
+    if rtr.cas.expected_state != "blocked":
+        raise WorkflowInputError(
+            "resolve_transition_request cas.expected_state must be "
+            "'blocked'"
+        )
+
+    # to_state must be "ready" (validated by TransitionService)
+    # task_id must match
+    if rtr.cas.task_id != bar_result.task_id:
+        raise WorkflowInputError(
+            "resolve_transition_request cas.task_id must match "
+            "blocked_audit_result.task_id"
+        )
+
+    # dispatch_cas must be None (PM-only)
+    if rtr.dispatch_cas is not None:
+        raise WorkflowInputError(
+            "resolve_transition_request dispatch_cas must be None"
+        )
+
+    # event_id dedup: must differ from dispatch, ACK, delivery, block
+    dcr = bar.dispatch_cycle_result
+    existing_event_ids = {
+        dcr.dispatch_transition.event_id,
+        dcr.acknowledge_transition.event_id,
+        dcr.delivery_transition.event_id,
+        bar_result.block_transition.event_id,
+    }
+    if rtr.event_id in existing_event_ids:
+        raise WorkflowInputError(
+            "resolve event_id must differ from dispatch, ACK, "
+            "delivery, and block event_ids"
+        )
+
+
+def _validate_next_dispatch_cycle_for_redispatch(
+    ndcr: DispatchCycleRequest,
+    bar: BlockedAuditRequest,
+    bar_result: BlockedAuditResult,
+) -> None:
+    """Validate next DispatchCycleRequest for redispatch (ref §4.5)."""
+    decision = bar_result.escalation_decision
+
+    # worker_kind must equal decision.next_worker_kind
+    if ndcr.worker_kind is not decision.next_worker_kind:
+        raise WorkflowInputError(
+            "next_dispatch_cycle_request.worker_kind must equal "
+            "escalation_decision.next_worker_kind"
+        )
+
+    dcr = bar.dispatch_cycle_result
+    old_identity = dcr.delivery_receipt.identity
+    new_identity = ndcr.dispatch_request.identity
+
+    # task_id must match
+    if new_identity.task_id != old_identity.task_id:
+        raise WorkflowInputError(
+            "next dispatch identity task_id must match original task_id"
+        )
+
+    # revision must match
+    if new_identity.revision != old_identity.revision:
+        raise WorkflowInputError(
+            "next dispatch identity revision must match original revision"
+        )
+
+    # new attempt must be exactly old attempt + 1
+    expected_new_attempt = old_identity.attempt + 1
+    if new_identity.attempt != expected_new_attempt:
+        raise WorkflowInputError(
+            "next dispatch identity attempt must be "
+            f"{expected_new_attempt}"
+        )
+
+    # dispatch_id must differ from old dispatch_id
+    if new_identity.dispatch_id == old_identity.dispatch_id:
+        raise WorkflowInputError(
+            "next dispatch_id must differ from previous dispatch_id"
+        )
+
+    # DispatchPayload.new_attempt must equal new identity.attempt
+    dp = ndcr.dispatch_transition_request.payload
+    if isinstance(dp, DispatchPayload):
+        if dp.new_attempt != new_identity.attempt:
+            raise WorkflowInputError(
+                "DispatchPayload.new_attempt must match dispatch identity attempt"
+            )
+        # DispatchPayload.dispatch_id must match identity.dispatch_id
+        if dp.dispatch_id != new_identity.dispatch_id:
+            raise WorkflowInputError(
+                "DispatchPayload.dispatch_id must match identity.dispatch_id"
+            )
+
+    # ACK dispatch_cas must match new identity
+    ack_dcas = ndcr.acknowledge_transition_request.dispatch_cas
+    if ack_dcas is not None:
+        if ack_dcas.expected_dispatch_id != new_identity.dispatch_id:
+            raise WorkflowInputError(
+                "ACK dispatch_cas expected_dispatch_id must match "
+                "new dispatch identity dispatch_id"
+            )
+        if ack_dcas.expected_attempt != new_identity.attempt:
+            raise WorkflowInputError(
+                "ACK dispatch_cas expected_attempt must match "
+                "new dispatch identity attempt"
+            )
+
+    # TaskDifficulty must remain unchanged
+    if ndcr.task_difficulty is not dcr.worker_result.task_difficulty:
+        raise WorkflowInputError(
+            "next_dispatch_cycle_request.task_difficulty must equal "
+            "original worker_result.task_difficulty"
+        )
 
 
 # -- ACK Observer (internal, used within run_dispatch_cycle) ------------------
@@ -1694,4 +1944,81 @@ class WorkflowOrchestrator:
             audit_result=acr.audit_result,
             escalation_decision=escalation_decision,
             block_transition=block_transition,
+        )
+
+    async def run_escalated_redispatch(
+        self,
+        request: EscalatedRedispatchRequest,
+        providers: Mapping[str, AgentCliProvider],
+    ) -> EscalatedRedispatchResult:
+        """Execute a single escalated redispatch cycle (TC-13.18d.3).
+
+        Execution order:
+        1. Full validation of EscalatedRedispatchRequest
+        2. clock.now()
+        3. apply_transition(BLOCKER_RESOLVED, lease=None, now)
+        4. await self.run_dispatch_cycle(next_dispatch_cycle_request, providers)
+        5. return EscalatedRedispatchResult
+
+        Requests with REQUEST_USER_DECISION action are fail-closed with
+        WorkflowInputError before any transition, slot, or dispatch.
+        """
+        # -- Validate request type ---------------------------------------------
+        if not isinstance(request, EscalatedRedispatchRequest):
+            raise WorkflowInputError(
+                "request must be EscalatedRedispatchRequest, "
+                f"got {type(request).__name__}"
+            )
+
+        bar = request.blocked_audit_request
+        bar_result = request.blocked_audit_result
+        rtr = request.resolve_transition_request
+        ndcr = request.next_dispatch_cycle_request
+
+        # -- 4.1 BlockedAuditRequest/Result binding ----------------------------
+        _validate_blocked_audit_binding(bar, bar_result)
+
+        # -- 4.2 EscalationDecision validation ---------------------------------
+        _validate_escalation_decision_for_redispatch(bar_result.escalation_decision)
+
+        # -- 4.3 Original BlockedPayload validation ----------------------------
+        _validate_blocked_payload_for_redispatch(bar.block_transition_request)
+
+        # -- 4.4 BLOCKER_RESOLVED validation -----------------------------------
+        _validate_blocker_resolved_for_redispatch(rtr, bar, bar_result)
+
+        # -- 4.5 Next DispatchCycleRequest validation --------------------------
+        _validate_next_dispatch_cycle_for_redispatch(
+            ndcr, bar, bar_result
+        )
+
+        # -- 4.6 Providers validation ------------------------------------------
+        if not isinstance(providers, Mapping):
+            raise WorkflowInputError(
+                f"providers must be a Mapping, "
+                f"got {type(providers).__name__}"
+            )
+        if len(providers) == 0:
+            raise WorkflowInputError("providers must not be empty")
+
+        # -- 2. clock.now() ---------------------------------------------------
+        now_resolve = self.clock.now()
+
+        # -- 3. Apply BLOCKER_RESOLVED with lease=None ------------------------
+        resolve_transition = ControlPlaneTransitionService(
+            self.project_root
+        ).apply_transition(rtr, lease=None, now=now_resolve)
+
+        # -- 4. Run single dispatch cycle -------------------------------------
+        dispatch_cycle_result = await self.run_dispatch_cycle(
+            ndcr,
+            providers,
+        )
+
+        # -- 5. Return result -------------------------------------------------
+        return EscalatedRedispatchResult(
+            task_id=bar_result.task_id,
+            escalation_decision=bar_result.escalation_decision,
+            resolve_transition=resolve_transition,
+            dispatch_cycle_result=dispatch_cycle_result,
         )

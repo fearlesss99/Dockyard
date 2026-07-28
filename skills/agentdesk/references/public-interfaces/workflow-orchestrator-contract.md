@@ -1,4 +1,4 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.2)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.3)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
@@ -6,17 +6,20 @@ DELIVERY_SUBMITTED.  TC-13.18c.2 extends it with MAD audit,
 DELIVERY_ACCEPTED, and optional CHANGE_INTEGRATED.
 TC-13.18d.1 extends it with DELIVERY_RETURNED and TASK_REQUEUED.
 TC-13.18d.2 extends it with TASK_BLOCKED (audit blocked → escalation).
+TC-13.18d.3 extends it with BLOCKER_RESOLVED (escalation resume → single redispatch).
 
 ## Status
 
-**Current** as of TC-13.18d.2.  The dispatch cycle (snapshot → acquire →
+**Current** as of TC-13.18d.3.  The dispatch cycle (snapshot → acquire →
 TASK_DISPATCHED → heartbeat + run_worker →
 DISPATCH_ACKNOWLEDGED → decode_worker_result →
 require_delivery_receipt → DELIVERY_SUBMITTED → stop heartbeat → release
 → result), delivery remediation (audit fail → acquire remediation lease →
 DELIVERY_RETURNED → release lease → TASK_REQUEUED (lease=None) →
-DeliveryRemediationResult), and blocked audit escalation (audit blocked →
-evaluate_escalation → TASK_BLOCKED (lease=None) → BlockedAuditResult)
+DeliveryRemediationResult), blocked audit escalation (audit blocked →
+evaluate_escalation → TASK_BLOCKED (lease=None) → BlockedAuditResult),
+and escalated single redispatch (BLOCKER_RESOLVED (lease=None) → single
+run_dispatch_cycle with next_worker_kind → EscalatedRedispatchResult)
 are implemented and callable.
 
 This document is the authoritative frozen specification for the
@@ -318,7 +321,7 @@ defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
 | 8 | `CHANGE_INTEGRATED` | Current — TC-13.18c.2 (integration path) |
 | 9 | `INTEGRATION_FAILED` | Target — TC-13.18d.3 (blocked path) |
 | 10 | `TASK_BLOCKED` | Current — TC-13.18d.2 (blocked path) |
-| 11 | `BLOCKER_RESOLVED` | TC-13.18d.2 (unblock path) |
+| 11 | `BLOCKER_RESOLVED` | Current — TC-13.18d.3 (escalation resume → ready → single redispatch) |
 | 12 | `BLOCKER_RESCOPED` | TC-13.18d.2 (rescope path) |
 | 13 | `BLOCKER_CANCELLED` | TC-13.18d.2 (cancel path) |
 | 14 | `TASK_CANCELLED` | TC-13.18d.2 (cancel path) |
@@ -486,7 +489,8 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18c.2** | MAD audit + Acceptance + Integration | TC-13.18c.1 | Current |
 | **TC-13.18d.1** | DELIVERY_RETURNED + TASK_REQUEUED (fail remediation) | TC-13.18c.2 | Current |
 | **TC-13.18d.2** | Blocked audit escalation (TASK_BLOCKED + EscalationDecision) | TC-13.18d.1 | Current |
-| **TC-13.18d.3** | Escalation dispatch retry + cancellation + replay + fault recovery | TC-13.18d.2 | Target |
+| **TC-13.18d.3** | Escalation resume + single redispatch (BLOCKER_RESOLVED + run_escalated_redispatch) | TC-13.18d.2 | Current |
+| **TC-13.18d-ext** | Retry loop, escalation replay, cancellation, fault recovery | TC-13.18d.3 | Target |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Target |
 | **TC-13.20** | HTML Dashboard | TC-13.17, TC-13.19 | Read-only UI |
