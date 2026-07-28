@@ -30,7 +30,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 17 | AgentDesk ApprovalGate | **Current** | TC-13.12d | TASK_APPROVAL with structured scope (dispatch/accept/integrate); runtime gate + ControlPlaneTransitionService integration + offline validator implemented |
 | 18 | AgentDesk EscalationService | **Current** | TC-13.13b | Pure WorkerKind tier progression; frozen contract §2.16; production module and full test suite committed |
 | 19 | AgentDesk RateLimit service | **Target** | TC-13.14 | Provider rate-limit handling independent of escalation |
-| 20 | AgentDesk MadAuditGateway | **Target** | TC-13.16 | Subprocess invocation of `mad audit` with worktree validation |
+| 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Target** | TC-13.17 | Read-only access to tasks, events, outbox, acceptances |
 | 22 | AgentDesk WorkflowOrchestrator | **Target** | TC-13.18 | Central scheduler integrating all services |
 | 23 | E2E / Recovery tests | **Target** | TC-13.19 | End-to-end validation and recovery scenarios |
@@ -5809,12 +5809,12 @@ intermediate "Current (contract frozen)" sub-status is permitted.
 
 ---
 
-### 2.17 MadAuditGateway — Frozen Contract (Target — TC-13.16a)
+### 2.17 MadAuditGateway — Frozen Contract (Current — TC-13.16b)
 
 TC-13.16a freezes the **MadAuditGateway contract** for subprocess invocation
 of `mad audit` with worktree validation.  No production module is shipped
 under TC-13.16a — the contract itself is the deliverable and must be
-implemented by TC-13.16b.
+implemented by TC-13.16b (now complete).
 
 ---
 
@@ -5862,21 +5862,24 @@ async def run_audit_gateway(
 ```python
 @dataclass(frozen=True, slots=True)
 class MadAuditGatewayInput:
-    project_root: str          # absolute Path-like string
+    project_root: Path
     task_id: str                # non-empty
     dispatch_id: str            # non-empty
     question: str               # the audit question
-    workspace: str              # absolute Path-like string — authoritative audit worktree
+    workspace: Path             # absolute Path — authoritative audit worktree
     task_card_commit: str       # 40-char hex SHA
     task_card_path: str         # repo-relative path
     delivery_report_path: str   # repo-relative path
     report_commit: str          # 40-char hex SHA
     base_commit: str            # 40-char hex SHA
     implementation_commit: str  # 40-char hex SHA
-    depth: str                  # "fast" | "balanced" | "deep"
+    depth: MadDeliberationDepth
 ```
 
-Exactly **12** fields — no more, no less.
+Exactly **12** fields — no more, no less.  `project_root` and `workspace`
+are absolute ``Path`` objects.  `depth` accepts only a
+`MadDeliberationDepth` enum member — bare strings are rejected at validation
+time.
 
 Agent lists are taken **only** from `config.audit_agent_ids` and
 `config.audit_report_agent_id`.  The caller must not supply agent IDs or a
@@ -5942,15 +5945,11 @@ Exactly **5** fields — no more, no less.  `verified` must be a strict `bool`
 ```python
 @dataclass(frozen=True, slots=True)
 class MadAuditPlan:
-    participants: tuple[str, ...]       # agent ID strings
-    report_agent_id: str
-    organizer_agent_id: str | None
-    source: str                          # "organizer" | "manual"
-    depth: str                           # "fast" | "balanced" | "deep"
-    critic_agent_id: str | None
+    depth: MadDeliberationDepth
 ```
 
-Exactly **6** fields — no more, no less.
+Exactly **1** field — no more, no less.  Matches the Current MAD output
+`{"depth": "<value>"}`.
 
 ---
 
@@ -6083,7 +6082,8 @@ TC-13.16b → TC-13.16a (this contract)
   (production implementation) is not yet complete.
 * This section (§2.17) is the Frozen Contract for TC-13.16a.
 * TC-13.15 (`mad audit` sub-command) is **Current**.
-* TC-13.16b (production module `mad_audit_gateway.py`) is **Target**.
+* TC-13.16b (production module `mad_audit_gateway.py`) is **Current** — committed.
+* This section (§2.17) is **Current** — TC-13.16b.
 
 ---
 

@@ -7794,7 +7794,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 class TC1316aContractFreezeTests(unittest.TestCase):
     """TC-13.16a — MadAuditGateway contract freeze smoke tests.
 
-    Covers: Current/Target status consistency, public API field precision,
+    Covers: TC-13.16a smoke class — Current/Target consistency
     agent-source-is-config-only, precise argv and cwd, 11-key output,
     typed issue/evidence/plan, purpose="audit", Gateway zero-state-write,
     no stale docs, no production module.
@@ -7857,10 +7857,13 @@ class TC1316aContractFreezeTests(unittest.TestCase):
                          "CLI contract: mad audit must not be in §3 Target Interfaces")
 
     def test_mad_auditgateway_remains_target_in_adr_table(self) -> None:
-        """Interface #20 MadAuditGateway must remain Target."""
-        self.assertIn("| 20 | AgentDesk MadAuditGateway | **Target** | TC-13.16",
+        """Interface #20 MadAuditGateway must be Current — TC-13.16b (contract was TC-13.16a)."""
+        self.assertIn("| 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b",
                       self.adr_text,
-                      "ADR: row 20 (MadAuditGateway) must remain Target")
+                      "ADR: row 20 (MadAuditGateway) must now be Current")
+        self.assertNotIn("| 20 | AgentDesk MadAuditGateway | **Target**",
+                         self.adr_text,
+                         "ADR: row 20 (MadAuditGateway) must no longer be Target")
 
     # -- 2. Public API field precision --
 
@@ -7919,14 +7922,12 @@ class TC1316aContractFreezeTests(unittest.TestCase):
         self.assertIn("verified", self.adr_text,
                       "ADR: MadAuditEvidence.verified must be documented as bool")
 
-    def test_mad_audit_plan_exact_6_fields(self) -> None:
-        """§2.17.7: MadAuditPlan must have exactly 6 fields."""
-        for f in ("participants", "report_agent_id", "organizer_agent_id",
-                   "source", "depth", "critic_agent_id"):
-            self.assertIn(f, self.adr_text,
-                          f"ADR: MadAuditPlan must reference '{f}'")
-        self.assertIn("Exactly **6** fields", self.adr_text,
-                      "ADR: MadAuditPlan must claim exactly 6 fields")
+    def test_mad_audit_plan_exact_1_field(self) -> None:
+        """§2.17.7: MadAuditPlan must have exactly 1 field (depth)."""
+        self.assertIn("depth: MadDeliberationDepth", self.adr_text,
+                      "ADR: MadAuditPlan must reference 'depth: MadDeliberationDepth'")
+        self.assertIn("Exactly **1** field", self.adr_text,
+                      "ADR: MadAuditPlan must claim exactly 1 field")
 
     # -- 3. Agent source is config only --
 
@@ -8069,22 +8070,199 @@ class TC1316aContractFreezeTests(unittest.TestCase):
         self.assertIn('"completed"', self.adr_text,
                       "ADR: must show status as 'completed'")
 
-    # -- 10. No production module --
+    # -- 10. Production module exists --
 
-    def test_no_mad_audit_gateway_production_module(self) -> None:
-        """mad_audit_gateway.py must NOT exist in production scripts."""
-        production_path = (
+    def test_production_module_exists(self) -> None:
+        """mad_audit_gateway.py must exist now (TC-13.16b complete)."""
+        scripts = (
             Path(__file__).resolve().parents[1]
             / "skills" / "agentdesk" / "scripts"
-            / "mad_audit_gateway.py"
         )
-        self.assertFalse(
-            production_path.exists(),
-            "TC-13.16a: mad_audit_gateway.py must NOT exist yet"
+        gateway = scripts / "mad_audit_gateway.py"
+        self.assertTrue(gateway.is_file(),
+                        "mad_audit_gateway.py must exist")
+        test_file = (
+            Path(__file__).resolve().parents[1]
+            / "tests" / "test_mad_audit_gateway.py"
+        )
+        self.assertTrue(test_file.is_file(),
+                        "test_mad_audit_gateway.py must exist")
+
+    def test_section_217_status_states_current(self) -> None:
+        """§2.17.14 must state §2.17 is Current — TC-13.16b."""
+        self.assertIn("* This section (§2.17) is **Current**",
+                      self.adr_text,
+                      "ADR §2.17.14: must state §2.17 is Current")
+
+
+class TC1316bProductionSmokeTests(unittest.TestCase):
+    """TC-13.16b — production smoke tests for MadAuditGateway."""
+
+    def setUp(self) -> None:
+        self.scripts = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "scripts"
+        )
+        self.adr_path = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        )
+        self.adr_text = self.adr_path.read_text(encoding="utf-8")
+        self.cli_contract_path = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "mad-cli-contract.md"
+        )
+        self.cli_text = self.cli_contract_path.read_text(encoding="utf-8")
+        self.gateway_path = self.scripts / "mad_audit_gateway.py"
+        self.test_path = (
+            Path(__file__).resolve().parents[1]
+            / "tests" / "test_mad_audit_gateway.py"
         )
 
-    def test_section_217_status_states_target(self) -> None:
-        """§2.17.14 must state that TC-13.16a freezes the contract; TC-13.16b is Target."""
-        self.assertIn("TC-13.16b (production module `mad_audit_gateway.py`) is **Target**",
+    # -- 1. Production module exists --
+
+    def test_production_module_exists(self) -> None:
+        """mad_audit_gateway.py must exist."""
+        self.assertTrue(self.gateway_path.is_file(),
+                        "mad_audit_gateway.py must exist")
+
+    def test_test_module_exists(self) -> None:
+        """test_mad_audit_gateway.py must exist."""
+        self.assertTrue(self.test_path.is_file(),
+                        "test_mad_audit_gateway.py must exist")
+
+    # -- 2. Exact 7 public symbols --
+
+    def test_exact_7_public_symbols(self) -> None:
+        """mad_audit_gateway __all__ must contain exactly 7 names."""
+        import sys
+        sys.path.insert(0, str(self.scripts))
+        try:
+            import mad_audit_gateway
+            self.assertEqual(len(mad_audit_gateway.__all__), 7)
+            expected = {
+                "MadAuditGatewayInput",
+                "MadAuditIssueLocation",
+                "MadAuditIssue",
+                "MadAuditEvidence",
+                "MadAuditPlan",
+                "MadAuditGatewayResult",
+                "run_audit_gateway",
+            }
+            self.assertEqual(set(mad_audit_gateway.__all__), expected)
+        finally:
+            sys.path.pop(0)
+            for k in list(sys.modules):
+                if k == "mad_audit_gateway" or k.startswith("mad_audit_gateway."):
+                    del sys.modules[k]
+
+    # -- 3. MadAuditPlan has exactly 1 field (not 6) --
+
+    def test_mad_audit_plan_has_exactly_1_field(self) -> None:
+        """§2.17.7: MadAuditPlan must have exactly 1 field (depth)."""
+        self.assertIn("Exactly **1** field", self.adr_text,
+                      "ADR §2.17.7: MadAuditPlan must claim exactly 1 field")
+        self.assertIn("depth: MadDeliberationDepth", self.adr_text,
+                      "ADR §2.17.7: MadAuditPlan must have depth: MadDeliberationDepth")
+
+    def test_mad_audit_plan_no_6_field_text(self) -> None:
+        """§2.17.7 must NOT claim 6 fields."""
+        section = self.adr_text
+        # Find §2.17.7 area
+        idx = section.find("#### 2.17.7 MadAuditPlan")
+        self.assertGreater(idx, -1, "§2.17.7 must exist")
+        nearby = section[idx:idx + 800]
+        self.assertNotIn("Exactly **6** fields", nearby,
+                         "§2.17.7 must not claim 6 fields for MadAuditPlan")
+
+    # -- 4. MadAuditGatewayInput has Path types, not str --
+
+    def test_input_project_root_is_path(self) -> None:
+        """project_root must be Path, not str."""
+        self.assertIn("project_root: Path", self.adr_text,
+                      "ADR: project_root must be Path type")
+        self.assertNotIn("project_root: str", self.adr_text,
+                         "ADR: project_root must NOT be str type")
+
+    def test_input_workspace_is_path(self) -> None:
+        """workspace must be Path, not str."""
+        self.assertIn("workspace: Path", self.adr_text,
+                      "ADR: workspace must be Path type")
+
+    def test_input_depth_is_maddeliberationdepth(self) -> None:
+        """depth must be MadDeliberationDepth, not str."""
+        self.assertIn("depth: MadDeliberationDepth", self.adr_text,
+                      "ADR: depth must be MadDeliberationDepth type")
+        self.assertNotIn("depth: str", self.adr_text,
+                         "ADR: depth must NOT be str type")
+
+    # -- 5. Interface #20 & §2.17 are now Current --
+
+    def test_interface_20_is_current(self) -> None:
+        """Interface #20 (MadAuditGateway) must be Current."""
+        self.assertIn(
+            "| 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b",
+            self.adr_text,
+            "ADR: Interface #20 must be Current — TC-13.16b"
+        )
+
+    def test_section_217_status_is_current(self) -> None:
+        """§2.17 heading must show Current — TC-13.16b."""
+        self.assertIn(
+            "### 2.17 MadAuditGateway — Frozen Contract (Current — TC-13.16b)",
+            self.adr_text,
+            "ADR: §2.17 must be Current — TC-13.16b"
+        )
+
+    def test_section_217_status_line_states_current(self) -> None:
+        """§2.17.14 must claim §2.17 is Current."""
+        self.assertIn("* This section (§2.17) is **Current**",
                       self.adr_text,
-                      "ADR §2.17.14: must state TC-13.16b is Target")
+                      "ADR §2.17.14: must state §2.17 is Current")
+
+    # -- 6. No stale docs --
+
+    def test_no_mad_audit_gateway_target_text(self) -> None:
+        """Interface #20 must not still claim Target."""
+        self.assertNotIn(
+            "| 20 | AgentDesk MadAuditGateway | **Target**",
+            self.adr_text,
+            "ADR: Interface #20 must no longer be Target"
+        )
+
+    # -- 7. mad audit remains Current in CLI contract --
+
+    def test_mad_audit_still_current_in_cli_contract(self) -> None:
+        """mad audit must remain Current in CLI contract."""
+        self.assertIn("| `mad audit` | **Current**",
+                      self.cli_text,
+                      "CLI contract: mad audit must be Current")
+
+    # -- 8. production module is importable and has correct signatures --
+
+    def test_run_audit_gateway_is_async_function(self) -> None:
+        """run_audit_gateway must be an async function."""
+        import sys, inspect
+        sys.path.insert(0, str(self.scripts))
+        try:
+            import mad_audit_gateway
+            self.assertTrue(
+                inspect.iscoroutinefunction(mad_audit_gateway.run_audit_gateway),
+                "run_audit_gateway must be async def"
+            )
+        finally:
+            sys.path.pop(0)
+            for k in list(sys.modules):
+                if k == "mad_audit_gateway" or k.startswith("mad_audit_gateway."):
+                    del sys.modules[k]
+
+    def test_all_dataclasses_are_frozen_slots(self) -> None:
+        """All 6 dataclasses must be frozen=True, slots=True."""
+        source = self.gateway_path.read_text(encoding="utf-8")
+        dataclass_count = source.count("@dataclass(frozen=True, slots=True)")
+        self.assertGreaterEqual(
+            dataclass_count, 6,
+            f"Expected at least 6 frozen/slots dataclasses, found {dataclass_count}"
+        )
