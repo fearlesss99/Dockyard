@@ -4314,49 +4314,84 @@ def _validate_approval_evidence(
         return
 
     # ── build event-history index for orphan cross-reference ──
-    event_history: dict[str, dict[str, Any]] = {}
+    # Uses the existing YAML subset parser (same as the rest of
+    # validate_project.py) for canonical agentdesk.state-event/v2
+    # events.  Index is a flat list so that multiple events with
+    # the same task_id/event_type are all retained.
+    canonical_events: list[dict[str, Any]] = []
     try:
         events_dir = project / "docs" / "pm" / "events"
         if events_dir.is_dir():
             for entry in sorted(events_dir.iterdir()):
                 if not entry.is_file() or entry.suffix != ".yaml":
                     continue
+                if entry.is_symlink():
+                    continue
+                logical_path = entry.relative_to(project).as_posix()
                 try:
                     raw = entry.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
+                except UnicodeDecodeError:
+                    reporter.error(
+                        f"event history is not valid UTF-8: {logical_path}"
+                    )
                     continue
-                parsed = _parse_json_compatible_object(
-                    raw, f"event history {entry.relative_to(project).as_posix()}",
-                    reporter,
+                except OSError:
+                    continue
+                parsed = _yaml_subset_mapping_from_text(
+                    raw, f"event history {logical_path}", reporter
                 )
-                if parsed is None:
+                if not isinstance(parsed, dict):
                     continue
-                dispatch_id = parsed.get("dispatch_id")
-                if isinstance(dispatch_id, str) and dispatch_id:
-                    event_history.setdefault(dispatch_id, parsed)
-                # Also index events that may carry accepted_commit evidence
-                event_type = parsed.get("event_type")
-                task_id_ev = parsed.get("task_id")
-                if isinstance(event_type, str) and isinstance(task_id_ev, str):
-                    key = f"{task_id_ev}|{event_type}"
-                    event_history.setdefault(key, parsed)
+                if parsed.get("schema_version") != "agentdesk.state-event/v2":
+                    continue
+                canonical_events.append(parsed)
+                # Also index legacy JSON events that were written by
+                # tests or older workflows
+                json_parsed = _parse_json_compatible_object(
+                    raw, f"event history {logical_path}", reporter,
+                )
+                if json_parsed is not None and isinstance(json_parsed, dict):
+                    if json_parsed.get("schema_version") == "agentdesk.state-event/v2":
+                        canonical_events.append(json_parsed)
     except OSError:
         pass
 
-    def _event_history_has_dispatch(dispatch_id: str) -> bool:
-        return dispatch_id in event_history
-
-    def _event_history_has_accepted_commit(task_id: str, ac: str) -> bool:
-        for key, ev in event_history.items():
-            if isinstance(key, str) and key.startswith(task_id + "|"):
-                if ev.get("accepted_commit") == ac:
-                    return True
-                eq_commit = ev.get("integrated_commit") or ev.get("implementation_commit")
-                if ac in (ev.get("accepted_commit"), eq_commit):
-                    return True
+    def _history_has_exact_subject(
+        task_id: str, revision: int, attempt: int, dispatch_id: str,
+    ) -> bool:
+        """True if ANY canonical event exactly matches all four fields."""
+        for ev in canonical_events:
+            if (
+                ev.get("task_id") == task_id
+                and ev.get("revision") == revision
+                and ev.get("attempt") == attempt
+                and ev.get("dispatch_id") == dispatch_id
+            ):
+                return True
         return False
 
-    def _event_history_has_task_id(task_id: str) -> bool:
+    def _history_has_task_id(task_id: str) -> bool:
+        for ev in canonical_events:
+            if ev.get("task_id") == task_id:
+                return True
+        return False
+
+    def _history_has_dispatch(dispatch_id: str) -> bool:
+        for ev in canonical_events:
+            if ev.get("dispatch_id") == dispatch_id:
+                return True
+        return False
+
+    def _history_has_accepted_commit(task_id: str, ac: str) -> bool:
+        """True if an event for task_id carries exactly *ac*
+        in its accepted_commit field."""
+        for ev in canonical_events:
+            if (
+                ev.get("task_id") == task_id
+                and ev.get("accepted_commit") == ac
+            ):
+                return True
+        return False
         for key, ev in event_history.items():
             if isinstance(key, str) and key.startswith(task_id + "|"):
                 return True
@@ -4428,9 +4463,17 @@ def _validate_approval_evidence(
                         f"{entry.relative_to(project).as_posix()}"
                     )
                     continue
-            except (OSError, AttributeError):
-                # stat or FILE_ATTRIBUTE_REPARSE_POINT unavailable → skip
+            except AttributeError:
+                # stat.FILE_ATTRIBUTE_REPARSE_POINT doesn't exist on
+                # this platform (e.g. POSIX) — not an error.
                 pass
+            except OSError as exc:
+                reporter.error(
+                    f"cannot verify whether approval evidence is a "
+                    f"reparse point: "
+                    f"{entry.relative_to(project).as_posix()}: {exc}"
+                )
+                continue
             if entry.is_dir():
                 continue
             if not entry.is_file():
@@ -4661,7 +4704,7 @@ def _validate_approval_evidence(
         # orphan detection — uses ledger + event history
         if isinstance(task_id, str):
             in_ledger = task_ledger_index is not None and task_id in task_ledger_index
-            in_history = _event_history_has_task_id(task_id)
+            in_history = _history_has_task_id(task_id)
             if not in_ledger and not in_history:
                 reporter.error(
                     f"{ctx} task_id {task_id} not found in task ledger "
@@ -4672,35 +4715,49 @@ def _validate_approval_evidence(
 
             ledger_task = task_ledger_index.get(task_id) if task_ledger_index else None
 
-            # revision check — ledger or history accepted
-            if isinstance(revision, int) and revision >= 1:
+            # Exact subject match from event history can prove all four
+            # subject fields even when the ledger disagrees.
+            has_exact_history = _history_has_exact_subject(
+                task_id, revision, attempt, dispatch_id,
+            )
+
+            # revision check
+            if isinstance(revision, int) and revision >= 1 and not has_exact_history:
                 if ledger_task is not None:
                     ledger_rev = ledger_task.get("revision")
                     if isinstance(ledger_rev, int) and ledger_rev != revision:
-                        if not in_history:
-                            reporter.error(
-                                f"{ctx} revision {revision} does not match "
-                                f"task ledger revision {ledger_rev}"
-                            )
+                        reporter.error(
+                            f"{ctx} revision {revision} does not match "
+                            f"task ledger revision {ledger_rev} "
+                            f"and no exact event history match"
+                        )
+                else:
+                    reporter.error(
+                        f"{ctx} revision {revision} cannot be proven "
+                        f"by ledger or event history exact match"
+                    )
 
-            # attempt check — ledger or history accepted
-            if isinstance(attempt, int) and attempt >= 1:
+            # attempt check
+            if isinstance(attempt, int) and attempt >= 1 and not has_exact_history:
                 if ledger_task is not None:
                     ledger_att = ledger_task.get("attempt")
                     if isinstance(ledger_att, int) and ledger_att != attempt:
-                        if not in_history:
-                            reporter.error(
-                                f"{ctx} attempt {attempt} does not match "
-                                f"task ledger attempt {ledger_att}"
-                            )
+                        reporter.error(
+                            f"{ctx} attempt {attempt} does not match "
+                            f"task ledger attempt {ledger_att} "
+                            f"and no exact event history match"
+                        )
+                else:
+                    reporter.error(
+                        f"{ctx} attempt {attempt} cannot be proven "
+                        f"by ledger or event history exact match"
+                    )
 
-            # dispatch_id check — fires when task is known via ledger
-            # or history AND we can't verify the dispatch_id.
-            # If the task is in the ledger, the grant's dispatch_id must
-            # be the current_dispatch (if any) or provable via event history.
-            # If the task is only in event history, the grant's dispatch_id
-            # must appear as a dispatch_id in event history.
-            if isinstance(dispatch_id, str) and dispatch_id:
+            # dispatch_id check — must be provable by ledger or history.
+            # If the exact subject is proven by history, we accept the
+            # dispatch_id that came with it.  Otherwise we check ledger
+            # or dispatch-only history.
+            if isinstance(dispatch_id, str) and dispatch_id and not has_exact_history:
                 dispatch_found = False
                 if ledger_task is not None:
                     ledger_dispatch = ledger_task.get("current_dispatch")
@@ -4711,48 +4768,28 @@ def _validate_approval_evidence(
                     )
                     if ledger_did == dispatch_id:
                         dispatch_found = True
-                if not dispatch_found and _event_history_has_dispatch(dispatch_id):
+                if not dispatch_found and _history_has_dispatch(dispatch_id):
                     dispatch_found = True
-                # Error if the task exists in ledger or history but
-                # dispatch_id is unverifiable from either source.
-                # Exception: if ledger_task exists but current_dispatch
-                # is None (draft), the grant is anticipatory.
                 if not dispatch_found:
-                    ledger_has_dispatch = (
-                        ledger_task is not None
-                        and isinstance(ledger_task.get("current_dispatch"), dict)
+                    reporter.error(
+                        f"{ctx} dispatch_id {dispatch_id} not found in "
+                        f"task ledger or event history"
                     )
-                    if ledger_has_dispatch or in_history:
-                        reporter.error(
-                            f"{ctx} dispatch_id {dispatch_id} not found in "
-                            f"task ledger or event history"
-                        )
 
             # accepted_commit check for integrate scope
-            if scope == "integrate" and isinstance(accepted_commit, str) and len(accepted_commit) == 40:
+            if scope == "integrate" and isinstance(accepted_commit, str) and len(accepted_commit) == 40 and not has_exact_history:
                 ac_found = False
                 if ledger_task is not None:
                     ledger_ac = ledger_task.get("accepted_commit")
                     if isinstance(ledger_ac, str) and ledger_ac == accepted_commit:
                         ac_found = True
-                if not ac_found and _event_history_has_accepted_commit(task_id, accepted_commit):
+                if not ac_found and _history_has_accepted_commit(task_id, accepted_commit):
                     ac_found = True
                 if not ac_found:
-                    # If the task IS in ledger with accepted_commit=None
-                    # (draft, not yet delivered), the grant is anticipatory.
-                    # Only error if the ledger explicitly has a different
-                    # accepted_commit or the task has event history.
-                    ledger_has_ac = (
-                        ledger_task is not None
-                        and isinstance(ledger_task.get("accepted_commit"), str)
+                    reporter.error(
+                        f"{ctx} accepted_commit {accepted_commit} not found in "
+                        f"task ledger or event history"
                     )
-                    if ledger_has_ac or in_history:
-                        reporter.error(
-                            f"{ctx} accepted_commit {accepted_commit} not found in "
-                            f"task ledger or event history"
-                        )
-                    # else: ledger_task has no accepted_commit → grant is
-                    #        anticipatory, no error
 
         validated_grants.append(grant)
 

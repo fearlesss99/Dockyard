@@ -62,10 +62,10 @@ def _make_state_yaml(tasks: list | None = None) -> str:
 
 
 def _make_draft_task(task_id: str = "TC-001", revision: int = 1) -> dict:
-    """A truly minimal draft task that passes all non-approval validation.
-    Sets current_dispatch=None to avoid triggering task validation errors.
-    The dispatch_id DSP-001 check in orphan detection will be satisfied by
-    event history (if present) or the specific test fixtures that need it."""
+    """A minimal draft task that passes non-approval validation.
+    No current_dispatch — the validator accepts this for draft tasks
+    and the positive tests include an explicit event that proves
+    the dispatch_id."""
     return {
         "task_id": task_id,
         "revision": revision,
@@ -142,6 +142,55 @@ def _make_revoke_yaml(**overrides) -> str:
     }
     defaults.update(overrides)
     return json.dumps(defaults, ensure_ascii=False, indent=2) + "\n"
+
+
+def _make_event_yaml(**overrides) -> str:
+    """Build a canonical production-format state-event YAML file.
+
+    Uses the production YAML subset format (key: value per line,
+    NOT JSON) that the validator's _yaml_subset_mapping_from_text
+    parser expects.
+    """
+    defaults = {
+        "schema_version": "agentdesk.state-event/v2",
+        "event_type": "TASK_DISPATCHED",
+        "event_id": "EVT-HIST-0001",
+        "task_id": "TC-001",
+        "revision": 1,
+        "attempt": 1,
+        "dispatch_id": "DSP-HISTORIC",
+        "from_state": "ready",
+        "to_state": "dispatched",
+        "actor_role_id": "PM",
+        "lease_epoch": 1,
+        "occurred_at": _NOW_STR,
+        "payload_digest": "sha256:" + "0" * 64,
+    }
+    defaults.update(overrides)
+    lines = []
+    for key, value in defaults.items():
+        if value is None:
+            lines.append(f"{key}: null")
+        elif isinstance(value, bool):
+            lines.append(f"{key}: {'true' if value else 'false'}")
+        elif isinstance(value, int):
+            lines.append(f"{key}: {value}")
+        else:
+            lines.append(f"{key}: {value}")
+    return "\n".join(lines) + "\n"
+
+
+def _assert_json_cannot_parse(content: str) -> None:
+    """Verify that the production YAML format is NOT valid JSON."""
+    import json as _json
+    try:
+        _json.loads(content)
+        raise AssertionError(
+            "Production event YAML must not be valid JSON — "
+            "test must exercise the YAML subset parser, not json.loads"
+        )
+    except ValueError:
+        pass
 
 
 def _git_head(proj: Path) -> str:
@@ -257,8 +306,20 @@ class PositiveApprovalValidationTests(unittest.TestCase):
                              f"Expected 0 errors, got: {reporter.errors}")
 
     def test_legal_dispatch_grant(self) -> None:
+        # Must provide event history to prove dispatch_id since the
+        # draft task has current_dispatch=None.
         with _temp_project([_make_draft_task()]) as proj:
             head = _git_head(proj)
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            event_yaml = _make_event_yaml(
+                task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-001", event_id="EVT-HIST-0001",
+            )
+            _assert_json_cannot_parse(event_yaml)
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                event_yaml, encoding="utf-8",
+            )
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
                 _make_grant_yaml(snapshot_commit=head, event_id="EVT-0001"),
                 encoding="utf-8",
@@ -270,6 +331,16 @@ class PositiveApprovalValidationTests(unittest.TestCase):
     def test_legal_accept_grant(self) -> None:
         with _temp_project([_make_draft_task()]) as proj:
             head = _git_head(proj)
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            event_yaml = _make_event_yaml(
+                task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-001", event_id="EVT-HIST-0001",
+            )
+            _assert_json_cannot_parse(event_yaml)
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                event_yaml, encoding="utf-8",
+            )
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
                 _make_grant_yaml(snapshot_commit=head, scope="accept", event_id="EVT-0001"),
                 encoding="utf-8",
@@ -281,6 +352,17 @@ class PositiveApprovalValidationTests(unittest.TestCase):
     def test_legal_integrate_grant(self) -> None:
         with _temp_project([_make_draft_task()]) as proj:
             head = _git_head(proj)
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            event_yaml = _make_event_yaml(
+                task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-001", event_id="EVT-HIST-0001",
+                accepted_commit="a" * 40,
+            )
+            _assert_json_cannot_parse(event_yaml)
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                event_yaml, encoding="utf-8",
+            )
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
                 _make_grant_yaml(
                     snapshot_commit=head, scope="integrate", event_id="EVT-0001",
@@ -294,6 +376,16 @@ class PositiveApprovalValidationTests(unittest.TestCase):
     def test_legal_grant_plus_revoke(self) -> None:
         with _temp_project([_make_draft_task()]) as proj:
             head = _git_head(proj)
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            event_yaml = _make_event_yaml(
+                task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-001", event_id="EVT-HIST-0001",
+            )
+            _assert_json_cannot_parse(event_yaml)
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                event_yaml, encoding="utf-8",
+            )
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
                 _make_grant_yaml(
                     snapshot_commit=head, event_id="EVT-0001",
@@ -313,6 +405,16 @@ class PositiveApprovalValidationTests(unittest.TestCase):
     def test_snapshot_ancestor_is_valid(self) -> None:
         with _temp_project([_make_draft_task()]) as proj:
             head1 = _git_head(proj)
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            event_yaml = _make_event_yaml(
+                task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-001", event_id="EVT-HIST-0001",
+            )
+            _assert_json_cannot_parse(event_yaml)
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                event_yaml, encoding="utf-8",
+            )
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
                 _make_grant_yaml(snapshot_commit=head1, event_id="EVT-0001"),
                 encoding="utf-8",
@@ -329,6 +431,16 @@ class PositiveApprovalValidationTests(unittest.TestCase):
     def test_README_md_ignored(self) -> None:
         with _temp_project([_make_draft_task()]) as proj:
             head = _git_head(proj)
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            event_yaml = _make_event_yaml(
+                task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-001", event_id="EVT-HIST-0001",
+            )
+            _assert_json_cannot_parse(event_yaml)
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                event_yaml, encoding="utf-8",
+            )
             (proj / "docs" / "pm" / "approvals" / "README.md").write_text(
                 "not evidence", encoding="utf-8",
             )
@@ -379,10 +491,11 @@ class SchemaValidationTests(unittest.TestCase):
         with _temp_project() as proj:
             head = _git_head(proj)
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
-                _make_grant_yaml(snapshot_commit=head), encoding="utf-8",
+                _make_grant_yaml(snapshot_commit=head, event_id="EVT-0001"),
+                encoding="utf-8",
             )
             (proj / "docs" / "pm" / "approvals" / "EVT-0002.yaml").write_text(
-                _make_revoke_yaml(snapshot_commit=head, extra="bad"),
+                _make_revoke_yaml(snapshot_commit=head, event_id="EVT-0002", extra="bad"),
                 encoding="utf-8",
             )
             reporter = validate_project.validate(proj, require_committed=False)
@@ -392,9 +505,10 @@ class SchemaValidationTests(unittest.TestCase):
         with _temp_project() as proj:
             head = _git_head(proj)
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
-                _make_grant_yaml(snapshot_commit=head), encoding="utf-8",
+                _make_grant_yaml(snapshot_commit=head, event_id="EVT-0001"),
+                encoding="utf-8",
             )
-            d = json.loads(_make_revoke_yaml(snapshot_commit=head))
+            d = json.loads(_make_revoke_yaml(snapshot_commit=head, event_id="EVT-0002"))
             del d["reason"]
             (proj / "docs" / "pm" / "approvals" / "EVT-0002.yaml").write_text(
                 json.dumps(d, ensure_ascii=False, indent=2) + "\n",
@@ -497,6 +611,9 @@ class UniquenessTests(unittest.TestCase):
                     snapshot_commit=head, approval_id="APR-001", event_id="EVT-0001",
                 ), encoding="utf-8",
             )
+            # This file has stem EVT-0001-collide, but its event_id is EVT-0001,
+            # same as the grant — filename mismatch AND event_id collision.
+            # Now also use the same event_id in the content.
             (proj / "docs" / "pm" / "approvals" / "EVT-0001-collide.yaml").write_text(
                 _make_revoke_yaml(
                     snapshot_commit=head, approval_id="APR-001", event_id="EVT-0001",
@@ -798,6 +915,7 @@ class RevokeRelationTests(unittest.TestCase):
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
                 _make_revoke_yaml(
                     snapshot_commit=head, approval_id="APR-NONEXISTENT",
+                    event_id="EVT-0001",
                 ), encoding="utf-8",
             )
             reporter = validate_project.validate(proj, require_committed=False)
@@ -944,36 +1062,29 @@ class OrphanEvidenceTests(unittest.TestCase):
                                "Wrong accepted_commit must be ERROR")
 
     def test_legal_grant_ledger_moved_on_but_event_history_proves(self) -> None:
-        """Grant where task ledger has moved on but event history proves task_id."""
-        with _temp_project([_make_draft_task(task_id="TC-001", revision=1)]) as proj:
+        """Grant where task ledger has moved on but event history proves task_id
+        with exact subject match."""
+        with _temp_project() as proj:
             head = _git_head(proj)
-            # Write an event that proves TC-002 existed at revision 2
+            # Write a production-format YAML event that proves TC-002
+            # at revision 2, attempt 1, dispatch DSP-002.
             events_dir = proj / "docs" / "pm" / "events"
             events_dir.mkdir(parents=True, exist_ok=True)
-            event = {
-                "schema_version": "agentdesk.state-event/v2",
-                "event_type": "TASK_DISPATCHED",
-                "task_id": "TC-002",
-                "revision": 2,
-                "attempt": 1,
-                "dispatch_id": "DSP-002",
-                "event_id": "EVT-HIST-0001",
-                "from_state": "ready",
-                "to_state": "dispatched",
-                "actor_role_id": "PM",
-                "lease_epoch": 1,
-                "occurred_at": _NOW_STR,
-                "payload_digest": "sha256:" + "0" * 64,
-            }
-            (events_dir / "EVT-HIST-0001.yaml").write_text(
-                json.dumps(event, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
+            event_yaml = _make_event_yaml(
+                task_id="TC-002", revision=2, attempt=1,
+                dispatch_id="DSP-002", event_id="EVT-HIST-0001",
             )
-            # Grant references TC-002 with revision=2 — must be provable by event
+            _assert_json_cannot_parse(event_yaml)
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                event_yaml, encoding="utf-8",
+            )
+            # Grant references TC-002 with exact same subject
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
                 _make_grant_yaml(
                     snapshot_commit=head, task_id="TC-002", revision=2,
                     dispatch_id="DSP-002", event_id="EVT-0001",
+                    # Grant attempt must match event attempt for exact subject match
+                    attempt=1,
                 ), encoding="utf-8",
             )
             reporter = validate_project.validate(proj, require_committed=False)
@@ -981,34 +1092,24 @@ class OrphanEvidenceTests(unittest.TestCase):
                              f"Event history should prove task: got {reporter.errors}")
 
     def test_dispatch_id_in_history_but_not_ledger_is_valid(self) -> None:
-        """dispatch_id found in event history but not in current ledger → legal."""
-        with _temp_project([_make_draft_task(task_id="TC-001")]) as proj:
+        """dispatch_id found in event history with exact subject match → legal."""
+        with _temp_project() as proj:
             head = _git_head(proj)
             events_dir = proj / "docs" / "pm" / "events"
             events_dir.mkdir(parents=True, exist_ok=True)
-            event = {
-                "schema_version": "agentdesk.state-event/v2",
-                "event_type": "TASK_DISPATCHED",
-                "task_id": "TC-001",
-                "revision": 1,
-                "attempt": 1,
-                "dispatch_id": "DSP-HISTORIC",
-                "event_id": "EVT-HIST-0001",
-                "from_state": "ready",
-                "to_state": "dispatched",
-                "actor_role_id": "PM",
-                "lease_epoch": 1,
-                "occurred_at": _NOW_STR,
-                "payload_digest": "sha256:" + "0" * 64,
-            }
+            event_yaml = _make_event_yaml(
+                task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-HISTORIC", event_id="EVT-HIST-0001",
+            )
+            _assert_json_cannot_parse(event_yaml)
             (events_dir / "EVT-HIST-0001.yaml").write_text(
-                json.dumps(event, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
+                event_yaml, encoding="utf-8",
             )
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
                 _make_grant_yaml(
                     snapshot_commit=head, dispatch_id="DSP-HISTORIC",
-                    event_id="EVT-0001",
+                    event_id="EVT-0001", revision=1, attempt=1,
+                    task_id="TC-001",
                 ), encoding="utf-8",
             )
             reporter = validate_project.validate(proj, require_committed=False)
@@ -1051,36 +1152,28 @@ class OrphanEvidenceTests(unittest.TestCase):
                                "Missing dispatch_id must be ERROR")
 
     def test_integrate_ac_ledger_null_history_proves_valid(self) -> None:
-        """Integrate grant: ledger accepted_commit=None, history has it → 0 errors."""
-        with _temp_project([_make_draft_task()]) as proj:
+        """Integrate grant: ledger absent, history has exact subject + ac → 0 errors."""
+        with _temp_project() as proj:
             head = _git_head(proj)
             events_dir = proj / "docs" / "pm" / "events"
             events_dir.mkdir(parents=True, exist_ok=True)
-            event = {
-                "schema_version": "agentdesk.state-event/v2",
-                "event_type": "CHANGE_INTEGRATED",
-                "task_id": "TC-001",
-                "revision": 1,
-                "attempt": 1,
-                "dispatch_id": "DSP-001",
-                "event_id": "EVT-HIST-0001",
-                "from_state": "accepted",
-                "to_state": "integrated",
-                "accepted_commit": "b" * 40,
-                "integrated_commit": "c" * 40,
-                "actor_role_id": "PM",
-                "lease_epoch": 1,
-                "occurred_at": _NOW_STR,
-                "payload_digest": "sha256:" + "0" * 64,
-            }
+            event_yaml = _make_event_yaml(
+                event_type="CHANGE_INTEGRATED",
+                task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-001", event_id="EVT-HIST-0001",
+                from_state="accepted", to_state="integrated",
+                accepted_commit="b" * 40, integrated_commit="c" * 40,
+            )
+            _assert_json_cannot_parse(event_yaml)
             (events_dir / "EVT-HIST-0001.yaml").write_text(
-                json.dumps(event, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
+                event_yaml, encoding="utf-8",
             )
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
                 _make_grant_yaml(
                     snapshot_commit=head, scope="integrate",
                     accepted_commit="b" * 40, event_id="EVT-0001",
+                    task_id="TC-001", revision=1, attempt=1,
+                    dispatch_id="DSP-001",
                 ), encoding="utf-8",
             )
             reporter = validate_project.validate(proj, require_committed=False)
