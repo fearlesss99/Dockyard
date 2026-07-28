@@ -1,4 +1,4 @@
-"""AgentDesk WorkflowOrchestrator — TC-13.18b / TC-13.18b.2 / TC-13.18c.1 / TC-13.18c.2 / TC-13.18d.1.
+"""AgentDesk WorkflowOrchestrator — TC-13.18b / TC-13.18b.2 / TC-13.18c.1 / TC-13.18c.2 / TC-13.18d.1 / TC-13.18d.2.
 
 Single dispatch-cycle execution: snapshot -> acquire lease ->
 TASK_DISPATCHED -> heartbeat + run_worker_observed ->
@@ -13,6 +13,10 @@ optional CHANGE_INTEGRATED → AcceptanceCycleResult.
 Delivery remediation (TC-13.18d.1): audit verdict=fail →
 acquire remediation lease → DELIVERY_RETURNED → release lease →
 TASK_REQUEUED (lease=None) → DeliveryRemediationResult.
+
+Blocked audit escalation (TC-13.18d.2): audit verdict=blocked →
+evaluate_escalation(current_worker_kind) → TASK_BLOCKED (lease=None) →
+BlockedAuditResult.
 
 Non-goals (explicitly excluded):
 * Escalation, retry, automatic blocked/fail remediation
@@ -36,6 +40,7 @@ from typing import Protocol
 
 from control_plane_transition import (
     AcknowledgePayload,
+    BlockedPayload,
     ControlPlaneTransitionService,
     DeliveryAcceptedPayload,
     DeliveryReturnedPayload,
@@ -55,6 +60,11 @@ from dispatcher_gateway import (
     DispatchRequest,
     DispatchStarted,
     DispatchStartedObserver,
+)
+from escalation_service import (
+    EscalationDecision,
+    EscalationRequest,
+    evaluate_escalation,
 )
 from mad_audit_gateway import (
     MadAuditGatewayInput,
@@ -82,6 +92,8 @@ from mad_audit_gateway import run_audit_gateway
 __all__ = [
     "AcceptanceCycleRequest",
     "AcceptanceCycleResult",
+    "BlockedAuditRequest",
+    "BlockedAuditResult",
     "DeliveryReceipt",
     "DeliveryRemediationRequest",
     "DeliveryRemediationResult",
@@ -466,6 +478,32 @@ class DeliveryRemediationResult:
     audit_result: MadAuditGatewayResult
     return_transition: TransitionResult
     requeue_transition: TransitionResult
+
+
+# -- BlockedAudit types (TC-13.18d.2) ----------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BlockedAuditRequest:
+    """Immutable input for blocked audit escalation — exactly four fields.
+
+    All identifiers are caller-supplied.
+    """
+
+    acceptance_cycle_result: AcceptanceCycleResult
+    dispatch_cycle_result: DispatchCycleResult
+    block_transition_request: TransitionRequest
+    current_worker_kind: WorkerKind
+
+
+@dataclass(frozen=True, slots=True)
+class BlockedAuditResult:
+    """Immutable result of a blocked audit cycle — exactly four fields."""
+
+    task_id: str
+    audit_result: MadAuditGatewayResult
+    escalation_decision: EscalationDecision
+    block_transition: TransitionResult
 
 
 # -- exception hierarchy ------------------------------------------------------
@@ -1509,4 +1547,151 @@ class WorkflowOrchestrator:
             audit_result=acr.audit_result,
             return_transition=return_result,
             requeue_transition=requeue_result,
+        )
+
+    async def run_blocked_audit_cycle(
+        self,
+        request: BlockedAuditRequest,
+    ) -> BlockedAuditResult:
+        """Execute blocked audit escalation cycle (TC-13.18d.2).
+
+        Execution order:
+        1. validate BlockedAuditRequest
+        2. evaluate_escalation(current_worker_kind) — exactly once
+        3. clock.now()
+        4. apply_transition(TASK_BLOCKED, lease=None) — exactly once
+        5. return BlockedAuditResult
+
+        No MAD audit, no WorkerSlotLease operations, no dispatch cycle.
+        """
+        # -- 1. Validate request type -----------------------------------------
+        if not isinstance(request, BlockedAuditRequest):
+            raise WorkflowInputError(
+                "request must be BlockedAuditRequest, "
+                f"got {type(request).__name__}"
+            )
+
+        acr = request.acceptance_cycle_result
+        dcr = request.dispatch_cycle_result
+        btr = request.block_transition_request
+
+        # -- 1a. Validate audit result: must be "blocked" --------------------
+        if not isinstance(acr.audit_result, MadAuditGatewayResult):
+            raise WorkflowInputError(
+                "acceptance_cycle_result.audit_result must be "
+                "MadAuditGatewayResult"
+            )
+
+        verdict = acr.audit_result.verdict
+        if verdict != "blocked":
+            raise WorkflowInputError(
+                "acceptance_cycle_result audit verdict must be 'blocked'"
+            )
+
+        # -- 1b. Fail-closed: accept/integrate transitions must be None -------
+        if acr.accept_transition is not None:
+            raise WorkflowInvariantError(
+                "accept_transition must be None for blocked verdict"
+            )
+        if acr.integrate_transition is not None:
+            raise WorkflowInvariantError(
+                "integrate_transition must be None for blocked verdict"
+            )
+
+        # -- 1c. Validate current_worker_kind --------------------------------
+        if not isinstance(request.current_worker_kind, WorkerKind):
+            raise WorkflowInputError(
+                "current_worker_kind must be WorkerKind, "
+                f"got {type(request.current_worker_kind).__name__}"
+            )
+
+        # -- 1d. Identity binding: task_id consistency -----------------------
+        receipt = dcr.delivery_receipt
+        task_id = acr.task_id
+        if task_id != receipt.identity.task_id:
+            raise WorkflowInputError(
+                "acceptance_cycle_result task_id must match "
+                "dispatch cycle delivery receipt task_id"
+            )
+        if task_id != btr.cas.task_id:
+            raise WorkflowInputError(
+                "block_transition_request task_id must match "
+                "acceptance_cycle_result task_id"
+            )
+
+        # -- 1e. WorkerKind binding: must exactly equal WorkerResult --------
+        if request.current_worker_kind is not dcr.worker_result.worker_kind:
+            raise WorkflowInputError(
+                "current_worker_kind must exactly equal "
+                "dispatch_cycle_result.worker_result.worker_kind"
+            )
+
+        # -- 1f. Validate block_transition_request ---------------------------
+        # event_type must be TASK_BLOCKED
+        if btr.event_type != "TASK_BLOCKED":
+            raise WorkflowInputError(
+                "block_transition_request event_type must be "
+                "TASK_BLOCKED"
+            )
+
+        # payload must be BlockedPayload
+        if not isinstance(btr.payload, BlockedPayload):
+            raise WorkflowInputError(
+                "block_transition_request payload must be "
+                "BlockedPayload"
+            )
+
+        # CAS expected_state must be review_ready
+        if btr.cas.expected_state != "review_ready":
+            raise WorkflowInputError(
+                "block_transition_request expected_state must be "
+                "'review_ready'"
+            )
+
+        # to_state must be "blocked" — validated by TransitionService,
+        # but checked here for fail-closed consistency
+        if btr.cas.task_id != task_id:
+            raise WorkflowInputError(
+                "block_transition_request task_id mismatch"
+            )
+
+        # dispatch_cas must be None (PM-only transition)
+        if btr.dispatch_cas is not None:
+            raise WorkflowInputError(
+                "block_transition_request dispatch_cas must be None"
+            )
+
+        # -- 1g. event_id dedup: must differ from dispatch, ACK, delivery ---
+        existing_event_ids = {
+            dcr.dispatch_transition.event_id,
+            dcr.acknowledge_transition.event_id,
+            dcr.delivery_transition.event_id,
+        }
+        if btr.event_id in existing_event_ids:
+            raise WorkflowInputError(
+                "block event_id must differ from dispatch, ACK, and "
+                "delivery event_ids"
+            )
+
+        # -- 2. Evaluate escalation exactly once -----------------------------
+        escalation_decision = evaluate_escalation(
+            EscalationRequest(
+                current_worker_kind=request.current_worker_kind,
+            )
+        )
+
+        # -- 3. clock.now() --------------------------------------------------
+        now_block = self.clock.now()
+
+        # -- 4. Apply TASK_BLOCKED with lease=None ---------------------------
+        block_transition = ControlPlaneTransitionService(
+            self.project_root
+        ).apply_transition(btr, lease=None, now=now_block)
+
+        # -- 5. Return result ------------------------------------------------
+        return BlockedAuditResult(
+            task_id=task_id,
+            audit_result=acr.audit_result,
+            escalation_decision=escalation_decision,
+            block_transition=block_transition,
         )

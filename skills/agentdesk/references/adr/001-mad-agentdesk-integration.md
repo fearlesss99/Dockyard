@@ -6455,8 +6455,8 @@ in `ControlPlaneTransitionService._TRANSITION_SPECS` (搂2.14.8):
 | 6 | `DELIVERY_RETURNED` | TC-13.18d.1 return path |
 | 7 | `TASK_REQUEUED` | TC-13.18d.1 requeue path |
 | 8 | `CHANGE_INTEGRATED` | TC-13.18c integration path |
-| 9 | `INTEGRATION_FAILED` | TC-13.18d.2 blocked path |
-| 10 | `TASK_BLOCKED` | TC-13.18d.2 blocked path |
+| 9 | `INTEGRATION_FAILED` | Target — TC-13.18d.3 blocked path |
+| 10 | `TASK_BLOCKED` | Current — TC-13.18d.2 blocked path |
 | 11 | `BLOCKER_RESOLVED` | TC-13.18d.2 unblock path |
 | 12 | `BLOCKER_RESCOPED` | TC-13.18d.2 rescope path |
 | 13 | `BLOCKER_CANCELLED` | TC-13.18d.2 cancel path |
@@ -6505,8 +6505,9 @@ TC-13.20  鈥?HTML Dashboard
 | TC-13.18b | TC-13.18a, TC-13.10c, TC-13.11c, TC-13.12d, TC-13.13b, TC-13.17b | Lease + heartbeat + run_worker + cleanup | **Current** |
 | TC-13.18c | TC-13.18b, TC-13.16b | Delivery + audit + accept + integrate | **Current** |
 | TC-13.18d.1 | TC-13.18c | Return + requeue (fail remediation) | **Current** |
-| TC-13.18d.2 | TC-13.18d.1 | Escalation + retry + cancel + replay | **Target** |
-| TC-13.19 | TC-13.18d.2 | E2E / recovery tests | **Target** 鈫?**Current** |
+| TC-13.18d.2 | TC-13.18d.1 | Blocked audit escalation (TASK_BLOCKED + EscalationDecision) | **Current** |
+| TC-13.18d.3 | TC-13.18d.2 | Escalation dispatch retry + cancel + replay | **Target** |
+| TC-13.19 | TC-13.18d.3 | E2E / recovery tests | **Target** 鈫?**Current** |
 
 ---
 
