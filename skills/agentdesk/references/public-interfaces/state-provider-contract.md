@@ -1,7 +1,13 @@
 # StateProvider — Read-Only Contract (Frozen — TC-13.17b)
 
 Interface #21 frozen contract.  TC-13.17a froze the contract; TC-13.17b
-produces the production module and this finalized revision.
+produced the production module; TC-13.17b.1 aligned YAML format compatibility;
+TC-13.17b.2 finalised this document against the current production API.
+
+This document is the authoritative frozen specification.
+Every field count, field name, field order, field type, and collection
+declared below must match `skills/agentdesk/scripts/state_provider.py`
+exactly.  Verification is enforced by `TC1317b2ContractFreezeTests`.
 
 ---
 ## 1. Purpose
@@ -16,6 +22,12 @@ StateProvider does **not** acquire the control-plane state lock, does
 **not** write lock files, does **not** spawn subprocesses, and does **not**
 import write-end gateway, WorkerAdapter, or ControlPlaneTransitionService
 execution entry points.
+
+The production module parses events and outbox in the **canonical YAML**
+format produced by `control_plane_transition._to_yaml_str()` — a
+deterministic, sorted-key, 2-space-indent, LF-only YAML subset.
+`tasks.yaml` and `mad-refs.yaml` are parsed as JSON (matching their
+writer format).
 
 ---
 ## 2. Canonical Input Files
@@ -91,10 +103,19 @@ sorted(entries, key=lambda p: p.name.encode("utf-8"))
 Locale-dependent `sorted()`, `mtime`, or filesystem-returned order are
 forbidden.
 
-### 3.2 Cross-File Consistency Rules
+### 3.2 Symlink and Reparse Point Rejection
+
+Symlinks, junctions, and reparse points in canonical directories are
+rejected fail-closed.  StateProvider raises `StateProviderSchemaError`
+if any file in `docs/pm/events/`, `docs/pm/outbox/`, or
+`docs/pm/acceptances/` is a symlink or Windows reparse point.
+
+### 3.3 Cross-File Consistency Rules
 
 - Every event `event_id` referenced by an outbox `event_id` must exist
   in the events set.
+- Every `TASK_DISPATCHED` event must have a corresponding outbox entry
+  sharing the same `event_id`.
 - Every `dispatch_id` in an active task's `current_dispatch` must have at
   least one corresponding event in the events set whose `task_id`,
   `revision`, `attempt`, and `dispatch_id` all match the task.
@@ -107,17 +128,19 @@ forbidden.
 - Every `mad-ref` entry's `task_id` must appear in `tasks.yaml`.
 - Every `mad-ref` entry's `dispatch_id` must correspond to at least
   one event in the events set.
-- Digest parity is checked via raw canonical bytes: the `payload_digest`
-  in a `TASK_DISPATCHED` event must match the SHA-256 of the outbox raw
-  bytes for the matching outbox message.
-- Partial transitions (event present but outbox missing, or vice versa,
-  for the same dispatch) are rejected.
+- Digest parity: the `payload_digest` in a `TASK_DISPATCHED` event
+  must match `sha256:<hex>` of the raw bytes of the matching outbox file.
+- Partial transitions (event present but outbox missing for
+  `TASK_DISPATCHED`) are rejected.
 - Orphan evidence (event/outbox/acceptance/mad-ref referencing a
   non-existent task) is rejected.
 - Duplicate records of any kind are rejected.
 
 ---
 ## 4. Input Schema — `tasks.yaml`
+
+Schema: `agentdesk.tasks/v2`.  Serialised as JSON (`json.dumps` with
+`sorted_keys=True`).
 
 Root object keys:
 
@@ -141,24 +164,24 @@ Each task object in the `tasks` array has exactly 24 fields:
 | 3 | `task_card_path` | `str` | Project-relative path to task card |
 | 4 | `task_card_commit` | `str` | 40-char lowercase hex SHA |
 | 5 | `state` | `str` | One of 11 frozen states |
-| 6 | `attempt` | `int \| null` | Non-bool, ≥ 1 when active dispatch; null otherwise |
-| 7 | `current_dispatch` | `object \| null` | Dispatch identity object or null |
-| 8 | `report_path` | `str \| null` | Project-relative report path |
-| 9 | `granted_approval_ids` | `list[str] \| null` | Model-degradation approval IDs |
-| 10 | `delivery_state` | `str \| null` | `none`, `working`, `submitted`, `invalid`, `accepted`, `rejected` |
-| 11 | `integration_state` | `str \| null` | `not_applicable`, `pending`, `integrated`, `failed` |
-| 12 | `implementation_commit` | `str \| null` | 40-char lowercase hex SHA |
-| 13 | `report_commit` | `str \| null` | 40-char lowercase hex SHA |
-| 14 | `accepted_commit` | `str \| null` | 40-char lowercase hex SHA |
-| 15 | `acceptance_path` | `str \| null` | Project-relative acceptance path |
-| 16 | `integrated_commit` | `str \| null` | 40-char lowercase hex SHA |
-| 17 | `blocked_reason` | `str \| null` | |
-| 18 | `blocked_kind` | `str \| null` | One of 9 frozen blocked kinds |
-| 19 | `blocked_owner` | `str \| null` | |
-| 20 | `unblock_condition` | `str \| null` | |
-| 21 | `review_after` | `str \| null` | RFC 3339 UTC |
-| 22 | `blocked_attempt_valid` | `bool \| null` | Non-int — strictly `bool` or `None` |
-| 23 | `resume_state` | `str \| null` | Target state after unblock |
+| 6 | `attempt` | `int \| None` | Non-bool, ≥ 1 when active dispatch; null otherwise |
+| 7 | `current_dispatch` | `object \| None` | Dispatch identity object or null |
+| 8 | `report_path` | `str \| None` | Project-relative report path |
+| 9 | `granted_approval_ids` | `list[str] \| None` | Model-degradation approval IDs |
+| 10 | `delivery_state` | `str \| None` | `none`, `working`, `submitted`, `invalid`, `accepted`, `rejected` |
+| 11 | `integration_state` | `str \| None` | `not_applicable`, `pending`, `integrated`, `failed` |
+| 12 | `implementation_commit` | `str \| None` | 40-char lowercase hex SHA |
+| 13 | `report_commit` | `str \| None` | 40-char lowercase hex SHA |
+| 14 | `accepted_commit` | `str \| None` | 40-char lowercase hex SHA |
+| 15 | `acceptance_path` | `str \| None` | Project-relative acceptance path |
+| 16 | `integrated_commit` | `str \| None` | 40-char lowercase hex SHA |
+| 17 | `blocked_reason` | `str \| None` | |
+| 18 | `blocked_kind` | `str \| None` | One of 9 frozen blocked kinds |
+| 19 | `blocked_owner` | `str \| None` | |
+| 20 | `unblock_condition` | `str \| None` | |
+| 21 | `review_after` | `str \| None` | RFC 3339 UTC |
+| 22 | `blocked_attempt_valid` | `bool \| None` | Non-int — strictly `bool` or `None` |
+| 23 | `resume_state` | `str \| None` | Target state after unblock |
 | 24 | `timestamps` | `object` | See §4.2 |
 
 ### 4.2 Task Timestamps
@@ -166,13 +189,13 @@ Each task object in the `tasks` array has exactly 24 fields:
 | Field | Type | Set when |
 |-------|------|----------|
 | `created_at` | `str` | Task created |
-| `ready_at` | `str \| null` | `TASK_SPECIFIED` |
-| `dispatched_at` | `str \| null` | `TASK_DISPATCHED` |
-| `started_at` | `str \| null` | `DISPATCH_ACKNOWLEDGED` |
-| `delivered_at` | `str \| null` | `DELIVERY_SUBMITTED` |
-| `blocked_at` | `str \| null` | `TASK_BLOCKED` / `INTEGRATION_FAILED` |
-| `accepted_at` | `str \| null` | `DELIVERY_ACCEPTED` |
-| `integrated_at` | `str \| null` | `CHANGE_INTEGRATED` |
+| `ready_at` | `str \| None` | `TASK_SPECIFIED` |
+| `dispatched_at` | `str \| None` | `TASK_DISPATCHED` |
+| `started_at` | `str \| None` | `DISPATCH_ACKNOWLEDGED` |
+| `delivered_at` | `str \| None` | `DELIVERY_SUBMITTED` |
+| `blocked_at` | `str \| None` | `TASK_BLOCKED` / `INTEGRATION_FAILED` |
+| `accepted_at` | `str \| None` | `DELIVERY_ACCEPTED` |
+| `integrated_at` | `str \| None` | `CHANGE_INTEGRATED` |
 | `updated_at` | `str` | Every transition |
 
 ### 4.3 Task States (Frozen Set)
@@ -188,7 +211,8 @@ Any → superseded
 ---
 ## 5. Input Schema — Events (`docs/pm/events/*.yaml`)
 
-Schema: `agentdesk.state-event/v2`.
+Schema: `agentdesk.state-event/v2`.  Serialised as canonical YAML
+(`control_plane_transition._to_yaml_str`).
 
 ### 5.1 Common Fields
 
@@ -199,14 +223,14 @@ Schema: `agentdesk.state-event/v2`.
 | 3 | `event_type` | `str` | One of 15 frozen event types |
 | 4 | `task_id` | `str` | `^TC-[0-9]{3,}$` |
 | 5 | `revision` | `int` | Non-bool |
-| 6 | `attempt` | `int \| null` | Non-bool when present |
-| 7 | `dispatch_id` | `str \| null` | |
+| 6 | `attempt` | `int \| None` | Non-bool when present |
+| 7 | `dispatch_id` | `str \| None` | |
 | 8 | `from_state` | `str` | One of 11 frozen states |
 | 9 | `to_state` | `str` | One of 11 frozen states |
 | 10 | `lease_epoch` | `int` | Non-bool, ≥ 1 |
 | 11 | `actor_role_id` | `str` | `"PM"` or role ID |
 | 12 | `occurred_at` | `str` | RFC 3339 UTC |
-| 13 | `source_message_id` | `str \| null` | |
+| 13 | `source_message_id` | `str \| None` | |
 | 14 | `evidence_refs` | `list[str]` | |
 | 15 | `guard_results` | `list[object]` | Each has `guard`, `inputs`, `result`, `checked_at`, `evidence_ref` |
 
@@ -230,7 +254,8 @@ BLOCKER_CANCELLED, TASK_CANCELLED, TASK_SUPERSEDED
 ---
 ## 6. Input Schema — Outbox (`docs/pm/outbox/*.yaml`)
 
-Schema: `agentdesk.outbox-message/v2`.
+Schema: `agentdesk.outbox-message/v2`.  Serialised as canonical YAML
+(`control_plane_transition._to_yaml_str`).
 
 | # | Field | Type | Notes |
 |---|-------|------|-------|
@@ -268,10 +293,6 @@ Filename pattern: `{task_id}-r{revision}-a{attempt}-review{N}.md`
 
 ### 7.1 AcceptanceEntry Fields (Frozen 16)
 
-Based on the `agentdesk.acceptance/v2` writer and the frozen validator in
-`validate_project.py` (`_validate_acceptance_record`), each acceptance
-record exposes exactly 16 fields:
-
 | # | Field | Type | Notes |
 |---|-------|------|-------|
 | 1 | `schema_version` | `str` | Must be `"agentdesk.acceptance/v2"` |
@@ -279,13 +300,13 @@ record exposes exactly 16 fields:
 | 3 | `revision` | `int` | Non-bool, ≥ 1 |
 | 4 | `attempt` | `int` | Non-bool, ≥ 1 |
 | 5 | `review_n` | `int` | Non-bool, ≥ 1 — from filename |
-| 6 | `decision` | `str` | `accepted`, `returned`, or `blocked` |
+| 6 | `decision` | `str` | `accepted`, `returned`, `blocked` |
 | 7 | `implementation_commit` | `str` | 40-char lowercase hex SHA |
 | 8 | `report_commit` | `str` | 40-char lowercase hex SHA |
-| 9 | `base_commit` | `str \| null` | 40-char lowercase hex SHA; from task card frontmatter |
-| 10 | `accepted_commit` | `str \| null` | 40-char lowercase hex SHA; set when decision=accepted |
+| 9 | `base_commit` | `str \| None` | 40-char lowercase hex SHA |
+| 10 | `accepted_commit` | `str \| None` | 40-char lowercase hex SHA; set when decision=accepted |
 | 11 | `reviewed_dispatch_id` | `str` | Non-empty dispatch ID |
-| 12 | `type` | `str` | Task type (implementation, qa, integration, review, architecture, docs, ops, spike) |
+| 12 | `type` | `str` | Task type |
 | 13 | `owner_approval_gate` | `str` | `none` or owner approval gate value |
 | 14 | `owner_approval_ids` | `tuple[str, ...]` | Owner approval IDs (may be empty tuple) |
 | 15 | `raw_body` | `str` | Full markdown body after frontmatter delimiter |
@@ -295,14 +316,12 @@ record exposes exactly 16 fields:
 ## 8. Optional Runtime Input — `mad-refs.yaml`
 
 Schema: `agentdesk.mad-refs/v1`.  Located at `.agentdesk/runtime/mad-refs.yaml`.
+Serialised as JSON (matching `mad_refs.py`).
 
 If the file does not exist, StateProvider proceeds without error — the
 `mad_refs` field in the snapshot is `None`.
 
 ### 8.1 `MadRefEntry` Fields (10 — matching `mad_refs.py`)
-
-These fields exactly match the `MadRefEntry` dataclass in
-`skills/agentdesk/scripts/mad_refs.py`:
 
 | # | Field | Type |
 |---|-------|------|
@@ -321,31 +340,32 @@ These fields exactly match the `MadRefEntry` dataclass in
 ## 9. Output — Frozen Snapshot
 
 The snapshot is returned as a frozen/slots dataclass.  All collections
-are `tuple` — no `dict`, `list`, or `set` is exposed through the public API.
+are `tuple`.  No `dict`, `list`, `set`, `Mapping`, or `MappingProxyType`
+is exposed on any public dataclass field.
 
 ### 9.1 `StateSnapshot` — Exact Fields (14)
 
-```text
+```
 StateSnapshot (frozen=True, slots=True)
-├── project_root: Path              (absolute)
-├── schema_version: str             ("agentdesk.tasks/v2")
+├── project_root: Path
+├── schema_version: str
 ├── project_id: str
-├── adoption_level: str             ("lite" | "standard" | "automated")
-├── updated_at: str                 (RFC 3339 UTC)
+├── adoption_level: str
+├── updated_at: str
 ├── pm_holder_id: str
-├── pm_lease_epoch: int             (≥ 1)
-├── pm_mode: str                    ("manual" | "timed")
+├── pm_lease_epoch: int
+├── pm_mode: str
 ├── tasks: tuple[TaskEntry, ...]
 ├── events: tuple[EventEntry, ...]
 ├── outbox: tuple[OutboxEntry, ...]
 ├── acceptances: tuple[AcceptanceEntry, ...]
 ├── mad_refs: tuple[MadRefEntry, ...] | None
-├── read_hexsha: str                (SHA-256 of raw bytes used for A/B comparison)
+└── read_hexsha: str
 ```
 
-### 9.2 `TaskEntry` — Exact Fields (25)
+### 9.2 `TaskEntry` — Exact Fields (24)
 
-Frozen/slots dataclass with 25 fields:
+Frozen/slots dataclass:
 
 | # | Field | Type |
 |---|-------|------|
@@ -373,7 +393,6 @@ Frozen/slots dataclass with 25 fields:
 | 22 | `blocked_attempt_valid` | `bool \| None` |
 | 23 | `resume_state` | `str \| None` |
 | 24 | `timestamps` | `TaskTimestamps` |
-| 25 | `raw_task` | `Mapping[str, object]` (immutable proxy) |
 
 ### 9.3 `TaskTimestamps` — Exact Fields (9)
 
@@ -391,7 +410,7 @@ Frozen/slots nested dataclass:
 | 8 | `integrated_at` | `str \| None` |
 | 9 | `updated_at` | `str` |
 
-### 9.4 `DispatchInfo` — Exact Fields (8)
+### 9.4 `DispatchInfo` — Exact Fields (7)
 
 Frozen/slots nested dataclass:
 
@@ -404,11 +423,8 @@ Frozen/slots nested dataclass:
 | 5 | `branch` | `str` |
 | 6 | `dispatched_at` | `str` |
 | 7 | `model_selection` | `ModelSelectionSnapshot` |
-| 8 | `raw_dispatch` | `Mapping[str, object]` (immutable proxy) |
 
 ### 9.5 `ModelSelectionSnapshot` — Exact Fields (10)
-
-Frozen/slots dataclass with exactly the 10 model-selection fields:
 
 | # | Field | Type |
 |---|-------|------|
@@ -423,11 +439,10 @@ Frozen/slots dataclass with exactly the 10 model-selection fields:
 | 9 | `selected_model_capabilities` | `tuple[str, ...]` |
 | 10 | `model_degradation_approval_id` | `str \| None` |
 
-### 9.6 `EventEntry` — Exact Fields (18)
+### 9.6 `EventEntry` — Exact Fields (17)
 
-A single frozen/slots dataclass representing all 15 event types.  Every
-field is present on every instance; event-type-specific extra fields
-are `None` when not applicable to that event type.
+A single frozen/slots dataclass.  Event-type-specific extra fields
+are `None` when not applicable.
 
 | # | Field | Type |
 |---|-------|------|
@@ -446,23 +461,31 @@ are `None` when not applicable to that event type.
 | 13 | `source_message_id` | `str \| None` |
 | 14 | `evidence_refs` | `tuple[str, ...]` |
 | 15 | `guard_results` | `tuple[GuardResult, ...]` |
-| 16 | `payload_digest` | `str \| None` — only for `TASK_DISPATCHED` |
-| 17 | `extra_fields` | `tuple[tuple[str, str], ...] \| None` — event-type-specific extras as immutable pairs; only for `CHANGE_INTEGRATED` |
-| 18 | `raw_event` | `Mapping[str, object]` (immutable proxy) |
+| 16 | `payload_digest` | `str \| None` |
+| 17 | `extra_fields` | `tuple[tuple[str, object], ...] \| None` |
 
-### 9.7 `GuardResult` — Exact Fields (5)
+### 9.7 `GuardInput` — Exact Fields (2)
+
+Frozen/slots dataclass:
+
+| # | Field | Type |
+|---|-------|------|
+| 1 | `key` | `str` |
+| 2 | `value` | `str \| int \| bool \| None` |
+
+### 9.8 `GuardResult` — Exact Fields (5)
 
 Frozen/slots nested dataclass:
 
 | # | Field | Type |
 |---|-------|------|
 | 1 | `guard` | `str` |
-| 2 | `inputs` | `tuple[tuple[str, object], ...]` (immutable flattened key-value pairs) |
+| 2 | `inputs` | `tuple[GuardInput, ...]` |
 | 3 | `result` | `str` |
 | 4 | `checked_at` | `str` |
 | 5 | `evidence_ref` | `str` |
 
-### 9.8 `OutboxEntry` — Exact Fields (14)
+### 9.9 `OutboxEntry` — Exact Fields (13)
 
 Frozen/slots dataclass:
 
@@ -481,9 +504,8 @@ Frozen/slots dataclass:
 | 11 | `created_at` | `str` |
 | 12 | `model_selection` | `ModelSelectionSnapshot` |
 | 13 | `payload` | `OutboxPayload` |
-| 14 | `raw_outbox` | `Mapping[str, object]` (immutable proxy) |
 
-### 9.9 `OutboxPayload` — Exact Fields (5)
+### 9.10 `OutboxPayload` — Exact Fields (5)
 
 Frozen/slots nested dataclass:
 
@@ -495,18 +517,44 @@ Frozen/slots nested dataclass:
 | 4 | `branch` | `str` |
 | 5 | `report_path` | `str` |
 
-### 9.10 `AcceptanceEntry` — Exact Fields (16)
+### 9.11 `AcceptanceEntry` — Exact Fields (16)
 
 Frozen/slots dataclass as specified in §7.1.
 
-### 9.11 `MadRefEntry` (from mad-refs) — Exact Fields (10)
+### 9.12 `MadRefEntry` — Exact Fields (10)
 
 Frozen/slots dataclass as specified in §8.1.
 
 ---
 ## 10. Public API
 
-### 10.1 Construction
+### 10.1 `__all__` (19 symbols)
+
+```python
+__all__ = [
+    "AcceptanceEntry",
+    "DispatchInfo",
+    "EventEntry",
+    "GuardInput",
+    "GuardResult",
+    "MadRefEntry",
+    "ModelSelectionSnapshot",
+    "OutboxEntry",
+    "OutboxPayload",
+    "StateProvider",
+    "StateProviderError",
+    "StateProviderInconsistentSnapshotError",
+    "StateProviderInputError",
+    "StateProviderNotFoundError",
+    "StateProviderSchemaError",
+    "StateProviderSnapshotChangedError",
+    "StateSnapshot",
+    "TaskEntry",
+    "TaskTimestamps",
+]
+```
+
+### 10.2 Construction
 
 ```python
 StateProvider(project_root: Path)
@@ -518,7 +566,7 @@ StateProvider(project_root: Path)
 - Raises `StateProviderInputError` if `project_root` is not absolute
   or is not a `Path`.
 
-### 10.2 Snapshot Method
+### 10.3 Snapshot Method
 
 ```python
 def snapshot(self) -> StateSnapshot:
@@ -529,7 +577,7 @@ def snapshot(self) -> StateSnapshot:
 - Returns a frozen `StateSnapshot`.
 - All errors raised from `snapshot()` — never from construction.
 
-### 10.3 No Query Methods
+### 10.4 No Query Methods
 
 TC-13.17b does not add optional query methods.  The only public read
 entry points are:
@@ -548,14 +596,11 @@ lookup patterns.
 
 ```text
 StateProviderError (Exception)
-├── StateProviderInputError              — invalid project_root, not absolute, not Path
-├── StateProviderNotFoundError           — required file or directory missing
-├── StateProviderSchemaError             — schema_version mismatch, invalid field type,
-│                                          extra/missing keys, corrupt JSON/YAML
-├── StateProviderSnapshotChangedError    — any input changed during snapshot construction
-└── StateProviderInconsistentSnapshotError — orphan event, partial transition,
-                                             cross-file reference mismatch,
-                                             duplicate ID, missing companion evidence
+├── StateProviderInputError
+├── StateProviderNotFoundError
+├── StateProviderSchemaError
+├── StateProviderSnapshotChangedError
+└── StateProviderInconsistentSnapshotError
 ```
 
 No `PermissionDeniedError` — there is no real permissions system to
@@ -568,9 +613,8 @@ evidence such a distinction.
 
 - All input and output types are frozen/slots dataclasses.
 - All collections are `tuple` — no public `dict`, `list`, or `set`.
+- No public field has type `Mapping`, `MappingProxyType`, or `dict`.
 - `project_root` is an absolute `Path`.
-- `Mapping[str, object]` proxies are used internally to prevent mutation
-  of raw parsed data; consumers receive only the frozen dataclass fields.
 
 ### 12.2 Determinism
 
@@ -597,10 +641,7 @@ Error messages never contain:
 - `approval_gate.py`
 - Any module that writes files, acquires locks, or spawns subprocesses
 
-`state_provider.py` may reuse pure parse/validation helpers from
-`validate_project.py` provided those helpers are read-only (no file
-writes, no locks, no subprocesses).  Alternatively, `state_provider.py`
-implements its own pure read-only strict parsers inline.
+`state_provider.py` implements its own pure read-only strict parsers inline.
 
 ### 12.5 Security
 

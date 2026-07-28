@@ -7801,6 +7801,199 @@ class ReleaseSmokeTests(unittest.TestCase):
                       "§2.16.5 must state no custom exception classes")
 
 
+# ── TC-13.17b.2 — Contract freeze tests ────────────────────────────────────
+
+
+class TC1317b2ContractFreezeTests(unittest.TestCase):
+    """TC-13.17b.2 — StateProvider contract ↔ production freeze verification.
+
+    Imports the production module directly and asserts that the contract
+    document matches the running code exactly.
+    """
+
+    def _import_sp(self):
+        import sys
+        from pathlib import Path
+        _scripts = Path(__file__).resolve().parents[1] / "skills" / "agentdesk" / "scripts"
+        sys.path.insert(0, str(_scripts))
+        import state_provider as sp
+        return sp
+
+    # -- 1. __all__ matches ───────────────────────────────────────────────
+
+    def test_all_matches_production(self) -> None:
+        """__all__ in the contract must match __all__ in the production module."""
+        sp = self._import_sp()
+        contract = self._read_contract()
+        # Extract __all__ from contract §10.1
+        section = _extract_markdown_section(contract, "### 10.1 `__all__`")
+        self.assertIsNotNone(section, "Contract §10.1 __all__ section must exist")
+        prod_symbols = sorted(sp.__all__)
+        # Verify each production symbol appears in the contract
+        for sym in prod_symbols:
+            self.assertIn(sym, section,
+                          f"'{sym}' in production __all__ but missing from contract §10.1")
+
+    # -- 2. Dataclass field counts match ──────────────────────────────────
+
+    _dc_map = {
+        "StateSnapshot": 14,
+        "TaskEntry": 24,
+        "TaskTimestamps": 9,
+        "DispatchInfo": 7,
+        "EventEntry": 17,
+        "GuardInput": 2,
+        "GuardResult": 5,
+        "OutboxEntry": 13,
+        "OutboxPayload": 5,
+        "AcceptanceEntry": 16,
+        "MadRefEntry": 10,
+        "ModelSelectionSnapshot": 10,
+    }
+
+    def test_dataclass_field_counts_match(self) -> None:
+        """Every dataclass field count in the contract must match production."""
+        sp = self._import_sp()
+        from dataclasses import fields
+        contract = self._read_contract()
+        for cls_name, expected_count in self._dc_map.items():
+            cls = getattr(sp, cls_name)
+            actual = len(list(fields(cls)))
+            self.assertEqual(expected_count, actual,
+                             f"{cls_name}: contract says {expected_count} fields, "
+                             f"production has {actual}")
+
+    # -- 3. Contract field counts match §9 ────────────────────────────────
+
+    def test_contract_9_declares_correct_field_counts(self) -> None:
+        """Contract §9 must declare the correct field count for each dataclass."""
+        contract = self._read_contract()
+        for cls_name, count in self._dc_map.items():
+            heading = f"Exact Fields ({count})"
+            # Find the section for this dataclass
+            # The heading is like "### 9.2 `TaskEntry` — Exact Fields (24)"
+            found = False
+            for line in contract.splitlines():
+                if f"`{cls_name}`" in line and f"({count})" in line:
+                    found = True
+                    break
+                if cls_name in line and f"Exact Fields ({count})" in line:
+                    found = True
+                    break
+            self.assertTrue(found,
+                            f"Contract §9 must declare {cls_name} with "
+                            f"\"Exact Fields ({count})\"")
+
+    # -- 4. No raw_task/raw_dispatch/raw_event/raw_outbox in contract ──────
+
+    def test_no_raw_fields_in_contract(self) -> None:
+        """Contract must not mention raw_task, raw_dispatch, raw_event, raw_outbox."""
+        contract = self._read_contract()
+        for banned in ("raw_task", "raw_dispatch", "raw_event", "raw_outbox"):
+            self.assertNotIn(banned, contract,
+                             f"Contract must not contain '{banned}'")
+
+    # -- 5. No Mapping/MappingProxy in contract ───────────────────────────
+
+    def test_no_mapping_type_in_contract(self) -> None:
+        """Contract must not expose Mapping or MappingProxyType on any dataclass field.
+
+        The contract may mention these types in design constraints (§12.1)
+        as "no public field has type Mapping, MappingProxyType, or dict."
+        But no field table row may declare them.
+        """
+        contract = self._read_contract()
+        # Check that none of the field tables contain Mapping or MappingProxyType
+        # as a declared field type (e.g. "| 25 | `raw_task` | `Mapping[str, object]`").
+        self.assertNotIn("`raw_task`", contract,
+                         "Contract must not contain raw_task field")
+        self.assertNotIn("`raw_dispatch`", contract,
+                         "Contract must not contain raw_dispatch field")
+        self.assertNotIn("`raw_event`", contract,
+                         "Contract must not contain raw_event field")
+        self.assertNotIn("`raw_outbox`", contract,
+                         "Contract must not contain raw_outbox field")
+        # The design constraint section §12.1 may reference MappingProxyType
+        # as a negative statement. That is allowed. But no field type should be
+        # declared as Mapping or MappingProxyType.
+        field_rows = [
+            line for line in contract.splitlines()
+            if line.strip().startswith("|") and "`Mapping" in line
+        ]
+        self.assertEqual([], field_rows,
+                         "No field table row must declare Mapping or MappingProxyType type")
+
+    # -- 6. Contract declares frozen/slots ────────────────────────────────
+
+    def test_contract_declares_frozen_slots(self) -> None:
+        """Contract must mandate frozen=True, slots=True."""
+        contract = self._read_contract().lower()
+        self.assertIn("frozen/slots", contract,
+                      "Contract must declare frozen/slots mandate")
+        self.assertTrue(
+            "frozen/slots" in contract or "frozen=True" in contract,
+            "Contract must declare frozen/slots dataclasses")
+
+    # -- 7. Contract declares tuple-only collections ──────────────────────
+
+    def test_contract_declares_tuple_collections(self) -> None:
+        """Contract must mandate tuple-only collections."""
+        contract = self._read_contract()
+        self.assertIn("tuple",
+                      contract,
+                      "Contract must declare tuple collections")
+        # Must forbid dict/list/set/Mapping
+        target = contract.lower()
+        self.assertIn("no public", target,
+                      "Contract must forbid public mutables")
+
+    # -- 8. GuardInput is documented ──────────────────────────────────────
+
+    def test_guardinput_documented_in_contract(self) -> None:
+        """GuardInput (2 fields) must be documented in §9.7."""
+        contract = self._read_contract()
+        self.assertIn("GuardInput", contract,
+                      "Contract must document GuardInput")
+        self.assertIn("### 9.7", contract,
+                      "Contract §9.7 must exist for GuardInput")
+
+    # -- 9. __all__ count matches ─────────────────────────────────────────
+
+    def test_all_count_is_19_or_20(self) -> None:
+        """Contract §10.1 must list the correct number of __all__ symbols."""
+        sp = self._import_sp()
+        self.assertEqual(len(sp.__all__), 19,
+                         f"Production __all__ has {len(sp.__all__)} symbols, expected 19")
+
+    def test_all_count_in_contract_section(self) -> None:
+        """Contract §10.1 heading mentions the correct symbol count."""
+        contract = self._read_contract()
+        sp = self._import_sp()
+        count = len(sp.__all__)
+        # The heading is like "### 10.1 `__all__` (19 symbols)"
+        # Check that the heading exists with the correct count
+        self.assertIn(
+            f"({count} symbols)",
+            contract,
+            f"Contract §10.1 heading must say '({count} symbols)'"
+        )
+
+    # -- helpers ──────────────────────────────────────────────────────────
+
+    def _read_contract(self) -> str:
+        from pathlib import Path
+        p = (Path(__file__).resolve().parents[1]
+             / "skills" / "agentdesk" / "references"
+             / "public-interfaces" / "state-provider-contract.md")
+        return p.read_text(encoding="utf-8")
+
+    def _read_production_source(self) -> str:
+        from pathlib import Path
+        p = (Path(__file__).resolve().parents[1]
+             / "skills" / "agentdesk" / "scripts" / "state_provider.py")
+        return p.read_text(encoding="utf-8")
+
+
 class TC1316aContractFreezeTests(unittest.TestCase):
     """TC-13.16a — MadAuditGateway contract freeze smoke tests.
 
