@@ -52,7 +52,7 @@ def _extract_markdown_section(text: str, heading: str) -> str | None:
     ``heading`` must include the leading ``#`` characters, e.g. ``"### 3.2"``.
     The heading line itself is *not* included in the returned text.
     Matches any heading line that *starts with* ``heading`` followed by a space
-    or end-of-line — so ``"### 3.2"`` matches both ``"### 3.2 Foo"`` and
+    or end-of-line �?so ``"### 3.2"`` matches both ``"### 3.2 Foo"`` and
     ``"### 3.2"``.
     """
     heading_level = len(heading) - len(heading.lstrip("#"))
@@ -86,7 +86,7 @@ def _find_exit_code_table_row(section_text: str, target_code: str) -> str | None
     """Parse a markdown exit-code table and return the condition cell for
     *target_code* (e.g. ``"0"``).
 
-    Recognises code cells like ``| `0` |`` and ``| 0 |`` equally — the
+    Recognises code cells like ``| `0` |`` and ``| 0 |`` equally �?the
     comparison is done after stripping backticks and whitespace from the
     first cell.
     """
@@ -275,7 +275,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             """Extract rows from the first Interface-Status-like markdown table.
 
             Returns a list of dicts keyed by normalised header column names.
-            All non-separator, non-empty rows are parsed — no first-column
+            All non-separator, non-empty rows are parsed �?no first-column
             shape gate.  Rows that start with ``|`` and are not a separator
             line or header are treated as data.
             """
@@ -316,7 +316,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             impl_col = "Implemented by"
 
             for row in rows:
-                # Determine the status cell — either a dedicated "Status" column
+                # Determine the status cell �?either a dedicated "Status" column
                 # or the column named after the row-number header (which is "#"
                 # per the ADR table header).
                 status_cell = row.get("Status", row.get(status_col, "")).strip()
@@ -410,7 +410,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_run_result_v1_maintains_backward_compat(self) -> None:
         """Verify run-result/v1 section keeps participants=list[str] and
-        Chinese-status semantics — scoped strictly to the 3.2 subsection.
+        Chinese-status semantics �?scoped strictly to the 3.2 subsection.
 
         Uses JSON parsing on the embedded code-fence example so that
         object-array participants are caught regardless of field names.
@@ -424,7 +424,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
         text: str = section_32  # type: ignore[assignment]
 
-        # ── (A) participants must be list[str] — JSON-parse the example ──
+        # ── (A) participants must be list[str] �?JSON-parse the example ──
         # Extract the first JSON code block inside the section.
         json_m = re.search(r"```json\n(.*?)```", text, re.DOTALL)
         self.assertIsNotNone(
@@ -462,7 +462,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertTrue(
             chinese_ok,
             "run-result/v1 section: status must use Chinese semantics "
-            "(e.g. 完成 / 带警告完成) or a MAD-status placeholder",
+            "(e.g. 完成 / 带警告完�? or a MAD-status placeholder",
         )
 
         # (C) V1 must NOT change status to English enums.
@@ -588,7 +588,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_audit_exit_zero_includes_verdict_fail_and_blocked(self) -> None:
         """Exit code 0 for 'mad audit' must cover pass, fail, and blocked
-        business verdicts — scoped strictly to the 3.3 subsection.
+        business verdicts �?scoped strictly to the 3.3 subsection.
 
         Parses the exit-code Markdown table by extracting its cells,
         normalises the code cell (strips backticks and whitespace), then
@@ -625,7 +625,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             )
 
         # ── Prose: find a sentence that explicitly links exit 0 to
-        #    verdict=fail or verdict=blocked (not just any "exit code … 0"
+        #    verdict=fail or verdict=blocked (not just any "exit code �?0"
         #    mention). ──
         linked = re.findall(
             r"(?:exit code.*?0|exit\s+0).*?(?:fail|blocked)",
@@ -861,7 +861,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_tc134_section_defines_three_enums(self) -> None:
         adr_text = self._adr_path().read_text(encoding="utf-8")
-        # Extract the TC-13.4 section — either a dedicated sub-section or
+        # Extract the TC-13.4 section �?either a dedicated sub-section or
         # the §2.8 heading.
         section = _extract_markdown_section(adr_text, "### 2.8")
         self.assertIsNotNone(section, "ADR must contain a §2.8 for TC-13.4")
@@ -1051,7 +1051,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_section_28_heading_is_current(self) -> None:
-        """§2.8 heading must read (Current — TC-13.4)."""
+        """§2.8 heading must read (Current �?TC-13.4)."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "### 2.8")
         self.assertIsNotNone(section, "ADR must contain §2.8")
@@ -1126,7 +1126,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertNotIn(
             "#### 2.8.5 ContextBudgetPolicy",
             adr_text,
-            "ADR must NOT contain #### 2.8.5 — now §2.9",
+            "ADR must NOT contain #### 2.8.5 �?now §2.9",
         )
         # Must reference TC-13.5.1.
         self.assertIn("TC-13.5.1", section_29)
@@ -1164,7 +1164,7 @@ class ReleaseSmokeTests(unittest.TestCase):
     def test_section_28_does_not_contain_tc135_public_api(self) -> None:
         """§2.8 continues to belong to TC-13.4 only; must not include
         BudgetResult as its own type or compute_budget as a function
-        definition — only as a cross-reference to §2.9."""
+        definition �?only as a cross-reference to §2.9."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section_28 = _extract_markdown_section(adr_text, "### 2.8")
         self.assertIsNotNone(section_28,
@@ -1173,11 +1173,11 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertNotIn(
             "BudgetResult",
             section_28,
-            "ADR §2.8 must NOT contain BudgetResult — that is §2.9",
+            "ADR §2.8 must NOT contain BudgetResult �?that is §2.9",
         )
         # §2.8 may mention compute_budget as a cross-reference (§2.8.1
         # explains budget relationship), but must not define the API in
-        # detail.  We only check that BudgetResult is absent — the
+        # detail.  We only check that BudgetResult is absent �?the
         # compute_budget mention is a legitimate contract cross-reference.
 
     def test_section_24_and_29_percentages_are_identical(self) -> None:
@@ -1245,7 +1245,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             if col_idx < len(parts):
                 # Only strip backticks and whitespace; keep underscores.
                 cell = parts[col_idx].strip().replace("`", "")
-                if cell and cell != "—" and cell.lower() not in ("value", "semantic"):
+                if cell and cell != "�? and cell.lower() not in ("value", "semantic"):
                     values.add(cell)
         return values
 
@@ -1294,7 +1294,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn(
             "35%",
             desc,
-            "TC-13.5.1 description must mention ≥35% reserved",
+            "TC-13.5.1 description must mention �?5% reserved",
         )
 
     # -- Item 9: §2.7 Skill and Dashboard Data Sharing restored -----------
@@ -1550,7 +1550,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             "ADR Interface Status #29 (TC-13.7) must NOT be marked Target",
         )
 
-    # -- 10c: DispatchIdentity — exactly four fields, includes revision -
+    # -- 10c: DispatchIdentity �?exactly four fields, includes revision -
 
     _DISPATCH_IDENTITY_FIELDS = frozenset(
         {"task_id", "revision", "attempt", "dispatch_id"}
@@ -1573,7 +1573,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             )
 
     def test_tc137_dispatch_identity_includes_revision(self) -> None:
-        """DispatchIdentity must include revision — this was missing in
+        """DispatchIdentity must include revision �?this was missing in
         the prior planning draft."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(
@@ -1586,7 +1586,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             "ADR §2.10.2 must include 'revision' in DispatchIdentity",
         )
 
-    # -- 10d: ModelSelectionSnapshot — exact ten fields ------------------
+    # -- 10d: ModelSelectionSnapshot �?exact ten fields ------------------
 
     _SNAPSHOT_KEYS = frozenset({
         "required_model_tier", "required_model_capabilities",
@@ -1614,14 +1614,14 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_tc137_snapshot_no_extra_keys(self) -> None:
         """The snapshot field table in §2.10.3 must list exactly the ten
-        frozen fields — no 11th field row."""
+        frozen fields �?no 11th field row."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(
             adr_text, "#### 2.10.3"
         ) or _extract_markdown_section(adr_text, "### 2.10")
         self.assertIsNotNone(section)
 
-        # Parse the table rows for field names — each table row
+        # Parse the table rows for field names �?each table row
         # must be one of the known 10 fields.  No 11th row.
         import re as _re
         field_names_in_table: set[str] = set()
@@ -1678,7 +1678,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_tc137_snapshot_forbids_mutable_collections(self) -> None:
         """§2.10.3 must state the snapshot contains no mutable list, dict,
-        or set — all collection fields are immutable."""
+        or set �?all collection fields are immutable."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(
             adr_text, "#### 2.10.3"
@@ -1709,7 +1709,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             "§2.10.3 must state that original order is preserved",
         )
 
-    # -- 10e: DispatchRequest — exactly five fields, no deferred extras –
+    # -- 10e: DispatchRequest �?exactly five fields, no deferred extras �?
 
     _REQUEST_REQUIRED_FIELDS = frozenset(
         {"identity", "workspace", "prompt", "model_selection", "timeout_seconds"}
@@ -1739,7 +1739,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_tc137_dispatch_request_forbids_deferred_fields(self) -> None:
         """§2.10.4 request field table must contain exactly the five
-        frozen fields — no provider_config_id, environment_allowlist,
+        frozen fields �?no provider_config_id, environment_allowlist,
         stdin_bytes, or other deferred fields."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(
@@ -1747,7 +1747,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         ) or _extract_markdown_section(adr_text, "### 2.10")
         self.assertIsNotNone(section)
 
-        # Parse the request field table — each numbered row must be one
+        # Parse the request field table �?each numbered row must be one
         # of the 5 frozen fields.  provider_config_id must not be a row.
         import re as _re
         field_names: set[str] = set()
@@ -1775,7 +1775,7 @@ class ReleaseSmokeTests(unittest.TestCase):
                 f"{', '.join(sorted(missing))}",
             )
 
-    # -- 10f: DispatchResult — exactly eight fields, no timed_out etc. ---
+    # -- 10f: DispatchResult �?exactly eight fields, no timed_out etc. ---
 
     _RESULT_REQUIRED = frozenset({
         "identity", "provider", "model_id", "duration_seconds",
@@ -1805,7 +1805,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_tc137_dispatch_result_forbids_timed_out_and_cancelled(self) -> None:
         """§2.10.7 result field table must NOT contain timed_out or
-        cancelled — those outcomes use exceptions."""
+        cancelled �?those outcomes use exceptions."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(
             adr_text, "#### 2.10.7"
@@ -1826,17 +1826,17 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertNotIn(
             "timed_out",
             field_names,
-            "§2.10.7 result table must NOT include 'timed_out' — timeout uses exceptions",
+            "§2.10.7 result table must NOT include 'timed_out' �?timeout uses exceptions",
         )
         self.assertNotIn(
             "cancelled",
             field_names,
-            "§2.10.7 result table must NOT include 'cancelled' — cancellation uses exceptions",
+            "§2.10.7 result table must NOT include 'cancelled' �?cancellation uses exceptions",
         )
 
     def test_tc137_dispatch_result_forbids_process_id_and_command_receipt(self) -> None:
         """§2.10.7 result field table must NOT contain process_id or
-        command_receipt — runtime-only identifiers not exposed."""
+        command_receipt �?runtime-only identifiers not exposed."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(
             adr_text, "#### 2.10.7"
@@ -1856,12 +1856,12 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertNotIn(
             "process_id",
             field_names,
-            "§2.10.7 result table must NOT include 'process_id' — runtime-only identifier",
+            "§2.10.7 result table must NOT include 'process_id' �?runtime-only identifier",
         )
         self.assertNotIn(
             "command_receipt",
             field_names,
-            "§2.10.7 result table must NOT include 'command_receipt' — runtime-only identifier",
+            "§2.10.7 result table must NOT include 'command_receipt' �?runtime-only identifier",
         )
 
     # -- 10g: Exception-only failure semantics ---------------------------
@@ -1896,9 +1896,9 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_tc137_stdout_stderr_are_opaque_bytes(self) -> None:
         """§2.10.7 and §2.10.8 together must state stdout/stderr are
-        opaque bytes — no decoding is attempted by the Gateway."""
+        opaque bytes �?no decoding is attempted by the Gateway."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
-        # Only check the output/failure subsections — the intro list
+        # Only check the output/failure subsections �?the intro list
         # mentions "opaque bytes" but §2.10.8 explicitly says
         # "There is no DispatchOutputDecodeError".  The contract is
         # that DispatchResult.stdout/stderr are ``bytes`` and the
@@ -1911,7 +1911,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             "§2.10.7 stdout/stderr fields must be of type bytes",
         )
         # §2.10.8 must state there is no OutputDecodeError (i.e. it
-        # is explicitly excluded — the word appears in the negation).
+        # is explicitly excluded �?the word appears in the negation).
         sec_failure = _extract_markdown_section(adr_text, "#### 2.10.8")
         self.assertIsNotNone(sec_failure)
         self.assertIn(
@@ -1965,7 +1965,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_tc137_does_not_preempt_tc138_tc139(self) -> None:
         """§2.10 must not define Claude‑specific parameters or WorkerKind
-        mapping or budget logic — those belong to TC-13.8/13.9.
+        mapping or budget logic �?those belong to TC-13.8/13.9.
 
         Uses structural parsing: the responsibility boundary list and
         exclusion list in §2.10.1 provide the authoritative scope."""
@@ -1996,7 +1996,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             "(e.g. '--permission-mode')",
         )
 
-    # -- 10ℓ: Protocol definition checks ---------------------------------
+    # -- 10�? Protocol definition checks ---------------------------------
 
     def test_tc137_agent_cli_provider_protocol_defined(self) -> None:
         """§2.10.5 must define AgentCliProvider Protocol with provider_id
@@ -2056,7 +2056,7 @@ class ReleaseSmokeTests(unittest.TestCase):
                 f"ADR §2.10.6 must reference AgentCliInvocation field '{field}'",
             )
         # The word "cwd" may appear in the prose rule explaining there is
-        # no cwd field — but a numbered table row ``| # | ``cwd`` |``
+        # no cwd field �?but a numbered table row ``| # | ``cwd`` |``
         # must NOT exist.  Check for the table-row pattern.
         self.assertNotRegex(
             section,
@@ -2128,7 +2128,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertNotIn("adapter.cwd", code,
                          "Production code must not reference adapter cwd")
 
-    # -- 10ℓ‑bis: Provider mapping — explicit run_dispatch signature --------
+    # -- 10ℓ‑bis: Provider mapping �?explicit run_dispatch signature --------
 
     def test_tc137_run_dispatch_signature_frozen(self) -> None:
         """§2.10.5 must freeze run_dispatch(request, providers) with
@@ -2154,13 +2154,13 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_tc137_no_module_level_mutable_registry(self) -> None:
         """§2.10.5 must state there is NO register_provider() or
-        unregister_provider() — the ADR says 'There is **no**
+        unregister_provider() �?the ADR says 'There is **no**
         ``register_provider()``, ``unregister_provider()``'."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "#### 2.10.5")
         self.assertIsNotNone(section)
         # The ADR says "There is **no** ``register_provider()``,
-        # ``unregister_provider()``" — this correctly asserts they don't
+        # ``unregister_provider()``" �?this correctly asserts they don't
         # exist.  The test checks that the section uses that language.
         target = section.lower()
         self.assertTrue(
@@ -2196,12 +2196,12 @@ class ReleaseSmokeTests(unittest.TestCase):
     # -- 10ℓ‑ter: argv excludes executable --------------------------------
 
     def test_tc137_argv_excludes_executable(self) -> None:
-        """§2.10.6 must state argv does NOT contain executable — the
+        """§2.10.6 must state argv does NOT contain executable �?the
         'argv does **not** include executable' language in the table."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "#### 2.10.6")
         self.assertIsNotNone(section)
-        # The table says "Arguments only — does **not** include executable".
+        # The table says "Arguments only �?does **not** include executable".
         # Check for the bold negation.
         target = section.lower()
         self.assertTrue(
@@ -2377,7 +2377,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_tc137_section_210_body_does_not_contain_stale_freezing_language(self) -> None:
         """§2.10 body must NOT contain 'does not mark TC-13.7 as Current'
-        or equivalent stale wording — scoped strictly to the §2.10
+        or equivalent stale wording �?scoped strictly to the §2.10
         subsection body."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "### 2.10")
@@ -2412,7 +2412,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_tc137_section_210_body_asserts_current_status(self) -> None:
         """§2.10 body must affirm TC-13.7 is Current with production
-        module and test suite — scoped to the §2.10 subsection."""
+        module and test suite �?scoped to the §2.10 subsection."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "### 2.10")
         self.assertIsNotNone(section, "ADR must contain §2.10")
@@ -2427,7 +2427,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             section,
             "§2.10 must reference dispatcher_gateway.py as production evidence",
         )
-        # The Frozen Contract language must still be present — we're
+        # The Frozen Contract language must still be present �?we're
         # preserving the contract, just updating the status marker.
         self.assertIn(
             "Frozen Contract",
@@ -2468,7 +2468,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_interface_status_row_30_claude_cli_row_number(self) -> None:
         """Verify row #30 in the Interface Status table is Claude Code CLI
-        contract with TC-13.8 — check the row number cell directly."""
+        contract with TC-13.8 �?check the row number cell directly."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
@@ -2513,7 +2513,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_tc139c_not_prematurely_marked_current_in_table(self) -> None:
         """TC-13.9c must NOT have 'Current' status in any
-        Interface Status row — TC-13.9b is now Current."""
+        Interface Status row �?TC-13.9b is now Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
 
@@ -2712,7 +2712,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "### 2.11")
         self.assertIsNotNone(section)
-        # Must explicitly prohibit normalizing claudecode → claude.
+        # Must explicitly prohibit normalizing claudecode �?claude.
         target = section.lower()
         has_forbid = (
             "must **not** be alias-normalized" in section
@@ -2724,7 +2724,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             "§2.11 must explicitly forbid alias normalization of provider_id",
         )
 
-    # ── 14e: Prompt transmission — stdin only ────────────────────────────
+    # ── 14e: Prompt transmission �?stdin only ────────────────────────────
 
     def test_tc138_prompt_via_stdin_utf8_no_bom(self) -> None:
         """§2.11 must state prompt is transmitted via stdin with UTF-8
@@ -3229,11 +3229,11 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_tc138_no_separate_config_class(self) -> None:
         """§2.11.9 must state there is no separate
-        ClaudeCodeProviderConfig class — the negation must exist."""
+        ClaudeCodeProviderConfig class �?the negation must exist."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "#### 2.11.9")
         self.assertIsNotNone(section)
-        # The ADR says "no separate ClaudeCodeProviderConfig" — verify
+        # The ADR says "no separate ClaudeCodeProviderConfig" �?verify
         # the negation language exists.  The name appears in the negation.
         target = section.lower()
         self.assertTrue(
@@ -3244,7 +3244,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_tc138_no_at_minimum_language(self) -> None:
-        """§2.11.9 must NOT say 'at minimum these fields' — the five
+        """§2.11.9 must NOT say 'at minimum these fields' �?the five
         fields are exact."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "#### 2.11.9")
@@ -3252,7 +3252,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertNotIn(
             "at minimum",
             section.lower(),
-            "§2.11.9 must NOT contain 'at minimum' — five fields are exact",
+            "§2.11.9 must NOT contain 'at minimum' �?five fields are exact",
         )
 
     # ── 15b: Exactly five fields ────────────────────────────────────────
@@ -3398,7 +3398,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "#### 2.11.9")
         self.assertIsNotNone(section)
-        # Text may be split across lines — normalize whitespace.
+        # Text may be split across lines �?normalize whitespace.
         target = " ".join(section.split())
         self.assertIn(
             "does **not** introduce a parallel public exception hierarchy",
@@ -3657,13 +3657,13 @@ class ReleaseSmokeTests(unittest.TestCase):
     # ── 15i: Production provider module exists ──────────────────────────────
 
     def test_tc138_production_provider_module_exists(self) -> None:
-        """claude_code_provider.py must exist — TC-13.8 is now Current."""
+        """claude_code_provider.py must exist �?TC-13.8 is now Current."""
         provider_path = (
             SKILL_ROOT / "scripts" / "claude_code_provider.py"
         )
         self.assertTrue(
             provider_path.is_file(),
-            "claude_code_provider.py must exist — TC-13.8 is Current",
+            "claude_code_provider.py must exist �?TC-13.8 is Current",
         )
 
     def test_tc138_test_file_exists(self) -> None:
@@ -3673,7 +3673,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
         self.assertTrue(
             test_path.is_file(),
-            "test_claude_code_provider.py must exist — TC-13.8 is Current",
+            "test_claude_code_provider.py must exist �?TC-13.8 is Current",
         )
 
     def test_tc138_module_exports_claude_code_provider(self) -> None:
@@ -3792,16 +3792,16 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertNotIn("Target", status,
                          f"TC-13.9b must NOT be Target, got: {status}")
 
-    # — 15k: No Codex provider started —
+    # �?15k: No Codex provider started �?
 
     def test_tc138_no_codex_provider_started(self) -> None:
-        """codex_cli_provider.py must now exist — TC-13.8.4 is Current."""
+        """codex_cli_provider.py must now exist �?TC-13.8.4 is Current."""
         codex_path = (
             SKILL_ROOT / "scripts" / "codex_cli_provider.py"
         )
         self.assertTrue(
             codex_path.exists(),
-            "codex_cli_provider.py must exist — TC-13.8.4 is Current",
+            "codex_cli_provider.py must exist �?TC-13.8.4 is Current",
         )
 
     # -- Item 16: TC-13.8 contract code example executability ------------
@@ -3879,7 +3879,7 @@ class ReleaseSmokeTests(unittest.TestCase):
                 self.assertTrue(
                     line.startswith("_CONTROL_PROMPT"),
                     f"§2.11.9 _CONTROL_PROMPT must not be indented inside "
-                    f"class — got: {line.strip()!r}",
+                    f"class �?got: {line.strip()!r}",
                 )
 
     # ── 16b: Top-level import from dispatcher_gateway ──────────────────
@@ -3990,14 +3990,14 @@ class ReleaseSmokeTests(unittest.TestCase):
         }
         tc139c = by_id.get("TC-13.9c")
         self.assertIsNotNone(tc139c, "ADR §5 must contain TC-13.9c")
-        # TC-13.9c is a future task card — it does not have a dedicated
+        # TC-13.9c is a future task card �?it does not have a dedicated
         # Interface Status row.  Verify it's in §5 only.
 
     def test_tc138_production_file_now_exists(self) -> None:
         """claude_code_provider.py must now exist."""
         self.assertTrue(
             (SKILL_ROOT / "scripts" / "claude_code_provider.py").is_file(),
-            "claude_code_provider.py must exist — TC-13.8 is Current",
+            "claude_code_provider.py must exist �?TC-13.8 is Current",
         )
 
     # ── Item 17: TC-13.8.3 Codex CLI Provider frozen contract ──────────────
@@ -4032,7 +4032,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_tc1383_section_212_exists_and_is_current(self) -> None:
-        """ADR must contain §2.12 Codex CLI Provider — Frozen Contract
+        """ADR must contain §2.12 Codex CLI Provider �?Frozen Contract
         marked Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "### 2.12")
@@ -4131,7 +4131,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("BOM", section)
 
     def test_tc1383_no_fixed_control_prompt(self) -> None:
-        """§2.12.3 must state no fixed control prompt is used — unlike
+        """§2.12.3 must state no fixed control prompt is used �?unlike
         Claude Provider."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "#### 2.12.3")
@@ -4280,12 +4280,12 @@ class ReleaseSmokeTests(unittest.TestCase):
             self.assertIn(
                 f"`{src}`",
                 section,
-                f"§2.12.6 must map {src} → {dst}",
+                f"§2.12.6 must map {src} �?{dst}",
             )
             self.assertIn(
                 f"`{dst}`",
                 section,
-                f"§2.12.6 must map {src} → {dst}",
+                f"§2.12.6 must map {src} �?{dst}",
             )
 
     def test_tc1383_xhigh_and_minimal_not_mapped(self) -> None:
@@ -4438,10 +4438,10 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_tc1383_codex_production_file_now_exists(self) -> None:
-        """codex_cli_provider.py must now exist — TC-13.8.4 is Current."""
+        """codex_cli_provider.py must now exist �?TC-13.8.4 is Current."""
         self.assertTrue(
             (SKILL_ROOT / "scripts" / "codex_cli_provider.py").is_file(),
-            "codex_cli_provider.py must exist — TC-13.8.4 is Current",
+            "codex_cli_provider.py must exist �?TC-13.8.4 is Current",
         )
 
     def test_tc1383_codex_test_file_exists(self) -> None:
@@ -4494,7 +4494,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         """Runtime argv must match the frozen contract exactly.
 
         Runs in an isolated subprocess so that module identity cannot
-        be affected by test ordering — no sys.modules deletion."""
+        be affected by test ordering �?no sys.modules deletion."""
         result = subprocess.run(
             [
                 sys.executable,
@@ -4600,9 +4600,9 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
 
-    # ═════════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════════════�?
     # TC-13.9a: WorkerAdapter Core Contract smoke tests (36 checks)
-    # ═════════════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════════════�?
 
     def test_tc139a_interface_row_14_no_longer_claims_four_tier_slots(self) -> None:
         """Interface #14 description must NOT claim 'four-tier slots'."""
@@ -4760,7 +4760,7 @@ class ReleaseSmokeTests(unittest.TestCase):
                       "§2.13.4 must state run_dispatch is called exactly once")
 
     def test_tc139a_budget_informational_only(self) -> None:
-        """§2.13.5 must declare budget is informational — not enforced."""
+        """§2.13.5 must declare budget is informational �?not enforced."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "#### 2.13.5")
         self.assertIsNotNone(section)
@@ -4870,7 +4870,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_tc139a_single_attempt(self) -> None:
-        """§2.13.8 must state exactly one attempt — no retry."""
+        """§2.13.8 must state exactly one attempt �?no retry."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "#### 2.13.8")
         self.assertIsNotNone(section, "ADR must contain §2.13.8 Single-Attempt")
@@ -4967,10 +4967,10 @@ class ReleaseSmokeTests(unittest.TestCase):
                       "§2.13.3 must declare __all__ with exactly two symbols")
 
     def test_tc139b_worker_adapter_py_exists(self) -> None:
-        """worker_adapter.py must now exist — TC-13.9b is Current."""
+        """worker_adapter.py must now exist �?TC-13.9b is Current."""
         self.assertTrue(
             (SKILL_ROOT / "scripts" / "worker_adapter.py").is_file(),
-            "worker_adapter.py must exist — TC-13.9b is Current",
+            "worker_adapter.py must exist �?TC-13.9b is Current",
         )
 
     def test_tc139a_future_task_cards_has_139a_139b_139c(self) -> None:
@@ -5094,7 +5094,7 @@ class ReleaseSmokeTests(unittest.TestCase):
     })
 
     def test_tc1310a_section_25_heading_is_frozen_contract(self) -> None:
-        """§2.5 heading must mention Frozen Contract — TC-13.10c."""
+        """§2.5 heading must mention Frozen Contract �?TC-13.10c."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         heading_m = re.search(
             r"^### 2\.5\s.*$", adr_text, re.MULTILINE,
@@ -5107,11 +5107,11 @@ class ReleaseSmokeTests(unittest.TestCase):
                       "§2.5 heading must reference TC-13.10")
 
     def test_tc1310a_frozen_contract_marker_in_section(self) -> None:
-        """§2.5 must contain 'Frozen Contract — TC-13.10a' marker."""
+        """§2.5 must contain 'Frozen Contract �?TC-13.10a' marker."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "### 2.5")
         self.assertIsNotNone(section, "ADR must contain §2.5")
-        self.assertIn("Frozen Contract — TC-13.10a", section,
+        self.assertIn("Frozen Contract �?TC-13.10a", section,
                       "§2.5 must contain the frozen contract marker")
 
     def test_tc1310a_eight_stable_slot_ids(self) -> None:
@@ -5287,7 +5287,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertEqual(
             found,
             list(range(1, 17)),
-            "§2.5 must have exactly subsections 1–16, contiguous, no gaps",
+            "§2.5 must have exactly subsections 1�?6, contiguous, no gaps",
         )
 
     def test_tc1310a_no_section_2517(self) -> None:
@@ -5298,10 +5298,10 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIsNone(m, "§2.5.17 must not exist")
 
     def test_tc1310a_paragraph_marker_range(self) -> None:
-        """The Frozen Contract paragraph must state §2.5.1–§2.5.16."""
+        """The Frozen Contract paragraph must state §2.5.1–�?.5.16."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
-        self.assertIn("§2.5.1–§2.5.16", adr_text,
-                      "Frozen contract paragraph must reference §2.5.1–§2.5.16")
+        self.assertIn("§2.5.1–�?.5.16", adr_text,
+                      "Frozen contract paragraph must reference §2.5.1–�?.5.16")
         self.assertNotIn("§2.5.17", adr_text,
                          "Frozen contract paragraph must NOT reference §2.5.17")
 
@@ -5379,7 +5379,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_tc1310a_third_worktree_global_capacity(self) -> None:
-        """§2.5.6: a third distinct worktree for same WorkerKind →
+        """§2.5.6: a third distinct worktree for same WorkerKind �?
         WorkerSlotCapacityError (global)."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "#### 2.5.6")
@@ -5484,7 +5484,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_tc1310a_global_lock_ordering_frozen(self) -> None:
-        """§2.5.9 must freeze lock ordering: worker-slot → state."""
+        """§2.5.9 must freeze lock ordering: worker-slot �?state."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "#### 2.5.9")
         self.assertIsNotNone(section)
@@ -5647,7 +5647,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         """TC-13.9c must still be Target."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
-        # TC-13.9c is not in the interface status table — check §5.
+        # TC-13.9c is not in the interface status table �?check §5.
         section = _extract_markdown_section(adr_text, "## 5. Future Task Cards")
         self.assertIsNotNone(section)
         self.assertIn("TC-13.9c", section,
@@ -5866,7 +5866,7 @@ class ReleaseSmokeTests(unittest.TestCase):
 
     def test_no_other_tc13_10_target_claim_in_adr(self) -> None:
         """No other sentence in the ADR should claim TC-13.10 is Target.
-        We parse only the substantive paragraphs — not code blocks, links,
+        We parse only the substantive paragraphs �?not code blocks, links,
         or future-task-card dependency descriptions that merely mention
         TC-13.10 as a task ID."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
@@ -5875,11 +5875,11 @@ class ReleaseSmokeTests(unittest.TestCase):
         stripped = re.sub(r"```.*?```", "", adr_text, flags=re.DOTALL)
 
         # Find lines that contain "TC-13.10" AND "Target" within a
-        # reasonable distance — but explicitly exclude lines where
+        # reasonable distance �?but explicitly exclude lines where
         # TC-13.10 is listed alongside other TC IDs that ARE Target
         # (those are the allowed ones in §2.13.14 and Future Task Cards).
         # We already verify those lines individually above.  This test
-        # guards against rogue "TC-13.10 … Target" patterns.
+        # guards against rogue "TC-13.10 �?Target" patterns.
         lines = stripped.splitlines()
         for i, raw in enumerate(lines):
             stripped_line = raw.strip()
@@ -5888,8 +5888,8 @@ class ReleaseSmokeTests(unittest.TestCase):
             if "TC-13.10" not in stripped_line:
                 continue
             # Skip lines that are purely dependency listings (e.g.
-            # "TC-13.11 → TC-13.10c").
-            if re.match(r"^\s*TC-[\d.]+(?:\s*[→,]\s*TC-[\d.]+)*\s*$",
+            # "TC-13.11 �?TC-13.10c").
+            if re.match(r"^\s*TC-[\d.]+(?:\s*[�?]\s*TC-[\d.]+)*\s*$",
                         stripped_line):
                 continue
             # Skip §2.14 status/status-subsection lines that list
@@ -5909,7 +5909,7 @@ class ReleaseSmokeTests(unittest.TestCase):
                 continue
             # Skip the §2.5.15 task card split which names TC-13.10c in
             # dependency arrows.
-            if "TC-13.10c" in stripped_line and "→" in stripped_line:
+            if "TC-13.10c" in stripped_line and "�? in stripped_line:
                 continue
             # Skip the interface table row #15 header.
             if "| 15 |" in stripped_line and "WorkerSlotLease" in stripped_line:
@@ -5918,10 +5918,10 @@ class ReleaseSmokeTests(unittest.TestCase):
             if stripped_line.startswith("| TC-13.10"):
                 continue
             # Skip the Frozen Contract marker in §2.5.
-            if "Frozen Contract — TC-13.10a" in stripped_line:
+            if "Frozen Contract �?TC-13.10a" in stripped_line:
                 continue
             # Skip the TC-13.11a task-card split table (lists TC-13.10c
-            # as a dependency — a valid forward reference, not a Target claim).
+            # as a dependency �?a valid forward reference, not a Target claim).
             if stripped_line.startswith("| TC-13.11") and "TC-13.10" in stripped_line:
                 continue
             # If the line contains both TC-13.10 and Target, it's
@@ -5932,9 +5932,9 @@ class ReleaseSmokeTests(unittest.TestCase):
                     f"claim: {stripped_line[:100]!r}"
                 )
 
-    # ═══════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════�?
     # TC-13.12a ApprovalGate frozen contract tests
-    # ═══════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════�?
 
     _TC1312A_CONTRACT_SECTION = "### 2.15"
     _APPROVAL_GATE_PY = SKILL_ROOT / "scripts" / "approval_gate.py"
@@ -5968,7 +5968,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertGreater(len(section), 500)
 
     def test_tc1312a_interface_17_still_target(self) -> None:
-        """Interface #17 must be Current — TC-13.12d is complete."""
+        """Interface #17 must be Current �?TC-13.12d is complete."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         for row in rows:
@@ -5980,7 +5980,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.fail("Interface Status row #17 not found")
 
     def test_tc1312a_interface_18_now_current(self) -> None:
-        """Interface #18 (TC-13.13b) must now be Current — TC-13.13b completed."""
+        """Interface #18 (TC-13.13b) must now be Current �?TC-13.13b completed."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         for row in rows:
@@ -6147,7 +6147,7 @@ class ReleaseSmokeTests(unittest.TestCase):
                           f"failure_code must include '{code}'")
 
     def test_tc1312a_result_passed_invariants(self) -> None:
-        """passed=True → failure_code=None, matched_evidence non-None."""
+        """passed=True �?failure_code=None, matched_evidence non-None."""
         section = self._tc1312a_section()
         self.assertIn("passed", section)
         # The contract must describe the invariant
@@ -6418,7 +6418,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_tc1312a_head_mismatch_fail_closed(self) -> None:
-        """HEAD != expected_snapshot_commit → ApprovalSnapshotConflictError."""
+        """HEAD != expected_snapshot_commit �?ApprovalSnapshotConflictError."""
         section = self._tc1312a_section()
         self.assertIn("ApprovalSnapshotConflictError", section)
         lower = section.lower()
@@ -6426,7 +6426,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             "head mismatch" in lower
             or "!=" in section
             or "head" in lower,
-            "§2.15.10 must describe HEAD mismatch → fail-closed",
+            "§2.15.10 must describe HEAD mismatch �?fail-closed",
         )
 
     def test_tc1312a_pre_commit_evidence_valid(self) -> None:
@@ -6463,7 +6463,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_tc1312a_external_precheck_not_substitute(self) -> None:
-        """External pre-check outside lock ≠ substitute."""
+        """External pre-check outside lock �?substitute."""
         section = self._tc1312a_section()
         lower = section.lower()
         self.assertTrue(
@@ -6723,7 +6723,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("no leading/trailing", section.lower())
 
     def test_tc1312a_grant_to_evidence_mapping(self) -> None:
-        """§2.15.5 must contain the Grant 16-key → ApprovalEvidence mapping
+        """§2.15.5 must contain the Grant 16-key �?ApprovalEvidence mapping
         table."""
         section = self._tc1312a_section()
         # Mapping table headings
@@ -6866,7 +6866,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertTrue(test_file.exists())
 
     def test_tc1311c_apply_transition_no_longer_not_implemented(self) -> None:
-        """apply_transition is now implemented — TC-13.11c is Current."""
+        """apply_transition is now implemented �?TC-13.11c is Current."""
         import importlib, sys
         mod_name = "control_plane_transition"
         if mod_name in sys.modules:
@@ -6965,7 +6965,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("SupersededPayload", section)
         # TransitionRequest class must not have 20+ optional fields.
         # The word "to_state: str" may appear in the docstring of
-        # TransitionResult — only forbid it IN TransitionRequest.
+        # TransitionResult �?only forbid it IN TransitionRequest.
         req_class = re.search(
             r"class TransitionRequest:.*?(?=\nclass TransitionResult)",
             section, re.DOTALL,
@@ -6999,7 +6999,7 @@ class ReleaseSmokeTests(unittest.TestCase):
     # ── spelling fix ─────────────────────────────────────────────────────────
 
     def test_tc1311a_no_supreseded_misspelling(self) -> None:
-        """supreseded_by must not appear — correct spelling is
+        """supreseded_by must not appear �?correct spelling is
         superseded_by."""
         section = self._tc1311a_section()
         self.assertNotIn("supreseded", section)
@@ -7071,7 +7071,7 @@ class ReleaseSmokeTests(unittest.TestCase):
     def test_tc1311a_cas_git_head_does_not_block_orphan_replay(self) -> None:
         """Uncommitted orphan files do not change git rev-parse HEAD,
         so CAS alone does not prevent replay over orphan evidence.
-        The contract must note this explicitly — check that the
+        The contract must note this explicitly �?check that the
         paragraph about HEAD and orphan evidence exists in §2.14.2."""
         section = self._tc1311a_section()
         lower = section.lower()
@@ -7485,7 +7485,7 @@ class ReleaseSmokeTests(unittest.TestCase):
                           "§2.16 must contain the full frozen contract")
 
     def test_tc1313a_interface_18_now_current(self) -> None:
-        """Interface #18 must now be Current — TC-13.13b completed."""
+        """Interface #18 must now be Current �?TC-13.13b completed."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         row18 = None
@@ -7557,7 +7557,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             self.assertIn(symbol, section,
                           f"__all__ must contain {symbol}")
 
-    # -- 5: progression — exactly three stepping upgrades --
+    # -- 5: progression �?exactly three stepping upgrades --
 
     def test_tc1313a_progression_exact_three_tiers(self) -> None:
         """§2.16.1 must define exact three-step progression."""
@@ -7566,14 +7566,14 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("standard_agent", section)
         self.assertIn("advanced_agent", section)
         self.assertIn("expert_agent", section)
-        # Verify the progression direction — each arrow points to next tier
+        # Verify the progression direction �?each arrow points to next tier
         collapsed = section.replace(" ", "")
         self.assertIn("basic_agent→standard_agent", collapsed,
-                      "§2.16.1 must show basic_agent → standard_agent progression")
+                      "§2.16.1 must show basic_agent �?standard_agent progression")
         self.assertIn("standard_agent→advanced_agent", collapsed,
-                      "§2.16.1 must show standard_agent → advanced_agent progression")
+                      "§2.16.1 must show standard_agent �?advanced_agent progression")
         self.assertIn("advanced_agent→expert_agent", collapsed,
-                      "§2.16.1 must show advanced_agent → expert_agent progression")
+                      "§2.16.1 must show advanced_agent �?expert_agent progression")
         self.assertIn("request_user_decision", section)
         self.assertTrue(
             "No skip" in section or "no skip" in section.lower()
@@ -7586,7 +7586,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_tc1313a_expert_returns_request_user_decision(self) -> None:
-        """§2.16.1/§2.16.9 must state expert → request_user_decision."""
+        """§2.16.1/§2.16.9 must state expert �?request_user_decision."""
         section = self._tc1313a_section()
         self.assertIn("request_user_decision", section)
         self.assertIn("None", section)  # next_worker_kind is None
@@ -7704,7 +7704,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_tc1313a_interface_20_through_25_still_target(self) -> None:
-        """Interfaces #20, #22–25 must remain Target; #21 is Current."""
+        """Interfaces #20, #22�?5 must remain Target; #21 is Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         for n in ("20", "22", "23", "24", "25"):
@@ -7733,7 +7733,7 @@ class ReleaseSmokeTests(unittest.TestCase):
     # -- 13: escalation_service.py must NOT exist --
 
     def test_tc1313b_production_module_exists(self) -> None:
-        """escalation_service.py must now exist — TC-13.13b completed."""
+        """escalation_service.py must now exist �?TC-13.13b completed."""
         self.assertTrue(
             (SKILL_ROOT / "scripts" / "escalation_service.py").is_file(),
             "escalation_service.py must exist after TC-13.13b",
@@ -7758,7 +7758,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("TC-13.13b", ids_seen,
                       "§5 must contain TC-13.13b row")
         self.assertNotIn("TC-13.13", ids_seen,
-                         "§5 must NOT contain bare TC-13.13 row — split into a/b")
+                         "§5 must NOT contain bare TC-13.13 row �?split into a/b")
 
     def test_tc1313a_depends_only_on_tc134(self) -> None:
         """§2.16.14: TC-13.13a depends only on TC-13.4."""
@@ -7801,11 +7801,11 @@ class ReleaseSmokeTests(unittest.TestCase):
                       "§2.16.5 must state no custom exception classes")
 
 
-# ── TC-13.17b.2 — Contract freeze tests ────────────────────────────────────
+# ── TC-13.17b.2 �?Contract freeze tests ────────────────────────────────────
 
 
 class TC1317b2ContractFreezeTests(unittest.TestCase):
-    """TC-13.17b.2 — StateProvider contract ↔ production freeze verification.
+    """TC-13.17b.2 �?StateProvider contract �?production freeze verification.
 
     Imports the production module directly and asserts that the contract
     document matches the running code exactly.
@@ -7871,7 +7871,7 @@ class TC1317b2ContractFreezeTests(unittest.TestCase):
         for cls_name, count in self._dc_map.items():
             heading = f"Exact Fields ({count})"
             # Find the section for this dataclass
-            # The heading is like "### 9.2 `TaskEntry` — Exact Fields (24)"
+            # The heading is like "### 9.2 `TaskEntry` �?Exact Fields (24)"
             found = False
             for line in contract.splitlines():
                 if f"`{cls_name}`" in line and f"({count})" in line:
@@ -7995,9 +7995,9 @@ class TC1317b2ContractFreezeTests(unittest.TestCase):
 
 
 class TC1316aContractFreezeTests(unittest.TestCase):
-    """TC-13.16a — MadAuditGateway contract freeze smoke tests.
+    """TC-13.16a �?MadAuditGateway contract freeze smoke tests.
 
-    Covers: TC-13.16a smoke class — Current/Target consistency
+    Covers: TC-13.16a smoke class �?Current/Target consistency
     agent-source-is-config-only, precise argv and cwd, 11-key output,
     typed issue/evidence/plan, purpose="audit", Gateway zero-state-write,
     no stale docs, no production module.
@@ -8032,7 +8032,7 @@ class TC1316aContractFreezeTests(unittest.TestCase):
 
     def test_mad_audit_result_v1_is_current_in_adr(self) -> None:
         """§2.1: `mad.audit-result/v1` heading must be Current."""
-        self.assertIn("**`mad.audit-result/v1` (Current — TC-13.15)**",
+        self.assertIn("**`mad.audit-result/v1` (Current �?TC-13.15)**",
                       self.adr_text,
                       "ADR: mad.audit-result/v1 heading must be Current")
 
@@ -8060,7 +8060,7 @@ class TC1316aContractFreezeTests(unittest.TestCase):
                          "CLI contract: mad audit must not be in §3 Target Interfaces")
 
     def test_mad_auditgateway_remains_target_in_adr_table(self) -> None:
-        """Interface #20 MadAuditGateway must be Current — TC-13.16b (contract was TC-13.16a)."""
+        """Interface #20 MadAuditGateway must be Current �?TC-13.16b (contract was TC-13.16a)."""
         self.assertIn("| 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b",
                       self.adr_text,
                       "ADR: row 20 (MadAuditGateway) must now be Current")
@@ -8072,7 +8072,7 @@ class TC1316aContractFreezeTests(unittest.TestCase):
 
     def test_section_217_frozen_contract_exists(self) -> None:
         """§2.17 MadAuditGateway Frozen Contract must exist."""
-        self.assertIn("### 2.17 MadAuditGateway — Frozen Contract",
+        self.assertIn("### 2.17 MadAuditGateway �?Frozen Contract",
                       self.adr_text,
                       "ADR: §2.17 MadAuditGateway Frozen Contract must exist")
 
@@ -8292,14 +8292,14 @@ class TC1316aContractFreezeTests(unittest.TestCase):
                         "test_mad_audit_gateway.py must exist")
 
     def test_section_217_status_states_current(self) -> None:
-        """§2.17.14 must state §2.17 is Current — TC-13.16b."""
+        """§2.17.14 must state §2.17 is Current �?TC-13.16b."""
         self.assertIn("* This section (§2.17) is **Current**",
                       self.adr_text,
                       "ADR §2.17.14: must state §2.17 is Current")
 
 
 class TC1316bProductionSmokeTests(unittest.TestCase):
-    """TC-13.16b — production smoke tests for MadAuditGateway."""
+    """TC-13.16b �?production smoke tests for MadAuditGateway."""
 
     def setUp(self) -> None:
         self.scripts = (
@@ -8408,15 +8408,15 @@ class TC1316bProductionSmokeTests(unittest.TestCase):
         self.assertIn(
             "| 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b",
             self.adr_text,
-            "ADR: Interface #20 must be Current — TC-13.16b"
+            "ADR: Interface #20 must be Current �?TC-13.16b"
         )
 
     def test_section_217_status_is_current(self) -> None:
-        """§2.17 heading must show Current — TC-13.16b."""
+        """§2.17 heading must show Current �?TC-13.16b."""
         self.assertIn(
-            "### 2.17 MadAuditGateway — Frozen Contract (Current — TC-13.16b)",
+            "### 2.17 MadAuditGateway �?Frozen Contract (Current �?TC-13.16b)",
             self.adr_text,
-            "ADR: §2.17 must be Current — TC-13.16b"
+            "ADR: §2.17 must be Current �?TC-13.16b"
         )
 
     def test_section_217_status_line_states_current(self) -> None:
@@ -8472,9 +8472,9 @@ class TC1316bProductionSmokeTests(unittest.TestCase):
 
 
 class TC1317aContractFreezeTests(unittest.TestCase):
-    """TC-13.17a — StateProvider read-only contract freeze smoke tests.
+    """TC-13.17a �?StateProvider read-only contract freeze smoke tests.
 
-    Covers: TC-13.17a smoke class — Target contract only, no production
+    Covers: TC-13.17a smoke class �?Target contract only, no production
     module; ADR §2.18 exists; public-interface contract doc exists;
     exception hierarchy declared; field counts; excluson boundaries;
     frozen/slots mandate; tuple-only collections; error message safety;
@@ -8530,16 +8530,16 @@ class TC1317aContractFreezeTests(unittest.TestCase):
     # -- 2. Interface #21 remains Target --
 
     def test_interface_21_is_current(self) -> None:
-        """Interface #21 (StateProvider) must be Current — TC-13.17b complete."""
+        """Interface #21 (StateProvider) must be Current �?TC-13.17b complete."""
         self.assertIn(
             "| 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b",
             self.adr_text,
-            "ADR: Interface #21 must be Current — TC-13.17b complete",
+            "ADR: Interface #21 must be Current �?TC-13.17b complete",
         )
         self.assertNotIn(
             "| 21 | AgentDesk StateProvider (read-only) | **Target**",
             self.adr_text,
-            "ADR: Interface #21 must NOT be Target — TC-13.17b complete",
+            "ADR: Interface #21 must NOT be Target �?TC-13.17b complete",
         )
 
     def test_tc1317b_complete_in_adr(self) -> None:
@@ -8649,9 +8649,9 @@ class TC1317aContractFreezeTests(unittest.TestCase):
         )
 
     def test_no_permission_denied_error(self) -> None:
-        """No PermissionDeniedError — no real permissions system exists."""
+        """No PermissionDeniedError �?no real permissions system exists."""
         # The contract names PermissionDeniedError in an explanatory note
-        # ("No `PermissionDeniedError`") — verify the exception hierarchy
+        # ("No `PermissionDeniedError`") �?verify the exception hierarchy
         # diagram does not list it as an actual leaf type.
         hierarchy_section = None
         for heading in ("## 11. Exception Hierarchy", "## 11."):
@@ -8670,7 +8670,7 @@ class TC1317aContractFreezeTests(unittest.TestCase):
         tree_lines = [
             l for l in lines
             if ("PermissionDeniedError" in l
-                and any(c in l for c in ("├", "└", "──")))
+                and any(c in l for c in ("�?, "�?, "──")))
         ]
         self.assertEqual(
             [], tree_lines,
@@ -8688,7 +8688,7 @@ class TC1317aContractFreezeTests(unittest.TestCase):
         )
 
     def test_tuple_collections_only(self) -> None:
-        """All collections must be tuple — no public dict/list/set."""
+        """All collections must be tuple �?no public dict/list/set."""
         self.assertTrue(
             "tuple" in self.contract_text.lower(),
             "Contract must mandate tuple collections",
@@ -8780,7 +8780,7 @@ class TC1317aContractFreezeTests(unittest.TestCase):
         )
         self.assertTrue(
             (scripts / "state_provider.py").is_file(),
-            "state_provider.py must exist — TC-13.17b complete",
+            "state_provider.py must exist �?TC-13.17b complete",
         )
 
     # -- 12. No stale docs --
@@ -8790,7 +8790,7 @@ class TC1317aContractFreezeTests(unittest.TestCase):
         self.assertNotIn(
             "| 21 | AgentDesk StateProvider (read-only) | **Target**",
             self.adr_text,
-            "ADR: Interface #21 must not claim Target — TC-13.17b complete",
+            "ADR: Interface #21 must not claim Target �?TC-13.17b complete",
         )
 
     def test_tc1317a_is_not_tc1317b(self) -> None:
@@ -8820,7 +8820,7 @@ class TC1317aContractFreezeTests(unittest.TestCase):
 
 
 class TC1318bProductionSmokeTests(unittest.TestCase):
-    """TC-13.18b — WorkflowOrchestrator production smoke.
+    """TC-13.18b �?WorkflowOrchestrator production smoke.
 
     Covers: Interface #22 remains Target; ADR §2.19 exists;
     public-interface contract doc exists + updated to Current;
@@ -8884,11 +8884,11 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
     # ── 2. Interface #22 remains Target ──────────────────────────────────
 
     def test_interface_22_is_target(self) -> None:
-        """Interface #22 must remain Target — TC-13.18."""
+        """Interface #22 must remain Target �?TC-13.18."""
         self.assertIn(
             "| 22 | AgentDesk WorkflowOrchestrator | **Target** | TC-13.18",
             self.adr_text,
-            "ADR: Interface #22 must remain Target — TC-13.18",
+            "ADR: Interface #22 must remain Target �?TC-13.18",
         )
 
     def test_interface_22_not_current(self) -> None:
@@ -8902,21 +8902,21 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
     # ── 3. Production module present ─────────────────────────────────────
 
     def test_workflow_orchestrator_py_exists(self) -> None:
-        """workflow_orchestrator.py must exist — TC-13.18b implemented."""
+        """workflow_orchestrator.py must exist �?TC-13.18b implemented."""
         self.assertTrue(
             (self.scripts_dir / "workflow_orchestrator.py").is_file(),
-            "workflow_orchestrator.py must exist — TC-13.18b is implemented",
+            "workflow_orchestrator.py must exist �?TC-13.18b is implemented",
         )
 
     def test_test_workflow_orchestrator_py_exists(self) -> None:
-        """test_workflow_orchestrator.py must exist — TC-13.18b implemented."""
+        """test_workflow_orchestrator.py must exist �?TC-13.18b implemented."""
         tests_dir = Path(__file__).resolve().parent
         self.assertTrue(
             (tests_dir / "test_workflow_orchestrator.py").is_file(),
-            "test_workflow_orchestrator.py must exist — TC-13.18b is implemented",
+            "test_workflow_orchestrator.py must exist �?TC-13.18b is implemented",
         )
 
-    # ── 4. Ownership boundary — no direct fence/state-lock/ApprovalGate ──
+    # ── 4. Ownership boundary �?no direct fence/state-lock/ApprovalGate ──
 
     def test_contract_forbids_direct_hold_worker_slot_fence(self) -> None:
         """Contract must forbid direct hold_worker_slot_fence() call."""
@@ -8978,7 +8978,7 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
             "Contract: must forbid guessing commits from opaque stdout",
         )
 
-    # ── 6. ACK semantics — excluded from automated cycle ─────────────────
+    # ── 6. ACK semantics �?excluded from automated cycle ─────────────────
 
     def test_contract_excludes_ack_from_automated_cycle(self) -> None:
         """Contract must exclude DISPATCH_ACKNOWLEDGED from v1 automated cycle."""
@@ -9178,7 +9178,7 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
             )
 
     def test_blocker_cancelled_not_missed(self) -> None:
-        """BLOCKER_CANCELLED must be present — not 14 transitions."""
+        """BLOCKER_CANCELLED must be present �?not 14 transitions."""
         self.assertIn(
             "BLOCKER_CANCELLED",
             self.contract_text,
@@ -9204,3 +9204,362 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
             section,
             "ADR §2.19.11 must reference TC-13.18a",
         )
+
+
+class TC139c1ProductionSmokeTests(unittest.TestCase):
+    """TC-13.9c.1 �?Claude 2.1.214 WorkerOutput decoder smoke.
+
+    Covers: ADR Interface #33 exists + Current; ADR §2.20 exists;
+    public-interface contract doc exists; production module present;
+    test module present; exactly 12 public API symbols; WorkerOutput 9
+    fields; DeliveryReceipt 6 fields; WorkerCompletionStatus 3 members;
+    exception hierarchy 7 types; encode/decode round-trip;
+    provider/version gate; decode of real fixtures fail-closed;
+    decode of synthetic envelope succeeds.
+    """
+
+    def setUp(self) -> None:
+        self.adr_path = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        )
+        self.contract_path = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "worker-output-contract.md"
+        )
+        self.adr_text = self.adr_path.read_text(encoding="utf-8")
+        self.contract_text = self.contract_path.read_text(encoding="utf-8")
+        self.scripts_dir = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "agentdesk" / "scripts"
+        )
+
+    # ── 1. Contract file & ADR §2.20 existence ──────────────────────────
+
+    def test_contract_file_exists(self) -> None:
+        """worker-output-contract.md must exist."""
+        self.assertTrue(
+            self.contract_path.is_file(),
+            "worker-output-contract.md must exist as a regular file",
+        )
+
+    def test_adr_section_220_exists(self) -> None:
+        """ADR §2.20 WorkerOutput Decoder Frozen Contract must exist."""
+        self.assertIn(
+            "#### 2.20 WorkerOutput Decoder",
+            self.adr_text,
+            "ADR: §2.20 WorkerOutput Decoder Frozen Contract must exist",
+        )
+
+    def test_adr_section_220_references_contract_file(self) -> None:
+        """§2.20 must reference worker-output-contract.md."""
+        section = _extract_markdown_section(
+            self.adr_text, "#### 2.20 WorkerOutput Decoder"
+        )
+        self.assertIsNotNone(section, "ADR must contain §2.20")
+        self.assertIn(
+            "worker-output-contract.md",
+            section,
+            "ADR §2.20 must reference worker-output-contract.md",
+        )
+
+    # ── 2. Interface #33 is Current ──────────────────────────────────────
+
+    def test_interface_33_is_current(self) -> None:
+        """Interface #33 must be Current �?TC-13.9c.1."""
+        self.assertIn(
+            "| 33 | AgentDesk WorkerOutput Decoder",
+            self.adr_text,
+            "ADR: Interface #33 must exist",
+        )
+        # Must contain Current marker
+        self.assertIn(
+            "WorkerOutput Decoder �?Claude 2.1.214 | **Current**",
+            self.adr_text,
+            "ADR: Interface #33 must be Current",
+        )
+
+    # ── 3. Production module present ─────────────────────────────────────
+
+    def test_worker_output_decoder_py_exists(self) -> None:
+        """worker_output_decoder.py must exist."""
+        self.assertTrue(
+            (self.scripts_dir / "worker_output_decoder.py").is_file(),
+            "worker_output_decoder.py must exist",
+        )
+
+    def test_test_worker_output_decoder_py_exists(self) -> None:
+        """test_worker_output_decoder.py must exist."""
+        tests_dir = Path(__file__).resolve().parent
+        self.assertTrue(
+            (tests_dir / "test_worker_output_decoder.py").is_file(),
+            "test_worker_output_decoder.py must exist",
+        )
+
+    # ── 4. Public API counts ─────────────────────────────────────────────
+
+    def test_exactly_12_public_symbols(self) -> None:
+        """Production module must export exactly 12 symbols."""
+        import sys as _sys
+        _sys.path.insert(0, str(self.scripts_dir))
+        try:
+            import worker_output_decoder as w
+        finally:
+            _sys.path.pop(0)
+        self.assertEqual(
+            len(w.__all__), 12,
+            f"Expected 12 public symbols, got {len(w.__all__)}",
+        )
+
+    def test_worker_output_9_fields(self) -> None:
+        """WorkerOutput must have exactly 9 fields."""
+        import sys as _sys
+        _sys.path.insert(0, str(self.scripts_dir))
+        try:
+            from worker_output_decoder import WorkerOutput
+            import dataclasses
+        finally:
+            _sys.path.pop(0)
+        self.assertEqual(
+            len(dataclasses.fields(WorkerOutput)), 9,
+            "WorkerOutput must have exactly 9 fields",
+        )
+
+    def test_delivery_receipt_6_fields(self) -> None:
+        """DeliveryReceipt must have exactly 6 fields."""
+        import sys as _sys
+        _sys.path.insert(0, str(self.scripts_dir))
+        try:
+            from worker_output_decoder import DeliveryReceipt
+            import dataclasses
+        finally:
+            _sys.path.pop(0)
+        self.assertEqual(
+            len(dataclasses.fields(DeliveryReceipt)), 6,
+            "DeliveryReceipt must have exactly 6 fields",
+        )
+
+    def test_worker_completion_status_3_members(self) -> None:
+        """WorkerCompletionStatus must have exactly 3 members."""
+        import sys as _sys
+        _sys.path.insert(0, str(self.scripts_dir))
+        try:
+            from worker_output_decoder import WorkerCompletionStatus
+        finally:
+            _sys.path.pop(0)
+        self.assertEqual(
+            len(WorkerCompletionStatus), 3,
+            "WorkerCompletionStatus must have exactly 3 members",
+        )
+
+    # ── 5. Exception hierarchy ───────────────────────────────────────────
+
+    def test_exception_hierarchy_7_types(self) -> None:
+        """7 exception types must exist with correct hierarchy."""
+        import sys as _sys
+        _sys.path.insert(0, str(self.scripts_dir))
+        try:
+            from worker_output_decoder import (
+                WorkerOutputError,
+                WorkerOutputUnsupportedProviderError,
+                WorkerOutputUnsupportedVersionError,
+                WorkerOutputIntegrityError,
+                WorkerOutputDecodeError,
+                WorkerOutputSchemaError,
+                WorkerOutputIdentityError,
+            )
+        finally:
+            _sys.path.pop(0)
+        self.assertTrue(issubclass(WorkerOutputUnsupportedProviderError, WorkerOutputError))
+        self.assertTrue(issubclass(WorkerOutputUnsupportedVersionError, WorkerOutputError))
+        self.assertTrue(issubclass(WorkerOutputIntegrityError, WorkerOutputError))
+        self.assertTrue(issubclass(WorkerOutputDecodeError, WorkerOutputError))
+        self.assertTrue(issubclass(WorkerOutputSchemaError, WorkerOutputError))
+        self.assertTrue(issubclass(WorkerOutputIdentityError, WorkerOutputError))
+
+    # ── 6. Round-trip: synthetic envelope decode �?delivery receipt ──────
+
+    def test_roundtrip_completed_to_delivery_receipt(self) -> None:
+        """Completed synthetic envelope must decode and produce DeliveryReceipt."""
+        import sys as _sys
+        _sys.path.insert(0, str(self.scripts_dir))
+        try:
+            import json
+            import hashlib
+            from worker_output_decoder import (
+                decode_worker_result,
+                require_delivery_receipt,
+            )
+            from dispatcher_gateway import DispatchIdentity, DispatchResult
+            from worker_adapter import WorkerResult
+            from core_types import TaskDifficulty, WorkerKind
+            from context_budget import BudgetResult
+        finally:
+            _sys.path.pop(0)
+
+        # Build valid envelope
+        envelope = json.dumps({
+            "schema_version": "agentdesk.worker-output/v1",
+            "task_id": "TC-SMOKE",
+            "revision": 1,
+            "attempt": 1,
+            "dispatch_id": "DSP-SMOKE",
+            "status": "completed",
+            "implementation_commit": "a" * 40,
+            "report_commit": "b" * 40,
+            "summary": "smoke test round-trip",
+            "warnings": [],
+        }, ensure_ascii=False)
+
+        wrapper = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "api_error_status": None,
+            "duration_ms": 5000,
+            "duration_api_ms": 5773,
+            "ttft_ms": 4952,
+            "ttft_stream_ms": 553,
+            "time_to_request_ms": 270,
+            "num_turns": 1,
+            "result": envelope,
+            "stop_reason": "end_turn",
+            "session_id": "smoke-session",
+            "total_cost_usd": None,
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+            "modelUsage": {"m": {"inputTokens": 100, "outputTokens": 50}},
+            "permission_denials": [],
+            "terminal_reason": "completed",
+            "fast_mode_state": "off",
+            "uuid": "smoke-uuid",
+        }
+
+        stdout = json.dumps(wrapper, ensure_ascii=False).encode("utf-8")
+        identity = DispatchIdentity(
+            task_id="TC-SMOKE", revision=1, attempt=1, dispatch_id="DSP-SMOKE"
+        )
+        dispatch_result = DispatchResult(
+            identity=identity,
+            provider="claude",
+            model_id="claude-sonnet-4-5",
+            duration_seconds=5.0,
+            stdout=stdout,
+            stderr=b"",
+            stdout_sha256=hashlib.sha256(stdout).hexdigest(),
+            stderr_sha256=hashlib.sha256(b"").hexdigest(),
+        )
+        result = WorkerResult(
+            worker_kind=WorkerKind.STANDARD_AGENT,
+            task_difficulty=TaskDifficulty.STANDARD,
+            budget=BudgetResult(200000, TaskDifficulty.STANDARD, 35, 128000, 70000, 130000),
+            dispatch_result=dispatch_result,
+        )
+
+        output = decode_worker_result(result, "2.1.214")
+        self.assertEqual(output.status.value, "completed")
+        self.assertEqual(output.implementation_commit, "a" * 40)
+
+        receipt = require_delivery_receipt(output)
+        self.assertEqual(receipt.provider, "claude")
+        self.assertEqual(receipt.implementation_commit, "a" * 40)
+        self.assertEqual(receipt.report_commit, "b" * 40)
+
+    # ── 7. Provider / version gate ───────────────────────────────────────
+
+    def test_codex_raises_typed_error(self) -> None:
+        """Codex provider must raise WorkerOutputUnsupportedProviderError."""
+        import sys as _sys
+        _sys.path.insert(0, str(self.scripts_dir))
+        try:
+            import json
+            from worker_output_decoder import (
+                decode_worker_result,
+                WorkerOutputUnsupportedProviderError,
+            )
+            from dispatcher_gateway import DispatchIdentity, DispatchResult
+            from worker_adapter import WorkerResult
+            from core_types import TaskDifficulty, WorkerKind
+            from context_budget import BudgetResult
+        finally:
+            _sys.path.pop(0)
+
+        stdout = b"{}"
+        identity = DispatchIdentity(
+            task_id="TC-001", revision=1, attempt=1, dispatch_id="DSP-001"
+        )
+        dispatch_result = DispatchResult(
+            identity=identity,
+            provider="codex",
+            model_id="gpt-5",
+            duration_seconds=1.0,
+            stdout=stdout,
+            stderr=b"",
+            stdout_sha256="44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            stderr_sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )
+        result = WorkerResult(
+            worker_kind=WorkerKind.STANDARD_AGENT,
+            task_difficulty=TaskDifficulty.STANDARD,
+            budget=BudgetResult(200000, TaskDifficulty.STANDARD, 35, 128000, 70000, 130000),
+            dispatch_result=dispatch_result,
+        )
+        with self.assertRaises(WorkerOutputUnsupportedProviderError):
+            decode_worker_result(result, "2.1.214")
+
+    # ── 8. Real fixture decode fail-closed ──────────────────────────────
+
+    def test_real_fixture_decode_fail_closed(self) -> None:
+        """All 3 real Claude 2.1.214 fixtures must fail full decode."""
+        import sys as _sys
+        _sys.path.insert(0, str(self.scripts_dir))
+        try:
+            import json
+            import hashlib
+            from worker_output_decoder import (
+                decode_worker_result,
+                WorkerOutputDecodeError,
+                WorkerOutputSchemaError,
+            )
+            from dispatcher_gateway import DispatchIdentity, DispatchResult
+            from worker_adapter import WorkerResult
+            from core_types import TaskDifficulty, WorkerKind
+            from context_budget import BudgetResult
+        finally:
+            _sys.path.pop(0)
+
+        fixture_dir = (
+            Path(__file__).resolve().parents[1]
+            / "tests" / "fixtures" / "provider-output" / "claude" / "2.1.214"
+        )
+        for name in ("success-minimal", "success-unicode", "application-boundary"):
+            obj = json.loads(
+                (fixture_dir / f"{name}.json").read_text(encoding="utf-8")
+            )
+            stdout = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            identity = DispatchIdentity(
+                task_id="TC-001", revision=1, attempt=1, dispatch_id="DSP-001"
+            )
+            dispatch_result = DispatchResult(
+                identity=identity,
+                provider="claude",
+                model_id="claude-sonnet-4-5",
+                duration_seconds=5.0,
+                stdout=stdout,
+                stderr=b"",
+                stdout_sha256=hashlib.sha256(stdout).hexdigest(),
+                stderr_sha256=hashlib.sha256(b"").hexdigest(),
+            )
+            result = WorkerResult(
+                worker_kind=WorkerKind.STANDARD_AGENT,
+                task_difficulty=TaskDifficulty.STANDARD,
+                budget=BudgetResult(200000, TaskDifficulty.STANDARD, 35, 128000, 70000, 130000),
+                dispatch_result=dispatch_result,
+            )
+            with self.subTest(fixture=name):
+                try:
+                    decode_worker_result(result, "2.1.214")
+                    self.fail(f"{name}: should have failed decode")
+                except (WorkerOutputDecodeError, WorkerOutputSchemaError):
+                    pass  # Expected

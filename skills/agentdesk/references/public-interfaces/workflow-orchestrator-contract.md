@@ -100,13 +100,18 @@ WorkflowOrchestrator alone is responsible for:
 
 `WorkerResult.dispatch_result.stdout` and `.stderr` are opaque `bytes`.
 
+TC-13.9c.1 (Claude 2.1.214 decoder) is now **Current**.  The
+WorkflowOrchestrator must delegate output decoding to
+``decode_worker_result()`` and ``require_delivery_receipt()`` from
+``worker_output_decoder``.
+
 **The WorkflowOrchestrator must never:**
 
 | Forbidden action | Correct delegation |
 |-----------------|-------------------|
-| Parse Claude JSON or Codex JSONL | → TC-13.9c (future) |
-| Guess `implementation_commit` from stdout | → Caller supplies from out-of-band evidence |
-| Guess `report_commit` from stdout | → Caller supplies from out-of-band evidence |
+| Parse Claude JSON or Codex JSONL | → `worker_output_decoder.decode_worker_result()` |
+| Guess `implementation_commit` from stdout | → `WorkerOutput.implementation_commit` |
+| Guess `report_commit` from stdout | → `WorkerOutput.report_commit` |
 | Decode bytes to text and extract report content | → TC-13.9c |
 | Use current Git HEAD as Worker commit | → Not a valid substitute |
 | Silently decode with fallback character sets | → Fail-closed |
@@ -115,11 +120,11 @@ WorkflowOrchestrator alone is responsible for:
 
 - The orchestrator **can** complete: scheduling, lease acquisition, Worker
   execution, and result return.
-- The orchestrator **cannot** automatically complete `DELIVERY_SUBMITTED`
-  until TC-13.9c delivers typed, trustable `WorkerOutput` / `DeliveryReceipt`.
-- The caller must supply `implementation_commit` and `report_commit` from
-  out-of-band evidence when TC-13.9c is pending.
-- This dependency is **hard**: any path that claims `DELIVERY_SUBMITTED`
+- The orchestrator **can** complete ``DELIVERY_SUBMITTED`` via
+  ``decode_worker_result()`` → ``require_delivery_receipt()`` for
+  Claude/claudecode 2.1.214.
+- Codex deliveries remain blocked until TC-13.9c.2.
+- This dependency is **hard**: any path that claims ``DELIVERY_SUBMITTED``
   completion without TC-13.9c must document exactly which mechanism supplies
   the two commit SHAs.
 

@@ -1,4 +1,4 @@
-# ADR 001 — MAD × AgentDesk Integration Contract
+# ADR 001 鈥?MAD 脳 AgentDesk Integration Contract
 
 ## Status
 
@@ -12,7 +12,7 @@ marked **Current** exist and are callable today; interfaces marked
 | # | Interface | Status | Implemented by | Notes |
 |---|-----------|--------|----------------|-------|
 | 1 | `mad agents` (TSV) | **Current** | N/A (MVP) | Tab-separated `id name adapter enabled` to stdout |
-| 2 | `mad agents --format json` | **Target** | TC-13.2 | `mad.agents/v1` — root object with `schema_version` + `agents` array |
+| 2 | `mad agents --format json` | **Target** | TC-13.2 | `mad.agents/v1` 鈥?root object with `schema_version` + `agents` array |
 | 3 | `mad deliberate --format json` | **Current** | N/A (MVP) | `RunResult.to_dict()` to stdout; no public `schema_version` |
 | 4 | `mad.run-result/v1` schema | **Target** | TC-13.2 | Add `schema_version` only; keep all existing field shapes |
 | 5 | `mad audit` sub-command | **Current** | TC-13.15 | `mad.audit-result/v1`; structured audit of a delivery |
@@ -22,31 +22,32 @@ marked **Current** exist and are callable today; interfaces marked
 | 9 | AgentDesk `model-bindings/v2` | **Current** | TC-13.3 | Per-binding: `provider`, `model_id`, `tier`, `deliberation_tier`, `context_window_tokens`, `capabilities`, `enabled` |
 | 10 | AgentDesk PM lease | **Current** | N/A (existing) | `agentdesk.pm-lease/v1` in `.agentdesk/runtime/` |
 | 11 | AgentDesk event / outbox | **Current** | N/A (existing) | `agentdesk.state-event/v2`, `agentdesk.outbox-message/v2` |
-| 12 | AgentDesk double-commit protocol | **Current** | N/A (existing) | `implementation_commit` → `report_commit` |
+| 12 | AgentDesk double-commit protocol | **Current** | N/A (existing) | `implementation_commit` 鈫?`report_commit` |
 | 13 | AgentDesk MAD Decision Gateway | **Current** | TC-13.6 | Config-driven subprocess invocation of `mad` for planning/deliberation |
-| 14 | AgentDesk WorkerAdapter — four-tier Worker execution orchestration | **Current** | TC-13.9b | Basic/Standard/Advanced/Expert; WorkerKind + TaskDifficulty as independent inputs; provider/model from bindings only; budget computed, not enforced; concurrency slots deferred to TC-13.10 |
-| 15 | AgentDesk WorkerSlotLease | **Current** | TC-13.10c | `agentdesk.worker-slot-lease/v1`; frozen contract §2.5; implemented by TC-13.10a (frozen contract), TC-13.10b (data model, store, atomic I/O), TC-13.10c (acquire/release/renew/hold fence) |
+| 14 | AgentDesk WorkerAdapter 鈥?four-tier Worker execution orchestration | **Current** | TC-13.9b | Basic/Standard/Advanced/Expert; WorkerKind + TaskDifficulty as independent inputs; provider/model from bindings only; budget computed, not enforced; concurrency slots deferred to TC-13.10 |
+| 15 | AgentDesk WorkerSlotLease | **Current** | TC-13.10c | `agentdesk.worker-slot-lease/v1`; frozen contract 搂2.5; implemented by TC-13.10a (frozen contract), TC-13.10b (data model, store, atomic I/O), TC-13.10c (acquire/release/renew/hold fence) |
 | 16 | AgentDesk ControlPlaneTransitionService | **Current** | TC-13.11c | CAS-write tasks, immutable events, replayable outbox |
 | 17 | AgentDesk ApprovalGate | **Current** | TC-13.12d | TASK_APPROVAL with structured scope (dispatch/accept/integrate); runtime gate + ControlPlaneTransitionService integration + offline validator implemented |
-| 18 | AgentDesk EscalationService | **Current** | TC-13.13b | Pure WorkerKind tier progression; frozen contract §2.16; production module and full test suite committed |
+| 18 | AgentDesk EscalationService | **Current** | TC-13.13b | Pure WorkerKind tier progression; frozen contract 搂2.16; production module and full test suite committed |
 | 19 | AgentDesk RateLimit service | **Target** | TC-13.14 | Provider rate-limit handling independent of escalation |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
 | 22 | AgentDesk WorkflowOrchestrator | **Target** | TC-13.18 | Central scheduler integrating all services (dispatch cycle: Current as of TC-13.18b) |
 | 23 | E2E / Recovery tests | **Target** | TC-13.19 | End-to-end validation and recovery scenarios |
 | 24 | AgentDesk HTML Dashboard | **Target** | TC-13.20 | Read-only dashboard via StateProvider |
-| 25 | ADR status update (Target → Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
+| 25 | ADR status update (Target 鈫?Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
 | 26 | `agentdesk.mad-refs/v1` runtime schema | **Current** | TC-13.6 | Gitignored runtime record of MAD invocations |
 | 27 | AgentDesk shared core data types | **Current** | TC-13.4 | `TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind` enums; no budget calculation or WorkerAdapter implementation |
-| 28 | AgentDesk ContextBudgetPolicy | **Current** | TC-13.5.1 | Per-tier budget: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; min(floor %, cap); six-field BudgetResult; retains ≥35% reserved; depends on TC-13.4 |
-| 29 | AgentDesk DispatcherAgentGateway | **Current** | TC-13.7 | Frozen contract (§2.10); execution-only single-shot agent CLI boundary; depends on TC-13.4, TC-13.6 |
+| 28 | AgentDesk ContextBudgetPolicy | **Current** | TC-13.5.1 | Per-tier budget: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; min(floor %, cap); six-field BudgetResult; retains 鈮?5% reserved; depends on TC-13.4 |
+| 29 | AgentDesk DispatcherAgentGateway | **Current** | TC-13.7 | Frozen contract (搂2.10); execution-only single-shot agent CLI boundary; depends on TC-13.4, TC-13.6 |
 | 30 | Claude Code CLI contract | **Current** | TC-13.8 | Public CLI interface contract for `claude` invocation; depends on TC-13.4 |
-| 31 | AgentDesk Codex CLI Provider | **Current** | TC-13.8.4 | Frozen contract §2.12 established by TC-13.8.3; production module implemented by TC-13.8.4 |
-| 32 | AgentDesk WorkerAdapter Core — Frozen Contract | **Current** | TC-13.9b | §2.13; run_worker(request, worker_kind, task_difficulty, providers) → WorkerResult; budget informational only; output remains opaque bytes; no retry/slot/lease/state writes |
+| 31 | AgentDesk Codex CLI Provider | **Current** | TC-13.8.4 | Frozen contract 搂2.12 established by TC-13.8.3; production module implemented by TC-13.8.4 |
+| 32 | AgentDesk WorkerAdapter Core 鈥?Frozen Contract | **Current** | TC-13.9b | 搂2.13; run_worker(request, worker_kind, task_difficulty, providers) 鈫?WorkerResult; budget informational only; output remains opaque bytes; no retry/slot/lease/state writes |
+| 33 | AgentDesk WorkerOutput Decoder — Claude 2.1.214 | **Current** | TC-13.9c.1 | §2.20; version-locked, fail-closed; decode_worker_result(WorkerResult, version) → WorkerOutput; require_delivery_receipt(WorkerOutput) → DeliveryReceipt; claude + claudecode only; codex unsupported |
 
 ---
 
-## 1. Current — What Exists Today
+## 1. Current 鈥?What Exists Today
 
 ### 1.1 MAD Current Capabilities
 
@@ -56,12 +57,12 @@ marked **Current** exist and are callable today; interfaces marked
   to stdout.  The JSON object contains `deliberation_id`, `status`, `report`,
   `archive_path`, `warnings`, `participants`, `convergence`, and `plan`.
   There is **no `schema_version`** field.
-  - `status` is a Chinese string: `"完成"` or `"带警告完成"`.
+  - `status` is a Chinese string: `"瀹屾垚"` or `"甯﹁鍛婂畬鎴?`.
   - `participants` is a flat `list[str]` of agent IDs.
   - `convergence` and `plan` use their current shapes as produced by the engine.
 - **`mad resume --format json`** prints the same shape as `deliberate`.
 - **`mad audit` sub-command** (`mad.audit-result/v1`) is **Current** as of TC-13.15.
-  See §3.3 of the CLI contract for the full schema.
+  See 搂3.3 of the CLI contract for the full schema.
 - **`MAD_HOME`** is read by `config.app_home()`; when set, it overrides the
   default platform data directory.  This is the mechanism for isolating MAD
   state per project or per Gateway instance.
@@ -75,7 +76,7 @@ marked **Current** exist and are callable today; interfaces marked
 
 | Exit | Meaning |
 |------|---------|
-| `0` | Deliberation completed (including `status: "带警告完成"`) |
+| `0` | Deliberation completed (including `status: "甯﹁鍛婂畬鎴?`) |
 | `1` | Workflow, recovery, or report failure |
 | `2` | Parameter, plan, or configuration error |
 | `3` | Insufficient available participants |
@@ -90,7 +91,7 @@ marked **Current** exist and are callable today; interfaces marked
 | `130` | User cancellation or SIGINT |
 
 `mad resume` does **not** have a dedicated exit code `3` for insufficient
-participants — that is a `mad deliberate` distinction.  Argparse-level
+participants 鈥?that is a `mad deliberate` distinction.  Argparse-level
 parameter errors on `resume` are exit code `2` (Python `argparse` default).
 Uncaught configuration exceptions must not be documented as stable public
 exit semantics.
@@ -106,14 +107,14 @@ exit semantics.
 
 | Exit | Condition |
 |------|-----------|
-| `0` | Audit process completed — `status: "completed"`; `verdict` may be `pass`, `fail`, or `blocked` |
+| `0` | Audit process completed 鈥?`status: "completed"`; `verdict` may be `pass`, `fail`, or `blocked` |
 | `1` | Parse failure, model invocation failure, or evidence verification failure |
 | `2` | Parameter, configuration, or workspace validation failure (caller error) |
 | `3` | Insufficient available participants |
 | `130` | User cancellation or SIGINT |
 
 When exit is 0, `status` is always the string `"completed"`.  When exit is 0,
-`verdict` is one of `"pass"`, `"fail"`, or `"blocked"` — it is a mutually-exclusive
+`verdict` is one of `"pass"`, `"fail"`, or `"blocked"` 鈥?it is a mutually-exclusive
 enum describing the business finding, not the process outcome.
 
 MAD does **not**:
@@ -124,7 +125,7 @@ MAD does **not**:
 
 ### 1.2 AgentDesk Current Capabilities
 
-- **`model-bindings/v2`** maps `binding_id` → `{provider, model_id, tier,
+- **`model-bindings/v2`** maps `binding_id` 鈫?`{provider, model_id, tier,
   deliberation_tier, context_window_tokens, capabilities, enabled}`.  It is gitignored runtime config.
 - **PM lease** (`agentdesk.pm-lease/v1`) records `lease_id`, `holder_id`,
   `holder_instance_id`, `lease_epoch`, `last_snapshot_commit`, `acquired_at`,
@@ -144,19 +145,19 @@ MAD does **not**:
   paths, and transport receipts.
 
 AgentDesk does **not** currently have:
-- `WorkerSlotLease` — no per-slot concurrency fencing.
-- `WorkflowOrchestrator` — dispatch and state transitions are manual PM steps.
-- `MAD Gateway` — no automated MAD subprocess invocation.
-- `ControlPlaneTransitionService` — write logic is distributed across runbook
+- `WorkerSlotLease` 鈥?no per-slot concurrency fencing.
+- `WorkflowOrchestrator` 鈥?dispatch and state transitions are manual PM steps.
+- `MAD Gateway` 鈥?no automated MAD subprocess invocation.
+- `ControlPlaneTransitionService` 鈥?write logic is distributed across runbook
   procedures.
-- `EscalationService` / `RateLimit` as separate services (EscalationService contract frozen in §2.16; production module will be TC-13.13b).
+- `EscalationService` / `RateLimit` as separate services (EscalationService contract frozen in 搂2.16; production module will be TC-13.13b).
 - `TASK_APPROVAL` with structured scope (only `MODEL_DEGRADATION_APPROVED`
   exists for model-tier exceptions).
 - `StateProvider` as an explicit read-only service boundary.
 
 ---
 
-## 2. Target — Integration Design
+## 2. Target 鈥?Integration Design
 
 ### 2.1 MAD Target Interfaces
 
@@ -164,9 +165,9 @@ AgentDesk does **not** currently have:
 |-----------|--------|----------------|-------------|
 | `mad agents --format json` | `mad.agents/v1` | TC-13.2 | Root object with `schema_version` + `agents` array |
 | `mad deliberate --format json` | `mad.run-result/v1` | TC-13.2 | Current output plus `schema_version` at top level; backward-compatible |
-| `mad audit <question> --workspace …` | `mad.audit-result/v1` | TC-13.15 | Structured audit of a delivery workspace |
+| `mad audit <question> --workspace 鈥 | `mad.audit-result/v1` | TC-13.15 | Structured audit of a delivery workspace |
 
-**`mad.agents/v1` (Target — TC-13.2)**:
+**`mad.agents/v1` (Target 鈥?TC-13.2)**:
 
 Uses a root object, not a bare array:
 
@@ -176,7 +177,7 @@ Uses a root object, not a bare array:
   "agents": [
     {
       "id": "pi-deepseek",
-      "name": "Pi · DeepSeek V4 Pro",
+      "name": "Pi 路 DeepSeek V4 Pro",
       "adapter": "pi",
       "model": "deepseek/deepseek-v4-pro",
       "enabled": true,
@@ -194,7 +195,7 @@ Each agent object exposes only these fields:
 |-------|------|-------|
 | `id` | string | Stable unique agent ID |
 | `name` | string | Display name |
-| `adapter` | string | Adapter type (`claude`, `pi`, `codex`, …) |
+| `adapter` | string | Adapter type (`claude`, `pi`, `codex`, 鈥? |
 | `model` | string\|null | Model identifier |
 | `enabled` | boolean | Whether eligible for preflight |
 | `default_report` | boolean | Default report agent (at most one) |
@@ -202,14 +203,14 @@ Each agent object exposes only these fields:
 | `context_budget` | integer | Declared context token budget |
 
 The following AgentProfile fields are **forbidden** in the public output:
-- `executable` — local filesystem path; security boundary.
-- `extra_args` — may contain sensitive or local configuration.
-- `role` — internal prompt modifier, not a public interface field.
+- `executable` 鈥?local filesystem path; security boundary.
+- `extra_args` 鈥?may contain sensitive or local configuration.
+- `role` 鈥?internal prompt modifier, not a public interface field.
 
 The contract must never claim that `mad.agents/v1` outputs all `AgentProfile`
 fields.
 
-**`mad.run-result/v1` (Target — TC-13.2)**:
+**`mad.run-result/v1` (Target 鈥?TC-13.2)**:
 
 Backward-compatible: the only change from Current is the addition of
 `schema_version` at the top level.  All other fields keep their Current
@@ -219,12 +220,12 @@ shapes:
 {
   "schema_version": "mad.run-result/v1",
   "deliberation_id": "<id>",
-  "status": "完成 | 带警告完成",
+  "status": "瀹屾垚 | 甯﹁鍛婂畬鎴?,
   "report": "<full-markdown-report>",
   "archive_path": "<absolute-path>",
   "warnings": ["<warning>"],
   "participants": ["<agent-id>", "..."],
-  "convergence": {"strategy": "auto", "triggered": false, "reason": "...", "marked_participants": 0, "disputes": [], "status": "未触发"},
+  "convergence": {"strategy": "auto", "triggered": false, "reason": "...", "marked_participants": 0, "disputes": [], "status": "鏈Е鍙?},
   "plan": {"participants": [{"id": "...", "name": "...", "adapter": "...", "model": "...", "role": "..."}], "report_agent_id": "...", "organizer_agent_id": null, "source": "manual", "depth": "deep", "critic_agent_id": null}
 }
 ```
@@ -237,7 +238,7 @@ V1 explicitly does **not**:
 If future versions need English status strings or object-typed participants,
 they must use `mad.run-result/v2`.
 
-**`mad.audit-result/v1` (Current — TC-13.15)**:
+**`mad.audit-result/v1` (Current 鈥?TC-13.15)**:
 
 ```bash
 mad audit "<question>" \
@@ -305,7 +306,7 @@ The root object has exactly **11** keys:
 Key semantics:
 
 - `status` (string) describes whether the audit **process** completed.  When
-  exit code is `0`, `status` is fixed to `"completed"` — the audit ran to
+  exit code is `0`, `status` is fixed to `"completed"` 鈥?the audit ran to
   its natural conclusion.  `"failed"` and `"blocked"` are only used when the
   process itself did not complete normally.
 - `verdict` (enum `pass | fail | blocked`) describes the **business
@@ -314,7 +315,7 @@ Key semantics:
   determination due to missing or unreachable evidence.  It is not an
   infrastructure failure.
 - Infrastructure failures (model crash, parse error, evidence verification
-  error) are **not** encoded as verdict values — they are reported via
+  error) are **not** encoded as verdict values 鈥?they are reported via
   non-zero exit codes and `status`.
 - `participants` is `list[str]` (agent IDs), matching the shape in
   `mad.run-result/v1`.  It does not embed stage contribution details in V1.
@@ -324,7 +325,7 @@ Key semantics:
 
 | Exit | Condition |
 |------|-----------|
-| `0` | Audit process completed — `status: "completed"`; `verdict` may be `pass`, `fail`, or `blocked` |
+| `0` | Audit process completed 鈥?`status: "completed"`; `verdict` may be `pass`, `fail`, or `blocked` |
 | `1` | Parse failure, model invocation failure, or evidence verification failure |
 | `2` | Parameter, configuration, or workspace validation failure (caller error) |
 | `3` | Insufficient available participants |
@@ -354,9 +355,9 @@ It must never:
 | `git worktree add --detach <path> <report_commit>` | AgentDesk WorkflowOrchestrator |
 | Validate workspace integrity (7 checks) | MAD `audit` (before any model call) |
 | `git worktree remove <path>` | AgentDesk WorkflowOrchestrator (after audit) |
-| `git worktree prune` | Never automatic — manual PM recovery only |
+| `git worktree prune` | Never automatic 鈥?manual PM recovery only |
 
-**Gateway configuration** (`.agentdesk/runtime/gateway.yaml`, Target —
+**Gateway configuration** (`.agentdesk/runtime/gateway.yaml`, Target 鈥?
 TC-13.6):
 
 ```json
@@ -380,13 +381,13 @@ call types (`agents`, `deliberate`, `audit`).
 | Field | Source | Storage |
 |-------|--------|---------|
 | Raw stdout bytes | Subprocess capture | Not persisted (transient) |
-| SHA-256 of stdout | Computed by Gateway | `agentdesk.mad-refs/v1` → `stdout_sha256` (runtime-only) |
-| Parsed `report` field | Extracted from JSON | SHA-256 of report UTF-8 bytes → `agentdesk.mad-refs/v1` → `report_sha256` (runtime-only) |
-| `deliberation_id` | Parsed from JSON | `agentdesk.mad-refs/v1` → `deliberation_id` |
-| `archive_path` | Parsed from JSON | `agentdesk.mad-refs/v1` → `archive_path` (runtime-only, never in Git) |
+| SHA-256 of stdout | Computed by Gateway | `agentdesk.mad-refs/v1` 鈫?`stdout_sha256` (runtime-only) |
+| Parsed `report` field | Extracted from JSON | SHA-256 of report UTF-8 bytes 鈫?`agentdesk.mad-refs/v1` 鈫?`report_sha256` (runtime-only) |
+| `deliberation_id` | Parsed from JSON | `agentdesk.mad-refs/v1` 鈫?`deliberation_id` |
+| `archive_path` | Parsed from JSON | `agentdesk.mad-refs/v1` 鈫?`archive_path` (runtime-only, never in Git) |
 | `verdict` / `issues` | Parsed from JSON | Audit event (Git-tracked) |
 
-### 2.3 `agentdesk.mad-refs/v1` Runtime Schema (Current — TC-13.6)
+### 2.3 `agentdesk.mad-refs/v1` Runtime Schema (Current 鈥?TC-13.6)
 
 Gitignored runtime file at `.agentdesk/runtime/mad-refs.yaml`.
 Strict JSON root:
@@ -416,37 +417,37 @@ Rules:
 
 - `stdout_sha256` is the SHA-256 of MAD's raw stdout bytes (before JSON parse).
 - `report_sha256` is the SHA-256 of the parsed `report` field's UTF-8 bytes.
-- `archive_path` is absolute and must only exist in gitignored runtime — never
+- `archive_path` is absolute and must only exist in gitignored runtime 鈥?never
   in tracked files.
 - The entire `mad-refs` file is gitignored and must never be committed.
 - Git-tracked events may record the SHA-256 digests as references, but must
   not include `archive_path`.
 
-### 2.4 Worker Tiers (Target — TC-13.9a/9b)
+### 2.4 Worker Tiers (Target 鈥?TC-13.9a/9b)
 
 | Tier | Context Budget (% of model window) | Max Active | Escalation Behaviour |
 |------|-----------------------------------|------------|---------------------|
-| Basic | 20% | 2 global / 1 per worktree | Retry once same-tier → escalate to Standard |
-| Standard | 35% | 2 global / 1 per worktree | Retry once same-tier → escalate to Advanced |
-| Advanced | 50% | 2 global / 1 per worktree | First failure → escalate to Expert |
-| Expert | 65% | 2 global / 1 per worktree | Failure → request user decision |
+| Basic | 20% | 2 global / 1 per worktree | Retry once same-tier 鈫?escalate to Standard |
+| Standard | 35% | 2 global / 1 per worktree | Retry once same-tier 鈫?escalate to Advanced |
+| Advanced | 50% | 2 global / 1 per worktree | First failure 鈫?escalate to Expert |
+| Expert | 65% | 2 global / 1 per worktree | Failure 鈫?request user decision |
 
 At least **35% of context window** is reserved for system prompt, tool
 definitions, and overhead.  The per-worktree writer limit of 1 means no two
 Workers may write to the same ordinary worktree concurrently.
 
-The budget percentages and the ≥35 % reserved rule are computed by
-`ContextBudgetPolicy` (TC-13.5.1 — Current).  WorkerAdapter (TC-13.9a/9b)
+The budget percentages and the 鈮?5 % reserved rule are computed by
+`ContextBudgetPolicy` (TC-13.5.1 鈥?Current).  WorkerAdapter (TC-13.9a/9b)
 consumes the policy's `BudgetResult`; this section describes the
 *Worker-tier behaviours* that use that budget, not the arithmetic itself.
 
-### 2.5 Worker Slot Lease (Current — TC-13.10c)
+### 2.5 Worker Slot Lease (Current 鈥?TC-13.10c)
 
-> **Frozen Contract — TC-13.10a.**  Subsections §2.5.1–§2.5.16 below are
+> **Frozen Contract 鈥?TC-13.10a.**  Subsections 搂2.5.1鈥撀?.5.16 below are
 > the frozen contract for ``agentdesk.worker-slot-lease/v1``.  The
 > production implementation is now complete: TC-13.10b (data model,
 > validation, runtime store, atomic I/O) and TC-13.10c (acquire / release
-> / renew / hold fence, stale‑lease cleanup, capacity allocation,
+> / renew / hold fence, stale鈥憀ease cleanup, capacity allocation,
 > workspace normalisation, time monotonicity fencing).  TC-13.10a/b/c are
 > all **Current** as of this commit.
 
@@ -458,7 +459,7 @@ slot does not reset the provider rate-limit window.
 ---
 #### 2.5.1 Stable Slot Identifiers
 
-Eight stable slots are frozen — two per ``WorkerKind``:
+Eight stable slots are frozen 鈥?two per ``WorkerKind``:
 
 ```text
 basic_agent-1     basic_agent-2
@@ -469,16 +470,16 @@ expert_agent-1    expert_agent-2
 
 **Frozen rules:**
 
-1. Slot IDs are permanent — they are never created or destroyed at runtime.
+1. Slot IDs are permanent 鈥?they are never created or destroyed at runtime.
 2. The same slot can be acquired, released, and re-acquired indefinitely.
 3. On the first acquire of a given slot, ``lease_epoch`` is set to 1.
 4. Each subsequent acquire of the same slot increments ``lease_epoch`` by 1.
 5. ``renew`` does **not** increment the epoch.
-6. ``release`` does **not** delete the epoch from ``slot_epochs`` — the
+6. ``release`` does **not** delete the epoch from ``slot_epochs`` 鈥?the
    current epoch value persists in the store so that the next acquire can
    pick the correct successor.
 7. When selecting a free slot, the lowest-numbered available stable slot
-   for the requested ``WorkerKind`` is chosen — this guarantees
+   for the requested ``WorkerKind`` is chosen 鈥?this guarantees
    deterministic allocation.
 8. Random / dynamic slot IDs are forbidden.
 9. Parsing arbitrary free-form slot IDs is forbidden.
@@ -520,18 +521,18 @@ JSON-compatible YAML.  Root object has exactly four keys:
   is never reset to 0.
 * ``leases`` contains only currently-held slots (empty when no Workers are
   active).
-* Extra or missing root keys → fail-closed.
-* Extra or missing slot epoch entries → fail-closed.
+* Extra or missing root keys 鈫?fail-closed.
+* Extra or missing slot epoch entries 鈫?fail-closed.
 * When the file does not exist, read logic returns a canonical empty
   document; the file is created on first write.
 * The canonical empty document uses a sentinel ``updated_at`` of
-  ``1970-01-01T00:00:00Z`` — this value must **not** depend on the
+  ``1970-01-01T00:00:00Z`` 鈥?this value must **not** depend on the
   current system clock.  It is a deterministic marker meaning "no real
   write has occurred yet."
 
 ---
 
-#### 2.5.3 Lease Fields — Exact Ten
+#### 2.5.3 Lease Fields 鈥?Exact Ten
 
 ``worker_kind`` is added to the ADR field set as a frozen field so that
 capacity classification is self-contained within the lease store.
@@ -551,7 +552,7 @@ class WorkerSlotLease:
     expires_at: str
 ```
 
-**Exactly ten fields — no more, no less:**
+**Exactly ten fields 鈥?no more, no less:**
 
 | # | Field | Type | Rule |
 |---|-------|------|------|
@@ -561,7 +562,7 @@ class WorkerSlotLease:
 | 4 | ``worker_kind`` | ``WorkerKind`` | Must match the tier of ``slot_id`` |
 | 5 | ``holder_dispatch_id`` | ``str`` | Which dispatch holds this slot; non-empty |
 | 6 | ``holder_instance_id`` | ``str`` | Which runtime instance holds this slot; non-empty |
-| 7 | ``canonical_worktree`` | ``str`` | Normalised real path (see §2.5.13); non-empty |
+| 7 | ``canonical_worktree`` | ``str`` | Normalised real path (see 搂2.5.13); non-empty |
 | 8 | ``acquired_at`` | ``str`` | RFC 3339 UTC |
 | 9 | ``heartbeat_at`` | ``str`` | RFC 3339 UTC; updated on every renew |
 | 10 | ``expires_at`` | ``str`` | RFC 3339 UTC; ``acquired_at + LEASE_TTL_SECONDS`` |
@@ -569,16 +570,16 @@ class WorkerSlotLease:
 **Fields permanently forbidden from ``WorkerSlotLease``:**
 
 ```text
-task_id        — derivable from holder_dispatch_id via outbox
-revision       — derivable from holder_dispatch_id via outbox
-attempt        — derivable from holder_dispatch_id via outbox
-provider       — belongs to ModelSelectionSnapshot
-model_id       — belongs to ModelSelectionSnapshot
-task_difficulty — independent of slot allocation
-prompt         — never stored in lease
-PID            — runtime-only, not comparable across restarts
-process handle — non-serialisable
-retry count    — belongs to escalation layer
+task_id        鈥?derivable from holder_dispatch_id via outbox
+revision       鈥?derivable from holder_dispatch_id via outbox
+attempt        鈥?derivable from holder_dispatch_id via outbox
+provider       鈥?belongs to ModelSelectionSnapshot
+model_id       鈥?belongs to ModelSelectionSnapshot
+task_difficulty 鈥?independent of slot allocation
+prompt         鈥?never stored in lease
+PID            鈥?runtime-only, not comparable across restarts
+process handle 鈥?non-serialisable
+retry count    鈥?belongs to escalation layer
 ```
 
 ---
@@ -598,7 +599,7 @@ WSL-<32 lowercase hex>
 * Not derived from ``dispatch_id``, ``task_id``, or any other business
   identifier.
 * Must not embed paths, ``WorkerKind``, or holder information.
-* 32 hex characters (128 bits) — not 8 or 16.
+* 32 hex characters (128 bits) 鈥?not 8 or 16.
 
 ---
 
@@ -615,15 +616,15 @@ MAX_HEARTBEAT_INTERVAL_SECONDS = 20
 
 * All public API functions accept an explicit timezone-aware UTC
   ``datetime``.
-* Naive ``datetime`` → rejected (``TypeError`` or ``ValueError``).
-* Non-UTC offset → rejected.
+* Naive ``datetime`` 鈫?rejected (``TypeError`` or ``ValueError``).
+* Non-UTC offset 鈫?rejected.
 * On acquire: ``acquired_at == heartbeat_at == now``; ``expires_at == now
   + LEASE_TTL_SECONDS``.
 * On renew: only ``heartbeat_at`` and ``expires_at`` are updated;
   ``lease_id``, ``lease_epoch``, ``slot_id``, ``acquired_at``, and holder
   fields are unchanged.
-* ``now >= expires_at`` → stale (expired).
-* Monotonic time is **not** written to the file — the file always stores
+* ``now >= expires_at`` 鈫?stale (expired).
+* Monotonic time is **not** written to the file 鈥?the file always stores
   UTC wall-clock timestamps.
 * Callers cannot override the TTL.
 * Heartbeat scheduling (the 20 s cadence) belongs to TC-13.18
@@ -641,7 +642,7 @@ read existing store (or canonical empty document)
 validate schema
 remove expired active leases (all WorkerKinds)
 select the lowest-numbered free stable slot for the requested WorkerKind
-  → if none free: WorkerSlotCapacityError
+  鈫?if none free: WorkerSlotCapacityError
 increment slot_epochs[slot_id]
 create lease entry with the new epoch
 write store atomically
@@ -650,20 +651,20 @@ unlock
 
 **Frozen rules:**
 
-1. Stale-lease cleanup runs **before** capacity counting — an expired
+1. Stale-lease cleanup runs **before** capacity counting 鈥?an expired
    holder must not block a new acquire.
 2. Only one active lease per ``(WorkerKind, canonical_worktree)`` pair.
 3. Per-worktree limits are enforced independently for each ``WorkerKind``
-   — a ``basic_agent`` lease on worktree A does not block an
+   鈥?a ``basic_agent`` lease on worktree A does not block an
    ``advanced_agent`` lease on the same worktree.
-4. When no free slot exists for the requested ``WorkerKind`` →
+4. When no free slot exists for the requested ``WorkerKind`` 鈫?
    ``WorkerSlotCapacityError``.
 5. Acquire must reject a duplicate active pair with ``WorkerSlotCapacityError``
-   (per-worktree) — see the full duplicate rules below.
+   (per-worktree) 鈥?see the full duplicate rules below.
 6. Two different canonical worktrees for the same ``WorkerKind`` may occupy
    both global slots for that tier.
-7. A third distinct worktree for the same ``WorkerKind`` → global capacity
-   reached → ``WorkerSlotCapacityError``.
+7. A third distinct worktree for the same ``WorkerKind`` 鈫?global capacity
+   reached 鈫?``WorkerSlotCapacityError``.
 8. Different ``WorkerKind`` leases on the same canonical worktree do **not**
    block each other; each operates under its own independent per-worktree
    limit.
@@ -679,7 +680,7 @@ pair that is **not** expired after stale cleanup, it must:
 * **not** occupy a second slot;
 * **not** increment any epoch in ``slot_epochs``;
 * **not** update ``updated_at``;
-* **not** write the store file — the original file bytes are unchanged.
+* **not** write the store file 鈥?the original file bytes are unchanged.
 
 When the matching pair **was** present but expired before stale cleanup:
 
@@ -690,7 +691,7 @@ When the matching pair **was** present but expired before stale cleanup:
   lease, its epoch is incremented from the previous epoch value
   (retained in ``slot_epochs``).
 
-Acquire does **not** offer idempotent replay — a second active acquire
+Acquire does **not** offer idempotent replay 鈥?a second active acquire
 is a definite capacity error, never a silent success.
 
 ---
@@ -719,9 +720,9 @@ unlock
 **Frozen rules:**
 
 * All six identity fields are validated before deletion.
-* Only ``leases[slot_id]`` is removed — the corresponding
+* Only ``leases[slot_id]`` is removed 鈥?the corresponding
   ``slot_epochs[slot_id]`` is retained.
-* Repeating the same release (slot already gone) → fail-closed
+* Repeating the same release (slot already gone) 鈫?fail-closed
   (``WorkerSlotNotHeldError``).  The module does **not** silently treat
   a missing slot as success.
 * An expired lease may still be released (expiry is a separate concern
@@ -739,7 +740,7 @@ read store
 find the slot
 validate full lease identity (all six fields)
 validate lease is not expired
-  → if expired: WorkerSlotFencingError
+  鈫?if expired: WorkerSlotFencingError
 update heartbeat_at = now
 update expires_at = now + LEASE_TTL_SECONDS
 preserve lease_id, lease_epoch, slot_id, worker_kind,
@@ -750,13 +751,13 @@ unlock
 
 **Frozen rules:**
 
-* An expired lease **cannot** be resurrected via renew — the caller must
+* An expired lease **cannot** be resurrected via renew 鈥?the caller must
   ``release`` and ``acquire`` again, which yields a higher epoch.
 * ``lease_epoch`` is **never** changed by renew.
 
 ---
 
-#### 2.5.9 Fencing API — Lock-Held Context
+#### 2.5.9 Fencing API 鈥?Lock-Held Context
 
 A lock-free ``validate_lease()`` function **must not** be used to
 authorise state commits.  The only fencing-gate API is a context manager
@@ -779,10 +780,10 @@ def hold_worker_slot_fence(
 3. Verify the lease's full identity (all six fields match the current
    store).
 4. Verify the lease is not expired (``now < expires_at``).
-5. Yield — the caller performs its fenced state transition inside the
+5. Yield 鈥?the caller performs its fenced state transition inside the
    ``with`` block while the lock is held.
 6. In the ``finally`` block, release the lock.
-7. This function does **not** modify the lease — it does not auto-renew,
+7. This function does **not** modify the lease 鈥?it does not auto-renew,
    does not extend the expiry, and does not update ``heartbeat_at``.
 
 **Global lock ordering** (frozen):
@@ -811,10 +812,10 @@ Lock path: ``.agentdesk/runtime/.worker-slot-lease.lock``.
 
 **Frozen rules:**
 
-* ``os.open(path, O_CREAT | O_EXCL | O_WRONLY)`` — exclusive creation.
-* Contention → ``WorkerSlotContentionError`` raised immediately.
+* ``os.open(path, O_CREAT | O_EXCL | O_WRONLY)`` 鈥?exclusive creation.
+* Contention 鈫?``WorkerSlotContentionError`` raised immediately.
 * No waiting, no sleeping, no automatic retry.
-* No automatic removal of a lock based on mtime — a lock file is never
+* No automatic removal of a lock based on mtime 鈥?a lock file is never
   assumed to be stale by normal API functions.
 * Crash-orphaned locks can only be removed by an explicit recovery task
   (out of scope for TC-13.10).
@@ -838,7 +839,7 @@ Follows the established pattern from ``mad_refs.py`` and ``render_views.py``:
 * Best-effort ``os.fsync`` on the parent directory after replacement.
 * On any exception before ``os.replace``, the temporary file is cleaned
   up in a ``finally`` block.
-* The original file bytes are **never** modified by a failed write — only
+* The original file bytes are **never** modified by a failed write 鈥?only
   ``os.replace`` mutates the target path, and the temp file is discarded
   on failure.
 
@@ -851,7 +852,7 @@ supported.  File-level ``fsync`` (step 5) is required on all platforms.
 
 #### 2.5.12 Worktree Normalisation
 
-The public ``acquire`` input is a ``Path`` — callers pass the workspace
+The public ``acquire`` input is a ``Path`` 鈥?callers pass the workspace
 path directly without pre-normalisation:
 
 ```python
@@ -865,7 +866,7 @@ def acquire_worker_slot(
 
 The module internally normalises:
 
-1. Require ``workspace.is_absolute()`` — reject relative paths.
+1. Require ``workspace.is_absolute()`` 鈥?reject relative paths.
 2. Require ``workspace.exists()`` and ``workspace.is_dir()``.
 3. Reject a workspace that is itself a symlink or reparse point
    (``Path.is_symlink()`` on POSIX; on Windows, ``is_symlink()`` and
@@ -878,7 +879,7 @@ The module internally normalises:
    ``canonical_worktree``.
 
 Calling ``str.lower()`` on a path without ``realpath`` resolution is
-**forbidden** — it is not a substitute for proper normalisation and would
+**forbidden** 鈥?it is not a substitute for proper normalisation and would
 not resolve symlinks or reparse points.
 
 Windows reparse-point detection must use standard-library facilities
@@ -892,14 +893,14 @@ Frozen:
 
 ```text
 WorkerSlotLeaseError
-├── WorkerSlotValidationError   — schema / field violations
-├── WorkerSlotCapacityError     — no free slot for the requested WorkerKind
-├── WorkerSlotContentionError   — lock already held
-├── WorkerSlotNotHeldError      — release / renew of unknown slot
-└── WorkerSlotFencingError      — epoch mismatch / expired lease
+鈹溾攢鈹€ WorkerSlotValidationError   鈥?schema / field violations
+鈹溾攢鈹€ WorkerSlotCapacityError     鈥?no free slot for the requested WorkerKind
+鈹溾攢鈹€ WorkerSlotContentionError   鈥?lock already held
+鈹溾攢鈹€ WorkerSlotNotHeldError      鈥?release / renew of unknown slot
+鈹斺攢鈹€ WorkerSlotFencingError      鈥?epoch mismatch / expired lease
 ```
 
-No ``WorkerSlotConfigError`` — TTL and capacity are hard-coded, not
+No ``WorkerSlotConfigError`` 鈥?TTL and capacity are hard-coded, not
 configured.
 
 Exception messages must **not** contain:
@@ -933,28 +934,28 @@ The ``WorkflowOrchestrator`` (TC-13.18) is responsible for the full
 lifecycle:
 
 ```text
-acquire → heartbeat / renew → run_worker → fenced state transition → release
+acquire 鈫?heartbeat / renew 鈫?run_worker 鈫?fenced state transition 鈫?release
 ```
 
 ---
 
 #### 2.5.15 Task-Card Split
 
-* **TC-13.10a** — this frozen contract section (§2.5).
-* **TC-13.10b** — data model (``WorkerSlotLease`` dataclass),
+* **TC-13.10a** 鈥?this frozen contract section (搂2.5).
+* **TC-13.10b** 鈥?data model (``WorkerSlotLease`` dataclass),
   validation, runtime store read / write, atomic I/O, file lock.
   Depends on TC-13.10a.
-* **TC-13.10c** — ``acquire_worker_slot``, ``release_worker_slot``,
+* **TC-13.10c** 鈥?``acquire_worker_slot``, ``release_worker_slot``,
   ``renew_worker_slot``, ``hold_worker_slot_fence``, stale cleanup,
   fencing validation (lock-held).  Depends on TC-13.10b.
 
 Dependencies:
 
 ```text
-TC-13.10b → TC-13.10a
-TC-13.10c → TC-13.10b
-TC-13.11  → TC-13.10c
-TC-13.18  → TC-13.10c + TC-13.11 + …
+TC-13.10b 鈫?TC-13.10a
+TC-13.10c 鈫?TC-13.10b
+TC-13.11  鈫?TC-13.10c
+TC-13.18  鈫?TC-13.10c + TC-13.11 + 鈥?
 ```
 
 TC-13.10a, TC-13.10b, and TC-13.10c are all **Current** as of this commit.
@@ -964,18 +965,18 @@ The overall WorkerSlotLease interface is fully implemented.
 
 #### 2.5.16 Status
 
-* ADR Interface Status row #15 is now **Current** — TC-13.10c.
+* ADR Interface Status row #15 is now **Current** 鈥?TC-13.10c.
 * The Notes column references ``agentdesk.worker-slot-lease/v1``; frozen
-  contract in §2.5 (TC-13.10a).
-* **TC-13.10a** — frozen contract section (§2.5) — committed and stable.
-* **TC-13.10b** — data model (``WorkerSlotLease``), validation, runtime
-  store, read-only load, file lock, atomic write — committed
+  contract in 搂2.5 (TC-13.10a).
+* **TC-13.10a** 鈥?frozen contract section (搂2.5) 鈥?committed and stable.
+* **TC-13.10b** 鈥?data model (``WorkerSlotLease``), validation, runtime
+  store, read-only load, file lock, atomic write 鈥?committed
   (``worker_slot_lease.py`` + ``test_worker_slot_lease.py``).
-* **TC-13.10c** — acquire / release / renew / hold fence, stale‑lease
+* **TC-13.10c** 鈥?acquire / release / renew / hold fence, stale鈥憀ease
   cleanup, capacity allocation, workspace normalisation, time monotonicity
-  fencing — committed (same module + tests).
+  fencing 鈥?committed (same module + tests).
 * TC-13.10a, TC-13.10b, and TC-13.10c are all **Current**.
-* TC-13.9c remains **Target** — not blocked by this contract.
+* TC-13.9c remains **Target** 鈥?not blocked by this contract.
 * TC-13.11 and all subsequent interfaces remain **Target**.
 
 ### 2.6 Approval, Escalation, Event, and Outbox Separation
@@ -983,34 +984,34 @@ The overall WorkerSlotLease interface is fully implemented.
 Approval in the AgentDesk control plane spans three **independent** domains.
 They must not be conflated:
 
-1. **Task Action Approval** (TC-13.12, §2.15) — authorises control-plane
+1. **Task Action Approval** (TC-13.12, 搂2.15) 鈥?authorises control-plane
    actions.  Uses structured scope (`dispatch` / `accept` / `integrate`).
    Each approval is for exactly one action and one delivery.
    Evidence: ``TASK_APPROVAL_GRANTED`` and ``TASK_APPROVAL_REVOKED``
    immutable records in ``docs/pm/approvals/``.  Checked by the
    ``ApprovalGate`` runtime service (Interface #17, Target).
 
-2. **Owner Approval** — declared in the committed task-card frontmatter
+2. **Owner Approval** 鈥?declared in the committed task-card frontmatter
    ``owner_approval.gate``.  The only value attested in the current
    template is ``"none"``.  Owner approval does **not** use
    ``TASK_APPROVAL`` IDs and is independent of both task-action and
    model-degradation approval domains.
 
-3. **Model Degradation Approval** — authorises model-tier downgrades when
+3. **Model Degradation Approval** 鈥?authorises model-tier downgrades when
    ``degradation_policy == "require_pm_approval"`` and
    ``selected_model_tier < preferred_model_tier``.  Evidence:
    ``MODEL_DEGRADATION_APPROVED`` and ``MODEL_DEGRADATION_REVOKED``
    events in ``docs/pm/events/``.  This domain is **not** a substitute
-   for task-action approval — it only authorises model-tier selection,
+   for task-action approval 鈥?it only authorises model-tier selection,
    not dispatch / accept / integrate actions.  ``granted_approval_ids``
    in the task ledger retains its model-degradation-only semantics.
    TC-13.12 does **not** refactor the existing model degradation
    pipeline.
 
-See §2.15 for the frozen ApprovalGate contract.
+See 搂2.15 for the frozen ApprovalGate contract.
 
-* **EscalationGate** (TC-13.13a) — Pure WorkerKind tier progression.
-  **RateLimit** (TC-13.14 — provider 429 handling).  A rate-limit event must
+* **EscalationGate** (TC-13.13a) 鈥?Pure WorkerKind tier progression.
+  **RateLimit** (TC-13.14 鈥?provider 429 handling).  A rate-limit event must
   not change difficulty or generate `TASK_ESCALATED`.
 - **Event** records what happened (audit trail).  **Outbox** records what
   should be sent (replayable intent).  They use separate ID namespaces and
@@ -1020,26 +1021,26 @@ See §2.15 for the frozen ApprovalGate contract.
 
 The Skill (PM/Worker runbooks) and the HTML Dashboard both consume data
 through a **read-only StateProvider** (TC-13.17).  Neither writes to canonical
-state directly — all writes go through `ControlPlaneTransitionService`
+state directly 鈥?all writes go through `ControlPlaneTransitionService`
 (TC-13.11).
 
-### 2.8 Shared Core Data Types (Current — TC-13.4)
+### 2.8 Shared Core Data Types (Current 鈥?TC-13.4)
 
-TC-13.4 freezes three shared enumerations used across the MAD–AgentDesk
+TC-13.4 freezes three shared enumerations used across the MAD鈥揂gentDesk
 integration.  These types carry **no** provider identity, model ID,
 thread ID, worktree path, budget calculation, lease, slot, escalation,
 retry logic, or subprocess mechanics.  They are pure semantic tags.
 
 **All three enums use lowercase strings as their stable serialisation
-values.  Unknown values MUST be treated as fail-closed — consumers must
+values.  Unknown values MUST be treated as fail-closed 鈥?consumers must
 not silently fall back to a default or guess a meaning.**
 
 ---
 
 #### 2.8.1 `TaskDifficulty`
 
-`TaskDifficulty` describes the **difficulty** of a task — its inherent
-complexity, risk, and reasoning depth — independently of any model tier
+`TaskDifficulty` describes the **difficulty** of a task 鈥?its inherent
+complexity, risk, and reasoning depth 鈥?independently of any model tier
 or binding.  It is **not** a model tier, even when the string values
 happen to coincide with AgentDesk model-tier labels.
 
@@ -1065,11 +1066,11 @@ Rules:
   (`select_model.py`) and WorkerAdapter (TC-13.9a/9b).
 - `TaskDifficulty` **is** the primary input to `ContextBudgetPolicy`
   (TC-13.5.1).  Each difficulty value selects a frozen percentage (20 /
-  35 / 50 / 65) and hard cap (64 000 / 128 000 / 256 000 / 512 000).
+  35 / 50 / 65) and hard cap (64鈥?00 / 128鈥?00 / 256鈥?00 / 512鈥?00).
   This relationship is an arithmetic contract of `compute_budget`, not a
   property of the enum itself.
 - `TaskDifficulty` values must not be treated as model-tier labels even
-  though the four strings coincide today — budget percentages are not
+  though the four strings coincide today 鈥?budget percentages are not
   model tiers.
 - Adding a new difficulty value requires a new revision of this type
   contract.
@@ -1094,7 +1095,7 @@ Rules:
 - `MadDeliberationDepth` values belong to the `mad.*` semantic space.
   The AgentDesk `deliberation_tier` enum (`efficient` / `balanced` /
   `deep`) maps to provider-specific reasoning controls and belongs to
-  the `agentdesk.*` semantic space.  `fast` ≠ `efficient`; the two
+  the `agentdesk.*` semantic space.  `fast` 鈮?`efficient`; the two
   enums are separate by design.
 - Gateway and WorkerAdapter code must map between the two enums
   explicitly rather than casting strings across namespaces.
@@ -1120,12 +1121,12 @@ Rules:
   revision, or worktree is the responsibility of the WorkerAdapter
   (TC-13.9a/9b) and WorkerSlotLease (TC-13.10).
 - `WorkerKind` does **not** encode concurrency limits (2 global / 1 per
-  worktree), budget percentages, or escalation behaviour — those
+  worktree), budget percentages, or escalation behaviour 鈥?those
   belong to ContextBudgetPolicy (TC-13.5.1) and WorkerAdapter (TC-13.9a/9b).
 - A `WorkerKind` value must not be used as a model tier, and a model
   tier must not be used as a `WorkerKind`.
 - `WorkerKind` and `TaskDifficulty` are **independent** inputs.
-  There is no fixed one-to-one mapping between them — an Advanced task
+  There is no fixed one-to-one mapping between them 鈥?an Advanced task
   may be executed by an Expert Worker after escalation, or a Basic task
   may be routed to a Standard Worker during capacity overflow.
   Consumers must not derive a `TaskDifficulty` from a `WorkerKind` via
@@ -1138,12 +1139,12 @@ Rules:
 TC-13.4 explicitly does **not** include:
 
 - Budget calculation, context-window arithmetic, or token budgeting
-  (→ TC-13.5.1)
+  (鈫?TC-13.5.1)
 - Model selection, provider binding, or `select_model.py` logic
 - Any subprocess invocation, CLI call, or filesystem write
 - Worker scheduling, slot allocation, lease acquisition, or
-  concurrency fencing (→ TC-13.9a/9b, TC-13.10)
-- Retry, escalation, or rate-limit logic (→ TC-13.13, TC-13.14)
+  concurrency fencing (鈫?TC-13.9a/9b, TC-13.10)
+- Retry, escalation, or rate-limit logic (鈫?TC-13.13, TC-13.14)
 - Task-card, outbox, or event schema changes
 - A runtime data file; these enums are compile-time / specification
   constants only
@@ -1152,7 +1153,7 @@ TC-13.4 explicitly does **not** include:
 
 ---
 
-### 2.9 ContextBudgetPolicy (Current — TC-13.5.1)
+### 2.9 ContextBudgetPolicy (Current 鈥?TC-13.5.1)
 
 `ContextBudgetPolicy` (TC-13.5.1) computes a per-task token budget from
 `TaskDifficulty` and a model's `context_window_tokens`.  It is a **pure
@@ -1160,7 +1161,7 @@ arithmetic strategy** with no I/O, no provider knowledge, and no
 WorkerAdapter mechanics.
 
 The budget is the **smaller** of the percentage-floor result and a
-per-difficulty hard cap — this prevents oversized budgets on very large
+per-difficulty hard cap 鈥?this prevents oversized budgets on very large
 context windows while still reserving at least 35 % of the window.
 
 **Public API** (`skills/agentdesk/scripts/context_budget.py`):
@@ -1174,7 +1175,7 @@ context windows while still reserving at least 35 % of the window.
 
 | Parameter | Type | Constraint |
 |-----------|------|------------|
-| `context_window_tokens` | `int` | Positive (≥1), non-bool, from a validated `model-bindings/v2` binding |
+| `context_window_tokens` | `int` | Positive (鈮?), non-bool, from a validated `model-bindings/v2` binding |
 | `difficulty` | `TaskDifficulty` | Must be a `TaskDifficulty` enum member; bare strings and other enum types are rejected |
 
 **Frozen percentages and hard caps**:
@@ -1189,12 +1190,12 @@ context windows while still reserving at least 35 % of the window.
 **Integer arithmetic** (no floating-point, no `Decimal`):
 
 ```text
-percentage_budget  = context_window_tokens × budget_percent // 100   (floor)
+percentage_budget  = context_window_tokens 脳 budget_percent // 100   (floor)
 budget_tokens      = min(percentage_budget, budget_cap_tokens)
 reserved_tokens     = context_window_tokens - budget_tokens
 ```
 
-Callers cannot override the percentages or the caps — both tables are
+Callers cannot override the percentages or the caps 鈥?both tables are
 module-private and frozen.
 
 **Invariants** (enforced at computation time):
@@ -1204,7 +1205,7 @@ budget_tokens >= 1
 budget_tokens <= percentage_budget
 budget_tokens <= budget_cap_tokens
 budget_tokens + reserved_tokens == context_window_tokens
-reserved_tokens >= (context_window_tokens × 35 + 99) // 100   (ceil of 35 %)
+reserved_tokens >= (context_window_tokens 脳 35 + 99) // 100   (ceil of 35 %)
 ```
 
 If `budget_tokens` would round to 0 (window too small for the requested
@@ -1239,56 +1240,56 @@ difficulty), `compute_budget()` raises `ValueError`.
 constrain the Worker's effective context window.  WorkerAdapter is
 responsible for sourcing `context_window_tokens` from the selected
 model binding's `selected_context_window_tokens` field.  WorkerAdapter
-is a Target (TC-13.9a/9b) — ContextBudgetPolicy is Current and available
+is a Target (TC-13.9a/9b) 鈥?ContextBudgetPolicy is Current and available
 today.
 
 ---
 
-### 2.10 DispatcherAgentGateway — Frozen Contract (Current — TC-13.7)
+### 2.10 DispatcherAgentGateway 鈥?Frozen Contract (Current 鈥?TC-13.7)
 
 TC-13.7 defines an **execution-only** boundary for a single agent CLI
-subprocess dispatch.  This section preserves the Frozen Contract — the
+subprocess dispatch.  This section preserves the Frozen Contract 鈥?the
 frozen TC-13.7 public interfaces.  TC-13.7 is now **Current**: a
 matching production module (`dispatcher_gateway.py`) and test suite
 exist, and the DispatcherAgentGateway interface status is Current.
 
 TC-13.7 freezes:
 
-1.  **responsibility boundary** — what the Gateway does and what it
+1.  **responsibility boundary** 鈥?what the Gateway does and what it
     explicitly does not do;
-2.  **immutable input types** — `DispatchIdentity`,
+2.  **immutable input types** 鈥?`DispatchIdentity`,
     `ModelSelectionSnapshot`, `DispatchRequest`;
-3.  **provider adapter Protocol** — `AgentCliProvider` and the
+3.  **provider adapter Protocol** 鈥?`AgentCliProvider` and the
     `AgentCliInvocation` value it produces;
-4.  **immutable result type** — `DispatchResult` (exit‑0 success only);
-5.  **failure semantics** — exception‑only paths for non‑zero exit,
+4.  **immutable result type** 鈥?`DispatchResult` (exit鈥? success only);
+5.  **failure semantics** 鈥?exception鈥憃nly paths for non鈥憐ero exit,
     timeout, cancellation, and structural errors;
-6.  **output semantics** — stdout/stderr as opaque bytes with SHA‑256
+6.  **output semantics** 鈥?stdout/stderr as opaque bytes with SHA鈥?56
     hashing;
-7.  **executable security** — absolute‑path / ``shutil.which()``
+7.  **executable security** 鈥?absolute鈥憄ath / ``shutil.which()``
     resolution, ``shell=False`` locked;
-8.  **state & persistence boundary** — zero file writes, zero
-    canonical‑state, event, outbox, or report writes;
-9.  **timeout & cancellation** — full process‑tree termination;
-10. **dependency boundary** — what TC-13.7 consumes vs what is deferred
+8.  **state & persistence boundary** 鈥?zero file writes, zero
+    canonical鈥憇tate, event, outbox, or report writes;
+9.  **timeout & cancellation** 鈥?full process鈥憈ree termination;
+10. **dependency boundary** 鈥?what TC-13.7 consumes vs what is deferred
     to TC-13.8, TC-13.9a/9b, TC-13.10, TC-13.11, and TC-13.18.
 
 ---
 
 #### 2.10.1 Exact Responsibility Boundary
 
-TC-13.7 is a **single‑shot**, **config‑driven**, **provider‑agnostic**
+TC-13.7 is a **single鈥憇hot**, **config鈥慸riven**, **provider鈥慳gnostic**
 agent CLI execution gateway.  Every invocation:
 
 * strictly validates a frozen, immutable dispatch request and its
-  ten‑field `ModelSelectionSnapshot`;
-* resolves the provider adapter from the caller‑supplied
+  ten鈥慺ield `ModelSelectionSnapshot`;
+* resolves the provider adapter from the caller鈥憇upplied
   ``providers`` mapping keyed by
   ``selected_model_provider``;
 * constructs a safe subprocess invocation via the adapter;
 * launches **exactly one** subprocess;
 * captures raw stdout and stderr as `bytes`;
-* handles normal exit (code 0), non‑zero exit, timeout, and caller
+* handles normal exit (code 0), non鈥憐ero exit, timeout, and caller
   cancellation;
 * returns an immutable, classified ``DispatchResult`` (success) **or**
   raises a precise exception (every other outcome).
@@ -1296,9 +1297,9 @@ agent CLI execution gateway.  Every invocation:
 TC-13.7 **explicitly does NOT**:
 
 * write canonical state, dispatch files, events, outbox messages,
-  delivery reports, transport receipts, or any other Git‑tracked
+  delivery reports, transport receipts, or any other Git鈥憈racked
   artifact;
-* retry, escalate, approve, rate‑limit, or re‑queue;
+* retry, escalate, approve, rate鈥憀imit, or re鈥憅ueue;
 * consume ``WorkerKind``, ``TaskDifficulty``,
   ``ContextBudgetPolicy``, or ``BudgetResult``;
 * acquire, release, or validate slot leases or fencing tokens;
@@ -1306,30 +1307,30 @@ TC-13.7 **explicitly does NOT**:
   etc.);
 * implement WorkerAdapter lifecycle or WorkflowOrchestrator
   coordination;
-* invoke ``mad`` in any form — the MAD Gateway (TC-13.6) and ``mad``
+* invoke ``mad`` in any form 鈥?the MAD Gateway (TC-13.6) and ``mad``
   refs are separate domains.
 
 ---
 
-#### 2.10.2 DispatchIdentity — Frozen Audit Identity
+#### 2.10.2 DispatchIdentity 鈥?Frozen Audit Identity
 
-Immutable, four‑field identity carried by every request and result.
-All values originate from an already‑frozen dispatch / outbox committed
+Immutable, four鈥慺ield identity carried by every request and result.
+All values originate from an already鈥慺rozen dispatch / outbox committed
 before the Gateway is invoked.
 
 | Field | Type | Rule |
 |-------|------|------|
-| ``task_id`` | ``str`` | Non‑empty |
-| ``revision`` | ``int`` | Non‑bool, ≥ 1 |
-| ``attempt`` | ``int`` | Non‑bool, ≥ 1 |
-| ``dispatch_id`` | ``str`` | Non‑empty |
+| ``task_id`` | ``str`` | Non鈥慹mpty |
+| ``revision`` | ``int`` | Non鈥慴ool, 鈮?1 |
+| ``attempt`` | ``int`` | Non鈥慴ool, 鈮?1 |
+| ``dispatch_id`` | ``str`` | Non鈥慹mpty |
 
 The Gateway **must not** generate, modify, or derive any of these
 values.  They are opaque audit markers from the caller's perspective.
 
 ---
 
-#### 2.10.3 ModelSelectionSnapshot — Frozen Ten‑Field Snapshot
+#### 2.10.3 ModelSelectionSnapshot 鈥?Frozen Ten鈥慒ield Snapshot
 
 An immutable snapshot whose key set must **exactly** match the
 deterministic selector output (TC-13.3 / TC-13.4).  Extra keys and
@@ -1344,17 +1345,17 @@ missing keys are both rejected.
 | 5 | ``selected_model_id`` | ``str`` |
 | 6 | ``selected_model_tier`` | ``str`` |
 | 7 | ``selected_deliberation_tier`` | ``str`` |
-| 8 | ``selected_context_window_tokens`` | ``int`` (non‑bool, ≥ 1) |
+| 8 | ``selected_context_window_tokens`` | ``int`` (non鈥慴ool, 鈮?1) |
 | 9 | ``selected_model_capabilities`` | ``tuple[str, ...]`` |
 | 10 | ``model_degradation_approval_id`` | ``str`` or ``null`` |
 
 Rules:
 
 * ``provider``, ``model_id``, and ``deliberation_tier`` for the
-  subprocess call are taken **only** from this snapshot — callers must
+  subprocess call are taken **only** from this snapshot 鈥?callers must
   not supply an independent override.
 * ``model_binding_id`` is the **only** binding identifier.  There is
-  no separate ``provider_config_id`` — the snapshot's
+  no separate ``provider_config_id`` 鈥?the snapshot's
   ``selected_model_provider`` is the adapter lookup key.
 * ``selected_model_tier`` is stored but not consumed by TC-13.7;
   it is a passthrough audit field.
@@ -1365,43 +1366,43 @@ Rules:
   are **deeply immutable** ``tuple[str, ...]``:
   * The external selector JSON produces arrays; the snapshot
     constructor must copy each array into a tuple.
-  * Every element must be a non‑empty string.
+  * Every element must be a non鈥慹mpty string.
   * Original JSON array order is preserved.
   * Duplicate capabilities are rejected at construction time.
-  * Post‑construction mutations of the source ``list`` must not
+  * Post鈥慶onstruction mutations of the source ``list`` must not
     affect the snapshot.
   * The snapshot must not contain any mutable ``list``, ``dict``,
-    or ``set`` — every collection field is an immutable sequence
+    or ``set`` 鈥?every collection field is an immutable sequence
     or mapping.  (``required_model_capabilities`` and
     ``selected_model_capabilities`` are the only collection fields
-    in the ten‑field set; both are ``tuple[str, ...]``.)
+    in the ten鈥慺ield set; both are ``tuple[str, ...]``.)
 
 ---
 
-#### 2.10.4 DispatchRequest — Frozen Input
+#### 2.10.4 DispatchRequest 鈥?Frozen Input
 
-Exactly five fields — every field has a verifiable origin in an
-already‑frozen dispatch/outbox or runtime configuration.
+Exactly five fields 鈥?every field has a verifiable origin in an
+already鈥慺rozen dispatch/outbox or runtime configuration.
 
 | # | Field | Type | Rule |
 |---|-------|------|------|
 | 1 | ``identity`` | ``DispatchIdentity`` | Frozen audit identity |
 | 2 | ``workspace`` | ``Path`` | Absolute, existing directory |
-| 3 | ``prompt`` | ``str`` | Non‑empty; sole source of task content |
+| 3 | ``prompt`` | ``str`` | Non鈥慹mpty; sole source of task content |
 | 4 | ``model_selection`` | ``ModelSelectionSnapshot`` | Exactly ten fields, validated |
-| 5 | ``timeout_seconds`` | ``int`` | Non‑bool, ≥ 1 |
+| 5 | ``timeout_seconds`` | ``int`` | Non鈥慴ool, 鈮?1 |
 
 Fields **explicitly excluded** from TC-13.7 (deferred to later TCs):
 
-* ``project_root`` — Gateway resolves paths from ``workspace``.
-* ``provider_config_id`` — ``selected_model_provider`` from the
+* ``project_root`` 鈥?Gateway resolves paths from ``workspace``.
+* ``provider_config_id`` 鈥?``selected_model_provider`` from the
   snapshot is the adapter registry key.
-* ``environment_allowlist`` — environment filtering is deferred to
-  TC-13.8 per‑provider contracts; TC-13.7 copies the full parent
-  environment and applies adapter‑declared overrides.
-* ``stdin_bytes`` — ``prompt`` is the **sole** task content source;
+* ``environment_allowlist`` 鈥?environment filtering is deferred to
+  TC-13.8 per鈥憄rovider contracts; TC-13.7 copies the full parent
+  environment and applies adapter鈥慸eclared overrides.
+* ``stdin_bytes`` 鈥?``prompt`` is the **sole** task content source;
   the adapter produces ``stdin`` bytes from it inside
-  ``build_invocation``.  No separate caller‑supplied stdin channel
+  ``build_invocation``.  No separate caller鈥憇upplied stdin channel
   exists.
 * ``task_difficulty``, ``worker_kind``, ``budget_tokens``,
   ``lease_id``, ``slot_id``, ``retry_count``,
@@ -1412,12 +1413,12 @@ Rules:
 * ``workspace`` must exist and be an absolute directory.
 * ``workspace`` is the **authoritative subprocess working directory**.
   The Gateway must pass it directly as ``cwd`` to
-  ``asyncio.create_subprocess_exec`` on every invocation — on both
+  ``asyncio.create_subprocess_exec`` on every invocation 鈥?on both
   Windows and POSIX.  The adapter has no say in the working directory;
   ``AgentCliInvocation`` carries no ``cwd`` field.
-* ``prompt`` is the **only** source of task content — the adapter
+* ``prompt`` is the **only** source of task content 鈥?the adapter
   derives ``stdin`` from it.
-* ``timeout_seconds`` is a positive integer (non‑bool).
+* ``timeout_seconds`` is a positive integer (non鈥慴ool).
 * The entire request is frozen before Gateway invocation; the Gateway
   does not enrich, derive, or persist any additional fields.
 
@@ -1426,7 +1427,7 @@ Rules:
 #### 2.10.5 Provider Adapter Protocol
 
 TC-13.7 defines ``AgentCliProvider`` as a ``typing.Protocol``
-(runtime‑checkable).  TC-13.7 itself only ships the Protocol;
+(runtime鈥慶heckable).  TC-13.7 itself only ships the Protocol;
 it does **not** bundle any real provider implementation.
 
 **Required attribute:**
@@ -1439,21 +1440,21 @@ it does **not** bundle any real provider implementation.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| ``build_invocation(request)`` | ``AgentCliInvocation`` | Produce a fully‑resolved subprocess invocation from a validated ``DispatchRequest`` |
+| ``build_invocation(request)`` | ``AgentCliInvocation`` | Produce a fully鈥憆esolved subprocess invocation from a validated ``DispatchRequest`` |
 
 ``build_invocation`` receives the **entire** frozen ``DispatchRequest``
 (identity + workspace + prompt + snapshot + timeout) and returns a
-self‑contained ``AgentCliInvocation``.
+self鈥慶ontained ``AgentCliInvocation``.
 
-``parse_result()`` is **not** part of the TC-13.7 Protocol.  Provider‑
+``parse_result()`` is **not** part of the TC-13.7 Protocol.  Provider鈥?
 specific stdout parsing is deferred to TC-13.8 / TC-13.9.
 
-A ``FakeAgentCliProvider`` may exist in ``tests/`` only — it must not
+A ``FakeAgentCliProvider`` may exist in ``tests/`` only 鈥?it must not
 appear in any production module.
 
-**Provider lookup — call‑level explicit mapping**:
+**Provider lookup 鈥?call鈥憀evel explicit mapping**:
 
-TC-13.7 does **not** provide a module‑level mutable registry.  The
+TC-13.7 does **not** provide a module鈥憀evel mutable registry.  The
 public entry point receives provider instances explicitly:
 
 ```python
@@ -1466,36 +1467,36 @@ async def run_dispatch(
 
 Rules:
 
-* ``providers`` is a **call‑level explicit dependency** — the Gateway
+* ``providers`` is a **call鈥憀evel explicit dependency** 鈥?the Gateway
   stores no global state.
 * The lookup key is exactly ``request.model_selection.selected_model_provider``.
 * When the key is not present, ``ProviderNotSupportedError`` is raised
   **before** any subprocess is launched.
 * Every adapter's ``provider_id`` must equal its key in the mapping.
-* Both the provider key and ``provider_id`` must be non‑empty strings.
-* ``providers`` must not be empty — at least one provider must be
+* Both the provider key and ``provider_id`` must be non鈥慹mpty strings.
+* ``providers`` must not be empty 鈥?at least one provider must be
   supplied.
 * The Gateway does **not** mutate the mapping.
 * There is **no** ``register_provider()``, ``unregister_provider()``,
-  or clear‑registry function.
+  or clear鈥憆egistry function.
 * TC-13.8 / TC-13.9a callers construct the mapping before invoking
   ``run_dispatch``.
 * Tests construct a local ``{"fake": FakeAgentCliProvider()}``
-  mapping per call — ``FakeAgentCliProvider`` remains only in the
+  mapping per call 鈥?``FakeAgentCliProvider`` remains only in the
   test directory.
 
 ---
 
-#### 2.10.6 AgentCliInvocation — Frozen Invocation Value
+#### 2.10.6 AgentCliInvocation 鈥?Frozen Invocation Value
 
 Returned by ``AgentCliProvider.build_invocation()``.  Represents a
-fully‑resolved, safe subprocess invocation.
+fully鈥憆esolved, safe subprocess invocation.
 
 | # | Field | Type | Rule |
 |---|-------|------|------|
 | 1 | ``executable`` | ``str`` | Absolute path or plain name (resolved via ``shutil.which``) |
-| 2 | ``argv`` | ``tuple[str, ...]`` | Arguments only — does **not** include executable; each element is exactly one argument; empty tuple is legal |
-| 3 | ``stdin`` | ``bytes`` or ``None`` | Derived from ``DispatchRequest.prompt``; ``None`` → ``DEVNULL`` |
+| 2 | ``argv`` | ``tuple[str, ...]`` | Arguments only 鈥?does **not** include executable; each element is exactly one argument; empty tuple is legal |
+| 3 | ``stdin`` | ``bytes`` or ``None`` | Derived from ``DispatchRequest.prompt``; ``None`` 鈫?``DEVNULL`` |
 | 4 | ``env_overrides`` | ``tuple[tuple[str, str], ...]`` | Pairs of ``(KEY, value)``; keys are unique |
 
 The Gateway executes the invocation as:
@@ -1505,52 +1506,52 @@ resolved_executable = resolve(invocation.executable)
 await asyncio.create_subprocess_exec(
     resolved_executable,
     *invocation.argv,
-    cwd=str(request.workspace),   # authoritative — never from the adapter
+    cwd=str(request.workspace),   # authoritative 鈥?never from the adapter
     ...
 )
 ```
 
 Rules:
 
-* ``argv`` must **not** contain the executable — ``executable`` is a
+* ``argv`` must **not** contain the executable 鈥?``executable`` is a
   separate field and is passed as the first argument to
   ``create_subprocess_exec``.  The adapter must not duplicate it.
 * Empty ``argv`` is legal (the subprocess receives zero arguments).
-* ``executable`` is a **single** path or command name — it must not
+* ``executable`` is a **single** path or command name 鈥?it must not
   embed arguments, flags, or shell metacharacters.  Spaces in the
   path are permitted (the path is passed as a single ``exec*``
   argument).
-* ``shell=True`` is **never** used — the Gateway exclusively uses
+* ``shell=True`` is **never** used 鈥?the Gateway exclusively uses
   ``asyncio.create_subprocess_exec``.
 * ``create_subprocess_shell`` is **never** used.
 * ``stdin`` is produced by the adapter from the sole ``prompt``.
   When ``None`` the Gateway passes ``DEVNULL``.
 * ``env_overrides`` keys are unique.  The Gateway copies the full
   parent environment and then applies each ``(KEY, value)`` pair.
-* The adapter **does not** receive the full parent environment —
+* The adapter **does not** receive the full parent environment 鈥?
   it only declares the overrides it needs.
 * The Gateway **must not** log, persist, or return the content of
   environment variables in any result, exception, event, or report.
   API keys must never appear in Gateway output.
 * **No ``cwd`` field.**  The working directory is the sole
   responsibility of the Gateway and is taken from
-  ``DispatchRequest.workspace`` (§2.10.4).  ``AgentCliInvocation``
-  carries exactly four fields — the adapter has no ability to
+  ``DispatchRequest.workspace`` (搂2.10.4).  ``AgentCliInvocation``
+  carries exactly four fields 鈥?the adapter has no ability to
   influence, override, or suggest the subprocess working directory.
 
 ---
 
-#### 2.10.7 DispatchResult — Frozen Success Result (Exit 0 Only)
+#### 2.10.7 DispatchResult 鈥?Frozen Success Result (Exit 0 Only)
 
 ``DispatchResult`` is returned **only** when the subprocess exits
-cleanly with code 0.  Every other outcome uses exceptions (§2.10.8).
+cleanly with code 0.  Every other outcome uses exceptions (搂2.10.8).
 
 | # | Field | Type | Rule |
 |---|-------|------|------|
 | 1 | ``identity`` | ``DispatchIdentity`` | Echoed from request |
 | 2 | ``provider`` | ``str`` | Echoed from ``selected_model_provider`` |
 | 3 | ``model_id`` | ``str`` | Echoed from ``selected_model_id`` |
-| 4 | ``duration_seconds`` | ``float`` | Wall‑clock duration |
+| 4 | ``duration_seconds`` | ``float`` | Wall鈥慶lock duration |
 | 5 | ``stdout`` | ``bytes`` | Raw subprocess stdout |
 | 6 | ``stderr`` | ``bytes`` | Raw subprocess stderr |
 | 7 | ``stdout_sha256`` | ``str`` | 64 lowercase hex of raw ``stdout`` bytes |
@@ -1558,35 +1559,35 @@ cleanly with code 0.  Every other outcome uses exceptions (§2.10.8).
 
 Fields **explicitly excluded**:
 
-* ``timed_out`` — timeout uses exceptions, not a flag.
-* ``cancelled`` — cancellation uses exceptions, not a flag.
-* ``process_id`` — runtime‑only identifier; not exposed.
-* ``command_receipt`` — adapter‑internal detail; not exposed.
+* ``timed_out`` 鈥?timeout uses exceptions, not a flag.
+* ``cancelled`` 鈥?cancellation uses exceptions, not a flag.
+* ``process_id`` 鈥?runtime鈥憃nly identifier; not exposed.
+* ``command_receipt`` 鈥?adapter鈥慽nternal detail; not exposed.
 * ``archive_path``, ``report_sha256``, ``deliberation_id``, ``status``
-  — these are MAD Gateway (TC-13.6) concepts, not DispatcherAgentGateway
+  鈥?these are MAD Gateway (TC-13.6) concepts, not DispatcherAgentGateway
   concepts.
-* ``executor_model`` extension fields — the Gateway does not decide
+* ``executor_model`` extension fields 鈥?the Gateway does not decide
   what enters the terminal executor_model; that is the caller's
   responsibility (TC-13.9a/9b / TC-13.11).
 
 Rules:
 
 * ``provider`` and ``model_id`` are **echoed** from the frozen
-  snapshot — the Gateway cannot substitute or resolve them.
-* ``stdout`` and ``stderr`` are raw ``bytes`` — the Gateway does not
+  snapshot 鈥?the Gateway cannot substitute or resolve them.
+* ``stdout`` and ``stderr`` are raw ``bytes`` 鈥?the Gateway does not
   decode, truncate, or interpret them.
-* SHA‑256 digests are computed on the **original bytes** before any
+* SHA鈥?56 digests are computed on the **original bytes** before any
   processing.
-* The raw bytes are an in‑memory return value only; the Gateway does
+* The raw bytes are an in鈥憁emory return value only; the Gateway does
   **not** persist them and does **not** decide whether they enter a
-  Git‑tracked artifact.
+  Git鈥憈racked artifact.
 
 ---
 
-#### 2.10.8 Failure Semantics — Exception‑Only
+#### 2.10.8 Failure Semantics 鈥?Exception鈥慜nly
 
-Every non‑success path raises a specific exception.  ``DispatchResult``
-is **never** returned for a non‑zero exit, timeout, or cancellation.
+Every non鈥憇uccess path raises a specific exception.  ``DispatchResult``
+is **never** returned for a non鈥憐ero exit, timeout, or cancellation.
 
 | Condition | Exception | Carries |
 |-----------|-----------|---------|
@@ -1594,33 +1595,33 @@ is **never** returned for a non‑zero exit, timeout, or cancellation.
 | Snapshot validation failure | ``DispatchSnapshotError`` | missing/extra key details |
 | Provider not registered | ``ProviderNotSupportedError`` | ``provider_id`` |
 | Executable not found / not executable | ``ExecutableNotFoundError`` | ``executable`` |
-| Invocation structure error | ``DispatchInvocationError`` | adapter‑side validation failure |
+| Invocation structure error | ``DispatchInvocationError`` | adapter鈥憇ide validation failure |
 | Subprocess launch failure (OSError) | ``DispatchLaunchError`` | original exception |
 | Subprocess exceeds ``timeout_seconds`` | ``DispatchTimeoutError`` | ``timeout_seconds`` |
-| Caller cancellation | ``DispatchCancelledError`` | — |
-| Non‑zero exit code | ``DispatchNonZeroExitError`` | ``exit_code``, ``stdout_sha256``, ``stderr_sha256``, length‑capped stderr preview |
+| Caller cancellation | ``DispatchCancelledError`` | 鈥?|
+| Non鈥憐ero exit code | ``DispatchNonZeroExitError`` | ``exit_code``, ``stdout_sha256``, ``stderr_sha256``, length鈥慶apped stderr preview |
 
 ``DispatchNonZeroExitError`` may carry:
 
-* ``exit_code`` — the raw integer exit code;
-* ``stdout_sha256`` / ``stderr_sha256`` — SHA‑256 of raw bytes;
-* ``stderr_preview`` — a **length‑capped** (max 500 chars) preview,
-  decoded with ``errors="replace"`` to guard against non‑UTF‑8.
+* ``exit_code`` 鈥?the raw integer exit code;
+* ``stdout_sha256`` / ``stderr_sha256`` 鈥?SHA鈥?56 of raw bytes;
+* ``stderr_preview`` 鈥?a **length鈥慶apped** (max 500 chars) preview,
+  decoded with ``errors="replace"`` to guard against non鈥慤TF鈥?.
 
 ``DispatchNonZeroExitError`` must **never** carry:
 
 * the full environment;
 * the full argv;
 * the raw ``stdout`` or ``stderr`` bytes;
-* any un‑redacted secret material.
+* any un鈥憆edacted secret material.
 
-There is no ``DispatchOutputDecodeError`` — the Gateway treats
-stdout/stderr as opaque bytes and does not attempt UTF‑8 decoding.
-Provider‑specific decoding belongs to TC-13.8 / TC-13.9c.
+There is no ``DispatchOutputDecodeError`` 鈥?the Gateway treats
+stdout/stderr as opaque bytes and does not attempt UTF鈥? decoding.
+Provider鈥憇pecific decoding belongs to TC-13.8 / TC-13.9c.
 
 Output size limits are **not** frozen as a TC-13.7 public
-configuration knob.  Naïve post‑``communicate()`` length checks do not
-prevent memory pressure; a proper streaming or capped‑reader design is
+configuration knob.  Na茂ve post鈥慲`communicate()`` length checks do not
+prevent memory pressure; a proper streaming or capped鈥憆eader design is
 deferred as a future security hardening item.
 
 ---
@@ -1633,15 +1634,15 @@ Frozen rules:
    file with the execute bit set (``os.access(path, os.X_OK)``).
 2. If ``executable`` is a plain name (no directory separator), it is
    resolved via ``shutil.which()`` on the parent ``PATH``.
-3. Spaces in the executable path are permitted — the path is passed
+3. Spaces in the executable path are permitted 鈥?the path is passed
    as a single argument to ``exec*``.
-4. ``executable`` must not embed command arguments — it is a pure
+4. ``executable`` must not embed command arguments 鈥?it is a pure
    path.
 5. Each element of ``argv`` is one argument; ``argv`` is never a
    shell string.
 6. The Gateway uses ``asyncio.create_subprocess_exec`` exclusively.
 7. ``shell=True`` and ``create_subprocess_shell`` are **never** used.
-   Tests must prove this by verifying the subprocess‑creation mock
+   Tests must prove this by verifying the subprocess鈥慶reation mock
    receives no ``shell`` keyword argument.
 
 ---
@@ -1652,20 +1653,20 @@ TC-13.7 is a **pure execution boundary** with **zero file writes**:
 
 * It does **not** read canonical dispatch files, ``tasks.yaml``,
   events, or outbox.
-* It does **not** write any file — not to ``.agentdesk/runtime/``,
-  not to ``docs/pm/``, not to any Git‑tracked path.
+* It does **not** write any file 鈥?not to ``.agentdesk/runtime/``,
+  not to ``docs/pm/``, not to any Git鈥憈racked path.
 * It does **not** write transport receipts, dispatch receipts, or
   callback receipts.
 * It does **not** validate the terminal ``executor_model`` against
   the snapshot.
 * It does **not** decide which result fields are copied into a
-  delivery report or event — that is the caller's responsibility
+  delivery report or event 鈥?that is the caller's responsibility
   (TC-13.9a/9b / TC-13.11).
 
 The caller receives the ``DispatchResult`` in memory and may use its
-fields according to later TC contracts.  This ADR does **not** pre‑
+fields according to later TC contracts.  This ADR does **not** pre鈥?
 authorise writing ``duration_seconds``, ``exit_code``, or SHA
-digests into ``executor_model`` — those decisions belong to the TC
+digests into ``executor_model`` 鈥?those decisions belong to the TC
 that defines ``executor_model`` semantics.
 
 ---
@@ -1683,10 +1684,10 @@ process tree:
   the Gateway terminates the process tree and raises
   ``DispatchCancelledError``.
 
-The **exact** termination sequence (SIGTERM → grace → SIGKILL on
+The **exact** termination sequence (SIGTERM 鈫?grace 鈫?SIGKILL on
 POSIX; ``taskkill /T /F`` on Windows) follows the pattern validated
-in TC-13.6 but must be implemented independently — TC-13.7 must not
-import TC-13.6's ``mad_gateway`` module (which carries MAD‑specific
+in TC-13.6 but must be implemented independently 鈥?TC-13.7 must not
+import TC-13.6's ``mad_gateway`` module (which carries MAD鈥憇pecific
 command, environment, and parser logic).
 
 The Gateway does **not** return partial stdout after timeout or
@@ -1698,29 +1699,29 @@ cancellation.  The Gateway does **not** retry.
 
 | TC | Relationship to TC-13.7 |
 |----|--------------------------|
-| **TC-13.4** | Consumed — ``core_types`` enums are the only allowed import from the shared type layer |
-| **TC-13.6** | Depends on — the Gateway pattern (subprocess lifecycle, executable resolution, process‑tree termination) is validated by TC-13.6; TC-13.7 must implement its own without importing ``mad_gateway`` |
-| **TC-13.8** | Separate — defines the Claude‑specific ``AgentCliProvider`` implementation and CLI contract; TC-13.7 must not reference Claude |
-| **TC-13.9a/9b** | Consumer — WorkerAdapter calls the Gateway, maps ``WorkerKind`` + ``TaskDifficulty`` as independent inputs, applies budget, and returns ``WorkerResult``; single-attempt, no retry/slot/lease |
-| **TC-13.10** | Separate — slot lease and fencing are independent of a single subprocess execution |
-| **TC-13.11** | Consumer — ControlPlaneTransitionService invokes the Gateway and writes canonical state / events / outbox from the result |
-| **TC-13.18** | Consumer — WorkflowOrchestrator coordinates Gateway calls |
+| **TC-13.4** | Consumed 鈥?``core_types`` enums are the only allowed import from the shared type layer |
+| **TC-13.6** | Depends on 鈥?the Gateway pattern (subprocess lifecycle, executable resolution, process鈥憈ree termination) is validated by TC-13.6; TC-13.7 must implement its own without importing ``mad_gateway`` |
+| **TC-13.8** | Separate 鈥?defines the Claude鈥憇pecific ``AgentCliProvider`` implementation and CLI contract; TC-13.7 must not reference Claude |
+| **TC-13.9a/9b** | Consumer 鈥?WorkerAdapter calls the Gateway, maps ``WorkerKind`` + ``TaskDifficulty`` as independent inputs, applies budget, and returns ``WorkerResult``; single-attempt, no retry/slot/lease |
+| **TC-13.10** | Separate 鈥?slot lease and fencing are independent of a single subprocess execution |
+| **TC-13.11** | Consumer 鈥?ControlPlaneTransitionService invokes the Gateway and writes canonical state / events / outbox from the result |
+| **TC-13.18** | Consumer 鈥?WorkflowOrchestrator coordinates Gateway calls |
 
 ---
 
 #### 2.10.13 Status
 
-This section (§2.10) is now an implemented contract.
+This section (搂2.10) is now an implemented contract.
 
-* ADR Interface Status row #29 “AgentDesk DispatcherAgentGateway”
+* ADR Interface Status row #29 鈥淎gentDesk DispatcherAgentGateway鈥?
   is **Current**.
 * TC-13.8 and all subsequent Target interfaces remain **Target**.
-* TC-13.7 is marked **Current** — ``dispatcher_gateway.py`` and matching
+* TC-13.7 is marked **Current** 鈥?``dispatcher_gateway.py`` and matching
   tests are committed.
 
-### 2.11 Claude Code CLI Provider — Frozen Contract (Current — TC-13.8)
+### 2.11 Claude Code CLI Provider 鈥?Frozen Contract (Current 鈥?TC-13.8)
 
-TC-13.8 defines the **Claude Code CLI Provider** — a concrete
+TC-13.8 defines the **Claude Code CLI Provider** 鈥?a concrete
 `AgentCliProvider` adapter for the `claude` CLI.  This section is the
 Frozen Contract for TC-13.8 public interfaces.  TC-13.8 is **Current**:
 the production provider module (`claude_code_provider.py`) and matching
@@ -1736,7 +1737,7 @@ an `AgentCliInvocation`:
 
 ```
 DispatchRequest
-    ↓
+    鈫?
 AgentCliInvocation(
     executable,
     argv,
@@ -1748,22 +1749,22 @@ AgentCliInvocation(
 Claude Code Provider is responsible **only** for constructing this
 invocation value.  It does **not**:
 
-* launch subprocesses — TC-13.7 `DispatcherAgentGateway` owns this;
-* set `cwd` — `request.workspace` is passed as `cwd=str(request.workspace)`
+* launch subprocesses 鈥?TC-13.7 `DispatcherAgentGateway` owns this;
+* set `cwd` 鈥?`request.workspace` is passed as `cwd=str(request.workspace)`
   by the Gateway, never by the provider;
-* implement timeout or cancellation — Gateway responsibility;
-* terminate process trees — Gateway responsibility;
-* compute stdout/stderr SHA-256 — Gateway responsibility;
-* parse `DispatchResult.stdout` — stdout is opaque bytes (TC-13.7);
-* write files or persist state — Gateway is a pure execution boundary;
-* implement retry, lease, slot, or escalation — deferred to TC-13.9a/9b / TC-13.10 / TC-13.11.
+* implement timeout or cancellation 鈥?Gateway responsibility;
+* terminate process trees 鈥?Gateway responsibility;
+* compute stdout/stderr SHA-256 鈥?Gateway responsibility;
+* parse `DispatchResult.stdout` 鈥?stdout is opaque bytes (TC-13.7);
+* write files or persist state 鈥?Gateway is a pure execution boundary;
+* implement retry, lease, slot, or escalation 鈥?deferred to TC-13.9a/9b / TC-13.10 / TC-13.11.
 
 The provider must **not** have a `cwd` field, must not call `os.chdir()`,
 and must not use `--add-dir` to simulate the primary workspace directory.
 
 ---
 
-#### 2.11.2 Provider ID — Dual-Instance Design
+#### 2.11.2 Provider ID 鈥?Dual-Instance Design
 
 A single provider implementation may be registered under two distinct
 identifiers:
@@ -1775,14 +1776,14 @@ ClaudeCodeProvider(provider_id="claudecode", ...)
 
 **Frozen rules:**
 
-1. `provider_id` must be exactly `"claude"` or `"claudecode"` — no
+1. `provider_id` must be exactly `"claude"` or `"claudecode"` 鈥?no
    other values are permitted.
 2. Each instance's `provider_id` **must** equal its key in the providers
    `Mapping[str, AgentCliProvider]` passed to `run_dispatch`.
 3. `"claudecode"` must **not** be alias-normalized to `"claude"`.
 4. `ModelSelectionSnapshot.selected_model_provider` must **not** be
    modified by the provider.
-5. There is **no** module-level mutable provider registry — no
+5. There is **no** module-level mutable provider registry 鈥?no
    `register_provider()`, no `unregister_provider()`.
 
 **Explicitly prohibited:**
@@ -1797,7 +1798,7 @@ unchanged.
 
 ---
 
-#### 2.11.3 Prompt Transmission — Stdin-Only
+#### 2.11.3 Prompt Transmission 鈥?Stdin-Only
 
 `DispatchRequest.prompt` is the sole source of task content.
 
@@ -1809,7 +1810,7 @@ stdin = request.prompt.encode("utf-8")
 
 **Frozen rules:**
 
-* UTF-8 strict encoding — no `errors="ignore"` or `errors="replace"`.
+* UTF-8 strict encoding 鈥?no `errors="ignore"` or `errors="replace"`.
 * No BOM (byte-order mark).
 * The prompt must not be modified, trimmed, normalized, or concatenated
   with any other content.
@@ -1853,8 +1854,8 @@ Required flags:
 | `-p` | Fixed control prompt (compile-time constant) |
 | `--output-format` | `json` |
 | `--model` | `request.model_selection.selected_model_id` |
-| `--permission-mode` | Configured safe mode (see §2.11.7) |
-| `--effort` | Mapped effort (see §2.11.6) |
+| `--permission-mode` | Configured safe mode (see 搂2.11.7) |
+| `--effort` | Mapped effort (see 搂2.11.6) |
 | `--no-session-persistence` | (flag, no argument) |
 | `--allowedTools` | Each allowed tool as a separate argv element (see below) |
 | `--disallowedTools` | Each disallowed tool as a separate argv element (see below) |
@@ -1905,7 +1906,7 @@ def build_invocation(
 4. Allowed block always precedes disallowed block.
 5. When a tuple is empty, the corresponding flag and its arguments
    are omitted entirely.
-6. The flag is emitted once — it is NOT repeated per tool.
+6. The flag is emitted once 鈥?it is NOT repeated per tool.
 7. `executable` does NOT appear in `argv`.
 8. The result is always `tuple(argv)`.
 
@@ -1938,7 +1939,7 @@ argv == (
 )
 ```
 
-**Precise example** (allowed only — disallowed omitted):
+**Precise example** (allowed only 鈥?disallowed omitted):
 
 ```python
 allowed_tools = ("Bash(curl:*)",)
@@ -1963,7 +1964,7 @@ argv == (
 * Multiple tools are NOT joined by commas, spaces, or shell
   concatenation.
 * The task prompt must NOT appear in tool flags.
-* No shell string — each element is a separate `argv` token.
+* No shell string 鈥?each element is a separate `argv` token.
 * No shell wrapper (`cmd /c`, `powershell -Command`, `bash -c`).
 
 ---
@@ -1991,11 +1992,11 @@ generates:
 * silently fall back to another model.
 
 An empty string or otherwise invalid model ID must **fail closed**
-(see §2.11.12).
+(see 搂2.11.12).
 
 ---
 
-#### 2.11.6 Deliberation Tier → Claude Effort Mapping
+#### 2.11.6 Deliberation Tier 鈫?Claude Effort Mapping
 
 Frozen mapping:
 
@@ -2012,7 +2013,7 @@ Input source: `request.model_selection.selected_deliberation_tier`.
 * This is a **provider-specific** mapping from AgentDesk terminology
   to Claude CLI terminology.
 * It does **not** imply the two tier systems are semantically identical.
-* An unknown deliberation tier must **fail closed** — no silent default
+* An unknown deliberation tier must **fail closed** 鈥?no silent default
   to `medium`.
 * `MadDeliberationDepth.fast` is a **MAD** concept distinct from
   AgentDesk `efficient`; they are not the same enum and must not be
@@ -2020,7 +2021,7 @@ Input source: `request.model_selection.selected_deliberation_tier`.
 
 ---
 
-#### 2.11.7 Permission Mode — Safe Set
+#### 2.11.7 Permission Mode 鈥?Safe Set
 
 Allowed permission modes:
 
@@ -2043,7 +2044,7 @@ Reasons:
 * `delegate` is not part of the single-worker CLI execution model
   frozen in this task.
 
-An unknown permission mode must **fail closed** — no silent fallback
+An unknown permission mode must **fail closed** 鈥?no silent fallback
 to `default`.
 
 No equivalent dangerous skip-permissions argument may be enabled.
@@ -2063,15 +2064,15 @@ disallowed_tools: tuple[str, ...]
 
 * At construction time, external sequences are copied into `tuple`.
 * Every entry must be a non-empty string.
-* Leading and trailing whitespace on any entry is forbidden — reject
+* Leading and trailing whitespace on any entry is forbidden 鈥?reject
   at construction.
-* Duplicate entries are forbidden — reject at construction.
+* Duplicate entries are forbidden 鈥?reject at construction.
 * Original order is preserved.
 * Mutating the source list after construction does **not** affect the
   provider's stored tuples.
 * Both tuples may be empty.
 * When empty, the corresponding `--allowedTools` / `--disallowedTools`
-  block is omitted entirely from `argv` (see §2.11.4).
+  block is omitted entirely from `argv` (see 搂2.11.4).
 
 When non-empty, each entry is serialized as a separate `argv` element
 following the flag.  No shell string concatenation is performed.
@@ -2086,7 +2087,7 @@ if not set(allowed_tools).isdisjoint(disallowed_tools):
 ```
 
 The same exact tool string must **not** appear in both tuples.  This is
-validated at construction time — the provider raises `ValueError`, not
+validated at construction time 鈥?the provider raises `ValueError`, not
 a warning.
 
 Must **not:**
@@ -2097,12 +2098,12 @@ Must **not:**
 * trim before comparing.
 
 The intersection check uses exact string equality on the validated
-entries (after individual-entry validation — non-empty, no whitespace,
+entries (after individual-entry validation 鈥?non-empty, no whitespace,
 etc.).
 
 ---
 
-#### 2.11.9 ClaudeCodeProvider — Frozen Public API
+#### 2.11.9 ClaudeCodeProvider 鈥?Frozen Public API
 
 `ClaudeCodeProvider` **is** the configuration.  There is no separate
 `ClaudeCodeProviderConfig` class.
@@ -2125,7 +2126,7 @@ _CONTROL_PROMPT = (
 
 @dataclass(frozen=True, slots=True)
 class ClaudeCodeProvider:
-    """Claude Code CLI adapter — TC-13.8 frozen contract."""
+    """Claude Code CLI adapter 鈥?TC-13.8 frozen contract."""
 
     provider_id: str
     executable: str
@@ -2134,7 +2135,7 @@ class ClaudeCodeProvider:
     disallowed_tools: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        # Reject at construction — ValueError on any illegal input.
+        # Reject at construction 鈥?ValueError on any illegal input.
         ...
 
     def build_invocation(
@@ -2147,7 +2148,7 @@ class ClaudeCodeProvider:
 __all__ = ["ClaudeCodeProvider"]
 ```
 
-**Exactly five fields — no more, no less:**
+**Exactly five fields 鈥?no more, no less:**
 
 | # | Field | Type | Constraint |
 |---|-------|------|------------|
@@ -2160,10 +2161,10 @@ __all__ = ["ClaudeCodeProvider"]
 `_CONTROL_PROMPT` is a **private** module-level constant (not a
 dataclass field, not a `ClassVar`, not in `__all__`).  ``dataclasses
 .fields(ClaudeCodeProvider)`` returns **exactly five** field objects.
-It is a compile-time string literal — it never contains task content,
+It is a compile-time string literal 鈥?it never contains task content,
 paths, dispatch IDs, or any request data.
 
-**Forbidden sixth field** — these must **never** appear on
+**Forbidden sixth field** 鈥?these must **never** appear on
 `ClaudeCodeProvider`:
 
 ```text
@@ -2194,38 +2195,38 @@ not a sixth provider field.
 * Must be `str`, non-empty, not pure whitespace.
 * Must not contain leading or trailing whitespace.
 * Must not contain NUL (`\x00`), CR (`\r`), or LF (`\n`).
-* Must not contain embedded arguments — no shell-command-as-string.
+* Must not contain embedded arguments 鈥?no shell-command-as-string.
 * A path containing ordinary spaces (e.g.
   `C:\Program Files\Claude\claude.exe`) **is** legal and must not be
   rejected as "embedded arguments".
 * The provider does **not** call `shlex.split()`, `shutil.which()`,
-  `os.fspath`, or any other path-resolution function — executable
-  resolution remains the Gateway's responsibility (§2.10.9).
+  `os.fspath`, or any other path-resolution function 鈥?executable
+  resolution remains the Gateway's responsibility (搂2.10.9).
 
-**Construction rejection — `ValueError`:** `ClaudeCodeProvider.__init__`
+**Construction rejection 鈥?`ValueError`:** `ClaudeCodeProvider.__init__`
 and `__post_init__` raise `ValueError` (not a custom exception class,
 not a warning) for:
 
 * `provider_id` not `"claude"` or `"claudecode"`;
 * `executable` empty, pure whitespace, contains NUL/CR/LF, or contains
   embedded arguments;
-* `permission_mode` not in the safe set (§2.11.7);
+* `permission_mode` not in the safe set (搂2.11.7);
 * any tool entry not a `str`, empty, or with leading/trailing whitespace;
 * duplicate tool entry;
 * non-empty intersection between `allowed_tools` and
-  `disallowed_tools` (see §2.11.8).
+  `disallowed_tools` (see 搂2.11.8).
 
-**`build_invocation` rejection — `ValueError`:** raises `ValueError`
+**`build_invocation` rejection 鈥?`ValueError`:** raises `ValueError`
 for:
 
-* unknown `selected_deliberation_tier` (see §2.11.6);
+* unknown `selected_deliberation_tier` (see 搂2.11.6);
 * any other request field that cannot be mapped per this contract.
 
 **Gateway wrapping:** `run_dispatch()` (TC-13.7) wraps provider
 exceptions into `DispatchInvocationError`.  TC-13.8 does **not**
 introduce a parallel public exception hierarchy.
 
-**Module public surface** — the production module
+**Module public surface** 鈥?the production module
 `skills/agentdesk/scripts/claude_code_provider.py` will export
 exactly one public symbol:
 
@@ -2259,7 +2260,7 @@ The Claude Code Provider:
 Authentication is the responsibility of the installation environment
 and the Claude CLI itself.
 
-The `--bare` flag is **not** included in this frozen contract — it
+The `--bare` flag is **not** included in this frozen contract 鈥?it
 may alter authentication and configuration loading behavior and
 requires separate evaluation.
 
@@ -2271,12 +2272,12 @@ The following must **never** appear in `argv`:
 
 | Forbidden Flag / Pattern | Reason |
 |--------------------------|--------|
-| `--continue` | Session resumption — single-shot only |
-| `--resume` | Session resumption — single-shot only |
-| `--session-id` | Session persistence — single-shot only |
-| `--fork-session` | Multi-session — not in scope |
-| `--remote` | Remote execution — not in scope |
-| `--teleport` | Remote execution — not in scope |
+| `--continue` | Session resumption 鈥?single-shot only |
+| `--resume` | Session resumption 鈥?single-shot only |
+| `--session-id` | Session persistence 鈥?single-shot only |
+| `--fork-session` | Multi-session 鈥?not in scope |
+| `--remote` | Remote execution 鈥?not in scope |
+| `--teleport` | Remote execution 鈥?not in scope |
 | `--dangerously-skip-permissions` | Security bypass |
 | `--permission-mode bypassPermissions` | Security bypass |
 | `--add-dir` for primary workspace | cwd handled by Gateway |
@@ -2305,10 +2306,10 @@ The provider must **reject** (fail closed, no silent recovery) for:
 | Tool entry empty string | `ValueError` at construction |
 | Tool entry has leading/trailing whitespace | `ValueError` at construction |
 | Duplicate tool entry in same tuple | `ValueError` at construction |
-| allowed ∩ disallowed not disjoint | `ValueError` at construction |
+| allowed 鈭?disallowed not disjoint | `ValueError` at construction |
 | Unknown `selected_deliberation_tier` | `ValueError` in `build_invocation` |
-| `provider_id` ≠ mapping key | `DispatchInputError` by Gateway (TC-13.7) |
-| Prompt cannot be transmitted per UTF-8 contract | `ValueError` — no replacement or trimming |
+| `provider_id` 鈮?mapping key | `DispatchInputError` by Gateway (TC-13.7) |
+| Prompt cannot be transmitted per UTF-8 contract | `ValueError` 鈥?no replacement or trimming |
 
 No silent correction, trimming, fallback, or alias normalization is
 permitted.
@@ -2343,9 +2344,9 @@ Worker delivery transformation belong to **TC-13.9c**.
 TC-13.8 does **not** implement:
 
 * `WorkerAdapter` (TC-13.9a/9b)
-* `WorkerKind` → provider selection (TC-13.9a/9b)
+* `WorkerKind` 鈫?provider selection (TC-13.9a/9b)
 * `ContextBudgetPolicy` invocation (TC-13.5.1 / TC-13.9a/9b)
-* Context budget → CLI argument translation (TC-13.9a/9b)
+* Context budget 鈫?CLI argument translation (TC-13.9a/9b)
 * Dispatch scheduling (TC-13.18)
 * Worker slot allocation (TC-13.10)
 * Lease management (TC-13.10)
@@ -2366,16 +2367,16 @@ All of the above remain **Target** for their respective task cards.
 
 * ADR Interface Status row #30 "Claude Code CLI contract"
   is **Current**.
-* This section (§2.11) is the Frozen Contract for TC-13.8 — it governs
+* This section (搂2.11) is the Frozen Contract for TC-13.8 鈥?it governs
   future implementation and test work.
 * TC-13.7 and all prior Current interfaces remain **Current**.
-* TC-13.8 is **Current** — the production provider module
+* TC-13.8 is **Current** 鈥?the production provider module
   (`claude_code_provider.py`) and complete test suite
   (`test_claude_code_provider.py`) are committed.
 
-### 2.12 Codex CLI Provider — Frozen Contract (Current — TC-13.8.4)
+### 2.12 Codex CLI Provider 鈥?Frozen Contract (Current 鈥?TC-13.8.4)
 
-TC-13.8.3 froze the **Codex CLI Provider** contract — the frozen public
+TC-13.8.3 froze the **Codex CLI Provider** contract 鈥?the frozen public
 interface recorded in this section.  TC-13.8.4 implemented the production
 provider module (`codex_cli_provider.py`) and the complete test suite
 (`test_codex_cli_provider.py`).  Both are now committed and this
@@ -2391,7 +2392,7 @@ an `AgentCliInvocation`:
 
 ```
 DispatchRequest
-    ↓
+    鈫?
 AgentCliInvocation(
     executable,
     argv,
@@ -2403,15 +2404,15 @@ AgentCliInvocation(
 Codex CLI Provider is responsible **only** for constructing this
 invocation value.  It does **not**:
 
-* launch subprocesses — TC-13.7 `DispatcherAgentGateway` owns this;
-* set `cwd` — `request.workspace` is passed as `cwd=str(request.workspace)`
+* launch subprocesses 鈥?TC-13.7 `DispatcherAgentGateway` owns this;
+* set `cwd` 鈥?`request.workspace` is passed as `cwd=str(request.workspace)`
   by the Gateway, never by the provider;
-* implement timeout or cancellation — Gateway responsibility;
-* terminate process trees — Gateway responsibility;
-* compute stdout/stderr SHA-256 — Gateway responsibility;
-* parse `DispatchResult.stdout` — stdout is opaque bytes (TC-13.7);
-* write files or persist state — Gateway is a pure execution boundary;
-* implement retry, lease, slot, or escalation — deferred to TC-13.9a/9b / TC-13.10 / TC-13.11;
+* implement timeout or cancellation 鈥?Gateway responsibility;
+* terminate process trees 鈥?Gateway responsibility;
+* compute stdout/stderr SHA-256 鈥?Gateway responsibility;
+* parse `DispatchResult.stdout` 鈥?stdout is opaque bytes (TC-13.7);
+* write files or persist state 鈥?Gateway is a pure execution boundary;
+* implement retry, lease, slot, or escalation 鈥?deferred to TC-13.9a/9b / TC-13.10 / TC-13.11;
 * manage authentication or secrets.
 
 The provider must **not** have a `cwd` field, must not call `os.chdir()`,
@@ -2419,7 +2420,7 @@ and must not use `-C`/`--cd` or `--add-dir`.
 
 ---
 
-#### 2.12.2 Provider ID — Single Identifier
+#### 2.12.2 Provider ID 鈥?Single Identifier
 
 Only one provider identifier is permitted:
 
@@ -2429,26 +2430,26 @@ codex
 
 **Frozen rules:**
 
-1. `provider_id` must be exactly `"codex"` — no other values are permitted.
+1. `provider_id` must be exactly `"codex"` 鈥?no other values are permitted.
 2. The instance's `provider_id` **must** equal its key in the providers
    `Mapping[str, AgentCliProvider]` passed to `run_dispatch`.
 3. `ModelSelectionSnapshot.selected_model_provider` must **not** be
    modified by the provider.
-4. There is **no** module-level mutable provider registry — no
+4. There is **no** module-level mutable provider registry 鈥?no
    `register_provider()`, no `unregister_provider()`.
 
 **Explicitly prohibited provider_id values:**
 
 ```text
-openai        — may represent OpenAI API provider, not Codex CLI
-openai-codex  — not a CLI provider identifier
-codexcli      — not a CLI provider identifier
-Codex         — case variant
-CODEX         — case variant
-claude        — Claude Code domain
-""            — empty
-None          — non-str
-True / 1      — non-str
+openai        鈥?may represent OpenAI API provider, not Codex CLI
+openai-codex  鈥?not a CLI provider identifier
+codexcli      鈥?not a CLI provider identifier
+Codex         鈥?case variant
+CODEX         鈥?case variant
+claude        鈥?Claude Code domain
+""            鈥?empty
+None          鈥?non-str
+True / 1      鈥?non-str
 ```
 
 No alias normalization is permitted.  `"openai"` is semantically
@@ -2457,7 +2458,7 @@ must **not** be accepted as a provider_id for the Codex CLI.
 
 ---
 
-#### 2.12.3 Prompt Transmission — Stdin-Only
+#### 2.12.3 Prompt Transmission 鈥?Stdin-Only
 
 `DispatchRequest.prompt` is the sole source of task content.
 
@@ -2469,7 +2470,7 @@ stdin = request.prompt.encode("utf-8")
 
 **Frozen rules:**
 
-* UTF-8 strict encoding — no `errors="ignore"` or `errors="replace"`.
+* UTF-8 strict encoding 鈥?no `errors="ignore"` or `errors="replace"`.
 * No BOM (byte-order mark).
 * The prompt must not be modified, trimmed, normalized, or concatenated
   with any other content.
@@ -2516,8 +2517,8 @@ Required flags:
 | `--json` | (flag, no argument) |
 | `--color` | `never` |
 | `--model` | `request.model_selection.selected_model_id` |
-| `--sandbox` | Configured safe mode (see §2.12.7) |
-| `-c` | `model_reasoning_effort="<mapped_effort>"` (see §2.12.6) |
+| `--sandbox` | Configured safe mode (see 搂2.12.7) |
+| `-c` | `model_reasoning_effort="<mapped_effort>"` (see 搂2.12.6) |
 | `-` | Stdin positional marker (must be last) |
 
 `executable` and `argv` are strictly separated:
@@ -2566,9 +2567,9 @@ def build_invocation(
 2. `exec` sub-command.
 3. `exec` options: `--ephemeral`, `--json`, `--color never`.
 4. `--model <model_id>`, `--sandbox <sandbox_mode>`.
-5. `-c model_reasoning_effort="<effort>"` — the entire key=value is one
+5. `-c model_reasoning_effort="<effort>"` 鈥?the entire key=value is one
    argv element.
-6. `-` — stdin marker, must be last.
+6. `-` 鈥?stdin marker, must be last.
 7. `executable` does NOT appear in `argv`.
 8. The result is always `tuple(argv)`.
 
@@ -2623,11 +2624,11 @@ generates:
 * add `--oss` or `--local-provider`.
 
 An empty string or otherwise invalid model ID must **fail closed**
-(see §2.12.12).
+(see 搂2.12.12).
 
 ---
 
-#### 2.12.6 Deliberation Tier → Codex Reasoning Effort Mapping
+#### 2.12.6 Deliberation Tier 鈫?Codex Reasoning Effort Mapping
 
 Codex CLI has no standalone `--effort` flag.  Reasoning effort is
 configured via the `model_reasoning_effort` config key passed through
@@ -2654,22 +2655,22 @@ Input source: `request.model_selection.selected_deliberation_tier`.
 * This is a **provider-specific** mapping from AgentDesk terminology
   to Codex CLI configuration.
 * It does **not** imply the two tier systems are semantically identical.
-* An unknown deliberation tier must **fail closed** — no silent default
+* An unknown deliberation tier must **fail closed** 鈥?no silent default
   to `medium`.
 * `MadDeliberationDepth.fast` is a **MAD** concept distinct from
   AgentDesk `efficient`; they are not the same enum and must not be
   treated as interchangeable.
-* `minimal` is **not** mapped — AgentDesk has no corresponding tier.
-* `xhigh` is **not** mapped — AgentDesk has no corresponding tier.
+* `minimal` is **not** mapped 鈥?AgentDesk has no corresponding tier.
+* `xhigh` is **not** mapped 鈥?AgentDesk has no corresponding tier.
 * Whether a specific model supports a given reasoning effort value is
   outside the provider's scope; if the CLI or model rejects the value,
   the Gateway's non-zero-exit semantics handle it.
-* No other `-c` override is permitted — the caller cannot supply
+* No other `-c` override is permitted 鈥?the caller cannot supply
   arbitrary config values.
 
 ---
 
-#### 2.12.7 Sandbox Mode — Safe Set
+#### 2.12.7 Sandbox Mode 鈥?Safe Set
 
 Allowed sandbox modes:
 
@@ -2686,14 +2687,14 @@ danger-full-access
 
 These values are the published sandbox modes from `codex --help`:
 
-> `-s, --sandbox <SANDBOX_MODE>` — `[possible values: read-only,
+> `-s, --sandbox <SANDBOX_MODE>` 鈥?`[possible values: read-only,
 > workspace-write, danger-full-access]`
 
 Reasons:
-* `danger-full-access` grants full filesystem access — violates the
+* `danger-full-access` grants full filesystem access 鈥?violates the
   least-privilege boundary for a single Worker invocation.
 
-An unknown sandbox mode must **fail closed** — no silent fallback
+An unknown sandbox mode must **fail closed** 鈥?no silent fallback
 to `workspace-write`.
 
 The provider does **not** make additional promises about OS-level
@@ -2703,9 +2704,9 @@ boundary.
 
 ---
 
-#### 2.12.8 Approval Policy — Fixed `never`
+#### 2.12.8 Approval Policy 鈥?Fixed `never`
 
-Approval policy is hard-coded as `never` — it is **not** a provider
+Approval policy is hard-coded as `never` 鈥?it is **not** a provider
 field:
 
 ```text
@@ -2714,15 +2715,15 @@ field:
 
 Frozen rules:
 
-* The value is always `"never"` — callers cannot override it.
+* The value is always `"never"` 鈥?callers cannot override it.
 * The flag must appear **before** `exec`.
 * `"never"` means: do not prompt for interactive approval; execution
   failures are immediately returned to the model.
-* `"never"` does **not** bypass the sandbox — `--sandbox` remains in
+* `"never"` does **not** bypass the sandbox 鈥?`--sandbox` remains in
   effect.
-* `"untrusted"` is **forbidden** — it may still request interactive
+* `"untrusted"` is **forbidden** 鈥?it may still request interactive
   approval for non-trusted commands.
-* `"on-request"` is **forbidden** — the model may request interactive
+* `"on-request"` is **forbidden** 鈥?the model may request interactive
   approval, which is unavailable in a non-interactive subprocess.
 
 AgentDesk's own `ApprovalGate` (TC-13.12) remains the control-plane
@@ -2743,21 +2744,21 @@ The contract promises:
 
 > Codex session files are not persisted to disk.
 
-It does **not** promise zero file I/O — the Codex CLI may still access
+It does **not** promise zero file I/O 鈥?the Codex CLI may still access
 authentication storage, configuration, caches, or platform runtime data.
 
 Explicitly **forbidden**:
 
 ```text
-exec resume       — session resumption
-resume            — top-level session resumption
-fork              — session forking
-session ID flags  — session identity
+exec resume       鈥?session resumption
+resume            鈥?top-level session resumption
+fork              鈥?session forking
+session ID flags  鈥?session identity
 ```
 
 ---
 
-#### 2.12.10 User Config & Rules — Not Overridden
+#### 2.12.10 User Config & Rules 鈥?Not Overridden
 
 The provider does **not** supply:
 
@@ -2774,24 +2775,24 @@ and does **not** accept arbitrary `-c` overrides from callers.
 
 Rationale:
 
-* `--ignore-user-config` — the effect on managed/enterprise policy is
+* `--ignore-user-config` 鈥?the effect on managed/enterprise policy is
   not yet verified; turning it on could drop enterprise security
   controls.
-* `--ignore-rules` — disables execpolicy `.rules` files; clear security
+* `--ignore-rules` 鈥?disables execpolicy `.rules` files; clear security
   risk.
-* `--profile`, `--enable`, `--disable` — introduce non-deterministic
+* `--profile`, `--enable`, `--disable` 鈥?introduce non-deterministic
   configuration.
-* Arbitrary `-c` — could override sandbox, approval, or model settings.
-* `--strict-config` — could cause unrelated config version mismatches
+* Arbitrary `-c` 鈥?could override sandbox, approval, or model settings.
+* `--strict-config` 鈥?could cause unrelated config version mismatches
   to block Worker dispatch.
 
 The **only** `-c` override the provider generates is the fixed
-reasoning-effort key (§2.12.6).  Future changes to this policy require
+reasoning-effort key (搂2.12.6).  Future changes to this policy require
 a separate contract revision.
 
 ---
 
-#### 2.12.11 CodexCliProvider — Frozen Public API
+#### 2.12.11 CodexCliProvider 鈥?Frozen Public API
 
 `CodexCliProvider` **is** the configuration.  There is no separate
 `CodexCliProviderConfig` class.
@@ -2810,14 +2811,14 @@ from dispatcher_gateway import (
 
 @dataclass(frozen=True, slots=True)
 class CodexCliProvider:
-    """Codex CLI adapter — TC-13.8.3 frozen contract."""
+    """Codex CLI adapter 鈥?TC-13.8.3 frozen contract."""
 
     provider_id: str
     executable: str
     sandbox_mode: str
 
     def __post_init__(self) -> None:
-        # Reject at construction — ValueError on any illegal input.
+        # Reject at construction 鈥?ValueError on any illegal input.
         ...
 
     def build_invocation(
@@ -2830,7 +2831,7 @@ class CodexCliProvider:
 __all__ = ["CodexCliProvider"]
 ```
 
-**Exactly three fields — no more, no less:**
+**Exactly three fields 鈥?no more, no less:**
 
 | # | Field | Type | Constraint |
 |---|-------|------|------------|
@@ -2838,10 +2839,10 @@ __all__ = ["CodexCliProvider"]
 | 2 | `executable` | `str` | See executable rules below |
 | 3 | `sandbox_mode` | `str` | `"read-only"` or `"workspace-write"` |
 
-`approval_policy` is **not** a field — it is hard-coded as `"never"`
-(§2.12.8).
+`approval_policy` is **not** a field 鈥?it is hard-coded as `"never"`
+(搂2.12.8).
 
-**Forbidden fields** — these must **never** appear on
+**Forbidden fields** 鈥?these must **never** appear on
 `CodexCliProvider`:
 
 ```text
@@ -2874,15 +2875,15 @@ not a provider field.
 * Must not contain leading or trailing whitespace.
 * Must not contain NUL (`\x00`), CR (`\r`), LF (`\n`), TAB (`\t`),
   VT (`\v`), or FF (`\f`).
-* Must not contain embedded arguments — no shell-command-as-string.
+* Must not contain embedded arguments 鈥?no shell-command-as-string.
 * Must not contain shell metacharacters (`&`, `|`, `;`, `` ` ``,
   `$`, `<`, `>`, `(`, `)`, `"`, `'`).
 * A path containing ordinary spaces (e.g.
   `C:\Program Files\OpenAI\codex.exe`) **is** legal and must not be
   rejected as "embedded arguments".
 * The provider does **not** call `shlex.split()`, `shutil.which()`,
-  `os.fspath`, or any other path-resolution function — executable
-  resolution remains the Gateway's responsibility (§2.10.9).
+  `os.fspath`, or any other path-resolution function 鈥?executable
+  resolution remains the Gateway's responsibility (搂2.10.9).
 
 **Allowed executable values:**
 
@@ -2893,27 +2894,27 @@ codex.cmd
 <absolute native codex.exe path>
 ```
 
-**Construction rejection — `ValueError`:** `CodexCliProvider.__init__`
+**Construction rejection 鈥?`ValueError`:** `CodexCliProvider.__init__`
 and `__post_init__` raise `ValueError` for:
 
 * `provider_id` not `"codex"`;
 * `executable` empty, pure whitespace, contains NUL/CR/LF/TAB/VT/FF,
   or contains embedded arguments or shell metacharacters;
-* `sandbox_mode` not in the safe set (§2.12.7).
+* `sandbox_mode` not in the safe set (搂2.12.7).
 
-**`build_invocation` rejection — `ValueError`:** raises `ValueError`
+**`build_invocation` rejection 鈥?`ValueError`:** raises `ValueError`
 for:
 
-* unknown `selected_deliberation_tier` (see §2.12.6);
+* unknown `selected_deliberation_tier` (see 搂2.12.6);
 * `selected_model_id` empty, with leading/trailing whitespace, or
-  containing characters outside the strict allowlist (§2.12.4);
+  containing characters outside the strict allowlist (搂2.12.4);
 * any other request field that cannot be mapped per this contract.
 
 **Gateway wrapping:** `run_dispatch()` (TC-13.7) wraps provider
 exceptions into `DispatchInvocationError`.  TC-13.8.3 does **not**
 introduce a parallel public exception hierarchy.
 
-**Module public surface** — the future production module
+**Module public surface** 鈥?the future production module
 `skills/agentdesk/scripts/codex_cli_provider.py` will export
 exactly one public symbol:
 
@@ -2981,7 +2982,7 @@ sequences, keeping the opaque bytes contract clean.
 
 ---
 
-#### 2.12.14 File Output Parameters — Permanently Forbidden
+#### 2.12.14 File Output Parameters 鈥?Permanently Forbidden
 
 The following must **never** appear in `argv`:
 
@@ -2993,7 +2994,7 @@ The following must **never** appear in `argv`:
 
 Reasons:
 
-* Both require file paths — introducing file lifecycle management
+* Both require file paths 鈥?introducing file lifecycle management
   beyond the pure `AgentCliInvocation` construction boundary.
 * `--output-schema` requires a JSON Schema file to be created and
   managed externally.
@@ -3013,24 +3014,24 @@ The following must **never** appear in `argv`:
 | `--dangerously-bypass-approvals-and-sandbox` | Security bypass |
 | `--dangerously-bypass-hook-trust` | Hook trust bypass |
 | `--sandbox danger-full-access` | Full filesystem access |
-| `--search` | Live web search — non-deterministic |
-| `--oss` | Provider switch — bypasses model binding |
-| `--local-provider` | Provider switch — bypasses model binding |
-| `--remote` | Remote execution — not in scope |
-| `--remote-auth-token-env` | Remote auth — not in scope |
-| `--enable` / `--disable` | Feature flag — non-deterministic |
+| `--search` | Live web search 鈥?non-deterministic |
+| `--oss` | Provider switch 鈥?bypasses model binding |
+| `--local-provider` | Provider switch 鈥?bypasses model binding |
+| `--remote` | Remote execution 鈥?not in scope |
+| `--remote-auth-token-env` | Remote auth 鈥?not in scope |
+| `--enable` / `--disable` | Feature flag 鈥?non-deterministic |
 | `--add-dir` | Additional writable directories |
 | `--skip-git-repo-check` | Bypasses Git requirement |
-| `-C` / `--cd` | Working directory override — cwd is Gateway's |
-| `-p` / `--profile` | Config profile — non-deterministic |
-| `-i` / `--image` | Image attachment — not in dispatch scope |
+| `-C` / `--cd` | Working directory override 鈥?cwd is Gateway's |
+| `-p` / `--profile` | Config profile 鈥?non-deterministic |
+| `-i` / `--image` | Image attachment 鈥?not in dispatch scope |
 | `--ignore-rules` | Disables execpolicy |
 | `--ignore-user-config` | Unverified enterprise policy impact |
 | `--strict-config` | Unrelated config version mismatch risk |
 | `--output-schema` | Requires file management |
 | `--output-last-message` / `-o` | Requires file writes |
 | `exec resume` | Session resumption |
-| `exec review` | Code review — not dispatch |
+| `exec review` | Code review 鈥?not dispatch |
 | Shell wrapper (`cmd /c`, `powershell -Command`, `bash -c`) | Process integrity |
 | Task prompt in argv | Stdin-only contract |
 | Secrets / API keys / tokens in argv | Security boundary |
@@ -3061,8 +3062,8 @@ The provider must **reject** (fail closed, no silent recovery) for:
 | `sandbox_mode` not in `{"read-only", "workspace-write"}` | `ValueError` at construction |
 | Unknown `selected_deliberation_tier` | `ValueError` in `build_invocation` |
 | `selected_model_id` empty, whitespace, or with forbidden characters | `ValueError` in `build_invocation` |
-| `provider_id` ≠ mapping key | `DispatchInputError` by Gateway (TC-13.7) |
-| Prompt cannot be transmitted per UTF-8 contract | `ValueError` — no replacement or trimming |
+| `provider_id` 鈮?mapping key | `DispatchInputError` by Gateway (TC-13.7) |
+| Prompt cannot be transmitted per UTF-8 contract | `ValueError` 鈥?no replacement or trimming |
 
 No silent correction, trimming, fallback, or alias normalization is
 permitted.
@@ -3073,11 +3074,11 @@ permitted.
 
 TC-13.8.3 does **not** implement:
 
-* Codex CLI Provider production module (`codex_cli_provider.py` — TC-13.8.4)
+* Codex CLI Provider production module (`codex_cli_provider.py` 鈥?TC-13.8.4)
 * `WorkerAdapter` (TC-13.9a/9b)
-* `WorkerKind` → provider selection (TC-13.9a/9b)
+* `WorkerKind` 鈫?provider selection (TC-13.9a/9b)
 * `ContextBudgetPolicy` invocation (TC-13.5.1 / TC-13.9a/9b)
-* Context budget → CLI argument translation (TC-13.9a/9b)
+* Context budget 鈫?CLI argument translation (TC-13.9a/9b)
 * Dispatch scheduling (TC-13.18)
 * Worker slot allocation (TC-13.10)
 * Lease management (TC-13.10)
@@ -3105,19 +3106,19 @@ All of the above remain **Target** for their respective task cards.
   is **Current** (TC-13.8.4).
 * TC-13.8.3 froze the contract; TC-13.8.4 implemented the production
   module and test suite.
-* This section (§2.12) remains the Frozen Contract — it governs the
+* This section (搂2.12) remains the Frozen Contract 鈥?it governs the
   implemented `CodexCliProvider`.
 * The production provider module (`codex_cli_provider.py`) and complete
   test suite (`test_codex_cli_provider.py`) are committed.
-* §2.10 (DispatcherAgentGateway), §2.11 (Claude Code CLI Provider),
+* 搂2.10 (DispatcherAgentGateway), 搂2.11 (Claude Code CLI Provider),
   and all prior Current interfaces remain **Current**.
-* TC-13.9a (WorkerAdapter Core contract) is **Target** — this section
-  (§2.13) is the Frozen Contract.  TC-13.9b (production implementation)
+* TC-13.9a (WorkerAdapter Core contract) is **Target** 鈥?this section
+  (搂2.13) is the Frozen Contract.  TC-13.9b (production implementation)
   and TC-13.9c (output decoding) remain Target.
 
 ---
 
-### 2.13 WorkerAdapter Core — Frozen Contract (Current — TC-13.9b)
+### 2.13 WorkerAdapter Core 鈥?Frozen Contract (Current 鈥?TC-13.9b)
 
 TC-13.9a freezes the **core execution orchestration** contract for
 `worker_adapter.py`.  It covers WorkerKind / TaskDifficulty separation,
@@ -3127,7 +3128,7 @@ concurrency slots, retry, escalation, or state persistence.
 
 ---
 
-#### 2.13.1 WorkerKind and TaskDifficulty — Independent Inputs
+#### 2.13.1 WorkerKind and TaskDifficulty 鈥?Independent Inputs
 
 `WorkerKind` and `TaskDifficulty` are **independent** inputs to
 `run_worker`.  Neither is derived from the other.
@@ -3138,14 +3139,14 @@ concurrency slots, retry, escalation, or state persistence.
    (`basic_agent` / `standard_agent` / `advanced_agent` / `expert_agent`).
 2. `TaskDifficulty` describes the task's intrinsic complexity
    (`basic` / `standard` / `advanced` / `expert`).
-3. The two values may differ — an Advanced task may be executed by an
+3. The two values may differ 鈥?an Advanced task may be executed by an
    Expert Worker after escalation, or a Basic task may be routed to a
    Standard Worker during capacity overflow.
 4. There is **no** one-to-one mapping between `WorkerKind` and
    `TaskDifficulty`.  No `_WORKER_KIND_TO_DIFFICULTY` dictionary, no
    string manipulation (`_agent` stripping), no enum-value casting, and
    no reverse mapping is permitted in production code.
-5. Both inputs must be enum members — bare strings, cross-enum values,
+5. Both inputs must be enum members 鈥?bare strings, cross-enum values,
    and non-enum types are rejected (fail-closed).
 6. Neither input has a default value in the `run_worker` signature.
 
@@ -3179,21 +3180,21 @@ async def run_worker(
 
 **Frozen rules:**
 
-* `providers` is a call-level explicit dependency — no module-level
+* `providers` is a call-level explicit dependency 鈥?no module-level
   registry, no `register_provider()`, no `unregister_provider()`.
 * Provider lookup follows the TC-13.7 pattern: the Gateway resolves the
   adapter from `request.model_selection.selected_model_provider`.
 * WorkerAdapter does **not** create Provider instances, does **not**
   modify the mapping, and does **not** require all three Provider IDs
-  to be present — only the one referenced by the snapshot is needed.
+  to be present 鈥?only the one referenced by the snapshot is needed.
 * WorkerAdapter does **not** call `select_model.py`, does **not**
   re-select the model, and does **not** apply fallback provider/model.
-* `request.model_selection` is consumed as-is — its ten-field snapshot
+* `request.model_selection` is consumed as-is 鈥?its ten-field snapshot
   is the single source of truth for provider and model routing.
 
 ---
 
-#### 2.13.3 WorkerResult — Exact Four Fields
+#### 2.13.3 WorkerResult 鈥?Exact Four Fields
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -3204,7 +3205,7 @@ class WorkerResult:
     dispatch_result: DispatchResult
 ```
 
-**Exactly four fields — no more, no less:**
+**Exactly four fields 鈥?no more, no less:**
 
 | # | Field | Type | Rule |
 |---|-------|------|------|
@@ -3216,19 +3217,19 @@ class WorkerResult:
 Fields **explicitly excluded**:
 
 ```text
-identity        — present in dispatch_result.identity
-request         — caller retains the original DispatchRequest
-snapshot        — present in request.model_selection
-provider        — present in dispatch_result.provider
-model_id        — present in dispatch_result.model_id
-final_text      — output decoding deferred to TC-13.9c
-output          — output decoding deferred to TC-13.9c
-events          — output decoding deferred to TC-13.9c
-executor_model  — ten-field copy belongs to report layer (TC-13.11)
-retry           — single-attempt only
-slot            — belongs to TC-13.10
-lease           — belongs to TC-13.10
-report          — file writes belong to TC-13.11
+identity        鈥?present in dispatch_result.identity
+request         鈥?caller retains the original DispatchRequest
+snapshot        鈥?present in request.model_selection
+provider        鈥?present in dispatch_result.provider
+model_id        鈥?present in dispatch_result.model_id
+final_text      鈥?output decoding deferred to TC-13.9c
+output          鈥?output decoding deferred to TC-13.9c
+events          鈥?output decoding deferred to TC-13.9c
+executor_model  鈥?ten-field copy belongs to report layer (TC-13.11)
+retry           鈥?single-attempt only
+slot            鈥?belongs to TC-13.10
+lease           鈥?belongs to TC-13.10
+report          鈥?file writes belong to TC-13.11
 ```
 
 `__all__` exports exactly two symbols:
@@ -3242,7 +3243,7 @@ exposed.
 
 ---
 
-#### 2.13.4 Execution Order — Single Frozen Sequence
+#### 2.13.4 Execution Order 鈥?Single Frozen Sequence
 
 ```text
 1. Validate request / worker_kind / task_difficulty
@@ -3263,18 +3264,18 @@ exposed.
 
 1. Budget **must** be computed before Gateway dispatch.  Budget failure
    (TypeError / ValueError from `compute_budget`) must propagate
-   immediately — the Gateway must not be called.
+   immediately 鈥?the Gateway must not be called.
 2. `run_dispatch` is called exactly once per `run_worker` invocation.
-3. `run_worker` does **not** call any `AgentCliProvider` method directly —
+3. `run_worker` does **not** call any `AgentCliProvider` method directly 鈥?
    all subprocess execution goes through `run_dispatch`.
 4. `DispatchRequest`, `ModelSelectionSnapshot`, and `providers` are not
    modified.
 5. `WorkerResult` is only returned when both steps succeed.  Every
-   failure path uses exceptions — no error-result flag.
+   failure path uses exceptions 鈥?no error-result flag.
 
 ---
 
-#### 2.13.5 Budget Semantics — Informational Only
+#### 2.13.5 Budget Semantics 鈥?Informational Only
 
 WorkerAdapter computes the budget and returns it as an informational
 result.  It does **not** enforce a token limit.
@@ -3287,10 +3288,10 @@ result.  It does **not** enforce a token limit.
   inside `compute_budget()`.
 * The full six-field `BudgetResult` is included in `WorkerResult.budget`.
 * WorkerAdapter does **not** modify, truncate, or compress the prompt (no prompt modification).
-* WorkerAdapter does **not** estimate token counts — character-count
+* WorkerAdapter does **not** estimate token counts 鈥?character-count
   approximations must not be used as token-count substitutes.
 * WorkerAdapter does **not** inject budget instructions into the prompt.
-* WorkerAdapter does **not** add any CLI budget flag — neither the
+* WorkerAdapter does **not** add any CLI budget flag 鈥?neither the
   Claude Code Provider nor the Codex CLI Provider accepts one.
 * WorkerAdapter does **not** write `BudgetResult` or any of its fields
   to a file, the existing ten-field snapshot, `executor_model`, an event,
@@ -3302,13 +3303,13 @@ result.  It does **not** enforce a token limit.
 
 ---
 
-#### 2.13.6 Output Boundary — Opaque Bytes
+#### 2.13.6 Output Boundary 鈥?Opaque Bytes
 
 WorkerAdapter core does **not** parse provider output.
 
 `WorkerResult.dispatch_result.stdout` and
-`WorkerResult.dispatch_result.stderr` remain opaque `bytes` — the exact
-same contract as `DispatchResult` (TC-13.7 §2.10.7).
+`WorkerResult.dispatch_result.stderr` remain opaque `bytes` 鈥?the exact
+same contract as `DispatchResult` (TC-13.7 搂2.10.7).
 
 **Frozen rules:**
 
@@ -3332,17 +3333,17 @@ WorkerAdapter core does **not** introduce a parallel exception hierarchy.
 
 **Frozen rules:**
 
-* Wrong `request` type → `TypeError`.
-* Wrong `worker_kind` type → `TypeError`.
-* Wrong `task_difficulty` type → `TypeError`.
-* `compute_budget()` `TypeError` / `ValueError` → propagated as-is.
-* All `DispatchGatewayError` subclasses → propagated as-is.
-* `asyncio.CancelledError` / `DispatchCancelledError` → not wrapped.
-* `WorkerResult` is only returned on complete success — no error-result
+* Wrong `request` type 鈫?`TypeError`.
+* Wrong `worker_kind` type 鈫?`TypeError`.
+* Wrong `task_difficulty` type 鈫?`TypeError`.
+* `compute_budget()` `TypeError` / `ValueError` 鈫?propagated as-is.
+* All `DispatchGatewayError` subclasses 鈫?propagated as-is.
+* `asyncio.CancelledError` / `DispatchCancelledError` 鈫?not wrapped.
+* `WorkerResult` is only returned on complete success 鈥?no error-result
   variant.
 * Exception messages must not contain the task prompt, full stdout, or
   full stderr bytes.
-* No `WorkerBudgetError`, no `WorkerOutputDecodeError` in the core —
+* No `WorkerBudgetError`, no `WorkerOutputDecodeError` in the core 鈥?
   these are deferred to future decoder work.
 
 ---
@@ -3362,8 +3363,8 @@ WorkerAdapter core does **not** introduce a parallel exception hierarchy.
 * No rate-limit handling.
 * No re-queue.
 
-Retry and orchestration → TC-13.18.  Escalation → TC-13.13.
-Rate limiting → TC-13.14.
+Retry and orchestration 鈫?TC-13.18.  Escalation 鈫?TC-13.13.
+Rate limiting 鈫?TC-13.14.
 
 ---
 
@@ -3434,13 +3435,13 @@ provider_output
 
 #### 2.13.12 Deep Immutability
 
-* `WorkerResult` is a frozen/slots dataclass — fields cannot be
+* `WorkerResult` is a frozen/slots dataclass 鈥?fields cannot be
   reassigned after construction.
-* `WorkerKind` and `TaskDifficulty` are enum members — hashable,
+* `WorkerKind` and `TaskDifficulty` are enum members 鈥?hashable,
   identity-stable.
-* `BudgetResult` is a `NamedTuple` — already immutable.
-* `DispatchResult` is a frozen/slots dataclass — already immutable.
-* `Mapping[str, AgentCliProvider]` is read-only — WorkerAdapter does
+* `BudgetResult` is a `NamedTuple` 鈥?already immutable.
+* `DispatchResult` is a frozen/slots dataclass 鈥?already immutable.
+* `Mapping[str, AgentCliProvider]` is read-only 鈥?WorkerAdapter does
   not convert it into a mutable registry.
 * No `list`, `dict`, or `set` is introduced in `WorkerResult`.
 * No input object is mutated.
@@ -3449,19 +3450,19 @@ provider_output
 
 #### 2.13.13 Task-Card Split
 
-The main Future Task Cards table (§5) records the three-card split
+The main Future Task Cards table (搂5) records the three-card split
 (TC-13.9a / TC-13.9b / TC-13.9c) and the updated TC-13.10 dependency.
 This section defines the per-card scope:
 
-* **TC-13.9a** — WorkerAdapter core contract freeze (this section).
+* **TC-13.9a** 鈥?WorkerAdapter core contract freeze (this section).
   Depends on TC-13.5.1, TC-13.7, TC-13.8, TC-13.8.4.
-* **TC-13.9b** — WorkerAdapter core production implementation
+* **TC-13.9b** 鈥?WorkerAdapter core production implementation
   (`worker_adapter.py`).  Depends on TC-13.9a.
-* **TC-13.9c** — Provider output decoding investigation and contract
+* **TC-13.9c** 鈥?Provider output decoding investigation and contract
   (Claude JSON + Codex JSONL).  Depends on TC-13.9b + reliable
   Claude/Codex output-schema evidence.
 
-TC-13.10a (`WorkerSlotLease` frozen contract — §2.5) depends on this ADR.
+TC-13.10a (`WorkerSlotLease` frozen contract 鈥?搂2.5) depends on this ADR.
 TC-13.10b (data model, store, atomic I/O) depends on TC-13.10a.
 TC-13.10c (acquire / release / renew / hold fence) depends on TC-13.10b.
 Concurrency fencing must not be blocked by output-decoding work.
@@ -3470,16 +3471,16 @@ Concurrency fencing must not be blocked by output-decoding work.
 
 #### 2.13.14 Status
 
-* ADR Interface Status row #32 "AgentDesk WorkerAdapter Core — Frozen
+* ADR Interface Status row #32 "AgentDesk WorkerAdapter Core 鈥?Frozen
   Contract" is **Current** (TC-13.9b).
-* This section (§2.13) is the Frozen Contract for TC-13.9a — it governs
+* This section (搂2.13) is the Frozen Contract for TC-13.9a 鈥?it governs
   the implemented production module (`worker_adapter.py`) and test suite.
 * The production module `worker_adapter.py` and matching test suite
   `test_worker_adapter.py` exist and are committed.
 * TC-13.9c (output decoding) remains **Target**.
 * TC-13.10 is **Current** (fully implemented by TC-13.10a/b/c).
 * TC-13.11, TC-13.14, and TC-13.18 remain **Target**.
-* TC-13.13a/b are **Current** — contract and production module complete.
+* TC-13.13a/b are **Current** 鈥?contract and production module complete.
 * All Current interfaces remain **Current**.
 
 
@@ -3491,7 +3492,7 @@ TC-13.11a freezes the **authoritative state-transition contract** for
 ``ControlPlaneTransitionService``.  It defines the CAS preconditions,
 lock ordering, event/outbox immutability rules, public API, exception
 hierarchy, and explicit non-goals.  No production code is shipped under
-TC-13.11a — the contract itself is the deliverable and must be
+TC-13.11a 鈥?the contract itself is the deliverable and must be
 implemented by TC-13.11b/c.
 
 ---
@@ -3516,7 +3517,7 @@ files:
 * ``BOARD.md`` and ``STATUS.md`` are derived views.  They are
   regenerated synchronously on every transition from the post-transition
   canonical state.  Derived views must **never** serve as CAS input.
-* Event and outbox files are immutable after creation — they are never
+* Event and outbox files are immutable after creation 鈥?they are never
   modified or overwritten.  Transport state (sent / acknowledged) is
   recorded in gitignored ``transport-receipts.yaml`` only, never in the
   immutable outbox file.
@@ -3532,7 +3533,7 @@ files:
 * ``render_views.py --check`` detects the drift.
 * The caller must re-render the views to restore consistency.
 * The service does **not** attempt to roll back already-replaced
-  canonical files — cross-file rollback is not possible at the
+  canonical files 鈥?cross-file rollback is not possible at the
   filesystem level and the service makes no claim to provide it.
 
 ---
@@ -3560,7 +3561,7 @@ class TransitionCAS:
 | ``expected_snapshot_commit`` | Caller (observed ``git rev-parse HEAD`` before constructing the request) | ``git rev-parse HEAD`` at service entry |
 
 ``expected_snapshot_commit`` is an **opaque observation** supplied by
-the caller — the service does not derive or guess it.  Before any file
+the caller 鈥?the service does not derive or guess it.  Before any file
 write, the service reads the current repository HEAD via ``git
 rev-parse HEAD`` and compares it to ``expected_snapshot_commit``.
 When the values differ, a concurrent writer has modified the repository
@@ -3573,23 +3574,23 @@ as event/outbox files left by a prior crash before ``tasks.yaml`` was
 written) do **not** change ``git rev-parse HEAD``.  A subsequent call
 with the same ``expected_snapshot_commit`` may therefore pass the Git
 HEAD CAS check even though orphan evidence exists on disk.  The service
-must **detect** orphan/partial evidence before writing (§2.14.6) and
+must **detect** orphan/partial evidence before writing (搂2.14.6) and
 must not silently replay over it.  The revision/state CAS still rejects
 a transition if ``tasks.yaml`` already reflects the target state.
 
 ---
-#### 2.14.3 Lease Epoch — Single Authority
+#### 2.14.3 Lease Epoch 鈥?Single Authority
 
 Each transition category has exactly **one** authoritative lease-epoch
 source:
 
 | Transition category | Lease source | Epoch field |
 |---------------------|-------------|-------------|
-| Worker-lifecycle transitions (dispatched → in_progress → review_ready → accepted / returned) | ``WorkerSlotLease`` object supplied by caller | ``lease.lease_epoch`` |
-| PM-only transitions (draft → ready, accepted → integrated, → blocked / cancelled / superseded) | ``pm_control.lease_epoch`` read from ``tasks.yaml`` at service entry | current ``pm_control.lease_epoch`` |
+| Worker-lifecycle transitions (dispatched 鈫?in_progress 鈫?review_ready 鈫?accepted / returned) | ``WorkerSlotLease`` object supplied by caller | ``lease.lease_epoch`` |
+| PM-only transitions (draft 鈫?ready, accepted 鈫?integrated, 鈫?blocked / cancelled / superseded) | ``pm_control.lease_epoch`` read from ``tasks.yaml`` at service entry | current ``pm_control.lease_epoch`` |
 
 The service never accepts a bare epoch integer from the caller alongside
-a ``WorkerSlotLease`` — the epoch is read exclusively from the supplied
+a ``WorkerSlotLease`` 鈥?the epoch is read exclusively from the supplied
 lease object.  ``WorkerSlotLeaseError`` subclasses (including
 ``WorkerSlotFencingError`` and ``WorkerSlotNotHeldError``) are
 propagated unchanged to the caller; the service does not introduce
@@ -3600,10 +3601,10 @@ check: the store's ``holder_id`` and ``lease_epoch`` must match the
 current ``tasks.yaml`` before the transition proceeds.
 
 ---
-#### 2.14.4 Lock Ordering — Frozen
+#### 2.14.4 Lock Ordering 鈥?Frozen
 
 **Worker-lifecycle transitions** must execute inside
-``hold_worker_slot_fence()`` (TC-13.10c §2.5.9) and additionally
+``hold_worker_slot_fence()`` (TC-13.10c 搂2.5.9) and additionally
 acquire a project-level control-plane state lock.  The frozen lock
 order is:
 
@@ -3620,7 +3621,7 @@ order is:
 ```
 
 **PM-only transitions** acquire only the control-plane state lock
-(steps 2–7).  No component may acquire the control-plane state lock
+(steps 2鈥?).  No component may acquire the control-plane state lock
 before the worker-slot lock when a Worker lease is held.  A call that
 enters the state lock while already holding the worker-slot lock is
 valid; the reverse order is an immediate ``TransitionLockOrderError``
@@ -3630,22 +3631,22 @@ The control-plane state lock uses a **stable lock file** at
 ``.agentdesk/runtime/.state-transition.lock`` with a **non-blocking
 OS advisory lock**:
 
-* **Windows**: ``msvcrt.locking(fd, LK_NBLCK, 1)`` — non-blocking
+* **Windows**: ``msvcrt.locking(fd, LK_NBLCK, 1)`` 鈥?non-blocking
   lock mode.  Contention raises ``IOError`` which is translated to
   ``TransitionLockContentionError``.
 * **POSIX** (Linux / macOS): ``fcntl.flock(fd, LOCK_EX | LOCK_NB)``
-  — non-blocking exclusive lock.  Contention returns ``EAGAIN`` /
+  鈥?non-blocking exclusive lock.  Contention returns ``EAGAIN`` /
   ``EACCES`` which is translated to
   ``TransitionLockContentionError``.
 * **Unsupported platforms**: fail-closed with
   ``TransitionLockContentionError``.
 
-The lock file is **never deleted** — its existence does not indicate
+The lock file is **never deleted** 鈥?its existence does not indicate
 that the lock is held.  Only the OS advisory lock decides ownership.
 Process-termination releases the OS advisory lock automatically;
 there is no stale-token recovery, no force-unlock, no mtime-based
 cleanup, and no retry.  Contention raises
-``TransitionLockContentionError`` immediately — no sleeping,
+``TransitionLockContentionError`` immediately 鈥?no sleeping,
 waiting, polling, or retry.
 
 **Lock file descriptor lifecycle**:
@@ -3703,7 +3704,7 @@ fixed order:
 1. Acquire locks
 2. Read existing canonical state (tasks.yaml, events/, outbox/,
    acceptances/)
-3a. Full idempotent-replay check — if ALL of the following hold:
+3a. Full idempotent-replay check 鈥?if ALL of the following hold:
       a. event file with event_id already exists AND its serialised
          bytes match what would be written now;
       b. if an outbox is expected (dispatch transitions): outbox file
@@ -3714,19 +3715,19 @@ fixed order:
       d. if acceptance is expected: acceptance record exists with
          matching content;
       e. no orphan/partial evidence exists (see step 3b);
-   → return idempotent success (TransitionResult, zero file writes).
-3b. Orphan/partial evidence check — if some but not all of the
+   鈫?return idempotent success (TransitionResult, zero file writes).
+3b. Orphan/partial evidence check 鈥?if some but not all of the
     expected files exist (e.g. event exists but tasks.yaml has
     not transitioned; event+outbox exist but tasks.yaml has not
     transitioned):
-   → raise TransitionDuplicateEvidenceError with a description of
+   鈫?raise TransitionDuplicateEvidenceError with a description of
      which files are present and which are missing.  Zero writes.
      The caller must recover the partial transition before retrying.
-3c. If neither 3a nor 3b applies → continue.
+3c. If neither 3a nor 3b applies 鈫?continue.
 4. Validate CAS (revision, state, snapshot_commit, dispatch identity
    if applicable, lease epoch).
 5. Serialise all file contents to bytes.
-6. Write authoritative files in fixed order (§2.14.7).
+6. Write authoritative files in fixed order (搂2.14.7).
 7. Render and write derived views.
 8. Release locks.
 ```
@@ -3736,12 +3737,12 @@ overwrite an existing event, outbox, or acceptance record.
 
 | Scenario | Detection step | Behaviour |
 |----------|---------------|----------|
-| Same ``event_id``, identical content, ``tasks.yaml`` already at target state, all companion files present, no orphan evidence | 3a | **Idempotent success** — return existing result, zero writes |
-| Same ``event_id``, different content | 3b | ``TransitionDuplicateEvidenceError`` — zero writes |
-| Same ``message_id``, different content | 3b | ``TransitionDuplicateEvidenceError`` — zero writes |
-| Same ``dedupe_key``, different ``message_id`` | 3b | ``TransitionDuplicateEvidenceError`` — zero writes |
-| Event exists but ``tasks.yaml`` not at target state (partial transition) | 3b | ``TransitionDuplicateEvidenceError`` — zero writes |
-| Event+outbox exist but ``tasks.yaml`` not at target state (partial transition) | 3b | ``TransitionDuplicateEvidenceError`` — zero writes |
+| Same ``event_id``, identical content, ``tasks.yaml`` already at target state, all companion files present, no orphan evidence | 3a | **Idempotent success** 鈥?return existing result, zero writes |
+| Same ``event_id``, different content | 3b | ``TransitionDuplicateEvidenceError`` 鈥?zero writes |
+| Same ``message_id``, different content | 3b | ``TransitionDuplicateEvidenceError`` 鈥?zero writes |
+| Same ``dedupe_key``, different ``message_id`` | 3b | ``TransitionDuplicateEvidenceError`` 鈥?zero writes |
+| Event exists but ``tasks.yaml`` not at target state (partial transition) | 3b | ``TransitionDuplicateEvidenceError`` 鈥?zero writes |
+| Event+outbox exist but ``tasks.yaml`` not at target state (partial transition) | 3b | ``TransitionDuplicateEvidenceError`` 鈥?zero writes |
 
 Equality for byte comparison is determined by exact byte equality of
 the fully-serialised YAML content (same keys, same values, same
@@ -3751,7 +3752,7 @@ ordering, same trailing newline).
 #### 2.14.7 Multi-File Writes and Crash Recovery
 
 The service writes canonical files using the single-file atomic pattern
-(``tempfile.mkstemp`` → write/fsync → ``os.replace`` → directory
+(``tempfile.mkstemp`` 鈫?write/fsync 鈫?``os.replace`` 鈫?directory
 fsync) already established by ``worker_slot_lease.py`` and
 ``render_views.py``.  **This guarantees per-file atomic replacement,
 not cross-file atomicity.**
@@ -3760,11 +3761,11 @@ The service writes files in a fixed order:
 
 ```text
 1. event file        (os.replace)
-2. outbox file       (os.replace — dispatch transitions only)
-3. acceptance record (os.replace — acceptance transitions only)
-4. tasks.yaml        (os.replace — LAST authoritative write)
-5. BOARD.md          (os.replace — derived)
-6. STATUS.md         (os.replace — derived)
+2. outbox file       (os.replace 鈥?dispatch transitions only)
+3. acceptance record (os.replace 鈥?acceptance transitions only)
+4. tasks.yaml        (os.replace 鈥?LAST authoritative write)
+5. BOARD.md          (os.replace 鈥?derived)
+6. STATUS.md         (os.replace 鈥?derived)
 ```
 
 ``tasks.yaml`` is written **last** among the canonical files.  The
@@ -3780,13 +3781,13 @@ successfully.
   managed canonical files remain byte-for-byte unchanged.**  No
   temporary files are left on disk.
 
-* **In-write failures** (``TransitionWriteError`` — an ``os.replace``
+* **In-write failures** (``TransitionWriteError`` 鈥?an ``os.replace``
   or ``os.fsync`` failure partway through the write sequence): files
   that were already ``os.replace``-d **may** have been changed; files
   not yet replaced are **unchanged**; the temporary file for the
   failing write is cleaned up on a best-effort basis.  The error
   message includes a safe stage identifier (e.g. ``"event"``,
-  ``"tasks.yaml"``) — never a full path or payload.
+  ``"tasks.yaml"``) 鈥?never a full path or payload.
 
   The service does **not** provide cross-file automatic rollback.
   ``TransitionWriteError`` after one or more successful ``os.replace``
@@ -3798,8 +3799,8 @@ successfully.
 | Crash point | Outcome | Recovery |
 |------------|---------|----------|
 | Before any ``os.replace`` | No files written | Retry with same request (idempotent) |
-| After event, before outbox | Event orphaned; ``tasks.yaml`` unchanged | Idempotency check (§2.14.6 step 3b) detects orphan → ``TransitionDuplicateEvidenceError``; caller completes remaining writes or removes orphan |
-| After event+outbox, before ``tasks.yaml`` | Event+outbox exist; ``tasks.yaml`` unchanged | Step 3b detects partial evidence → ``TransitionDuplicateEvidenceError``; caller completes or cleans up |
+| After event, before outbox | Event orphaned; ``tasks.yaml`` unchanged | Idempotency check (搂2.14.6 step 3b) detects orphan 鈫?``TransitionDuplicateEvidenceError``; caller completes remaining writes or removes orphan |
+| After event+outbox, before ``tasks.yaml`` | Event+outbox exist; ``tasks.yaml`` unchanged | Step 3b detects partial evidence 鈫?``TransitionDuplicateEvidenceError``; caller completes or cleans up |
 | After ``tasks.yaml``, before views | Canonical state consistent; views stale | ``render_views.py --check`` detects drift; caller re-renders |
 
 ---
@@ -3807,44 +3808,44 @@ successfully.
 
 All state names are taken from the frozen ``STATES`` tuple in
 ``validate_project.py``.  Event-type names match the protocol
-(§2.6 of the core protocol reference).
+(搂2.6 of the core protocol reference).
 
 | # | Transition | ``from_state`` | ``to_state`` | Worker lease required | Produces outbox | Produces acceptance |
 |---|-----------|---------------|-------------|----------------------|-----------------|---------------------|
-| 1 | ``draft → ready`` | ``draft`` | ``ready`` | No | No | No |
-| 2 | ``ready → dispatched`` | ``ready`` | ``dispatched`` | **Yes** | **Yes** (``task.dispatch``) | No |
-| 3 | ``dispatched → in_progress`` | ``dispatched`` | ``in_progress`` | **Yes** | No | No |
-| 4 | ``in_progress → review_ready`` | ``in_progress`` | ``review_ready`` | **Yes** | No | No |
-| 5 | ``review_ready → accepted`` | ``review_ready`` | ``accepted`` | **Yes** | No | **Yes** |
-| 6 | ``review_ready → returned`` | ``review_ready`` | ``returned`` | **Yes** | No | No |
-| 7 | ``returned → ready`` | ``returned`` | ``ready`` | No | No | No |
-| 8 | ``accepted → integrated`` | ``accepted`` | ``integrated`` | No | No | No |
-| 9 | ``accepted → blocked`` (INTEGRATION_FAILED) | ``accepted`` | ``blocked`` | No | No | No |
-| 10 | ``* → blocked`` (TASK_BLOCKED) | any non-terminal | ``blocked`` | No | No | No |
-| 11 | ``blocked → (resume)`` (BLOCKER_RESOLVED) | ``blocked`` | caller-specified | No | No | No |
-| 12 | ``blocked → draft`` (BLOCKER_RESCOPED) | ``blocked`` | ``draft`` | No | No | No |
-| 13 | ``blocked → cancelled`` (BLOCKER_CANCELLED) | ``blocked`` | ``cancelled`` | No | No | No |
-| 14 | ``* → cancelled`` (TASK_CANCELLED) | any non-terminal | ``cancelled`` | Depends on active dispatch | No | No |
-| 15 | ``* → superseded`` (TASK_SUPERSEDED) | any non-terminal | ``superseded`` | Depends on active dispatch | No | No |
+| 1 | ``draft 鈫?ready`` | ``draft`` | ``ready`` | No | No | No |
+| 2 | ``ready 鈫?dispatched`` | ``ready`` | ``dispatched`` | **Yes** | **Yes** (``task.dispatch``) | No |
+| 3 | ``dispatched 鈫?in_progress`` | ``dispatched`` | ``in_progress`` | **Yes** | No | No |
+| 4 | ``in_progress 鈫?review_ready`` | ``in_progress`` | ``review_ready`` | **Yes** | No | No |
+| 5 | ``review_ready 鈫?accepted`` | ``review_ready`` | ``accepted`` | **Yes** | No | **Yes** |
+| 6 | ``review_ready 鈫?returned`` | ``review_ready`` | ``returned`` | **Yes** | No | No |
+| 7 | ``returned 鈫?ready`` | ``returned`` | ``ready`` | No | No | No |
+| 8 | ``accepted 鈫?integrated`` | ``accepted`` | ``integrated`` | No | No | No |
+| 9 | ``accepted 鈫?blocked`` (INTEGRATION_FAILED) | ``accepted`` | ``blocked`` | No | No | No |
+| 10 | ``* 鈫?blocked`` (TASK_BLOCKED) | any non-terminal | ``blocked`` | No | No | No |
+| 11 | ``blocked 鈫?(resume)`` (BLOCKER_RESOLVED) | ``blocked`` | caller-specified | No | No | No |
+| 12 | ``blocked 鈫?draft`` (BLOCKER_RESCOPED) | ``blocked`` | ``draft`` | No | No | No |
+| 13 | ``blocked 鈫?cancelled`` (BLOCKER_CANCELLED) | ``blocked`` | ``cancelled`` | No | No | No |
+| 14 | ``* 鈫?cancelled`` (TASK_CANCELLED) | any non-terminal | ``cancelled`` | Depends on active dispatch | No | No |
+| 15 | ``* 鈫?superseded`` (TASK_SUPERSEDED) | any non-terminal | ``superseded`` | Depends on active dispatch | No | No |
 
 **Field modifications per transition** (canonical fields in
 ``tasks.yaml``):
 
 | Transition | Fields set / modified | Fields cleared |
 |-----------|----------------------|---------------|
-| draft → ready | ``revision`` frozen; ``ready_at`` | — |
-| ready → dispatched | ``attempt``; ``current_dispatch`` (all sub-fields); ``dispatched_at``; ``model_selection``; ``report_path`` | — |
-| dispatched → in_progress | ``started_at`` | — |
-| in_progress → review_ready | ``implementation_commit``; ``report_commit``; ``delivered_at``; ``delivery_state: submitted`` | — |
-| review_ready → accepted | ``accepted_commit``; ``acceptance_path``; ``accepted_at``; ``delivery_state: accepted`` | ``current_dispatch`` |
-| review_ready → returned | ``delivery_state: rejected`` | ``current_dispatch`` |
-| returned → ready | attempt preserved | ``current_dispatch`` |
-| accepted → integrated | ``integrated_commit``; ``integrated_at`` | — |
-| → blocked | blocked envelope (8 fields) | — (``current_dispatch`` retained only if ``blocked_attempt_valid: true``) |
-| → cancelled | — | ``current_dispatch`` |
-| → superseded | — | ``current_dispatch`` |
+| draft 鈫?ready | ``revision`` frozen; ``ready_at`` | 鈥?|
+| ready 鈫?dispatched | ``attempt``; ``current_dispatch`` (all sub-fields); ``dispatched_at``; ``model_selection``; ``report_path`` | 鈥?|
+| dispatched 鈫?in_progress | ``started_at`` | 鈥?|
+| in_progress 鈫?review_ready | ``implementation_commit``; ``report_commit``; ``delivered_at``; ``delivery_state: submitted`` | 鈥?|
+| review_ready 鈫?accepted | ``accepted_commit``; ``acceptance_path``; ``accepted_at``; ``delivery_state: accepted`` | ``current_dispatch`` |
+| review_ready 鈫?returned | ``delivery_state: rejected`` | ``current_dispatch`` |
+| returned 鈫?ready | attempt preserved | ``current_dispatch`` |
+| accepted 鈫?integrated | ``integrated_commit``; ``integrated_at`` | 鈥?|
+| 鈫?blocked | blocked envelope (8 fields) | 鈥?(``current_dispatch`` retained only if ``blocked_attempt_valid: true``) |
+| 鈫?cancelled | 鈥?| ``current_dispatch`` |
+| 鈫?superseded | 鈥?| ``current_dispatch`` |
 
-**Revision increment**: ``revision`` is bumped by the caller — the
+**Revision increment**: ``revision`` is bumped by the caller 鈥?the
 service never increments it.  The service validates that the
 caller-supplied ``expected_revision`` matches the current value
 and that ``new_revision`` (in ``BlockerRescopedPayload``) equals
@@ -3852,26 +3853,26 @@ and that ``new_revision`` (in ``BlockerRescopedPayload``) equals
 ``expected_revision + 1`` raises ``TransitionCASConflictError``.
 
 **Attempt increment**: ``attempt`` is set by the caller for each new
-dispatch — the service never increments it.  The service validates that
+dispatch 鈥?the service never increments it.  The service validates that
 the dispatch CAS ``expected_attempt`` matches the current value and
 that ``new_attempt`` (in ``DispatchPayload``) equals exactly
 ``current_attempt + 1``.  ``current_attempt`` starts at ``0`` before
 the first dispatch.  For the initial dispatch, ``new_attempt`` must be
-exactly ``1``.  For subsequent dispatches (after ``returned → ready``),
+exactly ``1``.  For subsequent dispatches (after ``returned 鈫?ready``),
 ``new_attempt`` must be exactly the previous attempt + 1.  Any value
 other than exactly ``current_attempt + 1`` raises
 ``TransitionCASConflictError``.  The service never derives
 ``new_attempt`` from ``expected_attempt + 1`` in place of explicit
-caller input — the caller provides the value; the service validates
+caller input 鈥?the caller provides the value; the service validates
 the exact relationship.
 
 ---
-#### 2.14.9 Event File Rules — Frozen
+#### 2.14.9 Event File Rules 鈥?Frozen
 
 Every transition produces exactly one ``agentdesk.state-event/v2`` file
 in ``docs/pm/events/``.  Frozen rules:
 
-1. Filename: ``EVT-YYYYMMDD-NNNN.yaml`` — derived from ``event_id``.
+1. Filename: ``EVT-YYYYMMDD-NNNN.yaml`` 鈥?derived from ``event_id``.
 2. ``event_id`` is a globally unique ``EVT-*`` string supplied by the
    caller.  The service rejects duplicate ``event_id`` values.
 3. **Common required keys** (present on every state event regardless of
@@ -3882,7 +3883,7 @@ in ``docs/pm/events/``.  Frozen rules:
    ``task_id``,
    ``revision``,
    ``attempt``,
-   ``dispatch_id`` (nullable — ``null`` when no active dispatch),
+   ``dispatch_id`` (nullable 鈥?``null`` when no active dispatch),
    ``from_state``,
    ``to_state``,
    ``lease_epoch``,
@@ -3890,17 +3891,17 @@ in ``docs/pm/events/``.  Frozen rules:
    ``occurred_at``.
 4. **Always-present nullable fields** (must exist as keys; value may be
    ``null``):
-   ``source_message_id`` — the ``callback_id`` when the transition was
+   ``source_message_id`` 鈥?the ``callback_id`` when the transition was
    triggered by a Worker callback; ``null`` otherwise.
 5. **Always-present container fields** (must exist as keys; value may
    be empty list):
-   ``evidence_refs`` — list of strings referencing evidence documents
+   ``evidence_refs`` 鈥?list of strings referencing evidence documents
    (e.g. ``["docs/pm/tasks/TC-031-r2-runtime-api.md"]``);
-   ``guard_results`` — list of guard-check objects, each with
+   ``guard_results`` 鈥?list of guard-check objects, each with
    ``guard``, ``inputs``, ``result``, ``checked_at``, and
    ``evidence_ref`` fields.
-6. **Event-type‑specific fields**:
-   * ``TASK_DISPATCHED``: ``payload_digest`` (required) — ``"sha256:"``
+6. **Event-type鈥憇pecific fields**:
+   * ``TASK_DISPATCHED``: ``payload_digest`` (required) 鈥?``"sha256:"``
      + 64 lowercase hex characters.  Computed by the service as SHA-256
      of the paired outbox file's raw UTF-8 LF bytes.  The outbox file
      must be written and its bytes finalised before the event
@@ -3911,25 +3912,25 @@ in ``docs/pm/events/``.  Frozen rules:
      ``equivalence_evidence_ref`` (all required).
 7. ``occurred_at`` is generated by the service from the caller-supplied
    ``now: datetime`` parameter.
-8. Events are append-only — never modified after creation.
+8. Events are append-only 鈥?never modified after creation.
 9. Unknown extra keys at the event root are rejected fail-closed
-   (``TransitionSchemaError``).  Missing keys from sets 3–5 are
-   rejected fail-closed.  Missing event-type‑specific keys (set 6) are
+   (``TransitionSchemaError``).  Missing keys from sets 3鈥? are
+   rejected fail-closed.  Missing event-type鈥憇pecific keys (set 6) are
    rejected fail-closed for the relevant ``event_type``.
 10. ``event_id`` is validated against the ``^EVT-.+`` pattern.
     ``message_id`` (outbox) is validated against the ``^MSG-.+`` pattern.
 
 ---
-#### 2.14.10 Outbox File Rules — Frozen
+#### 2.14.10 Outbox File Rules 鈥?Frozen
 
 Dispatch transitions produce exactly one ``agentdesk.outbox-message/v2``
 file in ``docs/pm/outbox/``.  Frozen rules:
 
-1. Filename: ``MSG-YYYYMMDD-NNNN.yaml`` — derived from ``message_id``.
+1. Filename: ``MSG-YYYYMMDD-NNNN.yaml`` 鈥?derived from ``message_id``.
 2. ``message_id`` is a globally unique ``MSG-*`` string supplied by the
    caller.  The service rejects duplicate ``message_id`` values.
 3. Required root keys: ``schema_version``, ``message_id``, ``event_id``
-   (→ TASK_DISPATCHED event), ``message_type`` (``task.dispatch``),
+   (鈫?TASK_DISPATCHED event), ``message_type`` (``task.dispatch``),
    ``dedupe_key``, ``task_id``, ``revision``, ``attempt``,
    ``dispatch_id``, ``destination_role_id``, ``created_at``,
    ``model_selection``, ``payload``.
@@ -3941,15 +3942,15 @@ file in ``docs/pm/outbox/``.  Frozen rules:
    mismatches against the ``current_dispatch.model_selection`` are
    rejected fail-closed (``TransitionSchemaError``).
 6. ``payload`` must contain ``task_path``, ``task_card_commit``,
-   ``base_commit``, ``branch``, and ``report_path`` — all matching the
+   ``base_commit``, ``branch``, and ``report_path`` 鈥?all matching the
    caller-supplied dispatch fields.
-7. Outbox files are immutable — never modified after creation.
+7. Outbox files are immutable 鈥?never modified after creation.
 8. Transport status (sent/acknowledged) is recorded in gitignored
    ``transport-receipts.yaml`` only, never written into the outbox file.
    The outbox records intent, not delivery confirmation.
 
 ---
-#### 2.14.11 Public API — Frozen Signatures
+#### 2.14.11 Public API 鈥?Frozen Signatures
 
 All public types are frozen/slots dataclasses.  Every type the caller
 needs to construct or catch is exported via ``__all__``:
@@ -4009,14 +4010,14 @@ class DispatchCAS:
 
 @dataclass(frozen=True, slots=True)
 class SpecifyPayload:
-    """Payload for draft → ready (TASK_SPECIFIED)."""
+    """Payload for draft 鈫?ready (TASK_SPECIFIED)."""
     # No extra fields beyond common event context.
     pass
 
 
 @dataclass(frozen=True, slots=True)
 class DispatchPayload:
-    """Payload for ready → dispatched (TASK_DISPATCHED)."""
+    """Payload for ready 鈫?dispatched (TASK_DISPATCHED)."""
     dispatch_id: str
     role_id: str
     model_selection: ModelSelectionSnapshot
@@ -4031,14 +4032,14 @@ class DispatchPayload:
 
 @dataclass(frozen=True, slots=True)
 class AcknowledgePayload:
-    """Payload for dispatched → in_progress (DISPATCH_ACKNOWLEDGED)."""
+    """Payload for dispatched 鈫?in_progress (DISPATCH_ACKNOWLEDGED)."""
     # Requires DispatchCAS; no extra fields beyond common context.
     pass
 
 
 @dataclass(frozen=True, slots=True)
 class DeliverySubmittedPayload:
-    """Payload for in_progress → review_ready (DELIVERY_SUBMITTED)."""
+    """Payload for in_progress 鈫?review_ready (DELIVERY_SUBMITTED)."""
     implementation_commit: str           # 40-char SHA
     report_commit: str                   # 40-char SHA
 
@@ -4046,7 +4047,7 @@ class DeliverySubmittedPayload:
 @dataclass(frozen=True, slots=True)
 class AcceptanceOwnerApproval:
     """Immutable owner-approval summary computed from canonical evidence
-    by ``apply_transition()`` — NOT a payload field.  gate is read from
+    by ``apply_transition()`` 鈥?NOT a payload field.  gate is read from
     the committed task-card frontmatter ``owner_approval.gate`` (only
     ``"none"`` is attested in the current template).  approval_ids are
     cross-checked against the task ledger ``granted_approval_ids`` and
@@ -4057,9 +4058,9 @@ class AcceptanceOwnerApproval:
 
 @dataclass(frozen=True, slots=True)
 class DeliveryAcceptedPayload:
-    """Payload for review_ready → accepted (DELIVERY_ACCEPTED).
+    """Payload for review_ready 鈫?accepted (DELIVERY_ACCEPTED).
 
-    ``owner_approval`` is NOT carried here — it is derived by the
+    ``owner_approval`` is NOT carried here 鈥?it is derived by the
     service from canonical evidence."""
     accepted_commit: str                 # 40-char SHA
     acceptance_path: str                 # project-relative
@@ -4070,21 +4071,21 @@ class DeliveryAcceptedPayload:
 
 @dataclass(frozen=True, slots=True)
 class DeliveryReturnedPayload:
-    """Payload for review_ready → returned (DELIVERY_RETURNED)."""
+    """Payload for review_ready 鈫?returned (DELIVERY_RETURNED)."""
     # Requires DispatchCAS; no extra fields beyond common context.
     pass
 
 
 @dataclass(frozen=True, slots=True)
 class RequeuePayload:
-    """Payload for returned → ready (TASK_REQUEUED)."""
+    """Payload for returned 鈫?ready (TASK_REQUEUED)."""
     # No extra fields beyond common event context.
     pass
 
 
 @dataclass(frozen=True, slots=True)
 class IntegrationPayload:
-    """Payload for accepted → integrated (CHANGE_INTEGRATED)."""
+    """Payload for accepted 鈫?integrated (CHANGE_INTEGRATED)."""
     integrated_commit: str               # 40-char SHA
     equivalence_method: str | None       # patch_id | tree | approved_mapping
     equivalence_evidence_ref: str | None
@@ -4092,7 +4093,7 @@ class IntegrationPayload:
 
 @dataclass(frozen=True, slots=True)
 class BlockedPayload:
-    """Payload for * → blocked (TASK_BLOCKED, INTEGRATION_FAILED)."""
+    """Payload for * 鈫?blocked (TASK_BLOCKED, INTEGRATION_FAILED)."""
     blocked_reason: str
     blocked_kind: str
     blocked_owner: str
@@ -4103,33 +4104,33 @@ class BlockedPayload:
 
 @dataclass(frozen=True, slots=True)
 class BlockerResolvedPayload:
-    """Payload for blocked → resume_state (BLOCKER_RESOLVED)."""
+    """Payload for blocked 鈫?resume_state (BLOCKER_RESOLVED)."""
     resume_to_state: str                 # caller-specified target state
 
 
 @dataclass(frozen=True, slots=True)
 class BlockerRescopedPayload:
-    """Payload for blocked → draft (BLOCKER_RESCOPED)."""
+    """Payload for blocked 鈫?draft (BLOCKER_RESCOPED)."""
     new_revision: int                    # target revision (== expected_revision + 1)
 
 
 @dataclass(frozen=True, slots=True)
 class BlockerCancelledPayload:
-    """Payload for blocked → cancelled (BLOCKER_CANCELLED)."""
+    """Payload for blocked 鈫?cancelled (BLOCKER_CANCELLED)."""
     # No extra fields beyond common event context.
     pass
 
 
 @dataclass(frozen=True, slots=True)
 class CancelledPayload:
-    """Payload for * → cancelled (TASK_CANCELLED)."""
+    """Payload for * 鈫?cancelled (TASK_CANCELLED)."""
     # No extra fields beyond common event context.
     pass
 
 
 @dataclass(frozen=True, slots=True)
 class SupersededPayload:
-    """Payload for * → superseded (TASK_SUPERSEDED)."""
+    """Payload for * 鈫?superseded (TASK_SUPERSEDED)."""
     superseded_by: str                   # valid task_id of the replacement
 
 
@@ -4157,7 +4158,7 @@ TransitionPayload = Union[
 class GuardInput:
     """Immutable single key-value pair for a guard input set.
 
-    ``GuardResult.inputs`` is ``tuple[GuardInput, ...]`` — key order
+    ``GuardResult.inputs`` is ``tuple[GuardInput, ...]`` 鈥?key order
     is caller-preserved.  Duplicate keys are rejected at construction.
     """
     key: str                             # non-empty, no leading/trailing whitespace
@@ -4172,9 +4173,9 @@ class GuardInput:
 
 @dataclass(frozen=True, slots=True)
 class GuardResult:
-    """Immutable guard-check result for a state‑event ``guard_results`` list.
+    """Immutable guard-check result for a state鈥慹vent ``guard_results`` list.
 
-    Constructed from validated fields — fail-closed on illegal input.
+    Constructed from validated fields 鈥?fail-closed on illegal input.
     """
     guard: str                           # non-empty guard identifier
     inputs: tuple[GuardInput, ...]       # caller-preserved order; no duplicate keys
@@ -4222,7 +4223,7 @@ class TransitionEventContext:
     """Immutable event-context data supplied by the caller.
 
     Provides ``source_message_id``, ``evidence_refs``, and
-    ``guard_results`` — the three fields that every
+    ``guard_results`` 鈥?the three fields that every
     ``agentdesk.state-event/v2`` must carry but that are independent
     of the transition payload.
     """
@@ -4320,7 +4321,7 @@ class ControlPlaneTransitionService:
         """Validate CAS, write canonical files, render views, return result.
 
         *lease* is required for worker-lifecycle transitions (transition
-        types 2–6 in §2.14.8) and optional for PM-only transitions.
+        types 2鈥? in 搂2.14.8) and optional for PM-only transitions.
 
         *now* must be a timezone-aware UTC ``datetime``.  Naive or
         non-UTC values are rejected (``TypeError``).
@@ -4333,13 +4334,13 @@ class ControlPlaneTransitionService:
 1. All public types use ``frozen=True, slots=True`` dataclasses.
    No ``object``, no bare ``dict``, no ``Any`` appear as payload types.
    ``TransitionPayload`` is a closed union of concrete payload
-   dataclasses — the ``event_type`` deterministically selects which
+   dataclasses 鈥?the ``event_type`` deterministically selects which
    variant is valid.
 2. ``project_root`` is an absolute ``Path`` supplied at service
    construction.
-3. ``now`` is an explicit ``datetime`` parameter — the service never
+3. ``now`` is an explicit ``datetime`` parameter 鈥?the service never
    calls ``datetime.now()`` internally.
-4. ``lease`` is an explicit ``WorkerSlotLease | None`` — ``None``
+4. ``lease`` is an explicit ``WorkerSlotLease | None`` 鈥?``None``
    signals a PM-only transition.  For worker-lifecycle transitions,
    ``lease`` must be non-``None``.
 5. Error messages must **never** call ``repr()``, ``str()``, or ``{!r}``
@@ -4354,12 +4355,12 @@ class ControlPlaneTransitionService:
    ``TransitionValidationError`` (fail-closed, zero writes).
 8. ``TransitionEventContext`` is required in every ``TransitionRequest``.
    The service does not supply defaults for ``source_message_id``,
-   ``evidence_refs``, or ``guard_results`` — the caller must explicitly
+   ``evidence_refs``, or ``guard_results`` 鈥?the caller must explicitly
    provide them.
 9. ``GuardInput`` values are restricted to YAML-friendly scalar types
    (``str | int | bool | None``).  Nested structures, ``float``, and
    arbitrary Python objects are rejected at construction.
-10. ``GuardResult`` is deeply immutable — ``inputs``,
+10. ``GuardResult`` is deeply immutable 鈥?``inputs``,
     ``evidence_refs`` (on ``TransitionEventContext``), and
     ``guard_results`` are all ``tuple``, never ``list``/``dict``/``set``.
     Source mutations after construction have no effect.
@@ -4380,7 +4381,7 @@ single, documented origin:
 | ``attempt`` | ``DispatchPayload.new_attempt`` (for ``TASK_DISPATCHED``) or ``DispatchCAS.expected_attempt`` (CAS-verified for non-dispatch transitions) | Caller-provided target value for new dispatches; current value from ``tasks.yaml`` for non-dispatch transitions; ``null`` when no active dispatch |
 | ``dispatch_id`` | ``DispatchPayload.dispatch_id`` (for ``TASK_DISPATCHED``) or ``DispatchCAS.expected_dispatch_id`` (CAS-verified) | Caller-provided for new dispatches; current value otherwise; ``null`` when no active dispatch |
 | ``from_state`` | ``TransitionCAS.expected_state`` (CAS-verified) | Current value from ``tasks.yaml`` after CAS |
-| ``to_state`` | ``TransitionRequest.payload`` → derived by transition type | From §2.14.8 transition table |
+| ``to_state`` | ``TransitionRequest.payload`` 鈫?derived by transition type | From 搂2.14.8 transition table |
 | ``source_message_id`` | ``TransitionEventContext.source_message_id`` | ``callback_id`` or ``null`` |
 | ``evidence_refs`` | ``TransitionEventContext.evidence_refs`` | Serialised as YAML list |
 | ``guard_results`` | ``TransitionEventContext.guard_results`` | Serialised as YAML list of mappings |
@@ -4398,21 +4399,21 @@ No event field is generated without a documented source.  No field
 appears in the output without an input channel to supply it.
 
 ---
-#### 2.14.14 Exception Hierarchy — Frozen
+#### 2.14.14 Exception Hierarchy 鈥?Frozen
 
 ```text
 ControlPlaneTransitionError                  (Exception)
-├── TransitionValidationError                — input type/value violation, event_type/payload mismatch
-├── TransitionCASConflictError               — CAS precondition failed
-├── TransitionLockContentionError            — control-plane lock held
-├── TransitionLockOrderError                 — reverse lock acquisition
-├── TransitionDuplicateEvidenceError         — duplicate/conflicting event_id / message_id / dedupe_key, or orphan evidence
-├── TransitionSchemaError                    — corrupt or invalid canonical file on read, extra/missing keys
-└── TransitionWriteError                     — os.replace / os.fsync failure during the write sequence
+鈹溾攢鈹€ TransitionValidationError                鈥?input type/value violation, event_type/payload mismatch
+鈹溾攢鈹€ TransitionCASConflictError               鈥?CAS precondition failed
+鈹溾攢鈹€ TransitionLockContentionError            鈥?control-plane lock held
+鈹溾攢鈹€ TransitionLockOrderError                 鈥?reverse lock acquisition
+鈹溾攢鈹€ TransitionDuplicateEvidenceError         鈥?duplicate/conflicting event_id / message_id / dedupe_key, or orphan evidence
+鈹溾攢鈹€ TransitionSchemaError                    鈥?corrupt or invalid canonical file on read, extra/missing keys
+鈹斺攢鈹€ TransitionWriteError                     鈥?os.replace / os.fsync failure during the write sequence
 ```
 
 **Pre-write failure guarantees (all exception types except
-``TransitionWriteError``)**: zero authoritative file writes — every
+``TransitionWriteError``)**: zero authoritative file writes 鈥?every
 managed canonical file remains byte-for-byte unchanged from its
 pre-transaction state.  No temporary files are left on disk.
 
@@ -4427,7 +4428,7 @@ The caller must run the validator and recovery procedures.
   the caller.  The service never introduces a semantically-equivalent
   "TransitionFencingError".
 * ``TypeError`` is raised for type violations (wrong input types,
-  naive datetime, etc.) — matching existing module conventions.
+  naive datetime, etc.) 鈥?matching existing module conventions.
 * ``TransitionDuplicateEvidenceError`` covers all duplicate-ID
   scenarios including same-ID-different-content, same-dedupe-key-
   different-message-id, and orphan/partial evidence detection.
@@ -4443,7 +4444,7 @@ The caller must run the validator and recovery procedures.
 
 Every field in a generated ``agentdesk.acceptance/v2`` record file has a
 single, documented origin.  The service constructs the frontmatter from
-the following sources — no field is synthesised without an input channel.
+the following sources 鈥?no field is synthesised without an input channel.
 
 | Acceptance field | Source | Notes |
 |------------------|--------|-------|
@@ -4462,11 +4463,11 @@ the following sources — no field is synthesised without an input channel.
 | ``implementation_commit`` | ``tasks.yaml`` task-level ``implementation_commit`` | Set by ``DELIVERY_SUBMITTED``; must equal ``DeliveryAcceptedPayload.accepted_commit`` |
 | ``report_commit`` | ``tasks.yaml`` task-level ``report_commit`` | Set by ``DELIVERY_SUBMITTED``; NOT ``current_dispatch.report_commit`` (which does not exist) |
 | ``accepted_commit`` | ``DeliveryAcceptedPayload.accepted_commit`` | Caller-provided; frozen as ``accepted_commit`` in ``tasks.yaml``; must equal ``implementation_commit`` |
-| ``owner_approval`` | Service constant derived from committed task card | ``gate`` ← task-card frontmatter ``owner_approval.gate``, validated as exactly ``"none"`` (the only value attested). ``approval_ids`` ← service constant: empty list ``[]``. Output is always ``{"gate": "none", "approval_ids": []}``. NOT a payload field. NOT derived from ``granted_approval_ids``. NOT related to ``MODEL_DEGRADATION_APPROVED``, ``MODEL_DEGRADATION_REVOKED``, or ``model_degradation_approval_id`` — those belong to model-tier degradation authorization exclusively. |
+| ``owner_approval`` | Service constant derived from committed task card | ``gate`` 鈫?task-card frontmatter ``owner_approval.gate``, validated as exactly ``"none"`` (the only value attested). ``approval_ids`` 鈫?service constant: empty list ``[]``. Output is always ``{"gate": "none", "approval_ids": []}``. NOT a payload field. NOT derived from ``granted_approval_ids``. NOT related to ``MODEL_DEGRADATION_APPROVED``, ``MODEL_DEGRADATION_REVOKED``, or ``model_degradation_approval_id`` 鈥?those belong to model-tier degradation authorization exclusively. |
 | ``evidence_refs`` | ``TransitionEventContext.evidence_refs`` | Serialised as YAML list |
 | ``residual_risks`` | ``DeliveryAcceptedPayload.residual_risks`` | Caller-supplied tuple of non-empty risk strings; may be empty |
 | ``created_at`` | ``apply_transition(... now=...)`` | Service-formatted RFC 3339 UTC |
-| Body title | Service template + acceptance path | ``# {task_id} · Acceptance · Attempt {attempt} · Review {review_n}`` — ``review_n`` is parsed from ``DeliveryAcceptedPayload.acceptance_path`` (``docs/pm/acceptances/{task_id}-r{revision}-a{attempt}-review{N}.md``). Task ID must match ``TC-[0-9]{3,}``. Revision ≥ 1, attempt ≥ 1, review N ≥ 1. Path is structurally validated (exactly 4 PurePosixPath segments). Task/revision/attempt in the path are validated to match CAS. Idempotent replay with the same path always produces the same ``review_n`` — no directory scan |
+| Body title | Service template + acceptance path | ``# {task_id} 路 Acceptance 路 Attempt {attempt} 路 Review {review_n}`` 鈥?``review_n`` is parsed from ``DeliveryAcceptedPayload.acceptance_path`` (``docs/pm/acceptances/{task_id}-r{revision}-a{attempt}-review{N}.md``). Task ID must match ``TC-[0-9]{3,}``. Revision 鈮?1, attempt 鈮?1, review N 鈮?1. Path is structurally validated (exactly 4 PurePosixPath segments). Task/revision/attempt in the path are validated to match CAS. Idempotent replay with the same path always produces the same ``review_n`` 鈥?no directory scan |
 | Body decision text | Service constant | ``accepted`` |
 | Body scope review checklist | Service template | Fixed checklist from acceptance template |
 | Body criteria and checks | ``DeliveryAcceptedPayload.criteria_evidence`` | PM-supplied per-criterion evidence; tuple of non-empty, non-whitespace strings; must not be empty |
@@ -4493,7 +4494,7 @@ by the service from the committed task card's ``owner_approval.gate``
 | ``rationale`` | ``str`` | Non-empty; the PM's justification for acceptance |
 
 All fields are frozen/slots, deeply immutable.  ``owner_approval`` is
-constructed by the service — the payload carries business content only.
+constructed by the service 鈥?the payload carries business content only.
 
 ---
 #### 2.14.16 Acceptance Boundary
@@ -4501,16 +4502,16 @@ constructed by the service — the payload carries business content only.
 The service may write acceptance records and update
 ``accepted_commit`` / ``acceptance_path`` / ``delivery_state`` when
 the caller supplies a valid ``TransitionRequest`` for the
-``review_ready → accepted`` transition.  The service does **not**
-authorise the acceptance — the caller must already have determined that
+``review_ready 鈫?accepted`` transition.  The service does **not**
+authorise the acceptance 鈥?the caller must already have determined that
 the acceptance is authorised (via ``ApprovalGate``, TC-13.12).
 
 The service does **not**:
 
 * Grant, revoke, or infer approval.
-* Manage ``granted_approval_ids`` — that is the caller's responsibility.
+* Manage ``granted_approval_ids`` 鈥?that is the caller's responsibility.
 * Generate ``MODEL_DEGRADATION_APPROVED`` or
-  ``MODEL_DEGRADATION_REVOKED`` events — those belong to TC-13.12.
+  ``MODEL_DEGRADATION_REVOKED`` events 鈥?those belong to TC-13.12.
 * Write ``owner_approval`` fields in the acceptance record beyond what
   the caller supplies.
 
@@ -4519,28 +4520,28 @@ The service does **not**:
 
 TC-13.11 must **not** implement, freeze, or assume responsibility for:
 
-* **ApprovalGate** (TC-13.12) — TASK_APPROVAL structured scope,
+* **ApprovalGate** (TC-13.12) 鈥?TASK_APPROVAL structured scope,
   MODEL_DEGRADATION_APPROVED/REVOKED events, ``granted_approval_ids``
   management.
-* **EscalationService** (TC-13.13a/b) — difficulty tier progression.
-* **RateLimit service** (TC-13.14) — provider 429 handling.
-* **StateProvider** (TC-13.17) — read-only access boundary.
-* **WorkflowOrchestrator** (TC-13.18) — full lifecycle coordination
-  (acquire → heartbeat → run_worker → fenced transition → release).
-* **Provider output decoder** (TC-13.9c) — stdout parsing.
-* **Retry / backoff** — single-attempt only.
-* **Subprocess invocation** — no CLI, model, or network calls.
-* **Git worktree creation or deletion** — the service assumes the
+* **EscalationService** (TC-13.13a/b) 鈥?difficulty tier progression.
+* **RateLimit service** (TC-13.14) 鈥?provider 429 handling.
+* **StateProvider** (TC-13.17) 鈥?read-only access boundary.
+* **WorkflowOrchestrator** (TC-13.18) 鈥?full lifecycle coordination
+  (acquire 鈫?heartbeat 鈫?run_worker 鈫?fenced transition 鈫?release).
+* **Provider output decoder** (TC-13.9c) 鈥?stdout parsing.
+* **Retry / backoff** 鈥?single-attempt only.
+* **Subprocess invocation** 鈥?no CLI, model, or network calls.
+* **Git worktree creation or deletion** 鈥?the service assumes the
   worktree already exists.
-* **Secret / auth management** — credentials are never read, written,
+* **Secret / auth management** 鈥?credentials are never read, written,
   or logged.
-* **Dashboard** (TC-13.20) — read-only HTML views.
-* **MAD audit** (TC-13.15 / TC-13.16) — audit subprocess invocation.
-* **Git commit** — the service writes files but does not commit.
+* **Dashboard** (TC-13.20) 鈥?read-only HTML views.
+* **MAD audit** (TC-13.15 / TC-13.16) 鈥?audit subprocess invocation.
+* **Git commit** 鈥?the service writes files but does not commit.
   The caller must commit all canonical files as a single Git commit.
-* **Transport receipt management** — transport state lives in
+* **Transport receipt management** 鈥?transport state lives in
   gitignored runtime files, never in canonical event/outbox files.
-* **pm-lease acquisition / renewal** — the service reads
+* **pm-lease acquisition / renewal** 鈥?the service reads
   ``pm_control.lease_epoch`` for PM-only transitions but does not
   manage the PM lease lifecycle.
 
@@ -4548,9 +4549,9 @@ TC-13.11 must **not** implement, freeze, or assume responsibility for:
 #### 2.14.15 Task-Card Split
 
 ```text
-TC-13.11a — this frozen contract (§2.14)
-TC-13.11b — typed models, validation, state lock, serialisation helpers
-TC-13.11c — CAS transition execution, event/outbox writes, view
+TC-13.11a 鈥?this frozen contract (搂2.14)
+TC-13.11b 鈥?typed models, validation, state lock, serialisation helpers
+TC-13.11c 鈥?CAS transition execution, event/outbox writes, view
             regeneration, crash-recovery tests
 ```
 
@@ -4558,7 +4559,7 @@ TC-13.11c — CAS transition execution, event/outbox writes, view
 |------|-----------|-------|--------------------------------------|
 | TC-13.11a | TC-13.10c, TC-13.2 | This contract only | **Target** |
 | TC-13.11b | TC-13.11a | Data model, store validation, state lock, serialisation | **Target** |
-| TC-13.11c | TC-13.11b | Full ``apply_transition``, all 15 transition types, complete test matrix | **Target** → **Current** |
+| TC-13.11c | TC-13.11b | Full ``apply_transition``, all 15 transition types, complete test matrix | **Target** 鈫?**Current** |
 
 Interface #16 status must remain **Target** until TC-13.11c is complete
 and the production module and full test suite are committed.  No
@@ -4581,11 +4582,11 @@ intermediate "Current (contract frozen)" sub-status is permitted.
 * TC-13.10a/b/c are all **Current**.
 * TC-13.12, TC-13.14, TC-13.17, TC-13.18, and all subsequent
   Target interfaces remain **Target**.
-* TC-13.13a/b are **Current** — contract and production module complete.
+* TC-13.13a/b are **Current** 鈥?contract and production module complete.
 
 ---
 
-### 2.15 ApprovalGate -- Frozen Contract (Current — TC-13.12d)
+### 2.15 ApprovalGate -- Frozen Contract (Current 鈥?TC-13.12d)
 
 TC-13.12a freezes the **ApprovalGate contract** for structured task-action
 approval.  No production module is shipped under TC-13.12a -- the contract
@@ -4637,7 +4638,7 @@ Frozen rules:
 
 * Exactly three values -- no more, no less.
 * ``str(member) == member.value`` -- JSON-serialised as lowercase strings.
-* Unknown values → fail-closed (``ValueError`` at construction).
+* Unknown values 鈫?fail-closed (``ValueError`` at construction).
 * A single approval covers **exactly one** scope.  Multi-scope approvals
   are forbidden.
 * Free-text scope values are forbidden.
@@ -4673,11 +4674,11 @@ class ApprovalSubject:
 Fields permanently excluded from ``ApprovalSubject``:
 
 ```text
-expected_snapshot_commit   — belongs to ApprovalCheckRequest
-path                       — never stored
-prompt                     — never stored
-provider / model_id        — model-tier concerns, not action-authorisation
-lease / actor / reason     — belong to ApprovalEvidence
+expected_snapshot_commit   鈥?belongs to ApprovalCheckRequest
+path                       鈥?never stored
+prompt                     鈥?never stored
+provider / model_id        鈥?model-tier concerns, not action-authorisation
+lease / actor / reason     鈥?belong to ApprovalEvidence
 ```
 
 ---
@@ -4737,7 +4738,7 @@ Exactly **ten** fields -- no more, no less.
 | 1 | ``approval_id`` | ``str`` | Non-empty, ``APR-*`` pattern |
 | 2 | ``event_id`` | ``str`` | Non-empty, ``EVT-*`` pattern |
 | 3 | ``scope`` | ``ApprovalScope`` | Must be an ``ApprovalScope`` member; bare strings rejected |
-| 4 | ``subject`` | ``ApprovalSubject`` | Five-field typed model (see §2.15.3) |
+| 4 | ``subject`` | ``ApprovalSubject`` | Five-field typed model (see 搂2.15.3) |
 | 5 | ``actor_role_id`` | ``str`` | Fixed: ``"PM"`` |
 | 6 | ``lease_epoch`` | ``int`` | Non-bool, ``>= 1`` |
 | 7 | ``granted_at`` | ``str`` | RFC 3339 UTC |
@@ -4768,18 +4769,18 @@ Frozen rules:
 **Fields permanently excluded from ``ApprovalEvidence``:**
 
 ```text
-schema_version     — storage envelope; not a business field
-record_type        — storage envelope; not a business field
-revoke state       — revoke is a separate record type
-path               — never stored
-prompt             — never stored
-secret             — never stored
-provider           — model-tier concern
-model_id            — model-tier concern
-workspace          — runtime concern
+schema_version     鈥?storage envelope; not a business field
+record_type        鈥?storage envelope; not a business field
+revoke state       鈥?revoke is a separate record type
+path               鈥?never stored
+prompt             鈥?never stored
+secret             鈥?never stored
+provider           鈥?model-tier concern
+model_id            鈥?model-tier concern
+workspace          鈥?runtime concern
 ```
 
-**Grant 16-key record → ApprovalEvidence 10-field mapping:**
+**Grant 16-key record 鈫?ApprovalEvidence 10-field mapping:**
 
 | ApprovalEvidence field | Source in Grant record |
 |------------------------|------------------------|
@@ -4807,7 +4808,7 @@ and ``expires_at``.  The type system must refuse to build an
 ``ApprovalEvidence`` from a revoke dictionary.
 
 ---
-#### 2.15.6 Approval Evidence Schema — ``agentdesk.task-approval/v1``
+#### 2.15.6 Approval Evidence Schema 鈥?``agentdesk.task-approval/v1``
 
 Approval evidence lives in a **new** canonical directory,
 ``docs/pm/approvals/``, separate from ``docs/pm/events/``.
@@ -4819,7 +4820,7 @@ derived from ``event_id`` only.  ``approval_id`` must never be used
 directly as a path component.
 
 ---
-##### 2.15.6.1 Grant Evidence — Exact 16 Root Keys
+##### 2.15.6.1 Grant Evidence 鈥?Exact 16 Root Keys
 
 ```yaml
 schema_version: agentdesk.task-approval/v1
@@ -4859,11 +4860,11 @@ snapshot_commit: <40-char-hex-sha>
 | 15 | ``reason`` | ``str`` | Non-empty |
 | 16 | ``snapshot_commit`` | ``str`` | 40-char hex SHA -- Git HEAD at grant creation time |
 
-Extra or missing root keys → fail-closed (``ApprovalValidationError``).
+Extra or missing root keys 鈫?fail-closed (``ApprovalValidationError``).
 The key set is frozen -- no optional keys beyond ``accepted_commit`` and
 ``expires_at``.
 
-##### 2.15.6.2 Revoke Evidence — Exact 10 Root Keys
+##### 2.15.6.2 Revoke Evidence 鈥?Exact 10 Root Keys
 
 ```yaml
 schema_version: agentdesk.task-approval/v1
@@ -4892,7 +4893,7 @@ snapshot_commit: <40-char-hex-sha>
 | 10 | ``snapshot_commit`` | ``str`` | 40-char hex SHA -- Git HEAD at revoke creation time |
 
 Each grant may have **at most one** revoke.  Revocation does not modify
-the grant file.  Extra or missing root keys → fail-closed.
+the grant file.  Extra or missing root keys 鈫?fail-closed.
 
 ---
 #### 2.15.7 Evidence Creation Ownership
@@ -4908,7 +4909,7 @@ the grant file.  Extra or missing root keys → fail-closed.
 * **Never** modifies ``tasks.yaml``, ``events/``, ``outbox/``, or
   ``acceptances/``.
 
-**Approval Evidence Writer** — co-resides in the same production module
+**Approval Evidence Writer** 鈥?co-resides in the same production module
 ``skills/agentdesk/scripts/approval_gate.py``.  Public API frozen here:
 
 ```python
@@ -4963,7 +4964,7 @@ Frozen writer rules:
   ``expected_snapshot_commit``.
 * Writer performs duplicate detection: ``approval_id`` uniqueness,
   single revoke per grant.
-* Writer uses atomic write (``tempfile.mkstemp`` → ``fsync`` →
+* Writer uses atomic write (``tempfile.mkstemp`` 鈫?``fsync`` 鈫?
   ``os.replace``) -- the same pattern as ``worker_slot_lease.py``.
 * Writer does **not** update ``tasks.yaml`` -- that is the caller's
   responsibility via ``ControlPlaneTransitionService``.
@@ -5107,7 +5108,7 @@ machine-readable decisions.
 A grant is **valid** for a given ``ApprovalCheckRequest`` when **all** of
 the following hold:
 
-| # | Criterion | Violation → |
+| # | Criterion | Violation 鈫?|
 |---|-----------|-------------|
 | 1 | ``schema_version`` == ``"agentdesk.task-approval/v1"`` | ``ApprovalValidationError`` |
 | 2 | ``record_type`` == ``"grant"`` | ``ApprovalValidationError`` |
@@ -5120,7 +5121,7 @@ the following hold:
 | 9 | ``accepted_commit`` == ``request.subject.accepted_commit`` | failure_code: ``wrong_subject`` |
 | 10 | ``actor_role_id`` == ``"PM"`` | ``ApprovalValidationError`` |
 | 11 | ``lease_epoch`` is non-bool ``int`` >= 1 | ``ApprovalValidationError`` |
-| 12 | ``now < expires_at`` (``null`` → never expires) | failure_code: ``expired`` |
+| 12 | ``now < expires_at`` (``null`` 鈫?never expires) | failure_code: ``expired`` |
 | 13 | No revoke record exists for this ``approval_id`` with ``now >= revoked_at`` | failure_code: ``revoked`` |
 | 14 | ``approval_id`` is unique within ``docs/pm/approvals/`` | ``ApprovalValidationError`` |
 | 15 | At most **one** active grant for the same scope + subject | ``ApprovalAmbiguousError`` |
@@ -5145,7 +5146,7 @@ Frozen rules for ``expected_snapshot_commit``:
    ``git rev-parse HEAD`` (argv array, ``shell=False``, no remote, no
    fetch, no network).
 
-3. If current HEAD != ``request.expected_snapshot_commit`` →
+3. If current HEAD != ``request.expected_snapshot_commit`` 鈫?
    ``ApprovalSnapshotConflictError`` (fail-closed, zero writes).
 
 4. Each evidence record carries a ``snapshot_commit`` -- the Git HEAD
@@ -5167,7 +5168,7 @@ Frozen rules for ``expected_snapshot_commit``:
    and a commit is trivially its own ancestor.
 
 7. Evidence whose ``snapshot_commit`` points to unreachable or future
-   history → ``ApprovalSnapshotConflictError``.
+   history 鈫?``ApprovalSnapshotConflictError``.
 
 8. Git calls: ``argv`` array, ``shell=False``.  No remote operations,
    no fetch, no network access.
@@ -5257,16 +5258,16 @@ Independent root -- **not** a subclass of ``ControlPlaneTransitionError``:
 
 ```text
 ApprovalError                              (Exception)
-├── ApprovalValidationError                — schema violation, unknown version,
-│                                            extra/missing keys, malformed fields,
-│                                            illegal actor_role_id, bad lease_epoch
-├── ApprovalNotFoundError                  — no matching grant evidence exists
-├── ApprovalAmbiguousError                 — multiple active grants for same
-│                                            scope + subject
-├── ApprovalExpiredError                   — grant exists but now >= expires_at
-├── ApprovalRevokedError                   — grant exists but a revoke record
-│                                            also exists with now >= revoked_at
-└── ApprovalSnapshotConflictError          — expected_snapshot_commit != HEAD,
+鈹溾攢鈹€ ApprovalValidationError                鈥?schema violation, unknown version,
+鈹?                                           extra/missing keys, malformed fields,
+鈹?                                           illegal actor_role_id, bad lease_epoch
+鈹溾攢鈹€ ApprovalNotFoundError                  鈥?no matching grant evidence exists
+鈹溾攢鈹€ ApprovalAmbiguousError                 鈥?multiple active grants for same
+鈹?                                           scope + subject
+鈹溾攢鈹€ ApprovalExpiredError                   鈥?grant exists but now >= expires_at
+鈹溾攢鈹€ ApprovalRevokedError                   鈥?grant exists but a revoke record
+鈹?                                           also exists with now >= revoked_at
+鈹斺攢鈹€ ApprovalSnapshotConflictError          鈥?expected_snapshot_commit != HEAD,
                                              or evidence snapshot_commit not an
                                              ancestor of expected_snapshot_commit
 ```
@@ -5350,15 +5351,15 @@ Frozen security rules for the ``approval_gate`` module:
 #### 2.15.18 Task-Card Split
 
 ```text
-TC-13.12a — this frozen contract (§2.15)
-TC-13.12b — typed models (ApprovalScope, ApprovalSubject,
+TC-13.12a 鈥?this frozen contract (搂2.15)
+TC-13.12b 鈥?typed models (ApprovalScope, ApprovalSubject,
             ApprovalCheckRequest, ApprovalEvidence,
             ApprovalCheckResult), evidence store/writer
             (write_grant, write_revoke), schema validation
-TC-13.12c — read-only runtime gate (ApprovalGate.check,
+TC-13.12c 鈥?read-only runtime gate (ApprovalGate.check,
             ApprovalGate.require), ControlPlaneTransitionService
             internal integration, replay / TOCTOU / concurrency
-TC-13.12d — offline validator integration (validate_project.py)
+TC-13.12d 鈥?offline validator integration (validate_project.py)
 ```
 
 | Card | Depends on | Scope | Interface #17 status after completion |
@@ -5377,19 +5378,19 @@ intermediate "Current (contract frozen)" sub-status is permitted.
 
 TC-13.12a must **not** implement, freeze, or assume responsibility for:
 
-* **Production module** (``approval_gate.py``) — does not exist.
-* **TC-13.11 modifications** — ``control_plane_transition.py`` is
+* **Production module** (``approval_gate.py``) 鈥?does not exist.
+* **TC-13.11 modifications** 鈥?``control_plane_transition.py`` is
   unchanged.
-* **``validate_project.py`` modifications** — validator is unchanged.
-* **``TASK_APPROVAL`` write implementation** — deferred to TC-13.12b.
-* **Runtime gate implementation** — deferred to TC-13.12c.
-* **Interface #17** — remains **Target**.
-* **TC-13.13a/b (EscalationService)** — frozen contract (§2.16) and
+* **``validate_project.py`` modifications** 鈥?validator is unchanged.
+* **``TASK_APPROVAL`` write implementation** 鈥?deferred to TC-13.12b.
+* **Runtime gate implementation** 鈥?deferred to TC-13.12c.
+* **Interface #17** 鈥?remains **Target**.
+* **TC-13.13a/b (EscalationService)** 鈥?frozen contract (搂2.16) and
   production implementation (TC-13.13b) are **Current**.
-* **Interface #18** — **Current** (TC-13.13b).
-* **Subprocess invocation** — no CLI, model, or network calls.
-* **Git worktree creation or deletion** — out of scope.
-* **Secret / auth management** — credentials are never read, written,
+* **Interface #18** 鈥?**Current** (TC-13.13b).
+* **Subprocess invocation** 鈥?no CLI, model, or network calls.
+* **Git worktree creation or deletion** 鈥?out of scope.
+* **Secret / auth management** 鈥?credentials are never read, written,
   or logged.
 
 ---
@@ -5397,7 +5398,7 @@ TC-13.12a must **not** implement, freeze, or assume responsibility for:
 
 * ADR Interface Status row #17 "AgentDesk ApprovalGate"
   is now **Current**.
-* This section (§2.15) is the Frozen Contract for TC-13.12a — now
+* This section (搂2.15) is the Frozen Contract for TC-13.12a 鈥?now
   fully implemented across TC-13.12b/c/d.
 * **TC-13.12b is implemented**: the production module
   ``skills/agentdesk/scripts/approval_gate.py`` exists and exports
@@ -5410,11 +5411,11 @@ TC-13.12a must **not** implement, freeze, or assume responsibility for:
   ``ApprovalGate.require()`` are fully functional read-only runtime
   gates.  ``ControlPlaneTransitionService`` integration with
   ``_exclusive_state_lock`` gating is complete.  The "stub" phase
-  is retired — neither ``check()`` nor ``require()`` raises
+  is retired 鈥?neither ``check()`` nor ``require()`` raises
   ``NotImplementedError``.
 * **TC-13.12d is implemented**: the offline ApprovalGate validator
   is integrated into ``validate_project.py``.  It covers all 14 ADR
-  §2.15.16 responsibilities: exact schema, global uniqueness, scope
+  搂2.15.16 responsibilities: exact schema, global uniqueness, scope
   validation, subject-scope consistency, actor_role_id, lease_epoch,
   timestamp integrity, expires_at ordering, grant-revoke relationship,
   single-revoke-per-grant, active-grant conflict detection, orphan
@@ -5426,7 +5427,7 @@ TC-13.12a must **not** implement, freeze, or assume responsibility for:
   calls ``_validate_approval_evidence()`` after all tasks are indexed,
   reporting through the existing ``Reporter``.
 * Interface #17 is **Current**.
-* TC-13.13a/b (EscalationService) are **Current** — contract and
+* TC-13.13a/b (EscalationService) are **Current** 鈥?contract and
   production module complete and committed.
 * TC-13.14 and all subsequent Target interfaces remain **Target**.
 
@@ -5436,7 +5437,7 @@ TC-13.12a must **not** implement, freeze, or assume responsibility for:
 
 TC-13.13a freezes the **pure-policy EscalationService contract** for Worker
 execution tier progression.  No production module is shipped under
-TC-13.13a — the contract itself is the deliverable and must be implemented by
+TC-13.13a 鈥?the contract itself is the deliverable and must be implemented by
 TC-13.13b.
 
 EscalationService is a deterministic, pure-in-memory policy.  It receives
@@ -5444,27 +5445,27 @@ the current ``WorkerKind`` and returns an ``EscalationDecision``.  It carries
 no retry loop, no subprocess, no persistent state, and no side effects.
 
 ---
-#### 2.16.1 Core Semantic — WorkerKind Progression (Not TaskDifficulty)
+#### 2.16.1 Core Semantic 鈥?WorkerKind Progression (Not TaskDifficulty)
 
 "Difficulty escalation" in TC-13.13 means **raising the execution Worker tier**
 (``WorkerKind``), not changing the task's intrinsic ``TaskDifficulty``
-(TC-13.4).  The two are independent inputs (§2.13.1).  An Advanced-difficulty
+(TC-13.4).  The two are independent inputs (搂2.13.1).  An Advanced-difficulty
 task may be handled by an Expert Worker after escalation, but the task's
 ``TaskDifficulty`` remains ``ADVANCED``.
 
 Frozen progression (exactly three tiers, no skip):
 
 ```
-basic_agent   → standard_agent
-standard_agent → advanced_agent
-advanced_agent → expert_agent
-expert_agent   → request_user_decision (no further tier)
+basic_agent   鈫?standard_agent
+standard_agent 鈫?advanced_agent
+advanced_agent 鈫?expert_agent
+expert_agent   鈫?request_user_decision (no further tier)
 ```
 
 No downward escalation, skip, or wrap-around to ``basic_agent`` is permitted.
 
 ---
-#### 2.16.2 EscalationAction — Exact Two Values
+#### 2.16.2 EscalationAction 鈥?Exact Two Values
 
 ```python
 import enum
@@ -5478,15 +5479,15 @@ class EscalationAction(str, enum.Enum):
 
 Frozen rules:
 
-* Exactly two values — no more, no less.
-* ``str(member) == member.value`` — serialised as lowercase strings.
-* Unknown values → fail-closed (``ValueError`` at construction).
+* Exactly two values 鈥?no more, no less.
+* ``str(member) == member.value`` 鈥?serialised as lowercase strings.
+* Unknown values 鈫?fail-closed (``ValueError`` at construction).
 * Free-text values are forbidden.
-* Bare strings are rejected at the public API boundary — callers must pass
+* Bare strings are rejected at the public API boundary 鈥?callers must pass
   an ``EscalationAction`` member, not a literal ``"escalate"``.
 
 ---
-#### 2.16.3 EscalationRequest — Exact One Field
+#### 2.16.3 EscalationRequest 鈥?Exact One Field
 
 ```python
 from dataclasses import dataclass
@@ -5497,7 +5498,7 @@ class EscalationRequest:
     current_worker_kind: WorkerKind
 ```
 
-Exactly one field — no more, no less.
+Exactly one field 鈥?no more, no less.
 
 | # | Field | Type | Rule |
 |---|-------|------|------|
@@ -5506,22 +5507,22 @@ Exactly one field — no more, no less.
 Fields permanently excluded from ``EscalationRequest``:
 
 ```text
-task_id            — belongs to ControlPlaneTransitionService (TC-13.11)
-revision           — belongs to ControlPlaneTransitionService (TC-13.11)
-attempt            — belongs to ControlPlaneTransitionService (TC-13.11)
-dispatch_id        — belongs to ControlPlaneTransitionService (TC-13.11)
-task_difficulty    — independent concept; must not be modified by escalation
-retry_count        — belongs to WorkflowOrchestrator (TC-13.18)
-last_exit_code     — subprocess detail; not a policy input
-stdout / stderr    — never stored or ingested
-provider / model_id — model-tier concerns, not Worker tier escalation
-lease / slot_id    — belongs to WorkerSlotLease (TC-13.10)
-cas / snapshot     — belongs to ControlPlaneTransitionService (TC-13.11)
-prompt / secrets   — never stored
+task_id            鈥?belongs to ControlPlaneTransitionService (TC-13.11)
+revision           鈥?belongs to ControlPlaneTransitionService (TC-13.11)
+attempt            鈥?belongs to ControlPlaneTransitionService (TC-13.11)
+dispatch_id        鈥?belongs to ControlPlaneTransitionService (TC-13.11)
+task_difficulty    鈥?independent concept; must not be modified by escalation
+retry_count        鈥?belongs to WorkflowOrchestrator (TC-13.18)
+last_exit_code     鈥?subprocess detail; not a policy input
+stdout / stderr    鈥?never stored or ingested
+provider / model_id 鈥?model-tier concerns, not Worker tier escalation
+lease / slot_id    鈥?belongs to WorkerSlotLease (TC-13.10)
+cas / snapshot     鈥?belongs to ControlPlaneTransitionService (TC-13.11)
+prompt / secrets   鈥?never stored
 ```
 
 ---
-#### 2.16.4 EscalationDecision — Exact Three Fields
+#### 2.16.4 EscalationDecision 鈥?Exact Three Fields
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -5531,7 +5532,7 @@ class EscalationDecision:
     next_worker_kind: WorkerKind | None
 ```
 
-Exactly three fields — no more, no less.
+Exactly three fields 鈥?no more, no less.
 
 | # | Field | Type | Rule |
 |---|-------|------|------|
@@ -5542,9 +5543,9 @@ Exactly three fields — no more, no less.
 Frozen rules:
 
 * When ``action == ESCALATE``: ``next_worker_kind`` is the immediate
-  next ``WorkerKind`` in the progression (§2.16.1).
+  next ``WorkerKind`` in the progression (搂2.16.1).
 * When ``action == REQUEST_USER_DECISION``: ``next_worker_kind`` is
-  ``None`` — there is no further tier.
+  ``None`` 鈥?there is no further tier.
 * Construction of an ``ESCALATE`` decision with ``next_worker_kind=None``
   must fail closed (``ValueError``).
 * Construction of a ``REQUEST_USER_DECISION`` decision with a non-``None``
@@ -5553,17 +5554,17 @@ Frozen rules:
 Fields permanently excluded from ``EscalationDecision``:
 
 ```text
-task_id, revision, attempt, dispatch_id     — TC-13.11 domain
-task_difficulty                             — must not be changed
-escalation_level                            — integer counter belongs to orchestration
-reason / kind strings                       — not defined in this contract
-retry_advice / backoff_ms                   — TC-13.18 domain
-new_provider / new_model_id                 — model selection is independent
-timestamp / occurred_at                     — caller's responsibility
+task_id, revision, attempt, dispatch_id     鈥?TC-13.11 domain
+task_difficulty                             鈥?must not be changed
+escalation_level                            鈥?integer counter belongs to orchestration
+reason / kind strings                       鈥?not defined in this contract
+retry_advice / backoff_ms                   鈥?TC-13.18 domain
+new_provider / new_model_id                 鈥?model selection is independent
+timestamp / occurred_at                     鈥?caller's responsibility
 ```
 
 ---
-#### 2.16.5 Public API — Exact Four Symbols
+#### 2.16.5 Public API 鈥?Exact Four Symbols
 
 ```python
 def evaluate_escalation(
@@ -5596,11 +5597,11 @@ __all__ = [
 ]
 ```
 
-Exactly **4** public symbols — no more, no less.
+Exactly **4** public symbols 鈥?no more, no less.
 
 Frozen rules:
 
-1. ``evaluate_escalation`` is a **pure deterministic function** —
+1. ``evaluate_escalation`` is a **pure deterministic function** 鈥?
    no I/O, no random, no wall-clock dependency.
 2. The production implementation must be importable without side effects.
 3. No module-level mutable registry.
@@ -5616,7 +5617,7 @@ Frozen rules:
    behaviour unchanged).
 
 ---
-#### 2.16.6 Retry Boundary — Explicitly Deferred
+#### 2.16.6 Retry Boundary 鈥?Explicitly Deferred
 
 TC-13.13 owns the **escalation decision**, not the retry loop.
 
@@ -5632,18 +5633,18 @@ Frozen rules:
   re-invocation are all **excluded** from TC-13.13.
 
 ---
-#### 2.16.7 TaskDifficulty Boundary — Explicitly Preserved
+#### 2.16.7 TaskDifficulty Boundary 鈥?Explicitly Preserved
 
 Frozen rules:
 
 * EscalationService does **not** receive ``TaskDifficulty``.
 * EscalationService does **not** derive ``TaskDifficulty``.
 * EscalationService does **not** modify ``TaskDifficulty``.
-* Escalation of ``WorkerKind`` (e.g. ``basic_agent → standard_agent``)
+* Escalation of ``WorkerKind`` (e.g. ``basic_agent 鈫?standard_agent``)
   does **not** imply any change to the task's intrinsic ``TaskDifficulty``.
 * An Advanced-difficulty task assigned to an Expert Worker after escalation
-  remains Advanced-difficulty — ``TaskDifficulty`` and ``WorkerKind`` are
-  independent concepts (§2.13.1).
+  remains Advanced-difficulty 鈥?``TaskDifficulty`` and ``WorkerKind`` are
+  independent concepts (搂2.13.1).
 
 ---
 #### 2.16.8 State & Persistence Boundary
@@ -5669,25 +5670,25 @@ TC-13.13a/b must **not**:
   ``model_id``.
 
 **EscalationService is a pure-policy function.**  The consumption of its
-``EscalationDecision`` — including state transitions, event/outbox writes,
-slot acquisition, and lease management — is the responsibility of the
+``EscalationDecision`` 鈥?including state transitions, event/outbox writes,
+slot acquisition, and lease management 鈥?is the responsibility of the
 WorkflowOrchestrator (TC-13.18).
 
 ---
-#### 2.16.9 Expert Boundary — Deferred to Orchestration
+#### 2.16.9 Expert Boundary 鈥?Deferred to Orchestration
 
-The ``expert_agent → request_user_decision`` path is the **only**
+The ``expert_agent 鈫?request_user_decision`` path is the **only**
 escalation outcome that does not yield a next ``WorkerKind``.
 
 | Decision | ``action`` | ``next_worker_kind`` |
 |----------|------------|----------------------|
-| ``basic_agent`` → ``standard_agent`` | ``ESCALATE`` | ``WorkerKind.STANDARD_AGENT`` |
-| ``standard_agent`` → ``advanced_agent`` | ``ESCALATE`` | ``WorkerKind.ADVANCED_AGENT`` |
-| ``advanced_agent`` → ``expert_agent`` | ``ESCALATE`` | ``WorkerKind.EXPERT_AGENT`` |
-| ``expert_agent`` → (end of chain) | ``REQUEST_USER_DECISION`` | ``None`` |
+| ``basic_agent`` 鈫?``standard_agent`` | ``ESCALATE`` | ``WorkerKind.STANDARD_AGENT`` |
+| ``standard_agent`` 鈫?``advanced_agent`` | ``ESCALATE`` | ``WorkerKind.ADVANCED_AGENT`` |
+| ``advanced_agent`` 鈫?``expert_agent`` | ``ESCALATE`` | ``WorkerKind.EXPERT_AGENT`` |
+| ``expert_agent`` 鈫?(end of chain) | ``REQUEST_USER_DECISION`` | ``None`` |
 
-What happens after ``REQUEST_USER_DECISION`` — user interaction UI,
-ApprovalGate scope, blocked transition, outbox message, or notification —
+What happens after ``REQUEST_USER_DECISION`` 鈥?user interaction UI,
+ApprovalGate scope, blocked transition, outbox message, or notification 鈥?
 is **explicitly deferred** to TC-13.18 (WorkflowOrchestrator) and is
 **not** defined by this contract.
 
@@ -5709,12 +5710,12 @@ Frozen rules:
 ---
 #### 2.16.11 Deep Immutability
 
-* ``EscalationAction`` is an enum — hashable, identity-stable.
-* ``EscalationRequest`` is a frozen/slots dataclass — single field,
+* ``EscalationAction`` is an enum 鈥?hashable, identity-stable.
+* ``EscalationRequest`` is a frozen/slots dataclass 鈥?single field,
   cannot be reassigned after construction.
-* ``EscalationDecision`` is a frozen/slots dataclass — three fields,
+* ``EscalationDecision`` is a frozen/slots dataclass 鈥?three fields,
   cannot be reassigned after construction.
-* ``WorkerKind`` is an enum — hashable, identity-stable.
+* ``WorkerKind`` is an enum 鈥?hashable, identity-stable.
 * No ``list``, ``dict``, or ``set`` is introduced in any public type.
 * No input object is mutated.
 
@@ -5729,10 +5730,10 @@ recovery) for:
 | ``request`` is not an ``EscalationRequest`` instance | ``TypeError`` |
 | ``current_worker_kind`` is not a ``WorkerKind`` member | ``ValueError`` |
 | ``current_worker_kind`` is a bare string, ``bool``, ``int``, or arbitrary object | ``TypeError`` or ``ValueError`` |
-| Unknown ``WorkerKind`` value | ``ValueError`` — no silent fallback |
+| Unknown ``WorkerKind`` value | ``ValueError`` 鈥?no silent fallback |
 | ``EscalationAction`` value not in ``{escalate, request_user_decision}`` | ``ValueError`` |
 | ``next_worker_kind=None`` with ``action=ESCALATE`` | ``ValueError`` |
-| ``next_worker_kind ≠ None`` with ``action=REQUEST_USER_DECISION`` | ``ValueError`` |
+| ``next_worker_kind 鈮?None`` with ``action=REQUEST_USER_DECISION`` | ``ValueError`` |
 
 No silent correction, trimming, fallback, or alias normalization is
 permitted.
@@ -5742,35 +5743,35 @@ permitted.
 
 TC-13.13 must **not** implement, freeze, or assume responsibility for:
 
-* **Retry loop or orchestration** (TC-13.18) — attempt counting,
+* **Retry loop or orchestration** (TC-13.18) 鈥?attempt counting,
   subprocess re-invocation, dispatch-id generation.
-* **State machine writes** (TC-13.11) — ``tasks.yaml``, events, outbox,
+* **State machine writes** (TC-13.11) 鈥?``tasks.yaml``, events, outbox,
   acceptance, approval records.
-* **``TASK_ESCALATED``** — no new event type, no new schema version.
+* **``TASK_ESCALATED``** 鈥?no new event type, no new schema version.
 * **Slot acquisition or lease fencing** (TC-13.10).
 * **ApprovalGate integration** (TC-13.12).
 * **Provider rate-limiting** (TC-13.14).
 * **Provider output decoding** (TC-13.9c).
-* **User interaction or notification** — the ``request_user_decision``
+* **User interaction or notification** 鈥?the ``request_user_decision``
   action is a return value; its consumption is a TC-13.18 concern.
-* **Model selection or provider routing** — ``WorkerKind`` escalation
+* **Model selection or provider routing** 鈥?``WorkerKind`` escalation
   does not change ``selected_model_provider``, ``selected_model_id``,
   or any ``model_selection`` field.
-* **TaskDifficulty modification** (§2.16.7).
-* **Subprocess invocation** — no CLI, model, or network calls.
-* **Git operations** — no ``rev-parse``, ``merge-base``, or worktree
+* **TaskDifficulty modification** (搂2.16.7).
+* **Subprocess invocation** 鈥?no CLI, model, or network calls.
+* **Git operations** 鈥?no ``rev-parse``, ``merge-base``, or worktree
   management.
-* **Secret / auth management** — credentials are never read, written,
+* **Secret / auth management** 鈥?credentials are never read, written,
   or logged.
-* **Production module** (``escalation_service.py``) — does not exist
+* **Production module** (``escalation_service.py``) 鈥?does not exist
   under TC-13.13a.
 
 ---
 #### 2.16.14 Dependency
 
 ```text
-TC-13.13a  →  TC-13.4   (WorkerKind enum)
-TC-13.13b  →  TC-13.13a (this contract)
+TC-13.13a  鈫? TC-13.4   (WorkerKind enum)
+TC-13.13b  鈫? TC-13.13a (this contract)
 ```
 
 TC-13.13a depends **only** on the ``WorkerKind`` enumeration from TC-13.4
@@ -5780,14 +5781,14 @@ TC-13.13a depends **only** on the ``WorkerKind`` enumeration from TC-13.4
 #### 2.16.15 Task-Card Split
 
 ```text
-TC-13.13a — this frozen contract (§2.16)
-TC-13.13b — production implementation (escalation_service.py)
+TC-13.13a 鈥?this frozen contract (搂2.16)
+TC-13.13b 鈥?production implementation (escalation_service.py)
 ```
 
 | Card | Depends on | Scope | Interface #18 status after completion |
 |------|-----------|-------|--------------------------------------|
 | TC-13.13a | TC-13.4 | This contract only | **Target** |
-| TC-13.13b | TC-13.13a | Production module + tests | **Target** → **Current** |
+| TC-13.13b | TC-13.13a | Production module + tests | **Target** 鈫?**Current** |
 
 Interface #18 status must remain **Target** until TC-13.13b is complete
 and the production module and full test suite are committed.  No
@@ -5797,23 +5798,23 @@ intermediate "Current (contract frozen)" sub-status is permitted.
 #### 2.16.16 Status
 
 * ADR Interface Status row #18 "AgentDesk EscalationService"
-  is **Current** — TC-13.13b.
-* This section (§2.16) is the Frozen Contract for TC-13.13a — it governs
+  is **Current** 鈥?TC-13.13b.
+* This section (搂2.16) is the Frozen Contract for TC-13.13a 鈥?it governs
   the production implementation.
 * The production module ``escalation_service.py`` exists and is committed.
 * The test suite ``test_escalation_service.py`` exists and is committed.
-* TC-13.13a/b are **Current** — the EscalationService contract and
+* TC-13.13a/b are **Current** 鈥?the EscalationService contract and
   implementation are complete.
-* TC-13.4 (``WorkerKind`` enum) is **Current** — no changes required.
+* TC-13.4 (``WorkerKind`` enum) is **Current** 鈥?no changes required.
 * TC-13.14 and all subsequent Target interfaces remain **Target**.
 
 ---
 
-### 2.17 MadAuditGateway — Frozen Contract (Current — TC-13.16b)
+### 2.17 MadAuditGateway 鈥?Frozen Contract (Current 鈥?TC-13.16b)
 
 TC-13.16a freezes the **MadAuditGateway contract** for subprocess invocation
 of `mad audit` with worktree validation.  No production module is shipped
-under TC-13.16a — the contract itself is the deliverable and must be
+under TC-13.16a 鈥?the contract itself is the deliverable and must be
 implemented by TC-13.16b (now complete).
 
 ---
@@ -5834,7 +5835,7 @@ __all__ = [
 ]
 ```
 
-Exactly **7** public symbols — no more, no less.
+Exactly **7** public symbols 鈥?no more, no less.
 
 ---
 
@@ -5857,7 +5858,7 @@ async def run_audit_gateway(
 
 ---
 
-#### 2.17.3 MadAuditGatewayInput — Exact Fields
+#### 2.17.3 MadAuditGatewayInput 鈥?Exact Fields
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -5866,7 +5867,7 @@ class MadAuditGatewayInput:
     task_id: str                # non-empty
     dispatch_id: str            # non-empty
     question: str               # the audit question
-    workspace: Path             # absolute Path — authoritative audit worktree
+    workspace: Path             # absolute Path 鈥?authoritative audit worktree
     task_card_commit: str       # 40-char hex SHA
     task_card_path: str         # repo-relative path
     delivery_report_path: str   # repo-relative path
@@ -5876,9 +5877,9 @@ class MadAuditGatewayInput:
     depth: MadDeliberationDepth
 ```
 
-Exactly **12** fields — no more, no less.  `project_root` and `workspace`
+Exactly **12** fields 鈥?no more, no less.  `project_root` and `workspace`
 are absolute ``Path`` objects.  `depth` accepts only a
-`MadDeliberationDepth` enum member — bare strings are rejected at validation
+`MadDeliberationDepth` enum member 鈥?bare strings are rejected at validation
 time.
 
 Agent lists are taken **only** from `config.audit_agent_ids` and
@@ -5886,7 +5887,7 @@ Agent lists are taken **only** from `config.audit_agent_ids` and
 report agent ID through `MadAuditGatewayInput`.
 
 All public models use `@dataclass(frozen=True, slots=True)`.  Every
-collection field is converted to an immutable `tuple` — no public `dict`
+collection field is converted to an immutable `tuple` 鈥?no public `dict`
 or `list` mutable objects are exposed.
 
 ---
@@ -5901,7 +5902,7 @@ class MadAuditIssueLocation:
     commit: str    # 40-char hex SHA
 ```
 
-Exactly **3** fields — no more, no less.
+Exactly **3** fields 鈥?no more, no less.
 
 ---
 
@@ -5919,7 +5920,7 @@ class MadAuditIssue:
     recommendation: str   # actionable fix
 ```
 
-Exactly **7** fields — no more, no less.
+Exactly **7** fields 鈥?no more, no less.
 
 ---
 
@@ -5935,7 +5936,7 @@ class MadAuditEvidence:
     verified: bool   # must be bool, not truthy/falsy
 ```
 
-Exactly **5** fields — no more, no less.  `verified` must be a strict `bool`
+Exactly **5** fields 鈥?no more, no less.  `verified` must be a strict `bool`
 (`True` or `False`), not a truthy/falsy value.
 
 ---
@@ -5948,7 +5949,7 @@ class MadAuditPlan:
     depth: MadDeliberationDepth
 ```
 
-Exactly **1** field — no more, no less.  Matches the Current MAD output
+Exactly **1** field 鈥?no more, no less.  Matches the Current MAD output
 `{"depth": "<value>"}`.
 
 ---
@@ -5972,7 +5973,7 @@ class MadAuditGatewayResult:
     report_sha256: str           # SHA-256 of report UTF-8 bytes
 ```
 
-Exactly **12** fields — no more, no less.
+Exactly **12** fields 鈥?no more, no less.
 
 ---
 
@@ -6001,7 +6002,7 @@ Must use an argv array; shell concatenation is forbidden.
 
 #### 2.17.10 Execution Bounds
 
-- `cwd=str(inp.workspace)` — workspace is the authoritative audit worktree.
+- `cwd=str(inp.workspace)` 鈥?workspace is the authoritative audit worktree.
 - Environment inherits the parent process; only `MAD_HOME` is set.
 - `MAD_PARTICIPANT` is **not** set by the Gateway.
 - The Gateway does **not** create or remove worktrees.
@@ -6037,9 +6038,9 @@ Rules:
 - Non-zero exit must never be parsed as a successful result or written to mad-ref.
 - `issues` must have exactly seven fields; `location` exactly three.
 - `evidence` must have exactly five fields; `verified` must be `bool`.
-- `archive_path` must be absolute — it enters only runtime mad-ref, never Git.
+- `archive_path` must be absolute 鈥?it enters only runtime mad-ref, never Git.
 - `report_sha256` is computed on UTF-8 bytes of the parsed `report` field.
-- Missing keys, extra keys, wrong types, or unknown enum values → fail-closed.
+- Missing keys, extra keys, wrong types, or unknown enum values 鈫?fail-closed.
 - Exception messages must never contain: report text, issue descriptions,
   raw stdout, workspace paths, or secrets.
 
@@ -6047,7 +6048,7 @@ Rules:
 
 #### 2.17.12 Error Handling
 
-Reuses the existing `mad_gateway` Gateway exception hierarchy — no parallel
+Reuses the existing `mad_gateway` Gateway exception hierarchy 鈥?no parallel
 AuditGateway exception classes are created.
 
 Exit code mapping:
@@ -6060,7 +6061,7 @@ Exit code mapping:
 | `130` | `GatewayExit130Error` |
 | Other | `GatewayUnknownExitError` |
 
-The Gateway only raises exceptions — it does **not** self-write a
+The Gateway only raises exceptions 鈥?it does **not** self-write a
 Git-tracked audit failure event.
 
 ---
@@ -6068,9 +6069,9 @@ Git-tracked audit failure event.
 #### 2.17.13 Dependencies
 
 ```text
-TC-13.16a → TC-13.6  (MadGatewayConfig, mad-refs)
-TC-13.16a → TC-13.15 (mad audit CLI contract)
-TC-13.16b → TC-13.16a (this contract)
+TC-13.16a 鈫?TC-13.6  (MadGatewayConfig, mad-refs)
+TC-13.16a 鈫?TC-13.15 (mad audit CLI contract)
+TC-13.16b 鈫?TC-13.16a (this contract)
 ```
 
 ---
@@ -6078,16 +6079,16 @@ TC-13.16b → TC-13.16a (this contract)
 #### 2.17.14 Status
 
 * ADR Interface Status row #20 "AgentDesk MadAuditGateway"
-  remains **Target** — TC-13.16a freezes the contract; TC-13.16b
+  remains **Target** 鈥?TC-13.16a freezes the contract; TC-13.16b
   (production implementation) is not yet complete.
-* This section (§2.17) is the Frozen Contract for TC-13.16a.
+* This section (搂2.17) is the Frozen Contract for TC-13.16a.
 * TC-13.15 (`mad audit` sub-command) is **Current**.
-* TC-13.16b (production module `mad_audit_gateway.py`) is **Current** — committed.
-* This section (§2.17) is **Current** — TC-13.16b.
+* TC-13.16b (production module `mad_audit_gateway.py`) is **Current** 鈥?committed.
+* This section (搂2.17) is **Current** 鈥?TC-13.16b.
 
 ---
 
-### 2.18 StateProvider — Frozen Contract (Current — TC-13.17b)
+### 2.18 StateProvider 鈥?Frozen Contract (Current 鈥?TC-13.17b)
 
 TC-13.17a froze the **StateProvider read-only contract**.  TC-13.17b
 implemented the production module, tests, and finalized the contract
@@ -6096,7 +6097,7 @@ document.
 StateProvider is the read-only service boundary for canonical project
 state.  The Skill (PM/Worker runbooks) and the HTML Dashboard (TC-13.20)
 both consume data through this interface.  Neither writes to canonical
-state directly — all writes go through `ControlPlaneTransitionService`
+state directly 鈥?all writes go through `ControlPlaneTransitionService`
 (TC-13.11).
 
 StateProvider does **not** acquire the control-plane state lock, does
@@ -6110,11 +6111,11 @@ The full frozen contract lives at:
 
 | # | File | Required | Description |
 |---|------|----------|-------------|
-| 1 | `docs/pm/state/tasks.yaml` | Yes | `agentdesk.tasks/v2` — authoritative task ledger |
-| 2 | `docs/pm/events/*.yaml` | Yes | `agentdesk.state-event/v2` — immutable event records |
-| 3 | `docs/pm/outbox/*.yaml` | Yes | `agentdesk.outbox-message/v2` — replayable outbox |
-| 4 | `docs/pm/acceptances/*.md` | Yes | `agentdesk.acceptance/v2` — acceptance records |
-| 5 | `.agentdesk/runtime/mad-refs.yaml` | No | `agentdesk.mad-refs/v1` — runtime MAD reference records |
+| 1 | `docs/pm/state/tasks.yaml` | Yes | `agentdesk.tasks/v2` 鈥?authoritative task ledger |
+| 2 | `docs/pm/events/*.yaml` | Yes | `agentdesk.state-event/v2` 鈥?immutable event records |
+| 3 | `docs/pm/outbox/*.yaml` | Yes | `agentdesk.outbox-message/v2` 鈥?replayable outbox |
+| 4 | `docs/pm/acceptances/*.md` | Yes | `agentdesk.acceptance/v2` 鈥?acceptance records |
+| 5 | `.agentdesk/runtime/mad-refs.yaml` | No | `agentdesk.mad-refs/v1` 鈥?runtime MAD reference records |
 
 ---
 #### 2.18.2 Multi-File Consistency Protocol
@@ -6122,38 +6123,38 @@ The full frozen contract lives at:
 StateProvider must detect concurrent transitions without acquiring
 the state lock:
 
-1. Read `tasks.yaml` raw bytes → **A**.
+1. Read `tasks.yaml` raw bytes 鈫?**A**.
 2. Read events, outbox, acceptances (stable-sorted).
 3. Read optional `mad-refs.yaml`.
-4. Re-read `tasks.yaml` raw bytes → **B**.
-5. **A** ≠ **B** → `StateProviderSnapshotChangedError`.
+4. Re-read `tasks.yaml` raw bytes 鈫?**B**.
+5. **A** 鈮?**B** 鈫?`StateProviderSnapshotChangedError`.
 6. Validate cross-file referential integrity and digest parity.
-7. Any inconsistency → `StateProviderInconsistentSnapshotError`.
+7. Any inconsistency 鈫?`StateProviderInconsistentSnapshotError`.
 8. Only when all checks pass: construct frozen snapshot.
 
 StateProvider must **never** skip validation on the assumption that
 the caller has already verified the snapshot.
 
 ---
-#### 2.18.3 Output — `StateSnapshot`
+#### 2.18.3 Output 鈥?`StateSnapshot`
 
 A single frozen/slots dataclass with `tuple` collections:
 
 ```text
 StateSnapshot
-├── project_root: Path
-├── schema_version: str
-├── project_id: str
-├── adoption_level: str
-├── updated_at: str
-├── pm_holder_id: str
-├── pm_lease_epoch: int
-├── pm_mode: str
-├── tasks: tuple[TaskEntry, ...]
-├── events: tuple[EventEntry, ...]
-├── outbox: tuple[OutboxEntry, ...]
-├── acceptances: tuple[AcceptanceEntry, ...]
-└── mad_refs: tuple[MadRefEntry, ...] | None
+鈹溾攢鈹€ project_root: Path
+鈹溾攢鈹€ schema_version: str
+鈹溾攢鈹€ project_id: str
+鈹溾攢鈹€ adoption_level: str
+鈹溾攢鈹€ updated_at: str
+鈹溾攢鈹€ pm_holder_id: str
+鈹溾攢鈹€ pm_lease_epoch: int
+鈹溾攢鈹€ pm_mode: str
+鈹溾攢鈹€ tasks: tuple[TaskEntry, ...]
+鈹溾攢鈹€ events: tuple[EventEntry, ...]
+鈹溾攢鈹€ outbox: tuple[OutboxEntry, ...]
+鈹溾攢鈹€ acceptances: tuple[AcceptanceEntry, ...]
+鈹斺攢鈹€ mad_refs: tuple[MadRefEntry, ...] | None
 ```
 
 `TaskEntry`, `EventEntry`, `OutboxEntry`, `AcceptanceEntry`, and
@@ -6172,7 +6173,7 @@ StateProvider(project_root: Path)
 def snapshot(self) -> StateSnapshot:
     # Executes the multi-file consistency protocol.
     # Returns a frozen StateSnapshot.
-    # All errors raised from snapshot() — never from construction.
+    # All errors raised from snapshot() 鈥?never from construction.
 ```
 
 ---
@@ -6180,21 +6181,21 @@ def snapshot(self) -> StateSnapshot:
 
 ```text
 StateProviderError (Exception)
-├── StateProviderInputError
-├── StateProviderNotFoundError
-├── StateProviderSchemaError
-├── StateProviderSnapshotChangedError
-└── StateProviderInconsistentSnapshotError
+鈹溾攢鈹€ StateProviderInputError
+鈹溾攢鈹€ StateProviderNotFoundError
+鈹溾攢鈹€ StateProviderSchemaError
+鈹溾攢鈹€ StateProviderSnapshotChangedError
+鈹斺攢鈹€ StateProviderInconsistentSnapshotError
 ```
 
-No `PermissionDeniedError` — no real permissions system to evidence
+No `PermissionDeniedError` 鈥?no real permissions system to evidence
 such a distinction.
 
 ---
 #### 2.18.6 Design Constraints
 
 - All input/output types: frozen/slots dataclasses.
-- All collections: `tuple` — no public `dict`, `list`, or `set`.
+- All collections: `tuple` 鈥?no public `dict`, `list`, or `set`.
 - `project_root`: absolute `Path`.
 - Sort order: deterministic (`sorted()` on filenames).
 - Error messages must not contain paths, task IDs, dispatch IDs,
@@ -6209,7 +6210,7 @@ such a distinction.
 
 StateProvider does **not** handle:
 
-- Approval authorization (→ ApprovalGate, TC-13.12).
+- Approval authorization (鈫?ApprovalGate, TC-13.12).
 - Worker-slot lease, PM lease, lock ownership tokens.
 - Transport receipts, process IDs, environment variables, secrets.
 - MAD archive internal files.
@@ -6219,19 +6220,19 @@ StateProvider does **not** handle:
 ---
 #### 2.18.8 Status
 
-* Interface #21 is **Current** — TC-13.17b.
-* This section (§2.18) is the Frozen Contract for TC-13.17a.
-* TC-13.17b (production module) is **complete** — `state_provider.py`
+* Interface #21 is **Current** 鈥?TC-13.17b.
+* This section (搂2.18) is the Frozen Contract for TC-13.17a.
+* TC-13.17b (production module) is **complete** 鈥?`state_provider.py`
   and `test_state_provider.py` are committed.
 * TC-13.18 (WorkflowOrchestrator) and TC-13.20 (HTML Dashboard)
   remain **Target**.
 
 ---
 
-### 2.19 WorkflowOrchestrator — Frozen Contract (Target — TC-13.18a)
+### 2.19 WorkflowOrchestrator 鈥?Frozen Contract (Target 鈥?TC-13.18a)
 
 TC-13.18a freezes the **WorkflowOrchestrator implementable contract**.
-No production module is shipped under TC-13.18a — the contract itself is the
+No production module is shipped under TC-13.18a 鈥?the contract itself is the
 deliverable.  Implementation begins with TC-13.18b.
 
 The full frozen contract lives at:
@@ -6239,7 +6240,7 @@ The full frozen contract lives at:
 
 ---
 
-#### 2.19.1 Ownership Boundary — Delegation-Only
+#### 2.19.1 Ownership Boundary 鈥?Delegation-Only
 
 The WorkflowOrchestrator is a **pure orchestration facade**.  It owns zero
 canonical state writes, zero lock primitives, and zero subprocess execution.
@@ -6262,21 +6263,21 @@ Every authoritative operation delegates to an existing Current service:
 1. WorkflowOrchestrator does **not** directly serialize or write any file
    under `docs/pm/` or `.agentdesk/runtime/`.
 2. WorkflowOrchestrator does **not** directly call
-   `hold_worker_slot_fence()` — `ControlPlaneTransitionService.apply_transition()`
+   `hold_worker_slot_fence()` 鈥?`ControlPlaneTransitionService.apply_transition()`
    acquires the fence internally when a `WorkerSlotLease` is supplied.
 3. WorkflowOrchestrator does **not** directly acquire
-   `.state-transition.lock` — `apply_transition()` acquires it internally.
+   `.state-transition.lock` 鈥?`apply_transition()` acquires it internally.
 4. The three gated transitions (`TASK_DISPATCHED`, `DELIVERY_ACCEPTED`,
    `CHANGE_INTEGRATED`) have `ApprovalGate.require()` already executed by
    `apply_transition()` inside the state lock.  WorkflowOrchestrator does
    **not** call ApprovalGate before or after transition requests.
-5. Callers must **not** fabricate `approval_gate` GuardResult entries —
+5. Callers must **not** fabricate `approval_gate` GuardResult entries 鈥?
    `apply_transition()` constructs them from the actual ApprovalGate
-   outcome (§2.15.13).
+   outcome (搂2.15.13).
 
 ---
 
-#### 2.19.2 TC-13.9c Hard Dependency — Opaque Output Boundary
+#### 2.19.2 TC-13.9c Hard Dependency 鈥?Opaque Output Boundary
 
 `WorkerResult.dispatch_result.stdout` and `.stderr` are opaque `bytes`.
 The WorkflowOrchestrator must **never**:
@@ -6292,7 +6293,7 @@ Until TC-13.9c delivers typed, trustable `WorkerOutput` / `DeliveryReceipt`:
 * WorkflowOrchestrator **can** complete scheduling, lease, Worker execution,
   and result return.
 * WorkflowOrchestrator **cannot** automatically complete
-  `DELIVERY_SUBMITTED` — caller must supply `implementation_commit` and
+  `DELIVERY_SUBMITTED` 鈥?caller must supply `implementation_commit` and
   `report_commit` from out-of-band evidence.
 * WorkflowOrchestrator **cannot** derive commit SHAs from opaque bytes.
 
@@ -6302,12 +6303,12 @@ out-of-band mechanism supplies the two commit SHAs.
 
 ---
 
-#### 2.19.3 DISPATCH_ACKNOWLEDGED — ACK Semantics
+#### 2.19.3 DISPATCH_ACKNOWLEDGED 鈥?ACK Semantics
 
 The true point at which a CLI subprocess has started and is ready to
 receive input is **not observable** via the current `run_worker()` API.
 `run_worker()` calls `run_dispatch()`, which calls
-`asyncio.create_subprocess_exec` and then `process.communicate()` — the
+`asyncio.create_subprocess_exec` and then `process.communicate()` 鈥?the
 function returns only after the subprocess exits.
 
 Decision for TC-13.18 v1: **ACK is excluded from the automated dispatch
@@ -6315,15 +6316,15 @@ cycle.**  The `DISPATCH_ACKNOWLEDGED` transition requires an external
 reliable start signal.  When the DispatcherAgentGateway gains a
 process-started callback (future task card), the ACK transition will be
 integrated.  Until then, the automated cycle skips
-`DISPATCH_ACKNOWLEDGED` — task remains `dispatched` until a Worker
+`DISPATCH_ACKNOWLEDGED` 鈥?task remains `dispatched` until a Worker
 explicitly reports in-progress.
 
 This decision does **not** alter the existing `DISPATCH_ACKNOWLEDGED`
-event schema or semantics — it merely defers its automated production.
+event schema or semantics 鈥?it merely defers its automated production.
 
 ---
 
-#### 2.19.4 Clock and Heartbeat — Explicit Injection
+#### 2.19.4 Clock and Heartbeat 鈥?Explicit Injection
 
 The WorkflowOrchestrator must accept an explicit `WorkflowClock` Protocol
 rather than calling `datetime.now()` or `time.sleep()` in production logic:
@@ -6343,11 +6344,11 @@ class WorkflowClock(Protocol):
 
 1. `now()` must return timezone-aware UTC.
 2. Heartbeat interval must not exceed the `WorkerSlotLease`
-   `MAX_HEARTBEAT_INTERVAL_SECONDS` of 20 s (§2.5.5).
+   `MAX_HEARTBEAT_INTERVAL_SECONDS` of 20 s (搂2.5.5).
 3. A heartbeat background task must be started before `run_worker()` and
    stopped (cancelled) on Worker completion, failure, or cancellation.
 4. Heartbeat failure (renew raises `WorkerSlotFencingError`) must cancel
-   the dispatch and enter the cleanup path — subsequent transitions must
+   the dispatch and enter the cleanup path 鈥?subsequent transitions must
    **not** proceed with an expired lease.
 5. Tests use a fake clock; production uses a real asyncio clock.
 6. A single frozen `now` value must **not** be reused across multiple
@@ -6383,7 +6384,7 @@ interface.
 
 ---
 
-#### 2.19.6 MAD Audit — Fail-Closed Strategy
+#### 2.19.6 MAD Audit 鈥?Fail-Closed Strategy
 
 In TC-13.18 v1, MAD audit is **mandatory** in the automated acceptance
 path.  There is **no** `skip_audit: bool` flag.
@@ -6393,13 +6394,13 @@ Audit result routing (frozen):
 | `verdict` | Action |
 |-----------|--------|
 | `"pass"` | Proceed to acceptance request |
-| `"fail"` | Reject automatic acceptance → enter return/escalation path |
+| `"fail"` | Reject automatic acceptance 鈫?enter return/escalation path |
 | `"blocked"` | Pause for PM / user decision |
 | Gateway exception (non-zero exit, timeout, parse failure) | Must **not** be treated as `"pass"`; enters blocked/escalation path |
 | No audit result (audit not invoked) | Automatic acceptance is **not** permitted |
 
 Future exemption from mandatory audit must use a separate, typed,
-auditable policy evidence object — never a bare boolean flag.
+auditable policy evidence object 鈥?never a bare boolean flag.
 
 ---
 
@@ -6413,16 +6414,16 @@ the orchestrator:
 * `DispatchGatewayError` (all subclasses)
 * `ApprovalError` (all subclasses)
 * `ControlPlaneTransitionError` (all subclasses)
-* `GatewayError` (all subclasses — from `mad_gateway`)
+* `GatewayError` (all subclasses 鈥?from `mad_gateway`)
 * `StateProviderError` (all subclasses)
 
 Only three orchestrator-specific exception types exist:
 
 ```text
 WorkflowOrchestratorError                  (Exception)
-├── WorkflowInputError                     — invalid argument types/values
-├── WorkflowHeartbeatError                 — heartbeat renewal lost
-└── WorkflowInvariantError                 — internal precondition violated
+鈹溾攢鈹€ WorkflowInputError                     鈥?invalid argument types/values
+鈹溾攢鈹€ WorkflowHeartbeatError                 鈥?heartbeat renewal lost
+鈹斺攢鈹€ WorkflowInvariantError                 鈥?internal precondition violated
 ```
 
 Exception messages must **never** contain: the task prompt, raw stdout or
@@ -6434,13 +6435,13 @@ dispatch IDs, user-generated content, or secrets.
 #### 2.19.8 Transition Coverage
 
 WorkflowOrchestrator must be aware of **all 15** transition types defined
-in `ControlPlaneTransitionService._TRANSITION_SPECS` (§2.14.8):
+in `ControlPlaneTransitionService._TRANSITION_SPECS` (搂2.14.8):
 
 | # | Event type | Covered by path |
 |---|-----------|----------------|
 | 1 | `TASK_SPECIFIED` | PM manual (orchestrator-aware) |
 | 2 | `TASK_DISPATCHED` | TC-13.18b dispatch path |
-| 3 | `DISPATCH_ACKNOWLEDGED` | Deferred (see §2.19.3) |
+| 3 | `DISPATCH_ACKNOWLEDGED` | Deferred (see 搂2.19.3) |
 | 4 | `DELIVERY_SUBMITTED` | TC-13.18c delivery path |
 | 5 | `DELIVERY_ACCEPTED` | TC-13.18c acceptance path |
 | 6 | `DELIVERY_RETURNED` | TC-13.18c return path |
@@ -6454,25 +6455,25 @@ in `ControlPlaneTransitionService._TRANSITION_SPECS` (§2.14.8):
 | 14 | `TASK_CANCELLED` | TC-13.18d cancel path |
 | 15 | `TASK_SUPERSEDED` | TC-13.18d supersede path |
 
-WorkflowOrchestrator does **not** duplicate `_TRANSITION_SPECS` — it
+WorkflowOrchestrator does **not** duplicate `_TRANSITION_SPECS` 鈥?it
 constructs typed `TransitionRequest` objects and passes them to
 `apply_transition()`.
 
 ---
 
-#### 2.19.9 Contract Scope — Explicit Non-Goals
+#### 2.19.9 Contract Scope 鈥?Explicit Non-Goals
 
 TC-13.18a does **not** implement:
 
-* WorkflowOrchestrator production module (`workflow_orchestrator.py` —
+* WorkflowOrchestrator production module (`workflow_orchestrator.py` 鈥?
   deferred to TC-13.18b).
-* Provider output decoding — TC-13.9c.
-* Rate-limit handling — TC-13.14.
-* Git worktree lifecycle — deferred to a future task card.
-* HTML Dashboard — TC-13.20.
-* Retry, escalation, and cancellation execution — deferred to TC-13.18d.
-* E2E / recovery tests — TC-13.19.
-* `DISPATCH_ACKNOWLEDGED` automated production — deferred to a future
+* Provider output decoding 鈥?TC-13.9c.
+* Rate-limit handling 鈥?TC-13.14.
+* Git worktree lifecycle 鈥?deferred to a future task card.
+* HTML Dashboard 鈥?TC-13.20.
+* Retry, escalation, and cancellation execution 鈥?deferred to TC-13.18d.
+* E2E / recovery tests 鈥?TC-13.19.
+* `DISPATCH_ACKNOWLEDGED` automated production 鈥?deferred to a future
   DispatcherGateway start-receipt task card.
 
 ---
@@ -6480,13 +6481,13 @@ TC-13.18a does **not** implement:
 #### 2.19.10 Recommended Task-Card Split
 
 ```text
-TC-13.18a — this frozen contract (§2.19)
-TC-13.9c  — typed WorkerOutput / DeliveryReceipt decoding
-TC-13.18b — lease, heartbeat, Worker execution, bounded cleanup
-TC-13.18c — DeliverySubmitted, MAD audit, Acceptance, Integration
-TC-13.18d — Escalation, retry, cancellation, replay, fault recovery
-TC-13.19  — real E2E closed-loop tests
-TC-13.20  — HTML Dashboard
+TC-13.18a 鈥?this frozen contract (搂2.19)
+TC-13.9c  鈥?typed WorkerOutput / DeliveryReceipt decoding
+TC-13.18b 鈥?lease, heartbeat, Worker execution, bounded cleanup
+TC-13.18c 鈥?DeliverySubmitted, MAD audit, Acceptance, Integration
+TC-13.18d 鈥?Escalation, retry, cancellation, replay, fault recovery
+TC-13.19  鈥?real E2E closed-loop tests
+TC-13.20  鈥?HTML Dashboard
 ```
 
 | Card | Depends on | Scope | Interface #22 status after completion |
@@ -6495,15 +6496,15 @@ TC-13.20  — HTML Dashboard
 | TC-13.18b | TC-13.18a, TC-13.10c, TC-13.11c, TC-13.12d, TC-13.13b, TC-13.17b | Lease + heartbeat + run_worker + cleanup | **Target** |
 | TC-13.18c | TC-13.18b, TC-13.16b | Delivery + audit + accept + integrate | **Target** |
 | TC-13.18d | TC-13.18c | Escalation + retry + cancel + replay | **Target** |
-| TC-13.19 | TC-13.18d | E2E / recovery tests | **Target** → **Current** |
+| TC-13.19 | TC-13.18d | E2E / recovery tests | **Target** 鈫?**Current** |
 
 ---
 
 #### 2.19.11 Status
 
 * ADR Interface Status row #22 "AgentDesk WorkflowOrchestrator"
-  remains **Target** — TC-13.18a.
-* This section (§2.19) is the Frozen Contract for TC-13.18a.
+  remains **Target** 鈥?TC-13.18a.
+* This section (搂2.19) is the Frozen Contract for TC-13.18a.
 * No production module is shipped under TC-13.18a.
 * TC-13.18b/c/d, TC-13.19, and TC-13.20 remain **Target**.
 * All prior Current interfaces remain **Current**.
@@ -6511,23 +6512,159 @@ TC-13.20  — HTML Dashboard
 ---
 
 
+
+#### 2.20 WorkerOutput Decoder — Frozen Contract (Current — TC-13.9c.1)
+
+TC-13.9c.1 delivers a version-locked, fail-closed, pure-function decoder
+for Claude Code 2.1.214 Worker output.  It converts opaque
+``WorkerResult.dispatch_result.stdout`` bytes into typed ``WorkerOutput``
+and ``DeliveryReceipt`` data classes.
+
+The full frozen contract is in
+``skills/agentdesk/references/public-interfaces/worker-output-contract.md``.
+This section records the essential design decisions.
+
+##### 2.20.1 Public API — Exactly 12 Symbols
+
+```python
+__all__ = [
+    "WorkerCompletionStatus",
+    "WorkerOutput",
+    "DeliveryReceipt",
+    "decode_worker_result",
+    "require_delivery_receipt",
+    "WorkerOutputError",
+    "WorkerOutputUnsupportedProviderError",
+    "WorkerOutputUnsupportedVersionError",
+    "WorkerOutputIntegrityError",
+    "WorkerOutputDecodeError",
+    "WorkerOutputSchemaError",
+    "WorkerOutputIdentityError",
+]
+```
+
+##### 2.20.2 Data Models
+
+``WorkerCompletionStatus`` — strict three-value ``str, Enum``:
+``completed``, ``partial``, ``blocked``.  No case-folding, no aliases,
+no unknown fallback.
+
+``WorkerOutput`` — frozen, slots, nine-field dataclass:
+``identity``, ``provider``, ``model_id``, ``status``,
+``implementation_commit`` (nullable), ``report_commit``, ``summary``,
+``warnings`` (tuple), ``stdout_sha256``.
+
+``DeliveryReceipt`` — frozen, slots, six-field dataclass (COMPLETED only):
+``identity``, ``provider``, ``model_id``, ``implementation_commit``,
+``report_commit``, ``stdout_sha256``.
+
+##### 2.20.3 Supported Matrix
+
+Only ``claude`` and ``claudecode`` at CLI version ``2.1.214`` are
+supported.  ``codex`` raises ``WorkerOutputUnsupportedProviderError``.
+Any other version raises ``WorkerOutputUnsupportedVersionError``.
+
+##### 2.20.4 Decode Pipeline
+
+1. Type-check ``WorkerResult``.
+2. Validate ``provider_cli_version`` (non-empty str, no whitespace).
+3. Provider gate (only ``claude`` / ``claudecode``).
+4. Version gate (only ``2.1.214``).
+5. SHA-256 integrity (constant-time comparison).
+6. Strict JSON parse (no BOM, no NaN/Infinity, no trailing text, no
+   duplicate keys).
+7. Claude wrapper validation (exact 20 keys; ``type=="result"``,
+   ``subtype=="success"``, ``is_error is False``,
+   ``api_error_status is None``, ``result`` non-empty str).
+8. Envelope parse (Claude ``result`` string is itself JSON).
+9. Envelope validation (exact 10 keys; identity match; commit format;
+   status-specific rules).
+10. Construct ``WorkerOutput``.
+
+##### 2.20.5 Claude Wrapper — 20 Keys
+
+Observed from three real CLI 2.1.214 captures (``success-minimal``,
+``success-unicode``, ``application-boundary``):
+
+```text
+type, subtype, is_error, api_error_status, duration_ms,
+duration_api_ms, ttft_ms, ttft_stream_ms, time_to_request_ms,
+num_turns, result, stop_reason, session_id, total_cost_usd,
+usage, modelUsage, permission_denials, terminal_reason,
+fast_mode_state, uuid
+```
+
+##### 2.20.6 AgentDesk Worker Completion Envelope — 10 Keys
+
+```text
+schema_version, task_id, revision, attempt, dispatch_id, status,
+implementation_commit, report_commit, summary, warnings
+```
+
+Key rules:
+* ``schema_version`` is ``"agentdesk.worker-output/v1"``.
+* All four identity fields must match ``DispatchIdentity`` exactly.
+* ``revision`` / ``attempt`` are non-bool int ``>=1``.
+* ``report_commit`` is always 40-char lowercase hex.
+* ``implementation_commit`` is null or 40-char lowercase hex.
+* ``completed`` requires ``implementation_commit``; the two commits
+  must differ.
+* ``summary`` is non-empty str, no NUL.
+* ``warnings``: list of non-empty, no-whitespace-edges, no-NUL/CR/LF,
+  deduplicated strings.
+
+##### 2.20.7 Security Boundaries
+
+The decoder must NOT: call subprocess, use asyncio, open files, read
+``pathlib``, access ``os.environ``, call Git, use the network, call
+Claude/Codex CLI, retry, fallback-decode, or auto-detect versions.
+Module import must have zero stdout, zero stderr, zero side effects.
+
+##### 2.20.8 Error Message Safety
+
+Exception messages must NOT contain: stdout/stderr bytes, Claude
+result text, summary text, warning content, task_id, dispatch_id,
+commit SHAs, session_id, uuid, cost fields, workspace paths, prompts,
+or secrets.
+
+##### 2.20.9 Task Card Split
+
+| Card | Description | Status |
+|------|-------------|--------|
+| TC-13.9c.1 | Claude 2.1.214 WorkerOutput decoder | Current |
+| TC-13.9c.2 | Codex WorkerOutput decoder | Target |
+| TC-13.9c | Full output decoding (Claude + Codex) | Target |
+
+##### 2.20.10 Status
+
+* ADR Interface Status row #33 "AgentDesk WorkerOutput Decoder" is
+  **Current** — TC-13.9c.1.
+* TC-13.9c.1 targets Claude/claudecode 2.1.214 only.
+* Codex decoding (TC-13.9c.2) remains **Target**.
+* The overall TC-13.9c task card remains **Target**.
+* TC-13.18c must only enable the validated Claude/claudecode path on
+  first release.
+* No cross-provider generic schema is validated.
+* No other Claude version compatibility is claimed.
+
+---
 ## 3. Ownership Boundaries
 
 | Domain | Owned by | Description |
 |--------|----------|-------------|
 | Deliberation execution | **MAD** | Agent preflight, stage progression, transcript, report generation |
 | Audit verdict & issues | **MAD** | Structured findings, evidence assessment, `mad.audit-result/v1` |
-| MAD archives | **MAD** | `MAD_HOME/deliberations/<id>/` — state, transcript, diagnostics, result |
-| Task state machine | **AgentDesk** | `tasks.yaml` — Draft → Ready → … → Integrated |
+| MAD archives | **MAD** | `MAD_HOME/deliberations/<id>/` 鈥?state, transcript, diagnostics, result |
+| Task state machine | **AgentDesk** | `tasks.yaml` 鈥?Draft 鈫?Ready 鈫?鈥?鈫?Integrated |
 | Dispatch & attempt lifecycle | **AgentDesk** | `dispatch_id`, `attempt`, `current_dispatch`, `model_selection` |
 | Worker slot & lease | **AgentDesk** | `WorkerSlotLease`, slot allocation, concurrency fencing |
 | Worktree lifecycle | **AgentDesk** | Create at `report_commit`, remove after audit |
-| Task-action approval & revocation | **AgentDesk** | ``TASK_APPROVAL_GRANTED`` / ``TASK_APPROVAL_REVOKED`` records (§2.15) |
+| Task-action approval & revocation | **AgentDesk** | ``TASK_APPROVAL_GRANTED`` / ``TASK_APPROVAL_REVOKED`` records (搂2.15) |
 | Model degradation approval & revocation | **AgentDesk** | ``MODEL_DEGRADATION_APPROVED`` / ``MODEL_DEGRADATION_REVOKED`` events |
 | Owner approval | **AgentDesk** | Task-card frontmatter ``owner_approval.gate`` (currently ``"none"``) |
 | Rate limiting | **AgentDesk** | Provider 429 handling, backoff, notification |
 | Escalation | **AgentDesk** | Difficulty tier progression |
-| Double-commit delivery | **AgentDesk** | `implementation_commit` → `report_commit` → acceptance → integration |
+| Double-commit delivery | **AgentDesk** | `implementation_commit` 鈫?`report_commit` 鈫?acceptance 鈫?integration |
 | HTML Dashboard | **AgentDesk** | Read-only views via StateProvider |
 
 **Hard boundary rule**: Neither side directly reads or writes the other's
@@ -6556,36 +6693,36 @@ use opaque foreign keys, not embedded schema objects.
 |-----------|-------------|------------|
 | TC-13.2 | MAD `agents --format json` + `mad.run-result/v1` schema | This ADR |
 | TC-13.4 | AgentDesk shared core data types (`TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind`) | TC-13.3 |
-| TC-13.5.1 | AgentDesk ContextBudgetPolicy (per-tier percentages: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; ≥35% reserved) | TC-13.4 |
+| TC-13.5.1 | AgentDesk ContextBudgetPolicy (per-tier percentages: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; 鈮?5% reserved) | TC-13.4 |
 | TC-13.6 | AgentDesk MAD Decision Gateway + `agentdesk.mad-refs/v1` | TC-13.2, TC-13.4 |
-| TC-13.7 | AgentDesk DispatcherAgentGateway (frozen contract §2.10; execution-only single-shot agent CLI boundary) | TC-13.4, TC-13.6 |
+| TC-13.7 | AgentDesk DispatcherAgentGateway (frozen contract 搂2.10; execution-only single-shot agent CLI boundary) | TC-13.4, TC-13.6 |
 | TC-13.8 | Claude Code CLI contract (public CLI interface for `claude` invocation) | TC-13.4 |
 | TC-13.8.3 | Codex CLI Provider frozen contract | This ADR |
 | TC-13.8.4 | Codex CLI Provider implementation | TC-13.8.3 |
-| TC-13.9a | WorkerAdapter core contract freeze (§2.13) | TC-13.5.1, TC-13.7, TC-13.8, TC-13.8.4 |
+| TC-13.9a | WorkerAdapter core contract freeze (搂2.13) | TC-13.5.1, TC-13.7, TC-13.8, TC-13.8.4 |
 | TC-13.9b | WorkerAdapter core production implementation (`worker_adapter.py`) | TC-13.9a |
 | TC-13.9c | Provider output decoding (Claude JSON + Codex JSONL) | TC-13.9b (module), reliable Claude/Codex output-schema evidence |
-| TC-13.10a | WorkerSlotLease frozen contract (§2.5) | This ADR |
+| TC-13.10a | WorkerSlotLease frozen contract (搂2.5) | This ADR |
 | TC-13.10b | WorkerSlotLease data model, validation, runtime store, atomic I/O, file lock | TC-13.10a |
 | TC-13.10c | WorkerSlotLease acquire / release / renew / hold fence | TC-13.10b |
 | TC-13.11a/b/c | ControlPlaneTransitionService | TC-13.10c, TC-13.2 |
-| TC-13.12a | ApprovalGate frozen contract (§2.15) | TC-13.11c |
+| TC-13.12a | ApprovalGate frozen contract (搂2.15) | TC-13.11c |
 | TC-13.12b | ApprovalGate typed models, evidence store/writer, schema validation | TC-13.12a |
 | TC-13.12c | ApprovalGate read-only runtime gate, ControlPlaneTransitionService internal integration | TC-13.12b, TC-13.11 |
 | TC-13.12d | ApprovalGate offline validator, replay, TOCTOU, concurrency hardening | TC-13.12c |
-| TC-13.13a | EscalationService frozen contract (§2.16) | TC-13.4 |
+| TC-13.13a | EscalationService frozen contract (搂2.16) | TC-13.4 |
 | TC-13.13b | EscalationService production implementation | TC-13.13a |
 | TC-13.14 | RateLimit service | TC-13.11 |
 | TC-13.15 | MAD `audit` sub-command (`mad.audit-result/v1`) | TC-13.2 |
 | TC-13.16a/b | AgentDesk MadAuditGateway | TC-13.15 |
 | TC-13.17a/b | StateProvider (read-only) | TC-13.11 |
-| TC-13.18a | WorkflowOrchestrator frozen contract (§2.19) | This ADR |
+| TC-13.18a | WorkflowOrchestrator frozen contract (搂2.19) | This ADR |
 | TC-13.18b | Lease + heartbeat + Worker execution + bounded cleanup | TC-13.18a, TC-13.10c, TC-13.11c, TC-13.12d, TC-13.13b, TC-13.17b |
 | TC-13.18c | DeliverySubmitted + MAD audit + Acceptance + Integration | TC-13.18b, TC-13.16b |
 | TC-13.18d | Escalation + retry + cancellation + replay + fault recovery | TC-13.18c |
 | TC-13.19 | E2E / Recovery tests | TC-13.18d |
 | TC-13.20 | HTML Dashboard | TC-13.17, TC-13.19 |
-| TC-13.21 | ADR status update (Target → Current) | TC-13.19 |
+| TC-13.21 | ADR status update (Target 鈫?Current) | TC-13.19 |
 
 ---
 
