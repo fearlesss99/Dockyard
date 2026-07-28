@@ -4380,27 +4380,6 @@ def _validate_approval_evidence(
                 return True
         return False
 
-    def _history_has_dispatch(dispatch_id: str) -> bool:
-        for ev in canonical_events:
-            if ev.get("dispatch_id") == dispatch_id:
-                return True
-        return False
-
-    def _history_has_accepted_commit(task_id: str, ac: str) -> bool:
-        """True if an event for task_id carries exactly *ac*
-        in its accepted_commit field."""
-        for ev in canonical_events:
-            if (
-                ev.get("task_id") == task_id
-                and ev.get("accepted_commit") == ac
-            ):
-                return True
-        return False
-        for key, ev in event_history.items():
-            if isinstance(key, str) and key.startswith(task_id + "|"):
-                return True
-        return False
-
     # ── shared snapshot_commit fail-closed validator ──
     def _validate_snapshot_commit(
         snapshot: Any, ctx: str, path: str
@@ -4757,11 +4736,9 @@ def _validate_approval_evidence(
                         f"by ledger or event history exact match"
                     )
 
-            # dispatch_id check — must be provable by ledger or history.
-            # If the exact subject is proven by history, we accept the
-            # dispatch_id that came with it.  Otherwise we check ledger
-            # or dispatch-only history.
-            if isinstance(dispatch_id, str) and dispatch_id and not has_exact_history:
+            # dispatch_id check — must be provable by ledger
+            # or exact-subject event history match.
+            if isinstance(dispatch_id, str) and dispatch_id:
                 dispatch_found = False
                 if ledger_task is not None:
                     ledger_dispatch = ledger_task.get("current_dispatch")
@@ -4772,7 +4749,7 @@ def _validate_approval_evidence(
                     )
                     if ledger_did == dispatch_id:
                         dispatch_found = True
-                if not dispatch_found and _history_has_dispatch(dispatch_id):
+                if not dispatch_found and has_exact_history:
                     dispatch_found = True
                 if not dispatch_found:
                     reporter.error(
@@ -4781,14 +4758,28 @@ def _validate_approval_evidence(
                     )
 
             # accepted_commit check for integrate scope
-            if scope == "integrate" and isinstance(accepted_commit, str) and len(accepted_commit) == 40 and not has_exact_history:
+            # Must be proven by the SAME canonical event that proves
+            # the exact subject — no cross-event splicing.
+            if scope == "integrate" and isinstance(accepted_commit, str) and len(accepted_commit) == 40:
                 ac_found = False
                 if ledger_task is not None:
                     ledger_ac = ledger_task.get("accepted_commit")
                     if isinstance(ledger_ac, str) and ledger_ac == accepted_commit:
                         ac_found = True
-                if not ac_found and _history_has_accepted_commit(task_id, accepted_commit):
-                    ac_found = True
+                if not ac_found and has_exact_history:
+                    # The exact-subject event already matched task_id,
+                    # revision, attempt, dispatch_id — verify its
+                    # accepted_commit field matches too.
+                    for ev in canonical_events:
+                        if (
+                            ev.get("task_id") == task_id
+                            and ev.get("revision") == revision
+                            and ev.get("attempt") == attempt
+                            and ev.get("dispatch_id") == dispatch_id
+                            and ev.get("accepted_commit") == accepted_commit
+                        ):
+                            ac_found = True
+                            break
                 if not ac_found:
                     reporter.error(
                         f"{ctx} accepted_commit {accepted_commit} not found in "

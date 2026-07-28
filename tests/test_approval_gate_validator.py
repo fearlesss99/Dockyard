@@ -1142,6 +1142,32 @@ class OrphanEvidenceTests(unittest.TestCase):
             self.assertEqual(0, reporter.errors,
                              f"History dispatch should prove: got {reporter.errors}")
 
+    def test_dispatch_id_wrong_task_in_history_errors(self) -> None:
+        """Event has same dispatch_id but different task — must ERROR."""
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            events_dir = proj / "docs" / "pm" / "events"
+            events_dir.mkdir(parents=True, exist_ok=True)
+            # Event is for TC-999, not TC-001
+            event_yaml = _make_event_yaml(
+                task_id="TC-999", revision=1, attempt=1,
+                dispatch_id="DSP-X", event_id="EVT-HIST-0001",
+            )
+            _assert_json_cannot_parse(event_yaml)
+            (events_dir / "EVT-HIST-0001.yaml").write_text(
+                event_yaml, encoding="utf-8",
+            )
+            (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
+                _make_grant_yaml(
+                    snapshot_commit=head, dispatch_id="DSP-X",
+                    event_id="EVT-0001", revision=1, attempt=1,
+                    task_id="TC-001",
+                ), encoding="utf-8",
+            )
+            reporter = validate_project.validate(proj, require_committed=False)
+            self.assertGreater(reporter.errors, 0,
+                               "Same dispatch_id, different task must be ERROR")
+
     def test_dispatch_id_not_in_ledger_or_history_errors(self) -> None:
         """dispatch_id in neither ledger nor history must ERROR
         when the task has an active current_dispatch."""
@@ -1207,41 +1233,35 @@ class OrphanEvidenceTests(unittest.TestCase):
                              f"History accepted_commit should prove: got {reporter.errors}")
 
     def test_integrate_ac_ledger_null_history_wrong_errors(self) -> None:
-        """Integrate: ledger null, history has different accepted_commit → ERROR."""
-        with _temp_project([_make_draft_task()]) as proj:
+        """Integrate: same event has exact subject but wrong accepted_commit → ERROR."""
+        with _temp_project() as proj:
             head = _git_head(proj)
             events_dir = proj / "docs" / "pm" / "events"
             events_dir.mkdir(parents=True, exist_ok=True)
-            event = {
-                "schema_version": "agentdesk.state-event/v2",
-                "event_type": "CHANGE_INTEGRATED",
-                "task_id": "TC-001",
-                "revision": 1,
-                "attempt": 1,
-                "dispatch_id": "DSP-001",
-                "event_id": "EVT-HIST-0001",
-                "from_state": "accepted",
-                "to_state": "integrated",
-                "accepted_commit": "a" * 40,
-                "integrated_commit": "c" * 40,
-                "actor_role_id": "PM",
-                "lease_epoch": 1,
-                "occurred_at": _NOW_STR,
-                "payload_digest": "sha256:" + "0" * 64,
-            }
+            # Event has accepted_commit='a'*40, grant wants 'f'*40.
+            # Exact subject matches but ac does not → ERROR.
+            event_yaml = _make_event_yaml(
+                event_type="CHANGE_INTEGRATED",
+                task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-001", event_id="EVT-HIST-0001",
+                from_state="accepted", to_state="integrated",
+                accepted_commit="a" * 40, integrated_commit="c" * 40,
+            )
+            _assert_json_cannot_parse(event_yaml)
             (events_dir / "EVT-HIST-0001.yaml").write_text(
-                json.dumps(event, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
+                event_yaml, encoding="utf-8",
             )
             (proj / "docs" / "pm" / "approvals" / "EVT-0001.yaml").write_text(
                 _make_grant_yaml(
                     snapshot_commit=head, scope="integrate",
                     accepted_commit="f" * 40, event_id="EVT-0001",
+                    task_id="TC-001", revision=1, attempt=1,
+                    dispatch_id="DSP-001",
                 ), encoding="utf-8",
             )
             reporter = validate_project.validate(proj, require_committed=False)
             self.assertGreater(reporter.errors, 0,
-                               "Mismatched accepted_commit must be ERROR")
+                               "Same event, wrong accepted_commit must be ERROR")
 
 
 class SnapshotCommitTests(unittest.TestCase):
