@@ -1,12 +1,13 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18c.1)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18c.2)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
-DELIVERY_SUBMITTED.
+DELIVERY_SUBMITTED.  TC-13.18c.2 extends it with MAD audit,
+DELIVERY_ACCEPTED, and optional CHANGE_INTEGRATED.
 
 ## Status
 
-**Current** as of TC-13.18c.1.  The dispatch cycle (snapshot → acquire →
+**Current** as of TC-13.18c.2.  The dispatch cycle (snapshot → acquire →
 TASK_DISPATCHED → heartbeat + run_worker →
 DISPATCH_ACKNOWLEDGED → decode_worker_result →
 require_delivery_receipt → DELIVERY_SUBMITTED → stop heartbeat → release
@@ -305,11 +306,11 @@ defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
 | 2 | `TASK_DISPATCHED` | TC-13.18b (dispatch path) |
 | 3 | `DISPATCH_ACKNOWLEDGED` | Current — TC-13.18b.2 (§5 of this doc) |
 | 4 | `DELIVERY_SUBMITTED` | Current — TC-13.18c.1 (§13 of this doc) |
-| 5 | `DELIVERY_ACCEPTED` | Target — TC-13.18c.2 (acceptance path) |
-| 6 | `DELIVERY_RETURNED` | Target — TC-13.18c.2 (return path) |
-| 7 | `TASK_REQUEUED` | Target — TC-13.18c.2 (requeue path) |
-| 8 | `CHANGE_INTEGRATED` | Target — TC-13.18c.2 (integration path) |
-| 9 | `INTEGRATION_FAILED` | TC-13.18d (blocked path) |
+| 5 | `DELIVERY_ACCEPTED` | Current — TC-13.18c.2 (acceptance path) |
+| 6 | `DELIVERY_RETURNED` | Target — TC-13.18d (return path) |
+| 7 | `TASK_REQUEUED` | Target — TC-13.18d (requeue path) |
+| 8 | `CHANGE_INTEGRATED` | Current — TC-13.18c.2 (integration path) |
+| 9 | `INTEGRATION_FAILED` | Target — TC-13.18d (blocked path) |
 | 10 | `TASK_BLOCKED` | TC-13.18d (blocked path) |
 | 11 | `BLOCKER_RESOLVED` | TC-13.18d (unblock path) |
 | 12 | `BLOCKER_RESCOPED` | TC-13.18d (rescope path) |
@@ -431,27 +432,22 @@ class DispatchCycleResult:
 
 @dataclass(frozen=True, slots=True)
 class AcceptanceCycleRequest:
-    task_id: str
-    accepted_commit: str
-    acceptance_path: str
-    residual_risks: tuple[str, ...]
-    criteria_evidence: tuple[str, ...]
-    rationale: str
-    accept_event_id: str
-    integrate_event_id: str
-    integrated_commit: str
-    equivalence_method: str | None
-    equivalence_evidence_ref: str | None
-    event_context: TransitionEventContext
-    # Future: audit_policy: AuditPolicy (not skip_audit: bool)
+    """Immutable input for an independent acceptance cycle — exactly six fields."""
+    dispatch_cycle_result: DispatchCycleResult
+    audit_input: MadAuditGatewayInput
+    acceptance_transition_request: TransitionRequest
+    integration_transition_request: TransitionRequest | None
+    worker_kind: WorkerKind
+    holder_instance_id: str
 
 
 @dataclass(frozen=True, slots=True)
 class AcceptanceCycleResult:
+    """Immutable result of an acceptance cycle — exactly four fields."""
     task_id: str
-    accept_transition: TransitionResult
+    audit_result: MadAuditGatewayResult
+    accept_transition: TransitionResult | None
     integrate_transition: TransitionResult | None
-    audit_result: MadAuditGatewayResult | None
 
 
 class WorkflowOrchestratorError(Exception):
@@ -481,7 +477,7 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18b** | Lease + heartbeat + Worker execution + bounded cleanup | TC-13.18a, TC-13.10c, TC-13.11c, TC-13.12d, TC-13.13b, TC-13.17b | Production |
 | **TC-13.18c** | DeliverySubmitted + MAD audit + Acceptance + Integration | TC-13.18b, TC-13.16b | Production |
 | **TC-13.18c.1** | DELIVERY_SUBMITTED via decode_worker_result + require_delivery_receipt | TC-13.18b.2, TC-13.9c.1 | Production — Current |
-| **TC-13.18c.2** | MAD audit + Acceptance + Integration | TC-13.18c.1 | Target |
+| **TC-13.18c.2** | MAD audit + Acceptance + Integration | TC-13.18c.1 | Current |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.18d** | Escalation + retry + cancellation + replay + fault recovery | TC-13.18c | Production |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d | Tests |
@@ -493,11 +489,5 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 
 TC-13.18c.1 does **not** implement:
 
-- `DELIVERY_ACCEPTED`, `DELIVERY_RETURNED`, `TASK_REQUEUED`, `CHANGE_INTEGRATED`
-- MAD audit or acceptance → TC-13.18c.2
-- Codex output decoding → TC-13.9c.2
-- Provider output decoding → TC-13.9c
-- Rate-limit handling → TC-13.14
-- Git worktree lifecycle → future task card
-- HTML Dashboard → TC-13.20
+- `DELIVERY_RETURNED`, `TASK_REQUEUED` → TC-13.18d
 - Retry, escalation, and cancellation execution → TC-13.18d

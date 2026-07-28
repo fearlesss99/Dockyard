@@ -1,4 +1,4 @@
-"""AgentDesk WorkflowOrchestrator — TC-13.18b / TC-13.18b.2 / TC-13.18c.1.
+"""AgentDesk WorkflowOrchestrator — TC-13.18b / TC-13.18b.2 / TC-13.18c.1 / TC-13.18c.2.
 
 Single dispatch-cycle execution: snapshot -> acquire lease ->
 TASK_DISPATCHED -> heartbeat + run_worker_observed ->
@@ -6,9 +6,13 @@ TASK_DISPATCHED -> heartbeat + run_worker_observed ->
 Worker exit 0 → decode_worker_result → require_delivery_receipt →
 DELIVERY_SUBMITTED → stop heartbeat -> release lease -> result.
 
+Acceptance cycle (TC-13.18c.2): run_audit_gateway → verdict=pass →
+acquire review lease → DELIVERY_ACCEPTED → release lease →
+optional CHANGE_INTEGRATED → AcceptanceCycleResult.
+
 Non-goals (explicitly excluded):
-* DELIVERY_ACCEPTED, DELIVERY_RETURNED, TASK_REQUEUED, CHANGE_INTEGRATED
-* MAD audit, acceptance, escalation, retry
+* DELIVERY_RETURNED, TASK_REQUEUED
+* Escalation, retry, automatic blocked/fail remediation
 * Codex output decoding (blocked until TC-13.9c.2)
 * Parsing stdout/stderr manually, guessing commits from Git HEAD
 * Git worktree lifecycle, subprocess invocation, file I/O
@@ -30,9 +34,11 @@ from typing import Protocol
 from control_plane_transition import (
     AcknowledgePayload,
     ControlPlaneTransitionService,
+    DeliveryAcceptedPayload,
     DeliverySubmittedPayload,
     DispatchCAS,
     DispatchPayload,
+    IntegrationPayload,
     TransitionCAS,
     TransitionEventContext,
     TransitionRequest,
@@ -45,6 +51,11 @@ from dispatcher_gateway import (
     DispatchStarted,
     DispatchStartedObserver,
 )
+from mad_audit_gateway import (
+    MadAuditGatewayInput,
+    MadAuditGatewayResult,
+)
+from mad_gateway import MadGatewayConfig
 from state_provider import StateProvider, StateProviderError
 from worker_adapter import WorkerResult, run_worker_observed
 from worker_output_decoder import (
@@ -60,7 +71,12 @@ from worker_slot_lease import (
     renew_worker_slot,
 )
 
+# -- run_audit_gateway (imported for module-level reference) -------------------
+from mad_audit_gateway import run_audit_gateway
+
 __all__ = [
+    "AcceptanceCycleRequest",
+    "AcceptanceCycleResult",
     "DeliveryReceipt",
     "DispatchCycleRequest",
     "DispatchCycleResult",
@@ -378,6 +394,45 @@ class DispatchCycleResult:
     duration_seconds: float
 
 
+# -- AcceptanceCycle types -----------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptanceCycleRequest:
+    """Immutable input for an independent acceptance cycle — exactly six fields.
+
+    All identifiers are caller-supplied.
+    """
+
+    dispatch_cycle_result: DispatchCycleResult
+    audit_input: MadAuditGatewayInput
+    acceptance_transition_request: TransitionRequest
+    integration_transition_request: TransitionRequest | None
+    worker_kind: WorkerKind
+    holder_instance_id: str
+
+    def __post_init__(self) -> None:
+        _vr = _validate_acceptance_cycle_request
+        _vr(self)
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptanceCycleResult:
+    """Immutable result of an acceptance cycle — exactly four fields.
+
+    Semantics:
+    * audit ``pass`` → ``accept_transition`` must be present.
+    * audit ``fail | blocked`` → both transitions are ``None``.
+    * integration not requested → ``integrate_transition=None``.
+    * integration requested + success → real integration result.
+    """
+
+    task_id: str
+    audit_result: MadAuditGatewayResult
+    accept_transition: TransitionResult | None
+    integrate_transition: TransitionResult | None
+
+
 # -- exception hierarchy ------------------------------------------------------
 
 
@@ -494,6 +549,191 @@ class _AckObserver:
 
 
 # -- WorkflowOrchestrator -----------------------------------------------------
+
+
+def _validate_acceptance_cycle_request(
+    request: AcceptanceCycleRequest,
+) -> None:
+    """Fail-closed pre-validation of *request* before any audit or acquire.
+
+    Raises :exc:`TypeError` / :exc:`ValueError` on the first violation;
+    messages never contain paths, prompts, report bodies, issue
+    descriptions, stdout, or secrets.
+    """
+    # -- dispatch_cycle_result type -----------------------------------------
+    if not isinstance(request.dispatch_cycle_result, DispatchCycleResult):
+        raise TypeError(
+            "dispatch_cycle_result must be DispatchCycleResult, "
+            f"got {type(request.dispatch_cycle_result).__name__}"
+        )
+
+    # -- audit_input type ---------------------------------------------------
+    if not isinstance(request.audit_input, MadAuditGatewayInput):
+        raise TypeError(
+            "audit_input must be MadAuditGatewayInput, "
+            f"got {type(request.audit_input).__name__}"
+        )
+
+    # -- worker_kind --------------------------------------------------------
+    if not isinstance(request.worker_kind, WorkerKind):
+        raise TypeError(
+            "worker_kind must be WorkerKind, "
+            f"got {type(request.worker_kind).__name__}"
+        )
+
+    # -- holder_instance_id -------------------------------------------------
+    if not isinstance(request.holder_instance_id, str) or \
+       not request.holder_instance_id:
+        raise TypeError(
+            "holder_instance_id must be a non-empty str, "
+            f"got {type(request.holder_instance_id).__name__}"
+        )
+
+    dcr = request.dispatch_cycle_result
+    ai = request.audit_input
+    receipt = dcr.delivery_receipt
+
+    # -- audit task_id matches worker identity ------------------------------
+    if ai.task_id != receipt.identity.task_id:
+        raise ValueError(
+            "audit_input task_id must match delivery receipt task_id"
+        )
+
+    # -- audit dispatch_id matches worker identity --------------------------
+    if ai.dispatch_id != receipt.identity.dispatch_id:
+        raise ValueError(
+            "audit_input dispatch_id must match delivery receipt dispatch_id"
+        )
+
+    # -- audit implementation_commit matches receipt -----------------------
+    if ai.implementation_commit != receipt.implementation_commit:
+        raise ValueError(
+            "audit_input implementation_commit must match "
+            "delivery receipt implementation_commit"
+        )
+
+    # -- audit report_commit matches receipt --------------------------------
+    if ai.report_commit != receipt.report_commit:
+        raise ValueError(
+            "audit_input report_commit must match "
+            "delivery receipt report_commit"
+        )
+
+    # -- audit workspace validation -----------------------------------------
+    if not isinstance(ai.workspace, Path):
+        raise TypeError(
+            "audit_input workspace must be a Path, "
+            f"got {type(ai.workspace).__name__}"
+        )
+    if not ai.workspace.is_absolute():
+        raise ValueError(
+            "audit_input workspace must be an absolute path"
+        )
+
+    # -- acceptance_transition_request --------------------------------------
+    atr = request.acceptance_transition_request
+
+    # event_type must be DELIVERY_ACCEPTED
+    if atr.event_type != "DELIVERY_ACCEPTED":
+        raise ValueError(
+            "acceptance_transition_request event_type must be "
+            f"DELIVERY_ACCEPTED, got {atr.event_type!r}"
+        )
+
+    # payload must be DeliveryAcceptedPayload
+    if not isinstance(atr.payload, DeliveryAcceptedPayload):
+        raise TypeError(
+            "acceptance_transition_request payload must be "
+            "DeliveryAcceptedPayload, "
+            f"got {type(atr.payload).__name__}"
+        )
+
+    # CAS task_id matches dispatch identity
+    if atr.cas.task_id != receipt.identity.task_id:
+        raise ValueError(
+            "acceptance_transition_request task_id must match "
+            "delivery receipt task_id"
+        )
+
+    # CAS expected_state must be review_ready
+    if atr.cas.expected_state != "review_ready":
+        raise ValueError(
+            "acceptance_transition_request expected_state must be "
+            f"'review_ready', got {atr.cas.expected_state!r}"
+        )
+
+    # DispatchCAS must match dispatch identity
+    if atr.dispatch_cas is None:
+        raise ValueError(
+            "acceptance_transition_request dispatch_cas must not be None"
+        )
+    dcas = atr.dispatch_cas
+    if dcas.expected_dispatch_id != receipt.identity.dispatch_id:
+        raise ValueError(
+            "acceptance dispatch_cas expected_dispatch_id must match "
+            "delivery receipt dispatch_id"
+        )
+    if dcas.expected_attempt != receipt.identity.attempt:
+        raise ValueError(
+            "acceptance dispatch_cas expected_attempt must match "
+            "delivery receipt attempt"
+        )
+
+    # payload accepted_commit equals receipt implementation_commit
+    if atr.payload.accepted_commit != receipt.implementation_commit:
+        raise ValueError(
+            "acceptance accepted_commit must equal "
+            "delivery receipt implementation_commit"
+        )
+
+    # -- integration_transition_request (if present) ------------------------
+    itr = request.integration_transition_request
+    if itr is not None:
+        if itr.event_type != "CHANGE_INTEGRATED":
+            raise ValueError(
+                "integration_transition_request event_type must be "
+                f"CHANGE_INTEGRATED, got {itr.event_type!r}"
+            )
+
+        if not isinstance(itr.payload, IntegrationPayload):
+            raise TypeError(
+                "integration_transition_request payload must be "
+                "IntegrationPayload, "
+                f"got {type(itr.payload).__name__}"
+            )
+
+        # integration expected_state must be "accepted"
+        if itr.cas.expected_state != "accepted":
+            raise ValueError(
+                "integration_transition_request expected_state must be "
+                f"'accepted', got {itr.cas.expected_state!r}"
+            )
+
+        # integration task_id must match
+        if itr.cas.task_id != receipt.identity.task_id:
+            raise ValueError(
+                "integration_transition_request task_id must match "
+                "delivery receipt task_id"
+            )
+
+        # integration dispatch_cas must be None
+        if itr.dispatch_cas is not None:
+            raise ValueError(
+                "integration_transition_request dispatch_cas must be None"
+            )
+
+        # integration event_id must differ from all other event_ids
+        _existing_event_ids = {
+            dcr.dispatch_transition.event_id,
+            dcr.acknowledge_transition.event_id,
+            dcr.delivery_transition.event_id,
+            atr.event_id,
+        }
+        if itr.event_id in _existing_event_ids:
+            raise ValueError(
+                "integration_transition_request event_id must differ from "
+                "dispatch, ACK, delivery, and acceptance event_ids"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -876,3 +1116,128 @@ class WorkflowOrchestrator:
 
         # body_error was already re-raised above -- unreachable.
         raise WorkflowInvariantError("unreachable")
+
+    async def run_acceptance_cycle(
+        self,
+        request: AcceptanceCycleRequest,
+        audit_config: MadGatewayConfig,
+    ) -> AcceptanceCycleResult:
+        """Execute an independent acceptance cycle (TC-13.18c.2).
+
+        Execution order:
+        1. validate request + audit_config
+        2. run_audit_gateway exactly once
+        3. verdict fail/blocked → return without transition
+        4. verdict pass → acquire review lease
+        5. apply DELIVERY_ACCEPTED under review lease
+        6. release review lease exactly once
+        7. optional apply CHANGE_INTEGRATED with lease=None
+        8. return AcceptanceCycleResult
+        """
+        # -- 1. Validate request --------------------------------------------
+        if not isinstance(request, AcceptanceCycleRequest):
+            raise WorkflowInputError(
+                "request must be AcceptanceCycleRequest, "
+                f"got {type(request).__name__}"
+            )
+
+        # -- 1b. Validate audit_config --------------------------------------
+        if not isinstance(audit_config, MadGatewayConfig):
+            raise WorkflowInputError(
+                "audit_config must be MadGatewayConfig, "
+                f"got {type(audit_config).__name__}"
+            )
+
+        # -- 2. Run MAD audit gateway exactly once --------------------------
+        audit_result = await run_audit_gateway(
+            audit_config,
+            request.audit_input,
+        )
+
+        dcr = request.dispatch_cycle_result
+
+        # -- 3. Verdict routing ---------------------------------------------
+        verdict = audit_result.verdict
+
+        if verdict in ("fail", "blocked"):
+            return AcceptanceCycleResult(
+                task_id=dcr.delivery_receipt.identity.task_id,
+                audit_result=audit_result,
+                accept_transition=None,
+                integrate_transition=None,
+            )
+
+        if verdict != "pass":
+            # Unknown verdict — Gateway should have rejected this,
+            # but orchestrator must fail-closed.
+            return AcceptanceCycleResult(
+                task_id=dcr.delivery_receipt.identity.task_id,
+                audit_result=audit_result,
+                accept_transition=None,
+                integrate_transition=None,
+            )
+
+        # -- 4. Acquire review lease ----------------------------------------
+        review_acquired = False
+        review_lease = None
+        body_error: BaseException | None = None
+        accept_result: TransitionResult | None = None
+        integrate_result: TransitionResult | None = None
+
+        try:
+            now_review_acquire = self.clock.now()
+            review_lease = acquire_worker_slot(
+                self.project_root,
+                request.worker_kind,
+                dcr.delivery_receipt.identity.dispatch_id,
+                request.holder_instance_id,
+                request.audit_input.workspace,
+                now_review_acquire,
+            )
+            review_acquired = True
+
+            # -- 5. Apply DELIVERY_ACCEPTED under review lease --------------
+            now_accept = self.clock.now()
+            accept_result = ControlPlaneTransitionService(
+                self.project_root
+            ).apply_transition(
+                request.acceptance_transition_request,
+                review_lease,
+                now_accept,
+            )
+
+        except BaseException as exc:
+            body_error = exc
+            raise
+        finally:
+            # -- 6. Release review lease exactly once -----------------------
+            if review_acquired:
+                try:
+                    now_release_review = self.clock.now()
+                    release_worker_slot(
+                        self.project_root, review_lease, now_release_review
+                    )
+                except BaseException as release_exc:
+                    if body_error is None:
+                        raise
+                    raise body_error from release_exc
+
+        # -- 7. Optional CHANGE_INTEGRATED ----------------------------------
+        itr = request.integration_transition_request
+        if itr is not None:
+            now_integrate = self.clock.now()
+            integrate_result = ControlPlaneTransitionService(
+                self.project_root
+            ).apply_transition(
+                itr,
+                lease=None,
+                now=now_integrate,
+            )
+
+        # -- 8. Return result -----------------------------------------------
+        return AcceptanceCycleResult(
+            task_id=dcr.delivery_receipt.identity.task_id,
+            audit_result=audit_result,
+            accept_transition=accept_result,
+            integrate_transition=integrate_result,
+        )

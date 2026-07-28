@@ -32,7 +32,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 19 | AgentDesk RateLimit service | **Target** | TC-13.14 | Provider rate-limit handling independent of escalation |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
-| 22 | AgentDesk WorkflowOrchestrator | **Target** | TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED: Current as of TC-13.18c.1) |
+| 22 | AgentDesk WorkflowOrchestrator | **Target** | TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Target — TC-13.18d) |
 | 23 | E2E / Recovery tests | **Target** | TC-13.19 | End-to-end validation and recovery scenarios |
 | 24 | AgentDesk HTML Dashboard | **Target** | TC-13.20 | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target 鈫?Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
@@ -6501,8 +6501,8 @@ TC-13.20  鈥?HTML Dashboard
 | Card | Depends on | Scope | Interface #22 status after completion |
 |------|-----------|-------|--------------------------------------|
 | TC-13.18a | This ADR | Contract only | **Target** |
-| TC-13.18b | TC-13.18a, TC-13.10c, TC-13.11c, TC-13.12d, TC-13.13b, TC-13.17b | Lease + heartbeat + run_worker + cleanup | **Target** |
-| TC-13.18c | TC-13.18b, TC-13.16b | Delivery + audit + accept + integrate | **Target** |
+| TC-13.18b | TC-13.18a, TC-13.10c, TC-13.11c, TC-13.12d, TC-13.13b, TC-13.17b | Lease + heartbeat + run_worker + cleanup | **Current** |
+| TC-13.18c | TC-13.18b, TC-13.16b | Delivery + audit + accept + integrate | **Current** |
 | TC-13.18d | TC-13.18c | Escalation + retry + cancel + replay | **Target** |
 | TC-13.19 | TC-13.18d | E2E / recovery tests | **Target** 鈫?**Current** |
 

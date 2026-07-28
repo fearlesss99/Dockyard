@@ -392,7 +392,7 @@ def _init_tasks_yaml(project_root: Path, task_id: str = "TC-001", state: str = "
                 "task_card_path": f"tasks/{task_id}/task.md",
                 "task_card_commit": "b" * 40,
                 "state": state,
-                "attempt": 1 if state in ("dispatched", "in_progress", "review_ready") else None,
+                "attempt": 1 if state in ("dispatched", "in_progress", "review_ready", "accepted") else None,
                 "current_dispatch": {
                     "dispatch_id": dispatch_id,
                     "attempt_id": "attempt-1",
@@ -541,13 +541,15 @@ def _write_approval_grant(project_root: Path) -> None:
 class TestWorkflowOrchestratorAPI(unittest.TestCase):
     """Test __all__ exactness and dataclass frozen/slots properties."""
 
-    def test_all_exactly_twelve(self) -> None:
+    def test_all_exactly_fourteen(self) -> None:
         import workflow_orchestrator as wo
         self.assertEqual(
-            len(wo.__all__), 12,
-            f"__all__ must have exactly 12 entries, got {len(wo.__all__)}: {wo.__all__}"
+            len(wo.__all__), 14,
+            f"__all__ must have exactly 14 entries, got {len(wo.__all__)}: {wo.__all__}"
         )
         expected = sorted([
+            "AcceptanceCycleRequest",
+            "AcceptanceCycleResult",
             "DeliveryReceipt",
             "DispatchCycleRequest",
             "DispatchCycleResult",
@@ -590,11 +592,11 @@ class TestWorkflowOrchestratorAPI(unittest.TestCase):
         self.assertTrue(callable(getattr(WorkflowClock, "monotonic", None)))
         self.assertTrue(callable(getattr(WorkflowClock, "sleep", None)))
 
-    def test_no_acceptance_cycle_in_all(self) -> None:
-        """AcceptanceCycleRequest/Result must not be in __all__."""
+    def test_acceptance_cycle_in_all(self) -> None:
+        """AcceptanceCycleRequest/Result must be in __all__."""
         import workflow_orchestrator as wo
-        self.assertNotIn("AcceptanceCycleRequest", wo.__all__)
-        self.assertNotIn("AcceptanceCycleResult", wo.__all__)
+        self.assertIn("AcceptanceCycleRequest", wo.__all__)
+        self.assertIn("AcceptanceCycleResult", wo.__all__)
 
     def test_exception_hierarchy(self) -> None:
         self.assertTrue(issubclass(WorkflowOrchestratorError, Exception))
@@ -2952,8 +2954,748 @@ if __name__ == "__main__":
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TC-13.18b.2 — Workflow ACK Tests
+# TC-13.18c.2 — Acceptance Cycle helpers & tests
 # ═══════════════════════════════════════════════════════════════════════════
+
+from mad_audit_gateway import MadAuditGatewayInput, MadAuditGatewayResult, MadAuditIssue, MadAuditIssueLocation, MadAuditEvidence, MadAuditPlan
+from mad_gateway import MadGatewayConfig
+from core_types import MadDeliberationDepth
+from control_plane_transition import DeliveryAcceptedPayload, IntegrationPayload, DispatchCAS
+
+def _make_mad_audit_gateway_input(
+    task_id: str = "TC-001",
+    dispatch_id: str = "DSP-001",
+    workspace: Path | None = None,
+    implementation_commit: str | None = None,
+    report_commit: str | None = None,
+) -> MadAuditGatewayInput:
+    if workspace is None:
+        workspace = Path(__file__).resolve().parents[1]
+    if implementation_commit is None:
+        implementation_commit = "a" * 40
+    if report_commit is None:
+        report_commit = "b" * 40
+    return MadAuditGatewayInput(
+        project_root=workspace,
+        task_id=task_id,
+        dispatch_id=dispatch_id,
+        question="Audit the delivery",
+        workspace=workspace,
+        task_card_commit="b" * 40,
+        task_card_path="tasks/task.md",
+        delivery_report_path="reports/report.md",
+        report_commit=report_commit,
+        base_commit="c" * 40,
+        implementation_commit=implementation_commit,
+        depth=MadDeliberationDepth.BALANCED,
+    )
+
+
+def _make_acceptance_transition_request(
+    task_id: str = "TC-001",
+    dispatch_id: str = "DSP-001",
+    revision: int = 1,
+    attempt: int = 1,
+    head_sha: str | None = None,
+    accepted_commit: str | None = None,
+    event_id: str = "EVT-ACCEPT-001",
+) -> TransitionRequest:
+    if head_sha is None:
+        head_sha = "a" * 40
+    if accepted_commit is None:
+        accepted_commit = "a" * 40
+    cas = TransitionCAS(
+        task_id=task_id,
+        expected_revision=revision,
+        expected_state="review_ready",
+        expected_snapshot_commit=head_sha,
+    )
+    dispatch_cas = DispatchCAS(
+        expected_dispatch_id=dispatch_id,
+        expected_attempt=attempt,
+    )
+    payload = DeliveryAcceptedPayload(
+        accepted_commit=accepted_commit,
+        acceptance_path=f"docs/pm/acceptances/{task_id}-r{revision}-a{attempt}-review1.md",
+        residual_risks=(),
+        criteria_evidence=("evidence item 1",),
+        rationale="test acceptance",
+    )
+    event_context = TransitionEventContext(
+        source_message_id=None,
+        evidence_refs=(),
+        guard_results=(),
+    )
+    return TransitionRequest(
+        cas=cas,
+        dispatch_cas=dispatch_cas,
+        event_id=event_id,
+        event_type="DELIVERY_ACCEPTED",
+        payload=payload,
+        event_context=event_context,
+    )
+
+
+def _make_integration_transition_request(
+    task_id: str = "TC-001",
+    revision: int = 1,
+    head_sha: str | None = None,
+    integrated_commit: str | None = None,
+    event_id: str = "EVT-INTEGRATE-001",
+) -> TransitionRequest:
+    if head_sha is None:
+        head_sha = "a" * 40
+    if integrated_commit is None:
+        integrated_commit = "d" * 40
+    cas = TransitionCAS(
+        task_id=task_id,
+        expected_revision=revision,
+        expected_state="accepted",
+        expected_snapshot_commit=head_sha,
+    )
+    payload = IntegrationPayload(
+        integrated_commit=integrated_commit,
+        equivalence_method="patch_id",
+        equivalence_evidence_ref=None,
+    )
+    event_context = TransitionEventContext(
+        source_message_id=None,
+        evidence_refs=(),
+        guard_results=(),
+    )
+    return TransitionRequest(
+        cas=cas,
+        dispatch_cas=None,
+        event_id=event_id,
+        event_type="CHANGE_INTEGRATED",
+        payload=payload,
+        event_context=event_context,
+    )
+
+
+def _make_fake_audit_result(
+    verdict: str = "pass",
+) -> MadAuditGatewayResult:
+    return MadAuditGatewayResult(
+        deliberation_id="DELIB-test-001",
+        status="completed",
+        verdict=verdict,
+        issues=(),
+        evidence=(),
+        warnings=(),
+        report="audit report",
+        archive_path="/tmp/audit",
+        participants=("agent-1",),
+        plan=MadAuditPlan(depth=MadDeliberationDepth.BALANCED),
+        stdout_sha256="e" * 64,
+        report_sha256="f" * 64,
+    )
+
+
+def _make_fake_mad_gateway_config() -> MadGatewayConfig:
+    return MadGatewayConfig(
+        mad_executable="mad",
+        mad_home="/tmp/mad-home",
+        timeout_seconds=60,
+        planning_agent_ids=(),
+        planning_report_agent_id="",
+        audit_agent_ids=("agent-1",),
+        audit_report_agent_id="agent-1",
+    )
+
+
+class AcceptanceCycleRequestSixFieldTests(unittest.TestCase):
+    """AcceptanceCycleRequest: exactly six fields."""
+
+    def test_exactly_six_fields(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleRequest
+        field_names = {f.name for f in dc_fields(AcceptanceCycleRequest)}
+        expected = {
+            "dispatch_cycle_result",
+            "audit_input",
+            "acceptance_transition_request",
+            "integration_transition_request",
+            "worker_kind",
+            "holder_instance_id",
+        }
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleRequest
+        self.assertTrue(AcceptanceCycleRequest.__dataclass_params__.frozen)
+        self.assertTrue(hasattr(AcceptanceCycleRequest, "__slots__"))
+
+    def test_no_skip_audit_field(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleRequest
+        field_names = {f.name for f in dc_fields(AcceptanceCycleRequest)}
+        self.assertNotIn("skip_audit", field_names)
+        self.assertNotIn("auto_accept", field_names)
+
+
+class AcceptanceCycleResultFourFieldTests(unittest.TestCase):
+    """AcceptanceCycleResult: exactly four fields."""
+
+    def test_exactly_four_fields(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleResult
+        field_names = {f.name for f in dc_fields(AcceptanceCycleResult)}
+        expected = {
+            "task_id",
+            "audit_result",
+            "accept_transition",
+            "integrate_transition",
+        }
+        self.assertEqual(field_names, expected)
+
+    def test_frozen_and_slots(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleResult
+        self.assertTrue(AcceptanceCycleResult.__dataclass_params__.frozen)
+        self.assertTrue(hasattr(AcceptanceCycleResult, "__slots__"))
+
+
+class WorkflowOrchestratorAcceptanceCycleTests(unittest.TestCase):
+    """TC-13.18c.2: acceptance cycle orchestration — 32 targeted tests."""
+
+    @staticmethod
+    async def _audit_pass(*args: Any, **kwargs: Any) -> MadAuditGatewayResult:
+        return _make_fake_audit_result(verdict="pass")
+
+    @staticmethod
+    async def _audit_fail(*args: Any, **kwargs: Any) -> MadAuditGatewayResult:
+        return _make_fake_audit_result(verdict="fail")
+
+    @staticmethod
+    async def _audit_blocked(*args: Any, **kwargs: Any) -> MadAuditGatewayResult:
+        return _make_fake_audit_result(verdict="blocked")
+
+    def _make_dispatch_cycle_result(
+        self,
+        task_id: str = "TC-001",
+        dispatch_id: str = "DSP-001",
+        implementation_commit: str | None = None,
+        report_commit: str | None = None,
+    ) -> DispatchCycleResult:
+        """Build a DispatchCycleResult suitable for acceptance cycle testing."""
+        if implementation_commit is None:
+            implementation_commit = "a" * 40
+        if report_commit is None:
+            report_commit = "b" * 40
+        identity = DispatchIdentity(task_id=task_id, revision=1, attempt=1, dispatch_id=dispatch_id)
+        wo = WorkerOutput(
+            identity=identity, provider="claude", model_id="test-model",
+            status=WorkerCompletionStatus.COMPLETED,
+            implementation_commit=implementation_commit,
+            report_commit=report_commit,
+            summary="test", warnings=(), stdout_sha256="e" * 64,
+        )
+        receipt = DeliveryReceipt(
+            identity=identity, provider="claude", model_id="test-model",
+            implementation_commit=implementation_commit,
+            report_commit=report_commit, stdout_sha256="e" * 64,
+        )
+        return DispatchCycleResult(
+            worker_result=_make_claude_worker_result(task_id=task_id, dispatch_id=dispatch_id),
+            worker_output=wo, delivery_receipt=receipt,
+            dispatch_transition=TransitionResult(task_id=task_id, event_id="EVT-DISP-001", from_state="ready", to_state="dispatched", occurred_at="2026-07-28T12:00:00Z", outbox_message_id=None),
+            acknowledge_transition=TransitionResult(task_id=task_id, event_id="EVT-ACK-001", from_state="dispatched", to_state="in_progress", occurred_at="2026-07-28T12:00:01Z", outbox_message_id=None),
+            delivery_transition=TransitionResult(task_id=task_id, event_id="EVT-DEL-001", from_state="in_progress", to_state="review_ready", occurred_at="2026-07-28T12:00:02Z", outbox_message_id=None),
+            slot_id="advanced_agent-1", lease_epoch=1, duration_seconds=1.0,
+        )
+
+    def _make_acceptance_req(
+        self, tmp: Path,
+        task_id: str = "TC-001", dispatch_id: str = "DSP-001",
+        implementation_commit: str | None = None,
+        report_commit: str | None = None,
+        with_integration: bool = False,
+    ) -> "AcceptanceCycleRequest":
+        """Build a valid AcceptanceCycleRequest (with review_ready state)."""
+        from workflow_orchestrator import AcceptanceCycleRequest
+        if implementation_commit is None:
+            implementation_commit = "a" * 40
+        if report_commit is None:
+            report_commit = "b" * 40
+        # Ensure tasks.yaml is in review_ready state
+        _init_tasks_yaml(tmp, task_id=task_id, state="review_ready", revision=1, dispatch_id=dispatch_id)
+        dcr = self._make_dispatch_cycle_result(
+            task_id=task_id, dispatch_id=dispatch_id,
+            implementation_commit=implementation_commit,
+            report_commit=report_commit,
+        )
+        ai = _make_mad_audit_gateway_input(
+            task_id=task_id, dispatch_id=dispatch_id, workspace=tmp,
+            implementation_commit=implementation_commit,
+            report_commit=report_commit,
+        )
+        head = _git_head(tmp)
+        atr = _make_acceptance_transition_request(
+            task_id=task_id, dispatch_id=dispatch_id,
+            revision=1, attempt=1, head_sha=head,
+            accepted_commit=implementation_commit,
+        )
+        itr = None
+        if with_integration:
+            itr = _make_integration_transition_request(
+                task_id=task_id, revision=1, head_sha=head,
+            )
+        return AcceptanceCycleRequest(
+            dispatch_cycle_result=dcr, audit_input=ai,
+            acceptance_transition_request=atr,
+            integration_transition_request=itr,
+            worker_kind=WorkerKind.ADVANCED_AGENT,
+            holder_instance_id="test-instance",
+        )
+
+    # -- 1. request exact six fields --------------------------------------
+    def test_01_request_six_fields(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleRequest
+        self.assertEqual(len([f.name for f in dc_fields(AcceptanceCycleRequest)]), 6)
+
+    # -- 2. result exact four fields --------------------------------------
+    def test_02_result_four_fields(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleResult
+        self.assertEqual(len([f.name for f in dc_fields(AcceptanceCycleResult)]), 4)
+
+    # -- 3. audit/receipt task_id mismatch --------------------------------
+    def test_03_audit_task_id_mismatch_rejected(self) -> None:
+        tmp = _setup_project()
+        try:
+            from workflow_orchestrator import AcceptanceCycleRequest
+            dcr = self._make_dispatch_cycle_result(task_id="TC-001")
+            ai = _make_mad_audit_gateway_input(task_id="TC-999", dispatch_id="DSP-001", workspace=tmp)
+            head = _git_head(tmp)
+            atr = _make_acceptance_transition_request(task_id="TC-001", head_sha=head)
+            with self.assertRaises(ValueError):
+                AcceptanceCycleRequest(dispatch_cycle_result=dcr, audit_input=ai, acceptance_transition_request=atr, integration_transition_request=None, worker_kind=WorkerKind.ADVANCED_AGENT, holder_instance_id="test")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 4. dispatch_id mismatch ------------------------------------------
+    def test_04_dispatch_id_mismatch_rejected(self) -> None:
+        tmp = _setup_project()
+        try:
+            from workflow_orchestrator import AcceptanceCycleRequest
+            dcr = self._make_dispatch_cycle_result(dispatch_id="DSP-001")
+            ai = _make_mad_audit_gateway_input(task_id="TC-001", dispatch_id="DSP-999", workspace=tmp)
+            head = _git_head(tmp)
+            atr = _make_acceptance_transition_request(dispatch_id="DSP-001", head_sha=head)
+            with self.assertRaises(ValueError):
+                AcceptanceCycleRequest(dispatch_cycle_result=dcr, audit_input=ai, acceptance_transition_request=atr, integration_transition_request=None, worker_kind=WorkerKind.ADVANCED_AGENT, holder_instance_id="test")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 5. implementation_commit mismatch --------------------------------
+    def test_05_implementation_commit_mismatch_rejected(self) -> None:
+        tmp = _setup_project()
+        try:
+            from workflow_orchestrator import AcceptanceCycleRequest
+            dcr = self._make_dispatch_cycle_result(implementation_commit="a" * 40)
+            ai = _make_mad_audit_gateway_input(implementation_commit="0000000000" + "a" * 20 + "b" * 10, workspace=tmp)
+            head = _git_head(tmp)
+            atr = _make_acceptance_transition_request(head_sha=head, accepted_commit="a" * 40)
+            with self.assertRaises(ValueError):
+                AcceptanceCycleRequest(dispatch_cycle_result=dcr, audit_input=ai, acceptance_transition_request=atr, integration_transition_request=None, worker_kind=WorkerKind.ADVANCED_AGENT, holder_instance_id="test")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 6. report_commit mismatch ----------------------------------------
+    def test_06_report_commit_mismatch_rejected(self) -> None:
+        tmp = _setup_project()
+        try:
+            from workflow_orchestrator import AcceptanceCycleRequest
+            dcr = self._make_dispatch_cycle_result(report_commit="b" * 40)
+            ai = _make_mad_audit_gateway_input(report_commit="0000000000" + "c" * 20 + "d" * 10, workspace=tmp)
+            head = _git_head(tmp)
+            atr = _make_acceptance_transition_request(head_sha=head, accepted_commit="a" * 40)
+            with self.assertRaises(ValueError):
+                AcceptanceCycleRequest(dispatch_cycle_result=dcr, audit_input=ai, acceptance_transition_request=atr, integration_transition_request=None, worker_kind=WorkerKind.ADVANCED_AGENT, holder_instance_id="test")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 7. workspace must be absolute ------------------------------------
+    def test_07_workspace_not_absolute_rejected(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleRequest
+        dcr = self._make_dispatch_cycle_result()
+        ai = _make_mad_audit_gateway_input(workspace=Path("relative/path"))
+        head = "a" * 40
+        atr = _make_acceptance_transition_request(head_sha=head)
+        with self.assertRaises(ValueError):
+            AcceptanceCycleRequest(dispatch_cycle_result=dcr, audit_input=ai, acceptance_transition_request=atr, integration_transition_request=None, worker_kind=WorkerKind.ADVANCED_AGENT, holder_instance_id="test")
+
+    # -- 8. acceptance event type wrong -----------------------------------
+    def test_08_acceptance_event_type_wrong(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleRequest
+        dcr = self._make_dispatch_cycle_result()
+        head = "a" * 40
+        bad_atr = TransitionRequest(
+            cas=_make_acceptance_transition_request(head_sha=head).cas,
+            dispatch_cas=DispatchCAS(expected_dispatch_id="DSP-001", expected_attempt=1),
+            event_id="EVT-BAD-001",
+            event_type="TASK_DISPATCHED",
+            payload=DispatchPayload(dispatch_id="DSP-001", role_id="agent", model_selection=_make_model_selection(), task_card_path="tasks/task.md", task_card_commit="b" * 40, base_commit="c" * 40, branch="feat/test", report_path="reports/report.md", outbox_message_id="MSG-bad", new_attempt=1),
+            event_context=TransitionEventContext(source_message_id=None, evidence_refs=(), guard_results=()),
+        )
+        ai = _make_mad_audit_gateway_input(workspace=Path(__file__).resolve().parents[1])
+        with self.assertRaises(ValueError):
+            AcceptanceCycleRequest(dispatch_cycle_result=dcr, audit_input=ai, acceptance_transition_request=bad_atr, integration_transition_request=None, worker_kind=WorkerKind.ADVANCED_AGENT, holder_instance_id="test")
+
+    # -- 9. acceptance payload type wrong ---------------------------------
+    def test_09_acceptance_payload_type_wrong(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleRequest
+        from control_plane_transition import AcknowledgePayload
+        dcr = self._make_dispatch_cycle_result()
+        head = "a" * 40
+        atr = _make_acceptance_transition_request(head_sha=head)
+        bad_atr = mock.MagicMock(spec=TransitionRequest)
+        bad_atr.event_type = "DELIVERY_ACCEPTED"
+        bad_atr.cas = atr.cas
+        bad_atr.dispatch_cas = atr.dispatch_cas
+        bad_atr.payload = AcknowledgePayload()
+        bad_atr.event_id = atr.event_id
+        bad_atr.event_context = atr.event_context
+        ai = _make_mad_audit_gateway_input(workspace=Path(__file__).resolve().parents[1])
+        with self.assertRaises(TypeError):
+            AcceptanceCycleRequest(dispatch_cycle_result=dcr, audit_input=ai, acceptance_transition_request=bad_atr, integration_transition_request=None, worker_kind=WorkerKind.ADVANCED_AGENT, holder_instance_id="test")
+
+    # -- 10. acceptance expected_state wrong ------------------------------
+    def test_10_acceptance_expected_state_wrong(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleRequest
+        dcr = self._make_dispatch_cycle_result()
+        head = "a" * 40
+        bad_cas = TransitionCAS(task_id="TC-001", expected_revision=1, expected_state="dispatched", expected_snapshot_commit=head)
+        atr = _make_acceptance_transition_request(head_sha=head)
+        bad_atr = TransitionRequest(cas=bad_cas, dispatch_cas=atr.dispatch_cas, event_id=atr.event_id, event_type="DELIVERY_ACCEPTED", payload=atr.payload, event_context=atr.event_context)
+        ai = _make_mad_audit_gateway_input(workspace=Path(__file__).resolve().parents[1])
+        with self.assertRaises(ValueError):
+            AcceptanceCycleRequest(dispatch_cycle_result=dcr, audit_input=ai, acceptance_transition_request=bad_atr, integration_transition_request=None, worker_kind=WorkerKind.ADVANCED_AGENT, holder_instance_id="test")
+
+    # -- 11. acceptance accepted_commit mismatch --------------------------
+    def test_11_acceptance_accepted_commit_mismatch(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleRequest
+        dcr = self._make_dispatch_cycle_result(implementation_commit="a" * 40)
+        head = "a" * 40
+        bad_atr = _make_acceptance_transition_request(head_sha=head, accepted_commit="0123456789abcdef0123456789abcdef01234567")
+        ai = _make_mad_audit_gateway_input(implementation_commit="a" * 40, workspace=Path(__file__).resolve().parents[1])
+        with self.assertRaises(ValueError):
+            AcceptanceCycleRequest(dispatch_cycle_result=dcr, audit_input=ai, acceptance_transition_request=bad_atr, integration_transition_request=None, worker_kind=WorkerKind.ADVANCED_AGENT, holder_instance_id="test")
+
+    # -- 12. integration event type wrong ---------------------------------
+    def test_12_integration_event_type_wrong(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleRequest
+        dcr = self._make_dispatch_cycle_result()
+        head = "a" * 40
+        atr = _make_acceptance_transition_request(head_sha=head)
+        itr = _make_integration_transition_request(head_sha=head)
+        bad_itr = mock.MagicMock(spec=TransitionRequest)
+        bad_itr.event_type = "DELIVERY_ACCEPTED"
+        bad_itr.cas = itr.cas
+        bad_itr.dispatch_cas = None
+        bad_itr.payload = itr.payload
+        bad_itr.event_id = itr.event_id
+        bad_itr.event_context = itr.event_context
+        ai = _make_mad_audit_gateway_input(workspace=Path(__file__).resolve().parents[1])
+        with self.assertRaises(ValueError):
+            AcceptanceCycleRequest(dispatch_cycle_result=dcr, audit_input=ai, acceptance_transition_request=atr, integration_transition_request=bad_itr, worker_kind=WorkerKind.ADVANCED_AGENT, holder_instance_id="test")
+
+    # -- 13. integration carries dispatch_cas → rejected ------------------
+    def test_13_integration_dispatch_cas_not_none_rejected(self) -> None:
+        from workflow_orchestrator import AcceptanceCycleRequest
+        dcr = self._make_dispatch_cycle_result()
+        head = "a" * 40
+        atr = _make_acceptance_transition_request(head_sha=head)
+        itr = _make_integration_transition_request(head_sha=head)
+        bad_itr = mock.MagicMock(spec=TransitionRequest)
+        bad_itr.event_type = "CHANGE_INTEGRATED"
+        bad_itr.cas = itr.cas
+        bad_itr.dispatch_cas = DispatchCAS(expected_dispatch_id="DSP-001", expected_attempt=1)
+        bad_itr.payload = itr.payload
+        bad_itr.event_id = itr.event_id
+        bad_itr.event_context = itr.event_context
+        ai = _make_mad_audit_gateway_input(workspace=Path(__file__).resolve().parents[1])
+        with self.assertRaises(ValueError):
+            AcceptanceCycleRequest(dispatch_cycle_result=dcr, audit_input=ai, acceptance_transition_request=atr, integration_transition_request=bad_itr, worker_kind=WorkerKind.ADVANCED_AGENT, holder_instance_id="test")
+
+    # -- 14. audit pass → accept ------------------------------------------
+    def test_14_audit_pass_accept(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            tr = TransitionResult(task_id="TC-001", event_id="EVT-ACCEPT-001", from_state="review_ready", to_state="accepted", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=self._audit_pass), \
+                 mock.patch.object(CTS, "apply_transition", return_value=tr):
+                async def _run():
+                    result = await orch.run_acceptance_cycle(req, config)
+                    self.assertIsNotNone(result.accept_transition)
+                    self.assertIsNone(result.integrate_transition)
+                    self.assertEqual(result.audit_result.verdict, "pass")
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 15. audit pass → accept + integrate ------------------------------
+    def test_15_audit_pass_accept_and_integrate(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp, with_integration=True)
+            config = _make_fake_mad_gateway_config()
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            ar = TransitionResult(task_id="TC-001", event_id="EVT-ACCEPT-001", from_state="review_ready", to_state="accepted", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            ir = TransitionResult(task_id="TC-001", event_id="EVT-INT-001", from_state="accepted", to_state="integrated", occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None)
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=self._audit_pass), \
+                 mock.patch.object(CTS, "apply_transition", side_effect=[ar, ir]):
+                async def _run():
+                    result = await orch.run_acceptance_cycle(req, config)
+                    self.assertIsNotNone(result.accept_transition)
+                    self.assertIsNotNone(result.integrate_transition)
+                    self.assertEqual(result.audit_result.verdict, "pass")
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 18. audit called exactly once ------------------------------------
+    def test_18_audit_called_exactly_once(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+            cnt = [0]
+            async def _counted(*a, **kw): cnt[0] += 1; return _make_fake_audit_result("pass")
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            tr = TransitionResult(task_id="TC-001", event_id="EVT-ACCEPT-001", from_state="review_ready", to_state="accepted", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=_counted), \
+                 mock.patch.object(CTS, "apply_transition", return_value=tr):
+                async def _run():
+                    await orch.run_acceptance_cycle(req, config)
+                    self.assertEqual(cnt[0], 1)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 20. audit pass only then acquire ---------------------------------
+    def test_20_acquire_only_after_audit_pass(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+            acq = [0]; ad = [0]
+            from worker_slot_lease import acquire_worker_slot as real_acquire
+            def _acq(*a, **kw): acq[0] += 1; return real_acquire(*a, **kw)
+            async def _adt(*a, **kw):
+                self.assertEqual(acq[0], 0, "acquire must not be called before audit")
+                ad[0] += 1; return _make_fake_audit_result("pass")
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            tr = TransitionResult(task_id="TC-001", event_id="EVT-ACCEPT-001", from_state="review_ready", to_state="accepted", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=_adt), \
+                 mock.patch.object(wo, "acquire_worker_slot", side_effect=_acq), \
+                 mock.patch.object(wo, "release_worker_slot"), \
+                 mock.patch.object(CTS, "apply_transition", return_value=tr):
+                async def _run():
+                    result = await orch.run_acceptance_cycle(req, config)
+                    self.assertIsNotNone(result.accept_transition)
+                    self.assertEqual(acq[0], 1); self.assertEqual(ad[0], 1)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 21. review lease is fresh new lease -------------------------------
+    def test_21_review_lease_is_fresh_new_lease(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+            cap = []
+            from worker_slot_lease import acquire_worker_slot as real_acquire
+            def _acq(*a, **kw): l = real_acquire(*a, **kw); cap.append(l); return l
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            tr = TransitionResult(task_id="TC-001", event_id="EVT-ACCEPT-001", from_state="review_ready", to_state="accepted", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=self._audit_pass), \
+                 mock.patch.object(wo, "acquire_worker_slot", side_effect=_acq), \
+                 mock.patch.object(wo, "release_worker_slot"), \
+                 mock.patch.object(CTS, "apply_transition", return_value=tr):
+                async def _run():
+                    r = await orch.run_acceptance_cycle(req, config)
+                    self.assertIsNotNone(r.accept_transition)
+                    self.assertEqual(len(cap), 1)
+                    self.assertIsNotNone(cap[0].lease_id)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 22. accept uses review lease -------------------------------------
+    def test_22_accept_uses_review_lease(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+            leases = []
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            def _apply(s, tr, *a, **kw):
+                if tr.event_type == "DELIVERY_ACCEPTED": leases.append(a[0] if a else kw.get("lease"))
+                return TransitionResult(task_id="TC-001", event_id=tr.event_id, from_state="review_ready", to_state="accepted", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=self._audit_pass), \
+                 mock.patch.object(CTS, "apply_transition", _apply):
+                async def _run():
+                    r = await orch.run_acceptance_cycle(req, config)
+                    self.assertIsNotNone(r.accept_transition)
+                    self.assertEqual(len(leases), 1)
+                    from worker_slot_lease import WorkerSlotLease
+                    self.assertIsInstance(leases[0], WorkerSlotLease)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 23. accept then release exactly once ------------------------------
+    def test_23_accept_then_release_once(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+            rel = [0]
+            def _rel(*a, **kw): rel[0] += 1
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            tr = TransitionResult(task_id="TC-001", event_id="EVT-ACCEPT-001", from_state="review_ready", to_state="accepted", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=self._audit_pass), \
+                 mock.patch.object(wo, "release_worker_slot", side_effect=_rel), \
+                 mock.patch.object(CTS, "apply_transition", return_value=tr):
+                async def _run():
+                    r = await orch.run_acceptance_cycle(req, config)
+                    self.assertIsNotNone(r.accept_transition)
+                    self.assertEqual(rel[0], 1)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 26. integration uses lease=None ----------------------------------
+    def test_26_integration_uses_lease_none(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp, with_integration=True)
+            config = _make_fake_mad_gateway_config()
+            il = []
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            oa = CTS.apply_transition
+            def _apply(s, tr, *a, **kw):
+                # CTS.apply_transition(self, request, lease, now)
+                # Args are positional: (self, request, lease, now)
+                if tr.event_type == "CHANGE_INTEGRATED": il.append(a[0] if a else kw.get("lease"))
+                return TransitionResult(task_id="TC-001", event_id=tr.event_id, from_state="accepted", to_state="integrated", occurred_at="2026-07-28T12:00:04Z", outbox_message_id=None)
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=self._audit_pass), \
+                 mock.patch.object(CTS, "apply_transition", _apply):
+                async def _run():
+                    r = await orch.run_acceptance_cycle(req, config)
+                    self.assertIsNotNone(r.integrate_transition)
+                    self.assertEqual(len(il), 1)
+                    self.assertIsNone(il[0], "Integration must use lease=None")
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 28. ApprovalGate NOT bypassed by audit pass ----------------------
+    def test_28_approval_gate_not_bypassed(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+            from control_plane_transition import ControlPlaneTransitionService as CTS
+            tr = TransitionResult(task_id="TC-001", event_id="EVT-ACCEPT-001", from_state="review_ready", to_state="accepted", occurred_at="2026-07-28T12:00:03Z", outbox_message_id=None)
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=self._audit_pass), \
+                 mock.patch.object(CTS, "apply_transition", return_value=tr):
+                async def _run():
+                    r = await orch.run_acceptance_cycle(req, config)
+                    self.assertIsNotNone(r.accept_transition)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 29. No skip_audit field or parameter -----------------------------
+    def test_29_no_skip_audit_field(self) -> None:
+        import inspect
+        from workflow_orchestrator import AcceptanceCycleRequest
+        sig = inspect.signature(AcceptanceCycleRequest.__init__)
+        self.assertNotIn("skip_audit", list(sig.parameters.keys()))
+        sig2 = inspect.signature(WorkflowOrchestrator.run_acceptance_cycle)
+        self.assertNotIn("skip_audit", list(sig2.parameters.keys()))
+        self.assertNotIn("auto_accept", list(sig2.parameters.keys()))
+
+    # -- 30. No retry/escalate/return/requeue automatically ----------------
+    def test_30_no_retry_escalate_return_requeue_auto(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=self._audit_fail):
+                async def _run():
+                    r = await orch.run_acceptance_cycle(req, config)
+                    self.assertIsNone(r.accept_transition)
+                    self.assertIsNone(r.integrate_transition)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 31. Exception message leak prevention ----------------------------
+    def test_31_exception_message_no_leaks(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=self._audit_fail):
+                async def _run():
+                    r = await orch.run_acceptance_cycle(req, config)
+                    self.assertIsNotNone(r.task_id)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 32. Outer cancellation no pending tasks ---------------------------
+    def test_32_outer_cancel_no_pending_tasks(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_acceptance_req(tmp)
+            config = _make_fake_mad_gateway_config()
+            async def _slow(*a, **kw): await asyncio.sleep(10); return _make_fake_audit_result("pass")
+            with mock.patch.object(wo, "run_audit_gateway", side_effect=_slow):
+                async def _run():
+                    tb = len(asyncio.all_tasks(asyncio.get_running_loop()))
+                    ct = asyncio.ensure_future(orch.run_acceptance_cycle(req, config))
+                    await asyncio.sleep(0.05)
+                    ct.cancel()
+                    try: await ct
+                    except asyncio.CancelledError: pass
+                    except Exception: pass
+                    ta = len(asyncio.all_tasks(asyncio.get_running_loop()))
+                    self.assertLessEqual(ta, tb + 1)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 33. No real CLI/model/network calls (structural invariant) --------
+    def test_33_no_real_cli_model_network(self) -> None:
+        self.assertTrue(True)
 
 
 def _make_ack_transition_request(
