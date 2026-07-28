@@ -31,7 +31,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 18 | AgentDesk EscalationService | **Current** | TC-13.13b | Pure WorkerKind tier progression; frozen contract §2.16; production module and full test suite committed |
 | 19 | AgentDesk RateLimit service | **Target** | TC-13.14 | Provider rate-limit handling independent of escalation |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
-| 21 | AgentDesk StateProvider (read-only) | **Target** | TC-13.17 | Read-only access to tasks, events, outbox, acceptances |
+| 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
 | 22 | AgentDesk WorkflowOrchestrator | **Target** | TC-13.18 | Central scheduler integrating all services |
 | 23 | E2E / Recovery tests | **Target** | TC-13.19 | End-to-end validation and recovery scenarios |
 | 24 | AgentDesk HTML Dashboard | **Target** | TC-13.20 | Read-only dashboard via StateProvider |
@@ -6087,11 +6087,11 @@ TC-13.16b → TC-13.16a (this contract)
 
 ---
 
-### 2.18 StateProvider — Frozen Contract (Target — TC-13.17a)
+### 2.18 StateProvider — Frozen Contract (Current — TC-13.17b)
 
-TC-13.17a freezes the **StateProvider read-only contract**.  No production
-module is shipped under TC-13.17a — the contract itself is the deliverable
-and must be implemented by TC-13.17b.
+TC-13.17a froze the **StateProvider read-only contract**.  TC-13.17b
+implemented the production module, tests, and finalized the contract
+document.
 
 StateProvider is the read-only service boundary for canonical project
 state.  The Skill (PM/Worker runbooks) and the HTML Dashboard (TC-13.20)
@@ -6219,9 +6219,10 @@ StateProvider does **not** handle:
 ---
 #### 2.18.8 Status
 
-* Interface #21 remains **Target** — TC-13.17a.
+* Interface #21 is **Current** — TC-13.17b.
 * This section (§2.18) is the Frozen Contract for TC-13.17a.
-* TC-13.17b (production module) is **not** started.
+* TC-13.17b (production module) is **complete** — `state_provider.py`
+  and `test_state_provider.py` are committed.
 * TC-13.18 (WorkflowOrchestrator) and TC-13.20 (HTML Dashboard)
   remain **Target**.
 

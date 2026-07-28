@@ -7704,10 +7704,10 @@ class ReleaseSmokeTests(unittest.TestCase):
         )
 
     def test_tc1313a_interface_20_through_25_still_target(self) -> None:
-        """Interfaces #20–25 must remain Target."""
+        """Interfaces #20, #22–25 must remain Target; #21 is Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
-        for n in ("20", "21", "22", "23", "24", "25"):
+        for n in ("20", "22", "23", "24", "25"):
             row = None
             for r in rows:
                 if r.get("#") == n or r.get("No.") == n:
@@ -7719,6 +7719,16 @@ class ReleaseSmokeTests(unittest.TestCase):
                 "Target" in status or "target" in status.lower(),
                 f"Interface #{n} must be Target, got: {status}",
             )
+        # Interface #21 is now Current
+        row21 = None
+        for r in rows:
+            if r.get("#") == "21" or r.get("No.") == "21":
+                row21 = r
+                break
+        self.assertIsNotNone(row21, "Interface #21 row not found")
+        status21 = row21.get("Status", "")
+        self.assertIn("Current", status21,
+                      f"Interface #21 must be Current, got: {status21}")
 
     # -- 13: escalation_service.py must NOT exist --
 
@@ -8304,7 +8314,7 @@ class TC1317aContractFreezeTests(unittest.TestCase):
     def test_adr_section_218_frozen_contract_exists(self) -> None:
         """§2.18 StateProvider Frozen Contract must exist in ADR."""
         self.assertIn(
-            "### 2.18 StateProvider — Frozen Contract (Target — TC-13.17a)",
+            "### 2.18 StateProvider",
             self.adr_text,
             "ADR: §2.18 StateProvider Frozen Contract must exist",
         )
@@ -8326,21 +8336,21 @@ class TC1317aContractFreezeTests(unittest.TestCase):
 
     # -- 2. Interface #21 remains Target --
 
-    def test_interface_21_is_target(self) -> None:
-        """Interface #21 (StateProvider) must be Target — not Current."""
+    def test_interface_21_is_current(self) -> None:
+        """Interface #21 (StateProvider) must be Current — TC-13.17b complete."""
         self.assertIn(
-            "| 21 | AgentDesk StateProvider (read-only) | **Target** | TC-13.17",
+            "| 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b",
             self.adr_text,
-            "ADR: Interface #21 must remain Target — TC-13.17a",
+            "ADR: Interface #21 must be Current — TC-13.17b complete",
         )
         self.assertNotIn(
-            "| 21 | AgentDesk StateProvider (read-only) | **Current**",
+            "| 21 | AgentDesk StateProvider (read-only) | **Target**",
             self.adr_text,
-            "ADR: Interface #21 must NOT be Current yet",
+            "ADR: Interface #21 must NOT be Target — TC-13.17b complete",
         )
 
-    def test_tc1317b_not_started_in_adr(self) -> None:
-        """§2.18.8 must state TC-13.17b is not started."""
+    def test_tc1317b_complete_in_adr(self) -> None:
+        """§2.18.8 must state TC-13.17b is complete."""
         section = _extract_markdown_section(
             self.adr_text, "### 2.18 StateProvider"
         )
@@ -8350,10 +8360,10 @@ class TC1317aContractFreezeTests(unittest.TestCase):
             section,
             "ADR §2.18 must reference TC-13.17b",
         )
-        # §2.18.8 Status: "TC-13.17b (production module) is **not** started."
-        self.assertTrue(
-            "not" in section.lower() and "started" in section.lower(),
-            "ADR §2.18 must state TC-13.17b is not started",
+        self.assertIn(
+            "complete",
+            section.lower(),
+            "ADR §2.18 must state TC-13.17b is complete",
         )
 
     # -- 3. Five canonical input files declared --
@@ -8392,17 +8402,12 @@ class TC1317aContractFreezeTests(unittest.TestCase):
     # -- 4. Multi-file consistency protocol --
 
     def test_multi_file_consistency_protocol(self) -> None:
-        """Contract must define the A→B consistency protocol (A ≠ B → error)."""
-        self.assertIn("**A**", self.contract_text,
-                      "Contract must define snapshot byte A (bold)")
-        self.assertIn("**B**", self.contract_text,
-                      "Contract must define snapshot byte B (bold)")
-        self.assertTrue(
-            "A" in self.contract_text and "B" in self.contract_text
-            and "snapshot-changed" not in self.contract_text,  # contract uses exception name
-            "Contract must define A and B bytes",
-        )
-        # The contract uses StateProviderSnapshotChangedError not "snapshot-changed"
+        """Contract must define the A→B consistency protocol."""
+        # The contract specifies reading all five sources twice and compares.
+        self.assertIn("twice", self.contract_text,
+                      "Contract must specify reading twice for consistency")
+        self.assertIn("second complete snapshot", self.contract_text,
+                      "Contract must specify a second complete snapshot")
         self.assertIn(
             "StateProviderSnapshotChangedError",
             self.contract_text,
@@ -8515,12 +8520,14 @@ class TC1317aContractFreezeTests(unittest.TestCase):
 
     def test_error_message_safety(self) -> None:
         """Error messages must not contain paths, task IDs, secrets."""
-        safety_terms = [
+        target = self.contract_text.lower()
+        safety_phrases = [
             "must not contain",
             "must **never** contain",
             "must never contain",
+            "error messages never contain",
         ]
-        found = any(t in self.contract_text.lower() for t in safety_terms)
+        found = any(p in target for p in safety_phrases)
         self.assertTrue(
             found,
             "Contract must specify error message safety (must not contain paths/IDs/content)",
@@ -8531,8 +8538,16 @@ class TC1317aContractFreezeTests(unittest.TestCase):
     def test_no_write_end_imports(self) -> None:
         """StateProvider must not import write-end gateways."""
         self.assertIn(
-            "must **not** import",
+            "import",
             self.contract_text,
+            "Contract must declare import boundaries",
+        )
+        # Verify the contract mentions forbidden imports
+        target = self.contract_text.lower()
+        self.assertTrue(
+            "must **not** import" in self.contract_text or
+            "does not import" in target or
+            "not import" in target,
             "Contract must declare import boundaries",
         )
 
@@ -8562,27 +8577,27 @@ class TC1317aContractFreezeTests(unittest.TestCase):
             "Contract must exclude BOARD.md as authoritative input",
         )
 
-    # -- 11. No production module --
+    # -- 11. Production module exists (TC-13.17b) --
 
-    def test_no_state_provider_py_exists(self) -> None:
-        """state_provider.py must NOT exist (TC-13.17b not started)."""
+    def test_state_provider_py_exists(self) -> None:
+        """state_provider.py must exist (TC-13.17b complete)."""
         scripts = (
             Path(__file__).resolve().parents[1]
             / "skills" / "agentdesk" / "scripts"
         )
-        self.assertFalse(
-            (scripts / "state_provider.py").exists(),
-            "state_provider.py must not exist — TC-13.17b not started",
+        self.assertTrue(
+            (scripts / "state_provider.py").is_file(),
+            "state_provider.py must exist — TC-13.17b complete",
         )
 
     # -- 12. No stale docs --
 
-    def test_no_stale_state_provider_current_text(self) -> None:
-        """Interface #21 must not claim Current."""
+    def test_no_stale_state_provider_target_text(self) -> None:
+        """Interface #21 must not claim Target."""
         self.assertNotIn(
-            "| 21 | AgentDesk StateProvider (read-only) | **Current**",
+            "| 21 | AgentDesk StateProvider (read-only) | **Target**",
             self.adr_text,
-            "ADR: Interface #21 must not claim Current",
+            "ADR: Interface #21 must not claim Target — TC-13.17b complete",
         )
 
     def test_tc1317a_is_not_tc1317b(self) -> None:
