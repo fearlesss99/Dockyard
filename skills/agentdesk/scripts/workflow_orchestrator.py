@@ -60,6 +60,7 @@ from control_plane_transition import (
     DispatchPayload,
     IntegrationPayload,
     RequeuePayload,
+    SupersededPayload,
     TransitionCAS,
     TransitionEventContext,
     TransitionRequest,
@@ -121,6 +122,8 @@ __all__ = [
     "IntegrationFailureResult",
     "TaskCancellationRequest",
     "TaskCancellationResult",
+    "TaskSupersessionRequest",
+    "TaskSupersessionResult",
     "WorkerOutput",
     "WorkflowClock",
     "WorkflowHeartbeatError",
@@ -647,6 +650,28 @@ class TaskCancellationResult:
 
     task_id: str
     cancellation_transition: TransitionResult
+
+
+# -- TaskSupersession types (TC-13.18d.8) ------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSupersessionRequest:
+    """Immutable input for quiescent task supersession — exactly one field.
+
+    All identifiers are caller-supplied.
+    """
+
+    supersession_transition_request: TransitionRequest
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSupersessionResult:
+    """Immutable result of quiescent task supersession — exactly three fields."""
+
+    task_id: str
+    superseded_by: str
+    supersession_transition: TransitionResult
 
 
 # -- exception hierarchy ------------------------------------------------------
@@ -2383,6 +2408,150 @@ class WorkflowOrchestrator:
         return TaskCancellationResult(
             task_id=task_id,
             cancellation_transition=cancellation_transition,
+        )
+
+    async def supersede_quiescent_task(
+        self,
+        request: TaskSupersessionRequest,
+    ) -> TaskSupersessionResult:
+        """Supersede a non-terminal task with no active dispatch (TC-13.18d.8).
+
+        Execution order:
+        1. Validate request shape (exactly TaskSupersessionRequest)
+        2. StateProvider.snapshot() exactly once
+        3. Locate source and replacement tasks from snapshot
+        4. Validate source/replacement/CAS
+        5. now = clock.now()
+        6. apply_transition(TASK_SUPERSEDED, lease=None, now)
+        7. return TaskSupersessionResult
+
+        Must NOT supersede a task with an active dispatch.  Does NOT run
+        MAD audit, EscalationService, WorkerAdapter, WorkerSlotLease, or
+        dispatch replacement task.  Transition exceptions and
+        asyncio.CancelledError propagate unchanged.
+        """
+        # -- 1. Validate request shape -------------------------------------------
+        if type(request) is not TaskSupersessionRequest:
+            raise WorkflowInputError(
+                "request must be TaskSupersessionRequest, "
+                f"got {type(request).__name__}"
+            )
+
+        tr = request.supersession_transition_request
+
+        # -- 1a. transition request must be exactly TransitionRequest ------------
+        if type(tr) is not TransitionRequest:
+            raise WorkflowInputError(
+                "supersession_transition_request must be TransitionRequest, "
+                f"got {type(tr).__name__}"
+            )
+
+        # -- 1b. event_type must be TASK_SUPERSEDED ------------------------------
+        if tr.event_type != "TASK_SUPERSEDED":
+            raise WorkflowInputError(
+                "supersession_transition_request event_type must be "
+                "TASK_SUPERSEDED"
+            )
+
+        # -- 1c. payload must be SupersededPayload -------------------------------
+        if type(tr.payload) is not SupersededPayload:
+            raise WorkflowInputError(
+                "supersession_transition_request payload must be "
+                "SupersededPayload"
+            )
+
+        # -- 1d. to_state must be "superseded" -----------------------------------
+        # (validated by TransitionService, fail-closed check here)
+
+        # -- 1e. dispatch_cas must be None --------------------------------------
+        if tr.dispatch_cas is not None:
+            raise WorkflowInputError(
+                "supersession_transition_request dispatch_cas must be None"
+            )
+
+        # -- 1f. event_id must not be empty --------------------------------------
+        if not tr.event_id:
+            raise WorkflowInputError(
+                "supersession_transition_request event_id must not be empty"
+            )
+
+        # -- 2. StateProvider.snapshot() -----------------------------------------
+        try:
+            snapshot = StateProvider(self.project_root).snapshot()
+        except StateProviderError:
+            raise  # propagate as-is
+
+        # -- 3. Locate source and replacement tasks ------------------------------
+        task_id = tr.cas.task_id
+        source_task = None
+        replacement_task = None
+        superseded_by = tr.payload.superseded_by
+
+        for t in snapshot.tasks:
+            if t.task_id == task_id:
+                source_task = t
+            if t.task_id == superseded_by:
+                replacement_task = t
+
+        # -- 4a. Source task must exist ------------------------------------------
+        if source_task is None:
+            raise WorkflowInputError(
+                "source task not found in snapshot"
+            )
+
+        # -- 4b. Source task revision must match CAS expected_revision -----------
+        if source_task.revision != tr.cas.expected_revision:
+            raise WorkflowInputError(
+                "task revision does not match CAS expected_revision"
+            )
+
+        # -- 4c. Source task state must match CAS expected_state -----------------
+        if source_task.state != tr.cas.expected_state:
+            raise WorkflowInputError(
+                "task state does not match CAS expected_state"
+            )
+
+        # -- 4d. Source task current_dispatch must be None (quiescent only) ------
+        if source_task.current_dispatch is not None:
+            raise WorkflowInputError(
+                "task has active dispatch — quiescent supersession refused"
+            )
+
+        # -- 4e. Source task must not already be in a terminal state -------------
+        _TERMINAL_STATES = frozenset({"cancelled", "superseded", "integrated"})
+        if source_task.state in _TERMINAL_STATES:
+            raise WorkflowInputError(
+                "task is already in a terminal state"
+            )
+
+        # -- 4f. superseded_by must be a non-empty safe string -------------------
+        # (already validated by SupersededPayload.__post_init__)
+
+        # -- 4g. Source and replacement must not be the same task ----------------
+        if task_id == superseded_by:
+            raise WorkflowInputError(
+                "source task must not supersede itself"
+            )
+
+        # -- 4h. Replacement task must exist in snapshot -------------------------
+        if replacement_task is None:
+            raise WorkflowInputError(
+                "replacement task not found in snapshot"
+            )
+
+        # -- 5. clock.now() ------------------------------------------------------
+        now = self.clock.now()
+
+        # -- 6. Apply TASK_SUPERSEDED with lease=None ----------------------------
+        supersession_transition = ControlPlaneTransitionService(
+            self.project_root
+        ).apply_transition(tr, lease=None, now=now)
+
+        # -- 7. Return result ----------------------------------------------------
+        return TaskSupersessionResult(
+            task_id=task_id,
+            superseded_by=superseded_by,
+            supersession_transition=supersession_transition,
         )
 
     # -- private validation helpers -------------------------------------------

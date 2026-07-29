@@ -1,4 +1,4 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.7)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
@@ -11,10 +11,11 @@ TC-13.18d.4 extends it with INTEGRATION_FAILED (accepted → blocked for externa
 TC-13.18d.5 extends it with BLOCKER_RESCOPED (expert blocked task rescope to draft).
 TC-13.18d.6 extends it with BLOCKER_CANCELLED (expert blocked task cancellation).
 TC-13.18d.7 extends it with TASK_CANCELLED (quiescent path — no active dispatch).
+TC-13.18d.8 extends it with TASK_SUPERSEDED (quiescent path — no active dispatch).
 
 ## Status
 
-**Current** as of TC-13.18d.7.  The dispatch cycle (snapshot → acquire →
+**Current** as of TC-13.18d.8.  The dispatch cycle (snapshot → acquire →
 TASK_DISPATCHED → heartbeat + run_worker →
 DISPATCH_ACKNOWLEDGED → decode_worker_result →
 require_delivery_receipt → DELIVERY_SUBMITTED → stop heartbeat → release
@@ -31,7 +32,9 @@ BlockedRescopeResult),
 and expert blocked task cancellation (BLOCKER_CANCELLED (lease=None) →
 BlockedCancellationResult),
 and quiescent task cancellation (StateProvider.snapshot() → validate no
-active dispatch → TASK_CANCELLED (lease=None) → TaskCancellationResult)
+active dispatch → TASK_CANCELLED (lease=None) → TaskCancellationResult),
+and quiescent task supersession (StateProvider.snapshot() → validate no
+active dispatch → TASK_SUPERSEDED (lease=None) → TaskSupersessionResult)
 are implemented and callable.
 
 This document is the authoritative frozen specification for the
@@ -338,7 +341,8 @@ defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
 | 13 | `BLOCKER_CANCELLED` | Current — TC-13.18d.6 (expert blocked → cancelled) |
 | 14 | `TASK_CANCELLED` (quiescent path) | Current — TC-13.18d.7 |
 | 15 | `TASK_CANCELLED` (active dispatch path) | Target |
-| 16 | `TASK_SUPERSEDED` | Target |
+| 16 | `TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8 |
+| 17 | `TASK_SUPERSEDED` (active dispatch path) | Target |
 
 The orchestrator does **not** duplicate `_TRANSITION_SPECS`.  It constructs
 typed `TransitionRequest` objects and passes them to `apply_transition()`.
@@ -522,7 +526,8 @@ TC-13.18d.5 does **not** implement:
 - `BLOCKER_CANCELLED` → Current — TC-13.18d.6
 - `TASK_CANCELLED` (quiescent path) → Current — TC-13.18d.7
 - `TASK_CANCELLED` (active dispatch path) → Target
-- `TASK_SUPERSEDED` → Target
+- `TASK_SUPERSEDED` (quiescent path) → Current — TC-13.18d.8
+- `TASK_SUPERSEDED` (active dispatch path) → Target
 - `INTEGRATION_FAILED` → TC-13.18d.4 (already implemented)
 - User notification / UI → Target
 - Expert user-decision external interaction (chat UI, approval UI) → Target

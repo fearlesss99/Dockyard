@@ -6462,7 +6462,8 @@ in `ControlPlaneTransitionService._TRANSITION_SPECS` (搂2.14.8):
 | 13 | `BLOCKER_CANCELLED` | Current — TC-13.18d.6 cancel path |
 | 14 | `TASK_CANCELLED` (quiescent path) | Current — TC-13.18d.7 |
 | 15 | `TASK_CANCELLED` (active dispatch path) | Target |
-| 16 | `TASK_SUPERSEDED` | Target |
+| 16 | `TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8 |
+| 17 | `TASK_SUPERSEDED` (active dispatch path) | Target |
 
 WorkflowOrchestrator does **not** duplicate `_TRANSITION_SPECS` 鈥?it
 constructs typed `TransitionRequest` objects and passes them to

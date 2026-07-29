@@ -14937,3 +14937,2005 @@ class WorkflowOrchestratorQuiescentCancellationTests(unittest.TestCase):
             self.assertEqual(len(transition_calls), 0)
         finally:
             import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── TaskSupersessionRequest One-Field Tests ───────────────────────────────
+
+
+class TaskSupersessionRequestOneFieldTests(unittest.TestCase):
+    """TaskSupersessionRequest: exactly one field, frozen, slots, no __dict__."""
+
+    def test_01_exactly_one_field(self) -> None:
+        from workflow_orchestrator import TaskSupersessionRequest
+        field_names = {f.name for f in dc_fields(TaskSupersessionRequest)}
+        self.assertEqual(
+            field_names, {"supersession_transition_request"},
+        )
+
+    def test_02_frozen_disallows_mutation(self) -> None:
+        from workflow_orchestrator import TaskSupersessionRequest
+        self.assertTrue(
+            TaskSupersessionRequest.__dataclass_params__.frozen
+        )
+        self.assertTrue(hasattr(TaskSupersessionRequest, "__slots__"))
+
+    def test_03_no_dict(self) -> None:
+        from workflow_orchestrator import TaskSupersessionRequest
+        from control_plane_transition import (
+            SupersededPayload,
+            TransitionCAS,
+            TransitionEventContext,
+            TransitionRequest,
+        )
+        cas = TransitionCAS(
+            task_id="TC-001",
+            expected_revision=1,
+            expected_state="draft",
+            expected_snapshot_commit="a" * 40,
+        )
+        tr = TransitionRequest(
+            cas=cas,
+            dispatch_cas=None,
+            event_id="EVT-SUPER-001",
+            event_type="TASK_SUPERSEDED",
+            payload=SupersededPayload(superseded_by="TC-002"),
+            event_context=TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(),
+                guard_results=(),
+            ),
+        )
+        req = TaskSupersessionRequest(supersession_transition_request=tr)
+        with self.assertRaises(AttributeError):
+            req.__dict__
+
+
+# ── TaskSupersessionResult Three-Field Tests ──────────────────────────────
+
+
+class TaskSupersessionResultThreeFieldTests(unittest.TestCase):
+    """TaskSupersessionResult: exactly three fields, frozen, slots, no __dict__."""
+
+    def test_01_exactly_three_fields(self) -> None:
+        from workflow_orchestrator import TaskSupersessionResult
+        field_names = {f.name for f in dc_fields(TaskSupersessionResult)}
+        self.assertEqual(
+            field_names, {"task_id", "superseded_by", "supersession_transition"},
+        )
+
+    def test_02_frozen_disallows_mutation(self) -> None:
+        from workflow_orchestrator import TaskSupersessionResult
+        self.assertTrue(
+            TaskSupersessionResult.__dataclass_params__.frozen
+        )
+        self.assertTrue(hasattr(TaskSupersessionResult, "__slots__"))
+
+    def test_03_no_dict(self) -> None:
+        from workflow_orchestrator import TaskSupersessionResult
+        result = TaskSupersessionResult(
+            task_id="TC-001",
+            superseded_by="TC-002",
+            supersession_transition=TransitionResult(
+                task_id="TC-001", event_id="EVT-SUPER-001",
+                from_state="draft", to_state="superseded",
+                occurred_at="2026-07-29T12:00:00Z", outbox_message_id=None,
+            ),
+        )
+        with self.assertRaises(AttributeError):
+            result.__dict__
+
+
+# ── WorkflowOrchestratorQuiescentSupersessionTests ────────────────────────
+
+
+class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
+    """TC-13.18d.8: quiescent task supersession — targeted tests."""
+
+    @staticmethod
+    def _setup_orch(tmp: Path) -> "WorkflowOrchestrator":
+        return _new_orch(tmp)
+
+    @staticmethod
+    def _make_quiescent_supersession_request(
+        task_id: str = "TC-001",
+        superseded_by: str = "TC-002",
+        state: str = "draft",
+        revision: int = 1,
+        event_id: str = "EVT-SUPER-001",
+        head_sha: str | None = None,
+    ) -> "TaskSupersessionRequest":
+        from workflow_orchestrator import TaskSupersessionRequest
+        from control_plane_transition import (
+            SupersededPayload,
+            TransitionCAS,
+            TransitionEventContext,
+            TransitionRequest,
+        )
+        if head_sha is None:
+            head_sha = "a" * 40
+        cas = TransitionCAS(
+            task_id=task_id,
+            expected_revision=revision,
+            expected_state=state,
+            expected_snapshot_commit=head_sha,
+        )
+        tr = TransitionRequest(
+            cas=cas,
+            dispatch_cas=None,
+            event_id=event_id,
+            event_type="TASK_SUPERSEDED",
+            payload=SupersededPayload(superseded_by=superseded_by),
+            event_context=TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(),
+                guard_results=(),
+            ),
+        )
+        return TaskSupersessionRequest(supersession_transition_request=tr)
+
+    # -- 1. draft state → superseded (success) -------------------------------
+
+    def test_01_draft_state_superseded_success(self) -> None:
+        """Draft task with no dispatch → successful supersession."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot,
+                TaskEntry,
+                TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request(state="draft")
+
+            # Build snapshot with both source and replacement tasks.
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1",
+                pm_lease_epoch=1,
+                pm_mode="manual",
+                tasks=(
+                    TaskEntry(
+                        task_id="TC-001", revision=1,
+                        task_card_path="tasks/TC-001/task.md",
+                        task_card_commit="b" * 40,
+                        state="draft", attempt=None,
+                        current_dispatch=None, report_path=None,
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-29T12:00:00Z",
+                            ready_at=None,
+                            dispatched_at=None, started_at=None,
+                            delivered_at=None, blocked_at=None,
+                            accepted_at=None, integrated_at=None,
+                            updated_at="2026-07-29T12:00:00Z",
+                        ),
+                    ),
+                    TaskEntry(
+                        task_id="TC-002", revision=1,
+                        task_card_path="tasks/TC-002/task.md",
+                        task_card_commit="c" * 40,
+                        state="draft", attempt=None,
+                        current_dispatch=None, report_path=None,
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-29T12:00:00Z",
+                            ready_at=None,
+                            dispatched_at=None, started_at=None,
+                            delivered_at=None, blocked_at=None,
+                            accepted_at=None, integrated_at=None,
+                            updated_at="2026-07-29T12:00:00Z",
+                        ),
+                    ),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            super_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-SUPER-001",
+                from_state="draft", to_state="superseded",
+                occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                self.assertIsNone(lease, "TASK_SUPERSEDED must have lease=None")
+                return super_tr
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.supersede_quiescent_task(req)
+                    self.assertEqual(result.task_id, "TC-001")
+                    self.assertEqual(result.superseded_by, "TC-002")
+                    self.assertEqual(result.supersession_transition, super_tr)
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 2. ready state → superseded (success) -------------------------------
+
+    def test_02_ready_state_superseded_success(self) -> None:
+        """Ready task with no dispatch → successful supersession."""
+        tmp = _setup_project(task_id="TC-001", state="ready")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot,
+                TaskEntry,
+                TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request(state="ready")
+
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1",
+                pm_lease_epoch=1,
+                pm_mode="manual",
+                tasks=(
+                    TaskEntry(
+                        task_id="TC-001", revision=1,
+                        task_card_path="tasks/TC-001/task.md",
+                        task_card_commit="b" * 40,
+                        state="ready", attempt=None,
+                        current_dispatch=None, report_path=None,
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-29T12:00:00Z",
+                            ready_at="2026-07-29T12:00:00Z",
+                            dispatched_at=None, started_at=None,
+                            delivered_at=None, blocked_at=None,
+                            accepted_at=None, integrated_at=None,
+                            updated_at="2026-07-29T12:00:00Z",
+                        ),
+                    ),
+                    TaskEntry(
+                        task_id="TC-002", revision=1,
+                        task_card_path="tasks/TC-002/task.md",
+                        task_card_commit="c" * 40,
+                        state="draft", attempt=None,
+                        current_dispatch=None, report_path=None,
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-29T12:00:00Z",
+                            ready_at=None,
+                            dispatched_at=None, started_at=None,
+                            delivered_at=None, blocked_at=None,
+                            accepted_at=None, integrated_at=None,
+                            updated_at="2026-07-29T12:00:00Z",
+                        ),
+                    ),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            super_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-SUPER-001",
+                from_state="ready", to_state="superseded",
+                occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return super_tr
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.supersede_quiescent_task(req)
+                    self.assertEqual(result.task_id, "TC-001")
+
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 3. lease=None -------------------------------------------------------
+
+    def test_03_lease_none_passed_to_transition(self) -> None:
+        """TASK_SUPERSEDED must pass lease=None to apply_transition."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot,
+                TaskEntry,
+                TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request()
+
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1",
+                pm_lease_epoch=1,
+                pm_mode="manual",
+                tasks=(
+                    TaskEntry(
+                        task_id="TC-001", revision=1,
+                        task_card_path="tasks/TC-001/task.md",
+                        task_card_commit="b" * 40,
+                        state="draft", attempt=None,
+                        current_dispatch=None, report_path=None,
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-29T12:00:00Z",
+                            ready_at=None,
+                            dispatched_at=None, started_at=None,
+                            delivered_at=None, blocked_at=None,
+                            accepted_at=None, integrated_at=None,
+                            updated_at="2026-07-29T12:00:00Z",
+                        ),
+                    ),
+                    TaskEntry(
+                        task_id="TC-002", revision=1,
+                        task_card_path="tasks/TC-002/task.md",
+                        task_card_commit="c" * 40,
+                        state="draft", attempt=None,
+                        current_dispatch=None, report_path=None,
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-29T12:00:00Z",
+                            ready_at=None,
+                            dispatched_at=None, started_at=None,
+                            delivered_at=None, blocked_at=None,
+                            accepted_at=None, integrated_at=None,
+                            updated_at="2026-07-29T12:00:00Z",
+                        ),
+                    ),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            lease_values = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                lease_values.append(lease)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-SUPER-001",
+                    from_state="draft", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(lease_values), 1)
+            self.assertIsNone(lease_values[0])
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 4. snapshot exactly once --------------------------------------------
+
+    def test_04_snapshot_exactly_once(self) -> None:
+        """StateProvider.snapshot must be called exactly once."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot,
+                TaskEntry,
+                TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request()
+
+            snapshot_calls = []
+
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1",
+                pm_lease_epoch=1,
+                pm_mode="manual",
+                tasks=(
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            def _counting_snapshot(sp_self):
+                snapshot_calls.append(1)
+                return fake_snapshot
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-SUPER-001",
+                    from_state="draft", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True,
+                side_effect=_counting_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(snapshot_calls), 1)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 5. transition exactly once ------------------------------------------
+
+    def test_05_transition_exactly_once(self) -> None:
+        """apply_transition must be called exactly once."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot,
+                TaskEntry,
+                TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request()
+
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1",
+                pm_lease_epoch=1,
+                pm_mode="manual",
+                tasks=(
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="EVT-SUPER-001",
+                    from_state="draft", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 1)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 6. replacement task is not modified ---------------------------------
+
+    def test_06_replacement_task_not_modified(self) -> None:
+        """Replacement task must not be written to or modified."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot,
+                TaskEntry,
+                TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request(state="draft")
+
+            replacement_task = TaskEntry(
+                task_id="TC-002", revision=1,
+                task_card_path="tasks/TC-002/task.md",
+                task_card_commit="c" * 40,
+                state="draft", attempt=None,
+                current_dispatch=None, report_path=None,
+                granted_approval_ids=None,
+                delivery_state=None, integration_state=None,
+                implementation_commit=None, report_commit=None,
+                accepted_commit=None, acceptance_path=None,
+                integrated_commit=None,
+                blocked_reason=None, blocked_kind=None,
+                blocked_owner=None, unblock_condition=None,
+                review_after=None, blocked_attempt_valid=None,
+                resume_state=None,
+                timestamps=TaskTimestamps(
+                    created_at="2026-07-29T12:00:00Z",
+                    ready_at=None,
+                    dispatched_at=None, started_at=None,
+                    delivered_at=None, blocked_at=None,
+                    accepted_at=None, integrated_at=None,
+                    updated_at="2026-07-29T12:00:00Z",
+                ),
+            )
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1",
+                pm_lease_epoch=1,
+                pm_mode="manual",
+                tasks=(
+                    TaskEntry(
+                        task_id="TC-001", revision=1,
+                        task_card_path="tasks/TC-001/task.md",
+                        task_card_commit="b" * 40,
+                        state="draft", attempt=None,
+                        current_dispatch=None, report_path=None,
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-29T12:00:00Z",
+                            ready_at=None,
+                            dispatched_at=None, started_at=None,
+                            delivered_at=None, blocked_at=None,
+                            accepted_at=None, integrated_at=None,
+                            updated_at="2026-07-29T12:00:00Z",
+                        ),
+                    ),
+                    replacement_task,
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            super_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-SUPER-001",
+                from_state="draft", to_state="superseded",
+                occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(tr)
+                return super_tr
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.supersede_quiescent_task(req)
+                    self.assertEqual(result.task_id, "TC-001")
+                    self.assertEqual(result.superseded_by, "TC-002")
+
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 1)
+            applied_tr = transition_calls[0]
+            self.assertEqual(applied_tr.cas.task_id, "TC-001")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 7. source has active dispatch → reject ------------------------------
+
+    def test_07_active_dispatch_rejected(self) -> None:
+        """Source task with active dispatch must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="in_progress")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot,
+                TaskEntry,
+                TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request(state="in_progress")
+
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1",
+                pm_lease_epoch=1,
+                pm_mode="manual",
+                tasks=(
+                    TaskEntry(
+                        task_id="TC-001", revision=1,
+                        task_card_path="tasks/TC-001/task.md",
+                        task_card_commit="b" * 40,
+                        state="in_progress", attempt=1,
+                        current_dispatch="DSP-001", report_path=None,
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-29T12:00:00Z",
+                            ready_at=None,
+                            dispatched_at="2026-07-29T12:00:01Z",
+                            started_at="2026-07-29T12:00:02Z",
+                            delivered_at=None, blocked_at=None,
+                            accepted_at=None, integrated_at=None,
+                            updated_at="2026-07-29T12:00:02Z",
+                        ),
+                    ),
+                    TaskEntry(
+                        task_id="TC-002", revision=1,
+                        task_card_path="tasks/TC-002/task.md",
+                        task_card_commit="c" * 40,
+                        state="draft", attempt=None,
+                        current_dispatch=None, report_path=None,
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-29T12:00:00Z",
+                            ready_at=None,
+                            dispatched_at=None, started_at=None,
+                            delivered_at=None, blocked_at=None,
+                            accepted_at=None, integrated_at=None,
+                            updated_at="2026-07-29T12:00:00Z",
+                        ),
+                    ),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="",
+                    from_state="in_progress", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 8. DispatchCAS non-None → reject ------------------------------------
+
+    def test_08_dispatch_cas_non_none_rejected(self) -> None:
+        """DispatchCAS non-None in transition request must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from workflow_orchestrator import TaskSupersessionRequest
+            from control_plane_transition import (
+                DispatchCAS,
+                SupersededPayload,
+                TransitionCAS,
+                TransitionEventContext,
+                TransitionRequest,
+            )
+            orch = _new_orch(tmp)
+
+            cas = TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="a" * 40,
+            )
+            # Build with dispatch_cas=None (required by TransitionRequest.__post_init__)
+            # then bypass frozen to inject a non-None DispatchCAS.
+            tr = TransitionRequest(
+                cas=cas,
+                dispatch_cas=None,
+                event_id="EVT-SUPER-001",
+                event_type="TASK_SUPERSEDED",
+                payload=SupersededPayload(superseded_by="TC-002"),
+                event_context=TransitionEventContext(
+                    source_message_id=None,
+                    evidence_refs=(),
+                    guard_results=(),
+                ),
+            )
+            object.__setattr__(tr, "dispatch_cas", DispatchCAS(
+                expected_dispatch_id="DSP-001",
+                expected_attempt=1,
+            ))
+            bad_req = TaskSupersessionRequest(supersession_transition_request=tr)
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="",
+                    from_state="draft", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_quiescent_task(bad_req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 9. source not found → reject ----------------------------------------
+
+    def test_09_source_not_found_rejected(self) -> None:
+        """Source task not in snapshot must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot,
+                TaskEntry,
+                TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request(task_id="TC-999")
+
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1",
+                pm_lease_epoch=1,
+                pm_mode="manual",
+                tasks=(
+                    TaskEntry(
+                        task_id="TC-002", revision=1,
+                        task_card_path="tasks/TC-002/task.md",
+                        task_card_commit="c" * 40,
+                        state="draft", attempt=None,
+                        current_dispatch=None, report_path=None,
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-29T12:00:00Z",
+                            ready_at=None,
+                            dispatched_at=None, started_at=None,
+                            delivered_at=None, blocked_at=None,
+                            accepted_at=None, integrated_at=None,
+                            updated_at="2026-07-29T12:00:00Z",
+                        ),
+                    ),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-999", event_id="",
+                    from_state="draft", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 10. replacement not found → reject ----------------------------------
+
+    def test_10_replacement_not_found_rejected(self) -> None:
+        """Replacement task not in snapshot must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request(superseded_by="TC-999")
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="",
+                    from_state="draft", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 11. source == replacement → reject ----------------------------------
+
+    def test_11_source_equals_replacement_rejected(self) -> None:
+        """Source and replacement task ID must not be the same."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request(
+                superseded_by="TC-001",
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="",
+                    from_state="draft", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 12. cancelled/superseded/integrated → reject ------------------------
+
+    def test_12_cancelled_rejected(self) -> None:
+        """Source in cancelled state must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="cancelled")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request(state="cancelled")
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="",
+                    from_state="cancelled", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_12b_superseded_rejected(self) -> None:
+        """Source in superseded state must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="superseded")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request(state="superseded")
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="",
+                    from_state="superseded", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_12c_integrated_rejected(self) -> None:
+        """Source in integrated state must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="integrated")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request(state="integrated")
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="",
+                    from_state="integrated", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 13. revision/state mismatch → reject --------------------------------
+
+    def test_13_revision_mismatch_rejected(self) -> None:
+        """CAS expected_revision mismatch must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request(
+                state="draft", revision=99,
+            )
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="",
+                    from_state="draft", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_13b_state_mismatch_rejected(self) -> None:
+        """CAS expected_state mismatch must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request(state="ready")
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="",
+                    from_state="draft", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 14. invalid event_type/payload/to_state → reject --------------------
+
+    def test_14_invalid_event_type_rejected(self) -> None:
+        """Non-TASK_SUPERSEDED event_type must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from workflow_orchestrator import TaskSupersessionRequest
+            from control_plane_transition import (
+                CancelledPayload,
+                TransitionCAS,
+                TransitionEventContext,
+                TransitionRequest,
+            )
+            orch = _new_orch(tmp)
+
+            cas = TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="a" * 40,
+            )
+            bad_tr = TransitionRequest(
+                cas=cas,
+                dispatch_cas=None,
+                event_id="EVT-SUPER-001",
+                event_type="TASK_CANCELLED",
+                payload=CancelledPayload(),
+                event_context=TransitionEventContext(
+                    source_message_id=None,
+                    evidence_refs=(),
+                    guard_results=(),
+                ),
+            )
+            bad_req = TaskSupersessionRequest(supersession_transition_request=bad_tr)
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="",
+                    from_state="draft", to_state="cancelled",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_quiescent_task(bad_req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_14b_invalid_payload_rejected(self) -> None:
+        """Non-SupersededPayload must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from workflow_orchestrator import TaskSupersessionRequest
+            from control_plane_transition import (
+                CancelledPayload,
+                SupersededPayload,
+                TransitionCAS,
+                TransitionEventContext,
+                TransitionRequest,
+            )
+            orch = _new_orch(tmp)
+
+            cas = TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="a" * 40,
+            )
+            # Build with valid payload first (TransitionRequest.__post_init__
+            # validates payload type against event_type), then bypass frozen
+            # to inject an invalid payload type.
+            bad_tr = TransitionRequest(
+                cas=cas,
+                dispatch_cas=None,
+                event_id="EVT-SUPER-001",
+                event_type="TASK_SUPERSEDED",
+                payload=SupersededPayload(superseded_by="TC-002"),
+                event_context=TransitionEventContext(
+                    source_message_id=None,
+                    evidence_refs=(),
+                    guard_results=(),
+                ),
+            )
+            object.__setattr__(bad_tr, "payload", CancelledPayload())
+            bad_req = TaskSupersessionRequest(supersession_transition_request=bad_tr)
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="",
+                    from_state="draft", to_state="superseded",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_quiescent_task(bad_req)
+                asyncio.run(_run())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 15. post-snapshot CAS conflict → propagate --------------------------
+
+    def test_15_snapshot_cas_conflict_propagates(self) -> None:
+        """TransitionCASConflictError must propagate unchanged."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot, TaskEntry, TaskTimestamps,
+            )
+            from control_plane_transition import TransitionCASConflictError
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request()
+
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1", pm_lease_epoch=1, pm_mode="manual",
+                tasks=(
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                raise TransitionCASConflictError("revision changed")
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(TransitionCASConflictError):
+                        await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 16. StateProvider exception → propagate -----------------------------
+
+    def test_16_state_provider_exception_propagates(self) -> None:
+        """StateProviderError must propagate unchanged."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request()
+
+            class _BogusStateProviderError(StateProviderError):
+                pass
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True,
+                side_effect=_BogusStateProviderError("broken"),
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(_BogusStateProviderError):
+                        await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 17. transition exception → propagate --------------------------------
+
+    def test_17_transition_exception_propagates(self) -> None:
+        """Arbitrary transition exception must propagate."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot, TaskEntry, TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request()
+
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1", pm_lease_epoch=1, pm_mode="manual",
+                tasks=(
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            class _BogusTransitionError(Exception):
+                pass
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                raise _BogusTransitionError("transition boom")
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(_BogusTransitionError):
+                        await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 18. cancellation → propagate ----------------------------------------
+
+    def test_18_cancellation_propagates(self) -> None:
+        """asyncio.CancelledError must propagate unchanged."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot, TaskEntry, TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request()
+
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1", pm_lease_epoch=1, pm_mode="manual",
+                tasks=(
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            def _cancelling_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                raise asyncio.CancelledError()
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_cancelling_transition,
+            ):
+                async def _run() -> None:
+                    with self.assertRaises(asyncio.CancelledError):
+                        await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 19. all failure paths: zero side effects ----------------------------
+
+    def test_19_failure_zero_side_effects(self) -> None:
+        """Every failure path must have zero transitions, zero clock.now(), zero leases."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+
+            # Bad request: wrong type
+            async def _run() -> None:
+                with self.assertRaises(WorkflowInputError):
+                    await orch.supersede_quiescent_task("not a request")
+            asyncio.run(_run())
+
+            # Bad transition request: wrong event_type
+            from workflow_orchestrator import TaskSupersessionRequest
+            from control_plane_transition import (
+                CancelledPayload,
+                TransitionCAS,
+                TransitionEventContext,
+                TransitionRequest,
+            )
+            cas = TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="a" * 40,
+            )
+            bad_tr = TransitionRequest(
+                cas=cas,
+                dispatch_cas=None,
+                event_id="EVT-SUPER-001",
+                event_type="TASK_CANCELLED",
+                payload=CancelledPayload(),
+                event_context=TransitionEventContext(
+                    source_message_id=None,
+                    evidence_refs=(),
+                    guard_results=(),
+                ),
+            )
+            bad_req = TaskSupersessionRequest(supersession_transition_request=bad_tr)
+
+            transition_calls = []
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                transition_calls.append(1)
+                return TransitionResult(
+                    task_id="TC-001", event_id="",
+                    from_state="draft", to_state="cancelled",
+                    occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+                )
+
+            with mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run2() -> None:
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_quiescent_task(bad_req)
+                asyncio.run(_run2())
+
+            self.assertEqual(len(transition_calls), 0)
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 20. no `repr` call on untrusted input --------------------------------
+
+    def test_20_no_repr_on_untrusted_input(self) -> None:
+        """Malicious repr must not be invoked during validation."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+
+            _repr_called = False
+
+            class _MaliciousPayload:
+                superseded_by: str = "TC-002"
+
+                def __repr__(self):
+                    nonlocal _repr_called
+                    _repr_called = True
+                    return "evil"
+
+            from workflow_orchestrator import TaskSupersessionRequest
+            from control_plane_transition import (
+                SupersededPayload,
+                TransitionCAS,
+                TransitionEventContext,
+                TransitionRequest,
+            )
+            cas = TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="a" * 40,
+            )
+            bad_tr = TransitionRequest(
+                cas=cas,
+                dispatch_cas=None,
+                event_id="EVT-SUPER-001",
+                event_type="TASK_SUPERSEDED",
+                payload=SupersededPayload(superseded_by="TC-002"),
+                event_context=TransitionEventContext(
+                    source_message_id=None,
+                    evidence_refs=(),
+                    guard_results=(),
+                ),
+            )
+            # Bypass frozen to inject a malicious payload whose __repr__
+            # would be dangerous. The orchestrator must reject by type
+            # without calling repr.
+            object.__setattr__(bad_tr, "payload", _MaliciousPayload())
+            bad_req = TaskSupersessionRequest(supersession_transition_request=bad_tr)
+
+            async def _run() -> None:
+                with self.assertRaises(WorkflowInputError):
+                    await orch.supersede_quiescent_task(bad_req)
+            asyncio.run(_run())
+
+            self.assertFalse(_repr_called, "repr must not be called on untrusted input")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 21. no audit/escalation/dispatch/lease operations -------------------
+
+    def test_21_no_audit_or_dispatch_operations(self) -> None:
+        """Supersession must not invoke audit, escalation, or dispatch."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot, TaskEntry, TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request()
+
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1", pm_lease_epoch=1, pm_mode="manual",
+                tasks=(
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            super_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-SUPER-001",
+                from_state="draft", to_state="superseded",
+                occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return super_tr
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo, "run_audit_gateway",
+            ) as mock_audit, mock.patch.object(
+                wo, "evaluate_escalation",
+            ) as mock_escalation, mock.patch.object(
+                wo, "acquire_worker_slot",
+            ) as mock_acquire, mock.patch.object(
+                wo, "release_worker_slot",
+            ) as mock_release, mock.patch.object(
+                wo, "renew_worker_slot",
+            ) as mock_renew, mock.patch.object(
+                wo, "run_worker_observed",
+            ) as mock_worker, mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+
+            mock_audit.assert_not_called()
+            mock_escalation.assert_not_called()
+            mock_acquire.assert_not_called()
+            mock_release.assert_not_called()
+            mock_renew.assert_not_called()
+            mock_worker.assert_not_called()
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 22. no direct task/event file I/O -----------------------------------
+
+    def test_22_no_direct_task_event_io(self) -> None:
+        """Supersession must not directly read/write tasks/events files."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request()
+
+            super_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-SUPER-001",
+                from_state="draft", to_state="superseded",
+                occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+            )
+
+            from state_provider import (
+                StateSnapshot, TaskEntry, TaskTimestamps,
+            )
+
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1", pm_lease_epoch=1, pm_mode="manual",
+                tasks=(
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return super_tr
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    await orch.supersede_quiescent_task(req)
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 23. no auto-dispatch of replacement task ----------------------------
+
+    def test_23_no_auto_dispatch_replacement(self) -> None:
+        """Replacement task must not be auto-dispatched."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            from state_provider import (
+                StateSnapshot, TaskEntry, TaskTimestamps,
+            )
+            orch = _new_orch(tmp)
+            req = self._make_quiescent_supersession_request()
+
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1", pm_lease_epoch=1, pm_mode="manual",
+                tasks=(
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            super_tr = TransitionResult(
+                task_id="TC-001", event_id="EVT-SUPER-001",
+                from_state="draft", to_state="superseded",
+                occurred_at="2026-07-29T12:00:04Z", outbox_message_id=None,
+            )
+
+            def _apply_transition(
+                cts_self: Any, tr: Any, lease: Any, now: Any,
+            ) -> TransitionResult:
+                return super_tr
+
+            with mock.patch.object(
+                wo.StateProvider, "snapshot",
+                autospec=True, return_value=fake_snapshot,
+            ), mock.patch.object(
+                wo.ControlPlaneTransitionService, "apply_transition",
+                autospec=True, side_effect=_apply_transition,
+            ):
+                async def _run() -> None:
+                    result = await orch.supersede_quiescent_task(req)
+                    self.assertEqual(result.task_id, "TC-001")
+                    self.assertEqual(result.superseded_by, "TC-002")
+                asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    # -- 24. request type must be exactly TaskSupersessionRequest ------------
+
+    def test_24_non_supersession_request_rejected(self) -> None:
+        """Non-TaskSupersessionRequest must be rejected."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            import workflow_orchestrator as wo
+            orch = _new_orch(tmp)
+            async def _run() -> None:
+                with self.assertRaises(WorkflowInputError):
+                    await orch.supersede_quiescent_task("not a request")
+            asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── StateProvider Multi-Task Snapshot Test (TC-13.18d.8 bonus) ────────────
+
+
+class StateProviderMultiTaskSnapshotTests(unittest.TestCase):
+    """StateProvider snapshot: multiple tasks in a single snapshot."""
+
+    def test_01_snapshot_contains_multiple_tasks(self) -> None:
+        """Snapshot with two tasks should return both in tasks tuple."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            from state_provider import (
+                StateSnapshot,
+                TaskEntry,
+                TaskTimestamps,
+            )
+            fake_snapshot = StateSnapshot(
+                project_root=tmp,
+                schema_version="agentdesk.tasks/v2",
+                project_id="test-project",
+                adoption_level="standard",
+                updated_at="2026-07-29T12:00:00Z",
+                pm_holder_id="pm-1",
+                pm_lease_epoch=1,
+                pm_mode="manual",
+                tasks=(
+                    TaskEntry(
+                        task_id="TC-001", revision=1,
+                        task_card_path="tasks/TC-001/task.md",
+                        task_card_commit="b" * 40,
+                        state="draft", attempt=None,
+                        current_dispatch=None, report_path=None,
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-29T12:00:00Z",
+                            ready_at=None,
+                            dispatched_at=None, started_at=None,
+                            delivered_at=None, blocked_at=None,
+                            accepted_at=None, integrated_at=None,
+                            updated_at="2026-07-29T12:00:00Z",
+                        ),
+                    ),
+                    TaskEntry(
+                        task_id="TC-002", revision=1,
+                        task_card_path="tasks/TC-002/task.md",
+                        task_card_commit="c" * 40,
+                        state="draft", attempt=None,
+                        current_dispatch=None, report_path=None,
+                        granted_approval_ids=None,
+                        delivery_state=None, integration_state=None,
+                        implementation_commit=None, report_commit=None,
+                        accepted_commit=None, acceptance_path=None,
+                        integrated_commit=None,
+                        blocked_reason=None, blocked_kind=None,
+                        blocked_owner=None, unblock_condition=None,
+                        review_after=None, blocked_attempt_valid=None,
+                        resume_state=None,
+                        timestamps=TaskTimestamps(
+                            created_at="2026-07-29T12:00:00Z",
+                            ready_at=None,
+                            dispatched_at=None, started_at=None,
+                            delivered_at=None, blocked_at=None,
+                            accepted_at=None, integrated_at=None,
+                            updated_at="2026-07-29T12:00:00Z",
+                        ),
+                    ),
+                ),
+                events=(), outbox=(), acceptances=(), mad_refs=None,
+                read_hexsha="a" * 40,
+            )
+
+            self.assertEqual(len(fake_snapshot.tasks), 2)
+            self.assertEqual(fake_snapshot.tasks[0].task_id, "TC-001")
+            self.assertEqual(fake_snapshot.tasks[1].task_id, "TC-002")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── ControlPlaneTransition TASK_SUPERSEDED Test (TC-13.18d.8 bonus) ───────
+
+
+class ControlPlaneTransitionTaskSupersededTests(unittest.TestCase):
+    """ControlPlaneTransitionService: TASK_SUPERSEDED transition."""
+
+    def test_01_task_superseded_transition_sets_superseded_by(self) -> None:
+        """TASK_SUPERSEDED must set superseded_by and clear current_dispatch."""
+        tmp = _setup_project(task_id="TC-001", state="draft")
+        try:
+            from control_plane_transition import (
+                ControlPlaneTransitionService,
+                SupersededPayload,
+                TransitionCAS,
+                TransitionEventContext,
+                TransitionRequest,
+            )
+            from contextlib import contextmanager
+
+            cas = TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="draft",
+                expected_snapshot_commit="d" * 40,
+            )
+            tr = TransitionRequest(
+                cas=cas,
+                dispatch_cas=None,
+                event_id="EVT-SUPER-001",
+                event_type="TASK_SUPERSEDED",
+                payload=SupersededPayload(superseded_by="TC-002"),
+                event_context=TransitionEventContext(
+                    source_message_id=None,
+                    evidence_refs=(),
+                    guard_results=(),
+                ),
+            )
+
+            @contextmanager
+            def _fake_state_lock(project_root):
+                yield
+
+            with mock.patch(
+                "control_plane_transition._exclusive_state_lock",
+                side_effect=_fake_state_lock,
+            ), mock.patch(
+                "control_plane_transition._resolve_head_commit",
+                return_value="d" * 40,
+            ), mock.patch(
+                "control_plane_transition._read_tasks_yaml",
+                return_value={
+                    "schema_version": "agentdesk.tasks/v2",
+                    "project_id": "test-project",
+                    "pm_control": {"holder_id": "pm-1", "lease_epoch": 1, "mode": "manual"},
+                    "tasks": [
+                        {
+                            "task_id": "TC-001",
+                            "revision": 1,
+                            "state": "draft",
+                            "current_dispatch": None,
+                            "superseded_by": None,
+                            "task_card_path": "tasks/TC-001/task.md",
+                            "task_card_commit": "b" * 40,
+                            "attempt": None,
+                            "report_path": None,
+                            "granted_approval_ids": None,
+                            "delivery_state": None,
+                            "integration_state": None,
+                            "implementation_commit": None,
+                            "report_commit": None,
+                            "accepted_commit": None,
+                            "acceptance_path": None,
+                            "integrated_commit": None,
+                            "blocked_reason": None,
+                            "blocked_kind": None,
+                            "blocked_owner": None,
+                            "unblock_condition": None,
+                            "review_after": None,
+                            "blocked_attempt_valid": None,
+                            "resume_state": None,
+                            "timestamps": {
+                                "created_at": "2026-07-29T12:00:00Z",
+                                "ready_at": None,
+                                "dispatched_at": None,
+                                "started_at": None,
+                                "delivered_at": None,
+                                "blocked_at": None,
+                                "accepted_at": None,
+                                "integrated_at": None,
+                                "updated_at": "2026-07-29T12:00:00Z",
+                            },
+                        }
+                    ],
+                    "events": [],
+                    "outbox": [],
+                    "acceptances": {},
+                },
+            ), mock.patch(
+                "control_plane_transition._write_canonical_files",
+            ), mock.patch(
+                "control_plane_transition._write_derived_views",
+            ):
+                from datetime import UTC, datetime
+                now = datetime.now(UTC)
+                service = ControlPlaneTransitionService(tmp)
+                result = service.apply_transition(tr, lease=None, now=now)
+
+                self.assertEqual(result.task_id, "TC-001")
+                self.assertEqual(result.to_state, "superseded")
+                self.assertEqual(result.from_state, "draft")
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
