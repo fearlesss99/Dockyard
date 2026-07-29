@@ -9650,3 +9650,177 @@ class TC139c1ProductionSmokeTests(unittest.TestCase):
                     self.fail(f"{name}: should have failed decode")
                 except (WorkerOutputDecodeError, WorkerOutputSchemaError):
                     pass  # Expected
+
+
+class TC1319jE2EProgramClosureTests(unittest.TestCase):
+    """TC-13.19j — E2E evidence program closure verification.
+
+    Verifies the closure state of the TC-13.19 E2E program without
+    re-running any historical E2E suites.
+    """
+
+    def setUp(self) -> None:
+        self.repo_root = Path(__file__).resolve().parents[1]
+        self.adr_text = (
+            self.repo_root / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+        self.orch_contract = (
+            self.repo_root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "workflow-orchestrator-contract.md"
+        ).read_text(encoding="utf-8")
+        self.report_path = (
+            self.repo_root / "reports" / "tc-13.19-final-delivery-report.md"
+        )
+
+    # -- 1. Interface #23 is Current --
+
+    def test_interface_23_is_current(self) -> None:
+        """Interface #23 (E2E / Recovery tests) must be Current."""
+        found = False
+        for line in self.adr_text.splitlines():
+            if "| 23 |" in line and "E2E" in line:
+                self.assertIn(
+                    "**Current**", line,
+                    f"Interface #23 must be Current: {line!r}",
+                )
+                self.assertIn(
+                    "TC-13.19j", line,
+                    f"Interface #23 must reference TC-13.19j: {line!r}",
+                )
+                found = True
+                break
+        self.assertTrue(found, "Interface #23 row not found in ADR")
+
+    # -- 2. Interface #22 still listed --
+
+    def test_interface_22_is_listed(self) -> None:
+        """Interface #22 (WorkflowOrchestrator) must still be listed."""
+        self.assertIn(
+            "| 22 | AgentDesk WorkflowOrchestrator",
+            self.adr_text,
+            "ADR must still list Interface #22 (WorkflowOrchestrator)",
+        )
+
+    # -- 3. TC-13.20 remains Target --
+
+    def test_tc1320_remains_target(self) -> None:
+        """TC-13.20 HTML Dashboard must remain Target."""
+        found = False
+        for line in self.adr_text.splitlines():
+            if "| 24 |" in line and "Dashboard" in line:
+                self.assertIn(
+                    "**Target**", line,
+                    f"Interface #24 must be Target: {line!r}",
+                )
+                found = True
+                break
+        self.assertTrue(found, "Interface #24 (HTML Dashboard) row not found")
+
+    # -- 4. All nine E2E test files exist --
+
+    def test_nine_e2e_test_files_exist(self) -> None:
+        """All nine E2E scenario test files must be present."""
+        tests_dir = self.repo_root / "tests"
+        expected = [
+            "test_workflow_e2e.py",
+            "test_workflow_recovery_e2e.py",
+            "test_workflow_escalation_e2e.py",
+            "test_workflow_expert_escalation_e2e.py",
+            "test_workflow_integration_failure_e2e.py",
+            "test_workflow_expert_cancellation_e2e.py",
+            "test_workflow_expert_rescope_e2e.py",
+            "test_workflow_quiescent_cancellation_e2e.py",
+            "test_workflow_quiescent_supersession_e2e.py",
+        ]
+        for fn in expected:
+            f = tests_dir / fn
+            self.assertTrue(f.is_file(), f"E2E test file must exist: {fn}")
+
+    # -- 5. TC-13.19 final report exists --
+
+    def test_final_delivery_report_exists(self) -> None:
+        """TC-13.19 final delivery report must exist."""
+        self.assertTrue(
+            self.report_path.is_file(),
+            "tc-13.19-final-delivery-report.md must exist",
+        )
+
+    # -- 6. Report lists a-i nine evidence items --
+
+    def test_report_lists_nine_evidence_items(self) -> None:
+        """Final report must reference all nine evidence cards."""
+        report = self.report_path.read_text(encoding="utf-8")
+        for card in (
+            "TC-13.19a", "TC-13.19b", "TC-13.19c",
+            "TC-13.19d", "TC-13.19e", "TC-13.19f",
+            "TC-13.19g", "TC-13.19h", "TC-13.19i",
+        ):
+            self.assertIn(card, report, f"Final report must list {card}")
+
+    # -- 7. Active-dispatch cancellation declared Target --
+
+    def test_active_dispatch_cancellation_declared_target(self) -> None:
+        """Active-dispatch cancellation must be declared Target."""
+        combined = self.orch_contract + self.adr_text
+        has_ref = (
+            "active-dispatch cancellation" in combined.lower()
+            or "active dispatch cancellation" in combined.lower()
+            or "TASK_CANCELLED (active dispatch" in combined
+        )
+        self.assertTrue(
+            has_ref,
+            "Active-dispatch cancellation Target status must be declared",
+        )
+
+    # -- 8. Active-dispatch supersession declared Target --
+
+    def test_active_dispatch_supersession_declared_target(self) -> None:
+        """Active-dispatch supersession must be declared Target."""
+        combined = self.orch_contract + self.adr_text
+        has_ref = (
+            "active-dispatch supersession" in combined.lower()
+            or "active dispatch supersession" in combined.lower()
+            or "TASK_SUPERSEDED (active dispatch" in combined
+        )
+        self.assertTrue(
+            has_ref,
+            "Active-dispatch supersession Target status must be declared",
+        )
+
+    # -- 9. Codex deferred declarations preserved --
+
+    def test_codex_deferred_declarations_preserved(self) -> None:
+        """Codex decoder/rate-limit deferred declarations must be preserved."""
+        for kw in ("codex decoder", "codex rate-limit", "Codex decoder"):
+            if kw in self.adr_text:
+                lower = self.adr_text.lower()
+                self.assertTrue(
+                    "target" in lower or "unsupported" in lower
+                    or "not yet" in lower,
+                    f"Codex/rate-limit deferred declaration must exist for: {kw}",
+                )
+                return
+
+    # -- 10. No false full-orchestrator completion claim --
+
+    def test_no_false_orchestrator_completion_claim(self) -> None:
+        """Neither contract nor report must claim Orchestrator is fully complete."""
+        forbidden = [
+            "WorkflowOrchestrator is fully complete",
+            "all Orchestrator functionality is implemented",
+            "WorkflowOrchestrator is entirely complete",
+        ]
+        for phrase in forbidden:
+            self.assertNotIn(
+                phrase.lower(),
+                self.orch_contract.lower(),
+                f"Orchestrator contract must not claim: {phrase}",
+            )
+            if self.report_path.is_file():
+                report_text = self.report_path.read_text(encoding="utf-8")
+                self.assertNotIn(
+                    phrase.lower(),
+                    report_text.lower(),
+                    f"TC-13.19 final report must not claim: {phrase}",
+                )

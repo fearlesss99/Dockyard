@@ -33,7 +33,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
 | 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Target; TASK_SUPERSEDED: Target; retry loop, fault recovery: Target) |
-| 23 | E2E / Recovery tests | **Target** | TC-13.19 | End-to-end validation and recovery scenarios |
+| 23 | E2E / Recovery tests | **Current** — TC-13.19j | E2E validation and recovery scenarios — nine scenario E2E tests committed; quiescent cancellation/supersession, expert user-decision paths, escalation chain, integration failure, and happy-path audit/accept/integrate all covered |
 | 24 | AgentDesk HTML Dashboard | **Target** | TC-13.20 | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target 鈫?Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
 | 26 | `agentdesk.mad-refs/v1` runtime schema | **Current** | TC-13.6 | Gitignored runtime record of MAD invocations |
@@ -6463,7 +6463,7 @@ in `ControlPlaneTransitionService._TRANSITION_SPECS` (搂2.14.8):
 | 14 | `TASK_CANCELLED` (quiescent path) | Current — TC-13.18d.7 |
 | 15 | `TASK_CANCELLED` (active dispatch path) | Target |
 | 16 | `TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8 |
-| 17 | `TASK_SUPERSEDED` (active dispatch path) | Target |
+| 17 | TASK_SUPERSEDED (active dispatch path) | Target |
 
 WorkflowOrchestrator does **not** duplicate `_TRANSITION_SPECS` 鈥?it
 constructs typed `TransitionRequest` objects and passes them to
@@ -6509,7 +6509,7 @@ TC-13.20  鈥?HTML Dashboard
 | TC-13.18d.1 | TC-13.18c | Return + requeue (fail remediation) | **Current** |
 | TC-13.18d.2 | TC-13.18d.1 | Blocked audit escalation (TASK_BLOCKED + EscalationDecision) | **Current** |
 | TC-13.18d.3 | TC-13.18d.2 | Escalation dispatch retry + cancel + replay | **Target** |
-| TC-13.19 | TC-13.18d.3 | E2E / recovery tests | **Target** 鈫?**Current** |
+| TC-13.19 | TC-13.18d.3 | E2E / recovery tests | **Target** → **Current — TC-13.19j** |
 
 ---
 

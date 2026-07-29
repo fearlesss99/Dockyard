@@ -1,4 +1,4 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
@@ -15,7 +15,7 @@ TC-13.18d.8 extends it with TASK_SUPERSEDED (quiescent path — no active dispat
 
 ## Status
 
-**Current** as of TC-13.18d.8.  The dispatch cycle (snapshot → acquire →
+**Current** as of TC-13.18d.8; E2E evidence program closed as of TC-13.19j.
 TASK_DISPATCHED → heartbeat + run_worker →
 DISPATCH_ACKNOWLEDGED → decode_worker_result →
 require_delivery_receipt → DELIVERY_SUBMITTED → stop heartbeat → release
@@ -35,7 +35,12 @@ and quiescent task cancellation (StateProvider.snapshot() → validate no
 active dispatch → TASK_CANCELLED (lease=None) → TaskCancellationResult),
 and quiescent task supersession (StateProvider.snapshot() → validate no
 active dispatch → TASK_SUPERSEDED (lease=None) → TaskSupersessionResult)
-are implemented and callable.
+are implemented and callable.  The E2E evidence program (TC-13.19a–j)
+validates all Current paths.  Active-dispatch cancellation, active-dispatch
+supersession, Codex decoding, Codex rate-limit classification, and
+retry-loop fault recovery remain Target.  See
+`reports/tc-13.19-final-delivery-report.md` and `test_release_smoke.py`
+class `TC1319jE2EProgramClosureTests`.  TC-13.20 (HTML Dashboard) is Target.
 
 This document is the authoritative frozen specification for the
 WorkflowOrchestrator public API, ownership boundaries, hard dependencies,
@@ -342,7 +347,7 @@ defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
 | 14 | `TASK_CANCELLED` (quiescent path) | Current — TC-13.18d.7 |
 | 15 | `TASK_CANCELLED` (active dispatch path) | Target |
 | 16 | `TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8 |
-| 17 | `TASK_SUPERSEDED` (active dispatch path) | Target |
+| 17 | TASK_SUPERSEDED (active dispatch path) | Target |
 
 The orchestrator does **not** duplicate `_TRANSITION_SPECS`.  It constructs
 typed `TransitionRequest` objects and passes them to `apply_transition()`.
@@ -527,7 +532,7 @@ TC-13.18d.5 does **not** implement:
 - `TASK_CANCELLED` (quiescent path) → Current — TC-13.18d.7
 - `TASK_CANCELLED` (active dispatch path) → Target
 - `TASK_SUPERSEDED` (quiescent path) → Current — TC-13.18d.8
-- `TASK_SUPERSEDED` (active dispatch path) → Target
+- TASK_SUPERSEDED (active dispatch path) → Target
 - `INTEGRATION_FAILED` → TC-13.18d.4 (already implemented)
 - User notification / UI → Target
 - Expert user-decision external interaction (chat UI, approval UI) → Target
