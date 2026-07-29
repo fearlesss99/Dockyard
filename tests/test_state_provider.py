@@ -835,6 +835,7 @@ class TC1317bProductionTests(unittest.TestCase):
                 "updated_at": "2026-07-28T00:00:04Z",
             }
             tasks_doc = _make_tasks_doc(state="superseded")
+            tasks_doc["tasks"][0]["superseded_by"] = "TC-001"
             tasks_doc["tasks"][0]["timestamps"] = ts
             _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
 
@@ -1005,6 +1006,292 @@ class TC1317bProductionTests(unittest.TestCase):
                               tree.root / "docs" / "pm" / "events")
             with self.assertRaises(StateProviderSchemaError):
                 StateProvider(tree.root).snapshot()
+        finally:
+            tree.cleanup()
+
+
+    # ── TC-13.17b.5 — superseded_by conditional field tests ──────────────
+
+    def test_canonical_superseded_task_reads_successfully(self) -> None:
+        """1. Canonical superseded task with superseded_by reads successfully."""
+        tree = _ProjectTree()
+        try:
+            did = "DSP-SUP-READ"
+            tasks_doc = _make_tasks_doc(
+                task_id="TC-002", state="superseded",
+            )
+            tasks_doc["tasks"][0]["superseded_by"] = "TC-001"
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+
+            out_doc = _make_outbox_doc(dispatch_id=did, event_id="EVT-SUP-RD",
+                                       task_id="TC-002")
+            out_raw = _write_outbox_yaml(out_doc, "MSG-SUP-RD.yaml",
+                                          tree.root / "docs" / "pm" / "outbox")
+            digest = "sha256:" + hashlib.sha256(out_raw).hexdigest()
+            ev = _make_event_doc(
+                event_id=out_doc["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest,
+                task_id="TC-002",
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev, "EVT-SUP-RD.yaml",
+                              tree.root / "docs" / "pm" / "events")
+
+            snapshot = StateProvider(tree.root).snapshot()
+            self.assertEqual(len(snapshot.tasks), 1)
+            task = snapshot.tasks[0]
+            self.assertEqual(task.state, "superseded")
+            self.assertEqual(task.superseded_by, "TC-001")
+        finally:
+            tree.cleanup()
+
+    def test_superseded_by_preserved_exactly(self) -> None:
+        """2. TaskEntry.superseded_by is preserved exactly as in the JSON."""
+        tree = _ProjectTree()
+        try:
+            did = "DSP-SUP-PRES"
+            tasks_doc = _make_tasks_doc(
+                task_id="TC-003", state="superseded",
+            )
+            tasks_doc["tasks"][0]["superseded_by"] = "TC-042"
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+
+            out_doc = _make_outbox_doc(dispatch_id=did, event_id="EVT-SUP-PR",
+                                       task_id="TC-003")
+            out_raw = _write_outbox_yaml(out_doc, "MSG-SUP-PR.yaml",
+                                          tree.root / "docs" / "pm" / "outbox")
+            digest = "sha256:" + hashlib.sha256(out_raw).hexdigest()
+            ev = _make_event_doc(
+                event_id=out_doc["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest,
+                task_id="TC-003",
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev, "EVT-SUP-PR.yaml",
+                              tree.root / "docs" / "pm" / "events")
+
+            snapshot = StateProvider(tree.root).snapshot()
+            self.assertEqual(snapshot.tasks[0].superseded_by, "TC-042")
+        finally:
+            tree.cleanup()
+
+    def test_normal_task_missing_superseded_by_returns_none(self) -> None:
+        """3. Normal task without superseded_by reads fine, returns None."""
+        tree = _ProjectTree()
+        try:
+            _setup_minimal_valid(tree)
+            snapshot = StateProvider(tree.root).snapshot()
+            task = snapshot.tasks[0]
+            self.assertEqual(task.state, "draft")
+            self.assertIsNone(task.superseded_by)
+        finally:
+            tree.cleanup()
+
+    def test_superseded_state_without_superseded_by_rejected(self) -> None:
+        """4. superseded state missing superseded_by is rejected fail-closed."""
+        tree = _ProjectTree()
+        try:
+            did = "DSP-SUP-NO"
+            tasks_doc = _make_tasks_doc(state="superseded")
+            # Intentionally do NOT add superseded_by
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+
+            out_doc = _make_outbox_doc(dispatch_id=did, event_id="EVT-SUP-NO")
+            out_raw = _write_outbox_yaml(out_doc, "MSG-SUP-NO.yaml",
+                                          tree.root / "docs" / "pm" / "outbox")
+            digest = "sha256:" + hashlib.sha256(out_raw).hexdigest()
+            ev = _make_event_doc(
+                event_id=out_doc["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev, "EVT-SUP-NO.yaml",
+                              tree.root / "docs" / "pm" / "events")
+
+            with self.assertRaises(StateProviderSchemaError):
+                StateProvider(tree.root).snapshot()
+        finally:
+            tree.cleanup()
+
+    def test_non_superseded_state_with_superseded_by_rejected(self) -> None:
+        """5. Non-superseded state carrying superseded_by is rejected fail-closed."""
+        tree = _ProjectTree()
+        try:
+            did = "DSP-NON-SUP"
+            tasks_doc = _make_tasks_doc(state="draft")
+            tasks_doc["tasks"][0]["superseded_by"] = "TC-001"
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+
+            out_doc = _make_outbox_doc(dispatch_id=did, event_id="EVT-NON-SUP")
+            out_raw = _write_outbox_yaml(out_doc, "MSG-NON-SUP.yaml",
+                                          tree.root / "docs" / "pm" / "outbox")
+            digest = "sha256:" + hashlib.sha256(out_raw).hexdigest()
+            ev = _make_event_doc(
+                event_id=out_doc["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev, "EVT-NON-SUP.yaml",
+                              tree.root / "docs" / "pm" / "events")
+
+            with self.assertRaises(StateProviderSchemaError):
+                StateProvider(tree.root).snapshot()
+        finally:
+            tree.cleanup()
+
+    def test_illegal_superseded_by_values_rejected(self) -> None:
+        """6. Empty string, non-string, illegal Task ID values rejected fail-closed."""
+        tree = _ProjectTree()
+        try:
+            did = "DSP-ILL-SUP"
+
+            # ── empty string ──
+            tasks_doc = _make_tasks_doc(state="superseded")
+            tasks_doc["tasks"][0]["superseded_by"] = ""
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+            out_doc = _make_outbox_doc(dispatch_id=did, event_id="EVT-ILL1")
+            out_raw = _write_outbox_yaml(out_doc, "MSG-ILL1.yaml",
+                                          tree.root / "docs" / "pm" / "outbox")
+            digest = "sha256:" + hashlib.sha256(out_raw).hexdigest()
+            ev = _make_event_doc(
+                event_id=out_doc["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev, "EVT-ILL1.yaml",
+                              tree.root / "docs" / "pm" / "events")
+            with self.assertRaises(StateProviderSchemaError):
+                StateProvider(tree.root).snapshot()
+            tree.cleanup()
+
+            # ── non-string (int) ──
+            tree = _ProjectTree()
+            tasks_doc = _make_tasks_doc(state="superseded")
+            tasks_doc["tasks"][0]["superseded_by"] = 12345
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+            out2 = _make_outbox_doc(dispatch_id=did, event_id="EVT-ILL2")
+            out_raw2 = _write_outbox_yaml(out2, "MSG-ILL2.yaml",
+                                           tree.root / "docs" / "pm" / "outbox")
+            digest2 = "sha256:" + hashlib.sha256(out_raw2).hexdigest()
+            ev2 = _make_event_doc(
+                event_id=out2["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest2,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev2, "EVT-ILL2.yaml",
+                              tree.root / "docs" / "pm" / "events")
+            with self.assertRaises(StateProviderSchemaError):
+                StateProvider(tree.root).snapshot()
+            tree.cleanup()
+
+            # ── illegal non-TC-ID string ──
+            tree = _ProjectTree()
+            tasks_doc = _make_tasks_doc(state="superseded")
+            tasks_doc["tasks"][0]["superseded_by"] = "not-a-task-id"
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+            out3 = _make_outbox_doc(dispatch_id=did, event_id="EVT-ILL3")
+            out_raw3 = _write_outbox_yaml(out3, "MSG-ILL3.yaml",
+                                           tree.root / "docs" / "pm" / "outbox")
+            digest3 = "sha256:" + hashlib.sha256(out_raw3).hexdigest()
+            ev3 = _make_event_doc(
+                event_id=out3["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest3,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev3, "EVT-ILL3.yaml",
+                              tree.root / "docs" / "pm" / "events")
+            with self.assertRaises(StateProviderSchemaError):
+                StateProvider(tree.root).snapshot()
+            tree.cleanup()
+
+            # ── bool (not a string) ──
+            tree = _ProjectTree()
+            tasks_doc = _make_tasks_doc(state="superseded")
+            tasks_doc["tasks"][0]["superseded_by"] = True
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+            out4 = _make_outbox_doc(dispatch_id=did, event_id="EVT-ILL4")
+            out_raw4 = _write_outbox_yaml(out4, "MSG-ILL4.yaml",
+                                           tree.root / "docs" / "pm" / "outbox")
+            digest4 = "sha256:" + hashlib.sha256(out_raw4).hexdigest()
+            ev4 = _make_event_doc(
+                event_id=out4["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest4,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev4, "EVT-ILL4.yaml",
+                              tree.root / "docs" / "pm" / "events")
+            with self.assertRaises(StateProviderSchemaError):
+                StateProvider(tree.root).snapshot()
+            tree.cleanup()
+
+            # ── null when state is superseded ──
+            tree = _ProjectTree()
+            tasks_doc = _make_tasks_doc(state="superseded")
+            tasks_doc["tasks"][0]["superseded_by"] = None
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+            out5 = _make_outbox_doc(dispatch_id=did, event_id="EVT-ILL5")
+            out_raw5 = _write_outbox_yaml(out5, "MSG-ILL5.yaml",
+                                           tree.root / "docs" / "pm" / "outbox")
+            digest5 = "sha256:" + hashlib.sha256(out_raw5).hexdigest()
+            ev5 = _make_event_doc(
+                event_id=out5["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest5,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev5, "EVT-ILL5.yaml",
+                              tree.root / "docs" / "pm" / "events")
+            with self.assertRaises(StateProviderSchemaError):
+                StateProvider(tree.root).snapshot()
+        finally:
+            tree.cleanup()
+
+    def test_error_messages_do_not_leak_superseded_by_value(self) -> None:
+        """7. Error messages never contain actual task_id or superseded_by value."""
+        tree = _ProjectTree()
+        try:
+            did = "DSP-LEAK"
+            tasks_doc = _make_tasks_doc(state="draft")
+            tasks_doc["tasks"][0]["superseded_by"] = "TC-SECRET"
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+
+            out_doc = _make_outbox_doc(dispatch_id=did, event_id="EVT-LEAK")
+            out_raw = _write_outbox_yaml(out_doc, "MSG-LEAK.yaml",
+                                          tree.root / "docs" / "pm" / "outbox")
+            digest = "sha256:" + hashlib.sha256(out_raw).hexdigest()
+            ev = _make_event_doc(
+                event_id=out_doc["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev, "EVT-LEAK.yaml",
+                              tree.root / "docs" / "pm" / "events")
+
+            with self.assertRaises(StateProviderSchemaError) as ctx:
+                StateProvider(tree.root).snapshot()
+            msg = str(ctx.exception)
+            self.assertNotIn("TC-SECRET", msg)
+        finally:
+            tree.cleanup()
+
+    def test_task_entry_exactly_25_fields_frozen_slots_no_dict(self) -> None:
+        """8. TaskEntry has exactly 25 fields, frozen=True, slots=True, no __dict__."""
+        from dataclasses import fields as dc_fields
+        _field_names = [f.name for f in dc_fields(TaskEntry)]
+        self.assertEqual(len(_field_names), 25)
+        self.assertIn("superseded_by", _field_names)
+
+        # frozen + slots
+        self.assertTrue(getattr(TaskEntry, "__dataclass_params__").frozen)
+        self.assertTrue(getattr(TaskEntry, "__dataclass_params__").slots)
+
+        # No __dict__ on instance
+        tree = _ProjectTree()
+        try:
+            _setup_minimal_valid(tree)
+            snapshot = StateProvider(tree.root).snapshot()
+            task = snapshot.tasks[0]
+            self.assertFalse(hasattr(task, "__dict__"),
+                             "TaskEntry instance must not have __dict__")
         finally:
             tree.cleanup()
 

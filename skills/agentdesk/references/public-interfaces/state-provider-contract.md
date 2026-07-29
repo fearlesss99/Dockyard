@@ -157,7 +157,9 @@ Root object keys:
 
 ### 4.1 Task Object Schema
 
-Each task object in the `tasks` array has exactly 24 fields:
+Each task object in the `tasks` array has exactly 24 required fields.
+The 25th field `superseded_by` is conditional — required when `state == "superseded"`,
+forbidden otherwise (see §4.4).
 
 | # | Field | Type | Notes |
 |---|-------|------|-------|
@@ -185,6 +187,7 @@ Each task object in the `tasks` array has exactly 24 fields:
 | 22 | `blocked_attempt_valid` | `bool \| None` | Non-int — strictly `bool` or `None` |
 | 23 | `resume_state` | `str \| None` | Target state after unblock |
 | 24 | `timestamps` | `object` | See §4.2 |
+| 25 | `superseded_by` | `str \| absent` | Conditional — see §4.4 |
 
 ### 4.2 Task Timestamps
 
@@ -218,6 +221,21 @@ Any → blocked → draft | ready | cancelled
 Any → cancelled
 Any → superseded
 ```
+
+### 4.4 Conditional Field — `superseded_by`
+
+`superseded_by` is a conditional field governed by the task `state`:
+
+- **`state == "superseded"`** — `superseded_by` MUST be present and MUST be a
+  valid Task ID matching `^TC-[0-9]{3,}$` (non-empty string).
+- **`state != "superseded"`** — `superseded_by` MUST NOT be present in the
+  task object at all.  The `TaskEntry.superseded_by` attribute is `None`.
+- Existing tasks in YAML are NOT required to add `superseded_by: null` —
+  the field is simply absent.
+- Empty strings, non-string types, and values not matching the Task ID
+  pattern are rejected fail-closed with `StateProviderSchemaError`.
+- Error messages do NOT contain the actual `task_id` or `superseded_by` value.
+- `repr()`/`str()` are never called on untrusted input in error paths.
 
 ---
 ## 5. Input Schema — Events (`docs/pm/events/*.yaml`)
@@ -374,7 +392,7 @@ StateSnapshot (frozen=True, slots=True)
 └── read_hexsha: str
 ```
 
-### 9.2 `TaskEntry` — Exact Fields (24)
+### 9.2 `TaskEntry` — Exact Fields (25)
 
 Frozen/slots dataclass:
 
@@ -404,6 +422,7 @@ Frozen/slots dataclass:
 | 22 | `blocked_attempt_valid` | `bool \| None` |
 | 23 | `resume_state` | `str \| None` |
 | 24 | `timestamps` | `TaskTimestamps` |
+| 25 | `superseded_by` | `str \| None` |
 
 ### 9.3 `TaskTimestamps` — Exact Fields (11)
 

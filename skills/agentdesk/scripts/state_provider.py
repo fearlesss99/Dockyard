@@ -18,7 +18,7 @@ Public API
 ``StateProvider``       — read-only service boundary
 ``StateProvider.snapshot()`` — execute the multi-file consistency protocol
 ``StateSnapshot``       — frozen/slots dataclass with all parsed data
-``TaskEntry``           — frozen task record (24 fields)
+``TaskEntry``           — frozen task record (25 fields)
 ``TaskTimestamps``      — frozen timestamps sub-record (11 fields)
 ``DispatchInfo``        — frozen dispatch sub-record (7 fields)
 ``EventEntry``          — frozen event record (17 fields)
@@ -162,7 +162,7 @@ _TASKS_ROOT_KEYS: frozenset[str] = frozenset(
      "updated_at", "pm_control", "tasks"}
 )
 
-# Task fields (24, matching validate_project.py TASK_FIELDS)
+# Task fields (24 always-required, 1 conditional — superseded_by for state=="superseded")
 _TASK_FIELDS: tuple[str, ...] = (
     "task_id", "revision", "task_card_path", "task_card_commit",
     "state", "attempt", "current_dispatch", "report_path",
@@ -173,6 +173,12 @@ _TASK_FIELDS: tuple[str, ...] = (
     "unblock_condition", "review_after", "blocked_attempt_valid",
     "resume_state", "timestamps",
 )
+
+# Conditional field — allowed in the task object but only required when state=="superseded"
+_ALLOWED_CONDITIONAL_TASK_FIELDS: frozenset[str] = frozenset({"superseded_by"})
+
+# Full set of 25 allowed task fields (24 required + superseded_by)
+_TASK_ALLOWED_FIELDS: frozenset[str] = frozenset(_TASK_FIELDS) | _ALLOWED_CONDITIONAL_TASK_FIELDS
 
 # Timestamp fields (11 — §4.2 of state-provider-contract.md)
 # cancelled_at and superseded_at are optional; their keys may be absent
@@ -659,7 +665,7 @@ class DispatchInfo:
 
 @dataclass(frozen=True, slots=True)
 class TaskEntry:
-    """Frozen task record (24 fields)."""
+    """Frozen task record (25 fields)."""
 
     task_id: str
     revision: int
@@ -685,6 +691,7 @@ class TaskEntry:
     blocked_attempt_valid: bool | None
     resume_state: str | None
     timestamps: TaskTimestamps
+    superseded_by: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1085,9 +1092,12 @@ def _validate_pm_control(pm: Any) -> None:
 
 
 def _build_single_task(raw: dict[str, Any], seen: set[str]) -> TaskEntry:
-    allowed = frozenset(_TASK_FIELDS)
+    allowed = _TASK_ALLOWED_FIELDS
     _validate_extra_keys(raw, allowed, "task")
-    _validate_missing_keys(raw, allowed, "task")
+
+    # 24 required fields — superseded_by is NOT required unconditionally
+    required = frozenset(_TASK_FIELDS)
+    _validate_missing_keys(raw, required, "task")
 
     task_id = _validate_task_id(raw.get("task_id"))
     if task_id in seen:
@@ -1097,13 +1107,30 @@ def _build_single_task(raw: dict[str, Any], seen: set[str]) -> TaskEntry:
     revision = _require_int_ge(raw.get("revision"), 1)
     task_card_path = _require_str(raw.get("task_card_path"))
     task_card_commit = _validate_sha40(raw.get("task_card_commit"), required=True)
-    state = _validate_state(raw.get("state"))
+    state_val = _validate_state(raw.get("state"))
+
+    # ── superseded_by conditional validation ──
+    superseded_by: str | None = None
+    raw_sb = raw.get("superseded_by")
+    if raw_sb is not None:
+        # Field present → must be a valid Task ID (non-empty, matching TC-pattern)
+        if not isinstance(raw_sb, str) or not _TASK_ID_RE.match(raw_sb):
+            raise StateProviderSchemaError("superseded_by is invalid")
+        superseded_by = _freeze(raw_sb)
+
+    if state_val == "superseded":
+        if superseded_by is None:
+            raise StateProviderSchemaError("superseded task is missing superseded_by")
+    else:
+        if "superseded_by" in raw:
+            raise StateProviderSchemaError("superseded_by not allowed for non-superseded task")
+    # ── end superseded_by conditional validation ──
 
     attempt_raw = raw.get("attempt")
     attempt: int | None = None
     if attempt_raw is not None:
         attempt = _require_int_ge(attempt_raw, 1)
-    elif state in ("dispatched", "in_progress", "review_ready"):
+    elif state_val in ("dispatched", "in_progress", "review_ready"):
         raise StateProviderSchemaError("attempt must be set for active dispatch state")
 
     dispatch = _build_dispatch(raw.get("current_dispatch"))
@@ -1146,7 +1173,7 @@ def _build_single_task(raw: dict[str, Any], seen: set[str]) -> TaskEntry:
         task_id=_freeze(task_id), revision=revision,
         task_card_path=_freeze(task_card_path),
         task_card_commit=task_card_commit,
-        state=_freeze(state), attempt=attempt,
+        state=_freeze(state_val), attempt=attempt,
         current_dispatch=dispatch, report_path=report_path,
         granted_approval_ids=granted, delivery_state=delivery_state,
         integration_state=integration_state,
@@ -1157,6 +1184,7 @@ def _build_single_task(raw: dict[str, Any], seen: set[str]) -> TaskEntry:
         blocked_owner=blocked_owner, unblock_condition=unblock_condition,
         review_after=review_after, blocked_attempt_valid=bav,
         resume_state=resume_state, timestamps=timestamps,
+        superseded_by=superseded_by,
     )
 
 
