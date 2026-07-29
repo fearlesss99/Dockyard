@@ -6925,6 +6925,8 @@ iteration order.
   as production under TC-13.20b.
 * The production module ``html_dashboard.py`` ships under TC-13.20b.
 * All prior Current interfaces remain **Current**.
+* Visual QA: Passed — TC-13.20c
+* Long-content overflow fix: TC-13.20b.2
 
 ---
 

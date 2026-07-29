@@ -438,6 +438,9 @@ literal string `None`.  Each sub-digest line is terminated with `\n`.
 The production module, HTML/CSS templates, and dashboard unit tests
 ship under TC-13.20b against this frozen contract.
 
+Visual QA: Passed — TC-13.20c
+Long-content overflow fix: TC-13.20b.2
+
 ---
 
 ## 11. Explicit Non-Goals
