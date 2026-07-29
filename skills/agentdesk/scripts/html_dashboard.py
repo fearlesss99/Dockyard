@@ -340,6 +340,7 @@ tbody tr:nth-child(even){background:#fafafb}
 .metric{background:var(--card);border:1px solid var(--line);padding:.6rem .75rem;border-radius:4px}
 .metric .k{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.03em}
 .metric .v{font-size:1rem;font-weight:600;word-break:break-all}
+h3,p,dt,dd,.task-block h3,.task-block dl dd,header .meta,.metric .v{overflow-wrap:anywhere;word-break:break-word;min-width:0}
 .state{font-weight:600;white-space:nowrap}
 .empty-state{padding:.75rem;background:var(--card);border:1px dashed var(--line);color:var(--muted)}
 article.task{background:var(--card);border:1px solid var(--line);padding:.75rem;margin-bottom:.75rem;border-radius:4px}

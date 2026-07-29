@@ -791,5 +791,124 @@ class TC1320bHtmlDashboardUnitTests(unittest.TestCase):
         self.assertTrue(any(ord(ch) > 127 for ch in snippet))
 
 
+class TC1320b2HtmlDashboardOverflowTests(unittest.TestCase):
+    """TC-13.20b.2 — long-text root-overflow fix.
+
+    ``_CSS`` now wraps long unbreakable strings in non-``.table-scroll``
+    containers (``h3``, ``p``, ``dt``, ``dd``, ``.task-block h3``,
+    ``.task-block dl dd``, ``header .meta``, ``.metric .v``) via
+    ``overflow-wrap:anywhere; word-break:break-word; min-width:0`` so
+    the page root never overflows horizontally.  These tests pin the
+    fix and guard the static-CSS invariants without altering the
+    snapshot digest, CSP, public API, fragment anchors, or escaping.
+    """
+
+    _EXPECTED_ALL = {
+        "DashboardRenderRequest", "DashboardArtifact", "render_dashboard",
+        "DashboardError", "DashboardInputError", "DashboardRenderError",
+        "DashboardSecurityError",
+    }
+
+    def setUp(self) -> None:
+        self._snap = _rich_snapshot()
+        self._art = render_dashboard(_req(self._snap))
+        self._text = self._art.html.decode("utf-8")
+        self._p = _StructureParser()
+        self._p.feed(self._text)
+
+    def _long_snapshot(self):
+        long_id = "TC-" + "9" * 200
+        long_role = "worker-" + "w" * 180
+        long_evidence = tuple(f"ev-{i:03d}-" + "x" * 120 for i in range(3))
+        t = _task(
+            task_id=long_id, state="dispatched", attempt=1,
+            current_dispatch=_dispatch(dispatch_id="DSP-LONG", role_id=long_role),
+            delivery_state="working", integration_state="pending",
+        )
+        ev = _event(
+            event_id="EVT-LONG", event_type="TASK_DISPATCHED",
+            task_id=long_id, from_state="ready", to_state="dispatched",
+            dispatch_id="DSP-LONG", attempt=1,
+            evidence_refs=long_evidence,
+            payload_digest="sha256:" + "7" * 64,
+        )
+        return _snapshot(
+            tasks=(t,), events=(ev,), outbox=(),
+            acceptances=(), mad_refs=(),
+            project_id="project-" + "p" * 160,
+        )
+
+    # 1. legal super-long numeric task id / project id / role id / evidence ref render normally
+    def test_long_content_renders_without_error(self) -> None:
+        snap = self._long_snapshot()
+        art = render_dashboard(_req(snap))
+        text = art.html.decode("utf-8")
+        self.assertIn("TC-" + "9" * 200, text)
+        self.assertIn("worker-" + "w" * 180, text)
+        self.assertIn("project-" + "p" * 160, text)
+        # evidence_refs are carried on the event; the dashboard renders
+        # their count in the Event Timeline Evidence column, proving the
+        # long evidence refs were accepted and the event rendered.
+        self.assertIn(">EVT-LONG</td>", text)
+        self.assertIn("<td>3</td>", text)
+        self.assertEqual(art.task_count, 1)
+
+    # 2. CSS contains overflow-wrap:anywhere
+    def test_css_contains_overflow_wrap_anywhere(self) -> None:
+        self.assertIn("overflow-wrap:anywhere", self._text)
+
+    # 3. CSS contains word-break:break-word
+    def test_css_contains_word_break_break_word(self) -> None:
+        self.assertIn("word-break:break-word", self._text)
+
+    # 4. CSS contains min-width:0
+    def test_css_contains_min_width_zero(self) -> None:
+        self.assertIn("min-width:0", self._text)
+
+    # 5. same request -> byte-identical HTML
+    def test_byte_identical_for_same_request(self) -> None:
+        req = _req(_rich_snapshot())
+        self.assertEqual(render_dashboard(req).html, render_dashboard(req).html)
+
+    # 6. snapshot_digest unchanged by static CSS change
+    def test_snapshot_digest_independent_of_static_css(self) -> None:
+        expected = "sha256:" + hd._compute_snapshot_digest(self._snap)
+        self.assertEqual(self._art.snapshot_digest, expected)
+
+    # 7. CSP bytes unchanged
+    def test_csp_bytes_unchanged(self) -> None:
+        self.assertIn(_FROZEN_CSP, self._text)
+        self.assertIn('http-equiv="Content-Security-Policy"', self._text)
+        self.assertIn(_FROZEN_CSP.encode("utf-8"), self._art.html)
+
+    # 8. __all__ still exactly 7
+    def test_public_api_all_remains_seven(self) -> None:
+        self.assertEqual(set(hd.__all__), self._EXPECTED_ALL)
+        self.assertEqual(len(hd.__all__), 7)
+
+    # 9. five fragment anchors still exist
+    def test_five_fragment_anchors_exist(self) -> None:
+        self.assertEqual(len(self._p.anchors), 5)
+        hrefs = {a["href"] for a in self._p.anchors}
+        self.assertEqual(hrefs, {
+            "#main-content", "#overview", "#task-board",
+            "#task-details", "#system-health",
+        })
+
+    # 10. malicious HTML content still escaped
+    def test_malicious_content_still_escaped(self) -> None:
+        snap = _snapshot(
+            tasks=(_task(
+                task_id='TC-<script>alert(1)</script>', state="ready"),),
+            project_id='<a href="#evil">x</a>',
+        )
+        art = render_dashboard(_req(snap))
+        text = art.html.decode("utf-8")
+        self.assertNotIn("<script>", text)
+        self.assertNotIn('href="#evil">', text)
+        self.assertIn("&lt;script&gt;", text)
+        self.assertIn("&lt;a href=&quot;#evil&quot;&gt;", text)
+
+
 if __name__ == "__main__":
     unittest.main()
