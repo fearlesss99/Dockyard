@@ -10589,12 +10589,1303 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                                 extra_task={
                                     "attempt": 1,
                                     "accepted_commit": "d" * 40,
+                                    "acceptance_path": "docs/pm/acceptances/TC-600-r1-a1-review1.md",
                                     "current_dispatch": {
                                         "dispatch_id": "DSP-GT", "role_id": "worker",
                                         "base_commit": "a" * 40, "branch": "main",
                                         "model_selection": {},
                                     },
                                 })
+
+    def test_CHANGE_INTEGRATED_acceptance_dispatched_chain_success(self) -> None:
+        """DELIVERY_ACCEPTED → CHANGE_INTEGRATED in the same project:
+        Verifies the integration ApprovalSubject gets dispatch_id from
+        the acceptance record's reviewed_dispatch_id, not `current_dispatch`
+        (which DELIVERY_ACCEPTED cleared to None).
+        """
+        import json as _jc
+        import sys as _jc_sys
+
+        _before_jc = list(_jc_sys.path)
+        try:
+            _scripts_jc = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+            if _scripts_jc not in _jc_sys.path:
+                _jc_sys.path.insert(0, _scripts_jc)
+            import approval_gate as _ag_jc
+        finally:
+            _jc_sys.path[:] = _before_jc
+
+        with _temporary_scripts_path():
+            from approval_gate import (
+                ApprovalSubject, ApprovalScope, ApprovalCheckRequest,
+                write_grant as _wg_jc,
+            )
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+
+        dispatch_id = "DSP-CHAIN"
+        task_id = "TC-600"
+        accepted_commit = "c" * 40
+        implementation_commit = "c" * 40  # same as accepted_commit for the acceptance invariant
+        report_commit_sh = "r" * 40
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+
+            # Git init
+            subprocess.run(["git", "-C", str(root), "init", "-q"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@test"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"],
+                           check=True, timeout=10, capture_output=True)
+
+            # Canonical dirs
+            for d in ("docs/pm/events", "docs/pm/outbox", "docs/pm/acceptances",
+                      "docs/pm/approvals", "docs/pm/state", "docs/pm/tasks",
+                      "docs/pm/reports", ".agentdesk/runtime"):
+                (root / d.replace("/", os.sep)).mkdir(parents=True, exist_ok=True)
+
+            # Task card
+            task_card_path = f"docs/pm/tasks/{task_id}.md"
+            tc = root / task_card_path
+            tc.write_text(
+                "---\n"
+                "type: implementation\n"
+                "role_id: worker-basic\n"
+                f"base_commit: {accepted_commit}\n"
+                "owner_approval:\n"
+                "  gate: none\n"
+                "  approval_ids: []\n"
+                "---\n\n# Task\n",
+                encoding="utf-8",
+            )
+
+            # Worker slot store with pre-acquired lease
+            (root / ".agentdesk" / "runtime" / "worker-slot-lease.yaml").write_text(
+                _jc.dumps({
+                    "schema_version": "agentdesk.worker-slot-lease/v1",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "slot_epochs": {
+                        "basic_agent-1": 1, "basic_agent-2": 0,
+                        "standard_agent-1": 0, "standard_agent-2": 0,
+                        "advanced_agent-1": 0, "advanced_agent-2": 0,
+                        "expert_agent-1": 0, "expert_agent-2": 0,
+                    },
+                    "leases": {
+                        "basic_agent-1": {
+                            "lease_id": "WSL-" + "a" * 32,
+                            "lease_epoch": 1,
+                            "slot_id": "basic_agent-1",
+                            "worker_kind": "basic_agent",
+                            "holder_dispatch_id": dispatch_id,
+                            "holder_instance_id": "worker-inst-1",
+                            "canonical_worktree": str(root).replace("\\", "/"),
+                            "acquired_at": "2026-07-29T00:00:00Z",
+                            "heartbeat_at": "2026-07-29T00:00:00Z",
+                            "expires_at": "2026-08-29T10:00:00Z",
+                        },
+                    },
+                }), encoding="utf-8",
+            )
+
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "init"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            # tasks.yaml — review_ready, current_dispatch populated
+            task_data = {
+                "task_id": task_id, "revision": 1,
+                "state": "review_ready", "attempt": 1,
+                "task_card_path": task_card_path,
+                "task_card_commit": head,
+                "current_dispatch": {
+                    "dispatch_id": dispatch_id, "role_id": "worker-basic",
+                    "base_commit": head, "branch": "main",
+                    "model_selection": {},
+                },
+                "report_path": f"docs/pm/reports/{task_id}-r1-a1.md",
+                "implementation_commit": implementation_commit,
+                "report_commit": report_commit_sh,
+                "accepted_commit": None,
+                "acceptance_path": None,
+                "integrated_commit": None,
+                "delivery_state": "submitted",
+                "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
+                "unblock_condition": None, "review_after": None,
+                "blocked_attempt_valid": None, "resume_state": None,
+                "timestamps": {
+                    "created_at": "2026-07-29T00:00:00Z",
+                    "updated_at": "2026-07-29T00:00:00Z",
+                },
+            }
+            state = {
+                "schema_version": "agentdesk.tasks/v2",
+                "project_id": "test-chain",
+                "adoption_level": "standard",
+                "updated_at": "2026-07-29T00:00:00Z",
+                "pm_control": {"holder_id": "pm-test-001", "lease_epoch": 1, "mode": "timed"},
+                "tasks": [task_data],
+            }
+            (root / "docs/pm/state/tasks.yaml").write_text(
+                _jc.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+            # Delivery report
+            report = root / f"docs/pm/reports/{task_id}-r1-a1.md"
+            report.write_text(
+                "---\n"
+                "schema_version: agentdesk.delivery-report/v2\n"
+                f"dispatch_id: {dispatch_id}\n"
+                f"task_id: {task_id}\n"
+                "revision: 1\nattempt: 1\n"
+                f"implementation_commit: {implementation_commit}\n"
+                f"report_commit: {report_commit_sh}\n"
+                "---\n",
+                encoding="utf-8",
+            )
+
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "tasks+report"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            # Write accept grant + integrate grant
+            now = datetime(2026, 7, 29, 0, 0, 0, tzinfo=UTC)
+            # Accept grant
+            _wg_jc(
+                project_root=root, approval_id="APR-CHAIN-ACCEPT",
+                event_id="EVT-CHAIN-ACCEPT-GRANT", scope=ApprovalScope.ACCEPT,
+                subject=ApprovalSubject(task_id=task_id, revision=1, attempt=1,
+                                        dispatch_id=dispatch_id, accepted_commit=None),
+                lease_epoch=1, now=now, reason="Chain test accept",
+                expires_at=None, expected_snapshot_commit=head,
+            )
+            # Integrate grant
+            _wg_jc(
+                project_root=root, approval_id="APR-CHAIN-INTEGRATE",
+                event_id="EVT-CHAIN-INTEGRATE-GRANT", scope=ApprovalScope.INTEGRATE,
+                subject=ApprovalSubject(task_id=task_id, revision=1, attempt=1,
+                                        dispatch_id=dispatch_id,
+                                        accepted_commit=accepted_commit),
+                lease_epoch=1, now=now, reason="Chain test integrate",
+                expires_at=None, expected_snapshot_commit=head,
+            )
+
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "grants"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            # Use pre-populated lease (matches store above) with correct heartbeat
+            now = datetime(2026, 7, 29, 0, 0, 0, tzinfo=UTC)
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32, lease_epoch=1,
+                slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id=dispatch_id,
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-29T00:00:00Z",
+                heartbeat_at="2026-07-29T00:00:00Z",
+                expires_at="2026-08-29T10:00:00Z",
+            )
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+
+            # ── Step 1: DELIVERY_ACCEPTED ──
+            acceptance_path = f"docs/pm/acceptances/{task_id}-r1-a1-review1.md"
+            da_payload = self.cpt.DeliveryAcceptedPayload(
+                accepted_commit=accepted_commit,
+                acceptance_path=acceptance_path,
+                residual_risks=("None",),
+                criteria_evidence=("All tests pass",),
+                rationale="PM approved",
+            )
+            da_cas = self.cpt.TransitionCAS(
+                task_id=task_id, expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            da_dc = self.cpt.DispatchCAS(
+                expected_dispatch_id=dispatch_id, expected_attempt=1,
+            )
+            da_ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            da_req = self.cpt.TransitionRequest(
+                cas=da_cas, dispatch_cas=da_dc,
+                event_id="EVT-CHAIN-DA",
+                event_type="DELIVERY_ACCEPTED",
+                payload=da_payload, event_context=da_ctx,
+            )
+            da_result = svc.apply_transition(da_req, lease, now)
+
+            self.assertEqual(da_result.to_state, "accepted")
+            self.assertTrue((root / acceptance_path).is_file(),
+                            "Acceptance file must be written by DELIVERY_ACCEPTED")
+
+            # Verify current_dispatch was cleared
+            with _temporary_scripts_path():
+                from state_provider import StateProvider
+            snap1 = StateProvider(root).snapshot()
+            tasks1 = [t for t in snap1.tasks if t.task_id == task_id]
+            self.assertEqual(len(tasks1), 1)
+            self.assertIsNone(tasks1[0].current_dispatch,
+                              "current_dispatch must be None after DELIVERY_ACCEPTED")
+            self.assertEqual(tasks1[0].state, "accepted")
+
+            # ── Step 2: CHANGE_INTEGRATED ──
+            # Spy on ApprovalGate.require() to inspect the subject
+            require_spy = []
+            _orig_require = _ag_jc.ApprovalGate.require
+
+            def _spy_require(inst_self, req, n):
+                require_spy.append({
+                    "scope": req.scope.value,
+                    "dispatch_id": req.subject.dispatch_id,
+                    "accepted_commit": req.subject.accepted_commit,
+                    "task_id": req.subject.task_id,
+                    "revision": req.subject.revision,
+                    "attempt": req.subject.attempt,
+                })
+                return _orig_require(inst_self, req, n)
+
+            with patch.object(_ag_jc.ApprovalGate, "require", _spy_require):
+                ci_payload = self.cpt.IntegrationPayload(
+                    integrated_commit=accepted_commit,
+                    equivalence_method="patch_id",
+                    equivalence_evidence_ref=None,
+                )
+                ci_cas = self.cpt.TransitionCAS(
+                    task_id=task_id, expected_revision=1,
+                    expected_state="accepted", expected_snapshot_commit=head,
+                )
+                ci_ctx = self.cpt.TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                )
+                ci_req = self.cpt.TransitionRequest(
+                    cas=ci_cas, dispatch_cas=None,
+                    event_id="EVT-CHAIN-CI",
+                    event_type="CHANGE_INTEGRATED",
+                    payload=ci_payload, event_context=ci_ctx,
+                )
+                ci_result = svc.apply_transition(ci_req, None, now)
+
+            self.assertEqual(ci_result.to_state, "integrated")
+
+            # Assertions on the spy
+            self.assertEqual(len(require_spy), 1,
+                             "ApprovalGate.require must be called exactly once for CHANGE_INTEGRATED")
+            sr = require_spy[0]
+            self.assertEqual(sr["scope"], "integrate")
+            self.assertEqual(sr["task_id"], task_id)
+            self.assertEqual(sr["revision"], 1)
+            self.assertEqual(sr["attempt"], 1)
+            self.assertEqual(sr["dispatch_id"], dispatch_id,
+                             "dispatch_id must come from acceptance record, not 'N/A'")
+            self.assertNotEqual(sr["dispatch_id"], "N/A",
+                                "dispatch_id must never be 'N/A'")
+            self.assertEqual(sr["accepted_commit"], accepted_commit)
+
+            # Final snapshot
+            snap2 = StateProvider(root).snapshot()
+            tasks2 = [t for t in snap2.tasks if t.task_id == task_id]
+            self.assertEqual(len(tasks2), 1)
+            self.assertEqual(tasks2[0].state, "integrated")
+            self.assertEqual(tasks2[0].integrated_commit, accepted_commit)
+
+        finally:
+            tmpdir.cleanup()
+
+    def test_CHANGE_INTEGRATED_missing_acceptance_fail_closed(self) -> None:
+        """CHANGE_INTEGRATED must fail-closed when acceptance_path is absent
+        from the canonical task — zero authoritative writes."""
+        import json as _jf
+        import sys as _jf_sys
+
+        _before_jf = list(_jf_sys.path)
+        try:
+            _scripts_jf = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+            if _scripts_jf not in _jf_sys.path:
+                _jf_sys.path.insert(0, _scripts_jf)
+        finally:
+            _jf_sys.path[:] = _before_jf
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            subprocess.run(["git", "-C", str(root), "init", "-q"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@test"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"],
+                           check=True, timeout=10, capture_output=True)
+
+            for d in ("docs/pm/events", "docs/pm/state"):
+                (root / d.replace("/", os.sep)).mkdir(parents=True, exist_ok=True)
+
+            task_data = {
+                "task_id": "TC-600", "revision": 1,
+                "state": "accepted", "attempt": 1,
+                "task_card_path": "docs/pm/tasks/TC-600.md",
+                "task_card_commit": "0" * 40,
+                "current_dispatch": None,
+                "implementation_commit": None,
+                "report_commit": None,
+                "accepted_commit": "c" * 40,
+                "acceptance_path": None,  # ← missing
+                "integrated_commit": None,
+                "delivery_state": "accepted",
+                "report_path": None,
+                "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
+                "unblock_condition": None, "review_after": None,
+                "blocked_attempt_valid": None, "resume_state": None,
+                "timestamps": {
+                    "created_at": "2026-07-29T00:00:00Z",
+                    "updated_at": "2026-07-29T00:00:00Z",
+                },
+            }
+            state = {
+                "schema_version": "agentdesk.tasks/v2",
+                "project_id": "test-fail",
+                "updated_at": "2026-07-29T00:00:00Z",
+                "pm_control": {"holder_id": "pm-test-001", "lease_epoch": 1, "mode": "timed"},
+                "tasks": [task_data],
+            }
+            (root / "docs/pm/state/tasks.yaml").write_text(
+                _jf.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "init"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            ci_payload = self.cpt.IntegrationPayload(
+                integrated_commit="c" * 40,
+                equivalence_method=None, equivalence_evidence_ref=None,
+            )
+            ci_cas = self.cpt.TransitionCAS(
+                task_id="TC-600", expected_revision=1,
+                expected_state="accepted", expected_snapshot_commit=head,
+            )
+            ci_ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            ci_req = self.cpt.TransitionRequest(
+                cas=ci_cas, dispatch_cas=None,
+                event_id="EVT-FAIL-CI",
+                event_type="CHANGE_INTEGRATED",
+                payload=ci_payload, event_context=ci_ctx,
+            )
+            now = datetime(2026, 7, 29, 0, 0, 0, tzinfo=UTC)
+            with self.assertRaises(self.cpt.TransitionSchemaError):
+                svc.apply_transition(ci_req, None, now)
+
+            # Verify zero integration writes
+            self.assertFalse(
+                (root / "docs/pm/events/EVT-FAIL-CI.yaml").exists(),
+                "No event file must be written on failure",
+            )
+        finally:
+            tmpdir.cleanup()
+
+    def test_CHANGE_INTEGRATED_acceptance_mismatch_fail_closed(self) -> None:
+        """CHANGE_INTEGRATED must fail-closed when any acceptance identity
+        field (task_id, revision, attempt, accepted_commit) mismatches."""
+        import json as _jm
+        import sys as _jm_sys
+
+        _before_jm = list(_jm_sys.path)
+        try:
+            _scripts_jm = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+            if _scripts_jm not in _jm_sys.path:
+                _jm_sys.path.insert(0, _scripts_jm)
+        finally:
+            _jm_sys.path[:] = _before_jm
+
+        for mismatch_field, bad_value, expected_error_keyword in [
+            ("task_id", "TC-WRONG", "task_id"),
+            ("revision", 99, "revision"),
+            ("attempt", 99, "attempt"),
+            ("accepted_commit", "b" * 40, "accepted_commit"),
+        ]:
+            with self.subTest(mismatch_field=mismatch_field, bad_value=bad_value):
+                tmpdir = tempfile.TemporaryDirectory()
+                try:
+                    root = Path(tmpdir.name)
+                    subprocess.run(["git", "-C", str(root), "init", "-q"],
+                                   check=True, timeout=10, capture_output=True)
+                    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@test"],
+                                   check=True, timeout=10, capture_output=True)
+                    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"],
+                                   check=True, timeout=10, capture_output=True)
+
+                    for d in ("docs/pm/events", "docs/pm/state", "docs/pm/acceptances"):
+                        (root / d.replace("/", os.sep)).mkdir(parents=True, exist_ok=True)
+
+                    # Write an acceptance record with the bad field
+                    acceptance_path = "docs/pm/acceptances/TC-001-r1-a1-review1.md"
+                    acc_lines = [
+                        "---",
+                        "schema_version: agentdesk.acceptance/v2",
+                        "task_id: TC-001",
+                        "revision: 1",
+                        "decision: accepted",
+                        "reviewed_dispatch_id: DSP-TEST",
+                        "attempt: 1",
+                        "type: implementation",
+                        "role_id: worker-basic",
+                        "reviewer_role_id: PM",
+                        "reviewer_id: pm-test-001",
+                        "lease_epoch: 1",
+                        "base_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "implementation_commit: iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+                        "report_commit: rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+                        "accepted_commit: cccccccccccccccccccccccccccccccccccccccc",
+                        "owner_approval:",
+                        "  gate: none",
+                        "  approval_ids: []",
+                        "evidence_refs: []",
+                        "residual_risks: []",
+                        "created_at: 2026-07-29T00:00:00Z",
+                        "---",
+                    ]
+                    # Insert the mismatch
+                    for i, line in enumerate(acc_lines):
+                        if line.startswith(f"{mismatch_field}: "):
+                            if mismatch_field == "revision":
+                                acc_lines[i] = f"{mismatch_field}: {bad_value}"
+                            elif mismatch_field == "attempt":
+                                acc_lines[i] = f"{mismatch_field}: {bad_value}"
+                            else:
+                                acc_lines[i] = f'{mismatch_field}: "{bad_value}"' if isinstance(bad_value, str) else f"{mismatch_field}: {bad_value}"
+                            break
+                    else:
+                        # field not present yet — add before the end frontmatter
+                        assert acc_lines[-1] == "---"
+                        if isinstance(bad_value, str):
+                            acc_lines.insert(-1, f'{mismatch_field}: "{bad_value}"')
+                        else:
+                            acc_lines.insert(-1, f"{mismatch_field}: {bad_value}")
+
+                    (root / acceptance_path).write_text("\n".join(acc_lines) + "\n", encoding="utf-8")
+
+                    task_data = {
+                        "task_id": "TC-001", "revision": 1,
+                        "state": "accepted", "attempt": 1,
+                        "task_card_path": "docs/pm/tasks/TC-001.md",
+                        "task_card_commit": "0" * 40,
+                        "current_dispatch": None,
+                        "implementation_commit": "i" * 40,
+                        "report_commit": "r" * 40,
+                        "accepted_commit": "c" * 40,
+                        "acceptance_path": acceptance_path,
+                        "integrated_commit": None,
+                        "delivery_state": "accepted",
+                        "report_path": None,
+                        "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
+                        "unblock_condition": None, "review_after": None,
+                        "blocked_attempt_valid": None, "resume_state": None,
+                        "superseded_by": None,
+                        "granted_approval_ids": None,
+                        "timestamps": {
+                            "created_at": "2026-07-29T00:00:00Z",
+                            "updated_at": "2026-07-29T00:00:00Z",
+                        },
+                    }
+                    state = {
+                        "schema_version": "agentdesk.tasks/v2",
+                        "project_id": "test-mismatch",
+                        "updated_at": "2026-07-29T00:00:00Z",
+                        "pm_control": {"holder_id": "pm-test-001", "lease_epoch": 1, "mode": "timed"},
+                        "tasks": [task_data],
+                    }
+                    (root / "docs/pm/state/tasks.yaml").write_text(
+                        _jm.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+                    subprocess.run(["git", "-C", str(root), "add", "-A"],
+                                   check=True, timeout=10, capture_output=True)
+                    subprocess.run(["git", "-C", str(root), "commit", "-m", "init"],
+                                   check=True, timeout=10, capture_output=True)
+                    r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                       check=True, timeout=10, capture_output=True, text=True)
+                    head = r.stdout.strip()
+
+                    svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+                    ci_payload = self.cpt.IntegrationPayload(
+                        integrated_commit="c" * 40,
+                        equivalence_method=None, equivalence_evidence_ref=None,
+                    )
+                    ci_cas = self.cpt.TransitionCAS(
+                        task_id="TC-001", expected_revision=1,
+                        expected_state="accepted", expected_snapshot_commit=head,
+                    )
+                    ci_ctx = self.cpt.TransitionEventContext(
+                        source_message_id=None, evidence_refs=(), guard_results=(),
+                    )
+                    ci_req = self.cpt.TransitionRequest(
+                        cas=ci_cas, dispatch_cas=None,
+                        event_id="EVT-MISMATCH-CI",
+                        event_type="CHANGE_INTEGRATED",
+                        payload=ci_payload, event_context=ci_ctx,
+                    )
+                    now = datetime(2026, 7, 29, 0, 0, 0, tzinfo=UTC)
+
+                    with self.assertRaises(self.cpt.TransitionSchemaError):
+                        svc.apply_transition(ci_req, None, now)
+
+                    self.assertFalse(
+                        (root / "docs/pm/events/EVT-MISMATCH-CI.yaml").exists(),
+                        "No event file must be written on identity mismatch",
+                    )
+                finally:
+                    tmpdir.cleanup()
+
+    def test_CHANGE_INTEGRATED_reviewed_dispatch_id_missing_or_invalid(self) -> None:
+        """CHANGE_INTEGRATED must fail-closed when reviewed_dispatch_id
+        is missing, null, or empty in the acceptance record."""
+        import json as _jr
+        import sys as _jr_sys
+
+        _before_jr = list(_jr_sys.path)
+        try:
+            _scripts_jr = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+            if _scripts_jr not in _jr_sys.path:
+                _jr_sys.path.insert(0, _scripts_jr)
+        finally:
+            _jr_sys.path[:] = _before_jr
+
+        for label, reviewed_dispatch_value in [
+            ("null", "null"),
+            ("empty", ""),
+        ]:
+            with self.subTest(label=label):
+                tmpdir = tempfile.TemporaryDirectory()
+                try:
+                    root = Path(tmpdir.name)
+                    subprocess.run(["git", "-C", str(root), "init", "-q"],
+                                   check=True, timeout=10, capture_output=True)
+                    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@test"],
+                                   check=True, timeout=10, capture_output=True)
+                    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"],
+                                   check=True, timeout=10, capture_output=True)
+
+                    for d in ("docs/pm/events", "docs/pm/state", "docs/pm/acceptances"):
+                        (root / d.replace("/", os.sep)).mkdir(parents=True, exist_ok=True)
+
+                    acceptance_path = "docs/pm/acceptances/TC-001-r1-a1-review1.md"
+                    rd_line = f"reviewed_dispatch_id: {reviewed_dispatch_value}"
+                    acc_content = (
+                        "---\n"
+                        "schema_version: agentdesk.acceptance/v2\n"
+                        "task_id: TC-001\n"
+                        "revision: 1\n"
+                        "decision: accepted\n"
+                        f"{rd_line}\n"
+                        "attempt: 1\n"
+                        "type: implementation\n"
+                        "role_id: worker-basic\n"
+                        "reviewer_role_id: PM\n"
+                        "reviewer_id: pm-test-001\n"
+                        "lease_epoch: 1\n"
+                        "base_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                        "implementation_commit: iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii\n"
+                        "report_commit: rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\n"
+                        "accepted_commit: cccccccccccccccccccccccccccccccccccccccc\n"
+                        "owner_approval:\n"
+                        "  gate: none\n"
+                        "  approval_ids: []\n"
+                        "evidence_refs: []\n"
+                        "residual_risks: []\n"
+                        "created_at: 2026-07-29T00:00:00Z\n"
+                        "---\n"
+                    )
+                    (root / acceptance_path).write_text(acc_content, encoding="utf-8")
+
+                    task_data = {
+                        "task_id": "TC-001", "revision": 1,
+                        "state": "accepted", "attempt": 1,
+                        "task_card_path": "docs/pm/tasks/TC-001.md",
+                        "task_card_commit": "0" * 40,
+                        "current_dispatch": None,
+                        "implementation_commit": "i" * 40,
+                        "report_commit": "r" * 40,
+                        "accepted_commit": "c" * 40,
+                        "acceptance_path": acceptance_path,
+                        "integrated_commit": None,
+                        "delivery_state": "accepted",
+                        "report_path": None,
+                        "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
+                        "unblock_condition": None, "review_after": None,
+                        "blocked_attempt_valid": None, "resume_state": None,
+                        "superseded_by": None,
+                        "granted_approval_ids": None,
+                        "timestamps": {
+                            "created_at": "2026-07-29T00:00:00Z",
+                            "updated_at": "2026-07-29T00:00:00Z",
+                        },
+                    }
+                    state = {
+                        "schema_version": "agentdesk.tasks/v2",
+                        "project_id": "test-rdid",
+                        "updated_at": "2026-07-29T00:00:00Z",
+                        "pm_control": {"holder_id": "pm-test-001", "lease_epoch": 1, "mode": "timed"},
+                        "tasks": [task_data],
+                    }
+                    (root / "docs/pm/state/tasks.yaml").write_text(
+                        _jr.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+                    subprocess.run(["git", "-C", str(root), "add", "-A"],
+                                   check=True, timeout=10, capture_output=True)
+                    subprocess.run(["git", "-C", str(root), "commit", "-m", "init"],
+                                   check=True, timeout=10, capture_output=True)
+                    r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                       check=True, timeout=10, capture_output=True, text=True)
+                    head = r.stdout.strip()
+
+                    svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+                    ci_payload = self.cpt.IntegrationPayload(
+                        integrated_commit="c" * 40,
+                        equivalence_method=None, equivalence_evidence_ref=None,
+                    )
+                    ci_cas = self.cpt.TransitionCAS(
+                        task_id="TC-001", expected_revision=1,
+                        expected_state="accepted", expected_snapshot_commit=head,
+                    )
+                    ci_ctx = self.cpt.TransitionEventContext(
+                        source_message_id=None, evidence_refs=(), guard_results=(),
+                    )
+                    ci_req = self.cpt.TransitionRequest(
+                        cas=ci_cas, dispatch_cas=None,
+                        event_id="EVT-RDID-CI",
+                        event_type="CHANGE_INTEGRATED",
+                        payload=ci_payload, event_context=ci_ctx,
+                    )
+                    now = datetime(2026, 7, 29, 0, 0, 0, tzinfo=UTC)
+
+                    with self.assertRaises(self.cpt.TransitionSchemaError):
+                        svc.apply_transition(ci_req, None, now)
+                finally:
+                    tmpdir.cleanup()
+
+    def test_CHANGE_INTEGRATED_current_dispatch_None_is_valid(self) -> None:
+        """current_dispatch is None is a valid pre-integration state
+        (cleared by DELIVERY_ACCEPTED). Integration works when
+        acceptance record is present with correct identity."""
+        import json as _jn
+        import sys as _jn_sys
+
+        _before_jn = list(_jn_sys.path)
+        try:
+            _scripts_jn = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+            if _scripts_jn not in _jn_sys.path:
+                _jn_sys.path.insert(0, _scripts_jn)
+            import approval_gate as _ag_jn
+        finally:
+            _jn_sys.path[:] = _before_jn
+
+        with _temporary_scripts_path():
+            from approval_gate import (
+                ApprovalSubject, ApprovalScope,
+                write_grant as _wg_jn,
+            )
+
+        dispatch_id = "DSP-NULLOK"
+        task_id = "TC-602"  # must match ^TC-[0-9]{3,}$
+        accepted_commit = "c" * 40
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+
+            subprocess.run(["git", "-C", str(root), "init", "-q"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@test"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"],
+                           check=True, timeout=10, capture_output=True)
+
+            for d in ("docs/pm/events", "docs/pm/state", "docs/pm/acceptances",
+                      "docs/pm/approvals", "docs/pm/outbox"):
+                (root / d.replace("/", os.sep)).mkdir(parents=True, exist_ok=True)
+
+            # Acceptance record with correct identity
+            acceptance_path = f"docs/pm/acceptances/{task_id}-r1-a1-review1.md"
+            acc_content = (
+                "---\n"
+                "schema_version: agentdesk.acceptance/v2\n"
+                f"task_id: {task_id}\n"
+                "revision: 1\n"
+                "decision: accepted\n"
+                f"reviewed_dispatch_id: {dispatch_id}\n"
+                "attempt: 1\n"
+                "type: implementation\n"
+                "role_id: worker-basic\n"
+                "reviewer_role_id: PM\n"
+                "reviewer_id: pm-test-001\n"
+                "lease_epoch: 1\n"
+                "base_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                "implementation_commit: iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii\n"
+                "report_commit: rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\n"
+                f"accepted_commit: {accepted_commit}\n"
+                "owner_approval:\n"
+                "  gate: none\n"
+                "  approval_ids: []\n"
+                "evidence_refs: []\n"
+                "residual_risks: []\n"
+                "created_at: 2026-07-29T00:00:00Z\n"
+                "---\n"
+            )
+            (root / acceptance_path).write_text(acc_content, encoding="utf-8")
+
+            # Task with current_dispatch=None — the state after DELIVERY_ACCEPTED
+            task_data = {
+                "task_id": task_id, "revision": 1,
+                "state": "accepted", "attempt": 1,
+                "task_card_path": "docs/pm/tasks/TC-602.md",
+                "task_card_commit": "0" * 40,
+                "current_dispatch": None,  # ← explicitly None
+                "implementation_commit": "i" * 40,
+                "report_commit": "r" * 40,
+                "accepted_commit": accepted_commit,
+                "acceptance_path": acceptance_path,
+                "integrated_commit": None,
+                "delivery_state": "accepted",
+                "report_path": None,
+                "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
+                "unblock_condition": None, "review_after": None,
+                "blocked_attempt_valid": None, "resume_state": None,
+                "timestamps": {
+                    "created_at": "2026-07-29T00:00:00Z",
+                    "updated_at": "2026-07-29T00:00:00Z",
+                },
+            }
+            state = {
+                "schema_version": "agentdesk.tasks/v2",
+                "project_id": "test-nullok",
+                "adoption_level": "standard",
+                "updated_at": "2026-07-29T00:00:00Z",
+                "pm_control": {"holder_id": "pm-test-001", "lease_epoch": 1, "mode": "timed"},
+                "tasks": [task_data],
+            }
+            (root / "docs/pm/state/tasks.yaml").write_text(
+                _jn.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "init"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            # Write integrate grant
+            now = datetime(2026, 7, 29, 0, 0, 0, tzinfo=UTC)
+            _wg_jn(
+                project_root=root, approval_id="APR-NULLOK-INTEGRATE",
+                event_id="EVT-NULLOK-INTEGRATE-GRANT", scope=ApprovalScope.INTEGRATE,
+                subject=ApprovalSubject(task_id=task_id, revision=1, attempt=1,
+                                        dispatch_id=dispatch_id,
+                                        accepted_commit=accepted_commit),
+                lease_epoch=1, now=now, reason="Null-ok integrate",
+                expires_at=None, expected_snapshot_commit=head,
+            )
+
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "grant"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            ci_payload = self.cpt.IntegrationPayload(
+                integrated_commit=accepted_commit,
+                equivalence_method=None, equivalence_evidence_ref=None,
+            )
+            ci_cas = self.cpt.TransitionCAS(
+                task_id=task_id, expected_revision=1,
+                expected_state="accepted", expected_snapshot_commit=head,
+            )
+            ci_ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            ci_req = self.cpt.TransitionRequest(
+                cas=ci_cas, dispatch_cas=None,
+                event_id="EVT-NULLOK-CI",
+                event_type="CHANGE_INTEGRATED",
+                payload=ci_payload, event_context=ci_ctx,
+            )
+
+            # Real ApprovalGate (spy, not mock)
+            require_spy = []
+            _orig_req = _ag_jn.ApprovalGate.require
+
+            def _spy(inst, req, n):
+                require_spy.append(req.subject.dispatch_id)
+                return _orig_req(inst, req, n)
+
+            with patch.object(_ag_jn.ApprovalGate, "require", _spy):
+                ci_result = svc.apply_transition(ci_req, None, now)
+
+            self.assertEqual(ci_result.to_state, "integrated")
+            self.assertEqual(len(require_spy), 1)
+            self.assertEqual(require_spy[0], dispatch_id,
+                             "dispatch_id must equal acceptance reviewed_dispatch_id")
+
+            # Verify state
+            with _temporary_scripts_path():
+                from state_provider import StateProvider
+            snap = StateProvider(root).snapshot()
+            tasks = [t for t in snap.tasks if t.task_id == task_id]
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0].state, "integrated")
+            self.assertIsNone(tasks[0].current_dispatch)
+
+        finally:
+            tmpdir.cleanup()
+
+    def test_exception_message_no_dispatch_id_leak(self) -> None:
+        """Exception messages from CHANGE_INTEGRATED dispatch-id resolution
+        must not contain the dispatch_id value, acceptance path, or
+        acceptance content."""
+        import json as _je
+        import sys as _je_sys
+
+        _before_je = list(_je_sys.path)
+        try:
+            _scripts_je = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+            if _scripts_je not in _je_sys.path:
+                _je_sys.path.insert(0, _scripts_je)
+        finally:
+            _je_sys.path[:] = _before_je
+
+        # Case: acceptance with task_id mismatch should not leak either value
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            subprocess.run(["git", "-C", str(root), "init", "-q"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@test"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"],
+                           check=True, timeout=10, capture_output=True)
+
+            for d in ("docs/pm/events", "docs/pm/state", "docs/pm/acceptances"):
+                (root / d.replace("/", os.sep)).mkdir(parents=True, exist_ok=True)
+
+            acceptance_path = "docs/pm/acceptances/TC-001-r1-a1-review1.md"
+            (root / acceptance_path).write_text(
+                "---\n"
+                "schema_version: agentdesk.acceptance/v2\n"
+                "task_id: TC-MALICIOUS\n"  # ← mismatch
+                "revision: 1\n"
+                "decision: accepted\n"
+                "reviewed_dispatch_id: DSP-SECRET\n"
+                "attempt: 1\n"
+                "type: implementation\n"
+                "role_id: worker-basic\n"
+                "reviewer_role_id: PM\n"
+                "reviewer_id: pm-test-001\n"
+                "lease_epoch: 1\n"
+                "base_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                "implementation_commit: iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii\n"
+                "report_commit: rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\n"
+                "accepted_commit: cccccccccccccccccccccccccccccccccccccccc\n"
+                "owner_approval:\n"
+                "  gate: none\n"
+                "  approval_ids: []\n"
+                "evidence_refs: []\n"
+                "residual_risks: []\n"
+                "created_at: 2026-07-29T00:00:00Z\n"
+                "---\n",
+                encoding="utf-8",
+            )
+
+            task_data = {
+                "task_id": "TC-001", "revision": 1,
+                "state": "accepted", "attempt": 1,
+                "task_card_path": "docs/pm/tasks/TC-001.md",
+                "task_card_commit": "0" * 40,
+                "current_dispatch": None,
+                "implementation_commit": "i" * 40,
+                "report_commit": "r" * 40,
+                "accepted_commit": "c" * 40,
+                "acceptance_path": acceptance_path,
+                "integrated_commit": None,
+                "delivery_state": "accepted",
+                "report_path": None,
+                "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
+                "unblock_condition": None, "review_after": None,
+                "blocked_attempt_valid": None, "resume_state": None,
+                "timestamps": {
+                    "created_at": "2026-07-29T00:00:00Z",
+                    "updated_at": "2026-07-29T00:00:00Z",
+                },
+            }
+            state = {
+                "schema_version": "agentdesk.tasks/v2",
+                "project_id": "test-leak",
+                "updated_at": "2026-07-29T00:00:00Z",
+                "pm_control": {"holder_id": "pm-test-001", "lease_epoch": 1, "mode": "timed"},
+                "tasks": [task_data],
+            }
+            (root / "docs/pm/state/tasks.yaml").write_text(
+                _je.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "init"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            ci_payload = self.cpt.IntegrationPayload(
+                integrated_commit="c" * 40,
+                equivalence_method=None, equivalence_evidence_ref=None,
+            )
+            ci_cas = self.cpt.TransitionCAS(
+                task_id="TC-001", expected_revision=1,
+                expected_state="accepted", expected_snapshot_commit=head,
+            )
+            ci_ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            ci_req = self.cpt.TransitionRequest(
+                cas=ci_cas, dispatch_cas=None,
+                event_id="EVT-LEAK-CI",
+                event_type="CHANGE_INTEGRATED",
+                payload=ci_payload, event_context=ci_ctx,
+            )
+            now = datetime(2026, 7, 29, 0, 0, 0, tzinfo=UTC)
+
+            with self.assertRaises(self.cpt.TransitionSchemaError) as cm:
+                svc.apply_transition(ci_req, None, now)
+
+            exc_msg = str(cm.exception)
+            self.assertNotIn("TC-MALICIOUS", exc_msg)
+            self.assertNotIn("DSP-SECRET", exc_msg)
+            self.assertNotIn(acceptance_path, exc_msg)
+            self.assertNotIn("acceptances", exc_msg)
+        finally:
+            tmpdir.cleanup()
+
+    def test_CHANGE_INTEGRATED_dispatch_id_from_acceptance(self) -> None:
+        """Verify via _build_approval_subject directly that
+        CHANGE_INTEGRATED reads dispatch_id from the acceptance
+        record's reviewed_dispatch_id, with all five identity fields
+        consistent, and that the "N/A" fallback is unreachable."""
+        import sys as _bd
+        _before_bd = list(_bd.path)
+        try:
+            _scripts_bd = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+            if _scripts_bd not in _bd.path:
+                _bd.path.insert(0, _scripts_bd)
+            from control_plane_transition import (
+                _build_approval_subject, _TransitionSpec,
+                IntegrationPayload, TransitionCAS, TransitionRequest,
+                TransitionEventContext, _read_acceptance_frontmatter,
+            )
+            from approval_gate import ApprovalSubject
+        finally:
+            _bd.path[:] = _before_bd
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+
+            # Acceptance record on disk with known reviewed_dispatch_id
+            acc_dir = root / "docs" / "pm" / "acceptances"
+            acc_dir.mkdir(parents=True, exist_ok=True)
+            acc_path = "docs/pm/acceptances/TC-001-r1-a1-review1.md"
+            acc_file = root / acc_path
+            acc_file.write_text(
+                "---\n"
+                "schema_version: agentdesk.acceptance/v2\n"
+                "task_id: TC-001\n"
+                "revision: 1\n"
+                "decision: accepted\n"
+                "reviewed_dispatch_id: DSP-ACCEPTANCE-SOURCE\n"
+                "attempt: 1\n"
+                "type: implementation\n"
+                "role_id: worker-basic\n"
+                "reviewer_role_id: PM\n"
+                "reviewer_id: pm-test-001\n"
+                "lease_epoch: 1\n"
+                "base_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                "implementation_commit: iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii\n"
+                "report_commit: rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\n"
+                "accepted_commit: cccccccccccccccccccccccccccccccccccccccc\n"
+                "owner_approval:\n"
+                "  gate: none\n"
+                "  approval_ids: []\n"
+                "evidence_refs: []\n"
+                "residual_risks: []\n"
+                "created_at: 2026-07-29T00:00:00Z\n"
+                "---\n",
+                encoding="utf-8",
+            )
+
+            spec = _TransitionSpec(
+                event_type="CHANGE_INTEGRATED", payload_type=IntegrationPayload,
+                from_states=frozenset({"accepted"}), to_state="integrated",
+                needs_worker_lease=False, needs_dispatch_cas=False,
+                produces_outbox=False, produces_acceptance=False,
+            )
+
+            request = TransitionRequest(
+                cas=TransitionCAS(
+                    task_id="TC-001", expected_revision=1,
+                    expected_state="accepted",
+                    expected_snapshot_commit="0" * 40,
+                ),
+                dispatch_cas=None,
+                event_id="EVT-DIRECT-CI",
+                event_type="CHANGE_INTEGRATED",
+                payload=IntegrationPayload(
+                    integrated_commit="c" * 40,
+                    equivalence_method=None,
+                    equivalence_evidence_ref=None,
+                ),
+                event_context=TransitionEventContext(
+                    source_message_id=None, evidence_refs=(), guard_results=(),
+                ),
+            )
+
+            task = {
+                "task_id": "TC-001",
+                "revision": 1,
+                "attempt": 1,
+                "state": "accepted",
+                "current_dispatch": None,  # ← cleared by DELIVERY_ACCEPTED
+                "acceptance_path": acc_path,
+            }
+
+            subj = _build_approval_subject(spec, request, task, root)
+
+            self.assertIsInstance(subj, ApprovalSubject)
+            self.assertEqual(subj.task_id, "TC-001")
+            self.assertEqual(subj.revision, 1)
+            self.assertEqual(subj.attempt, 1)
+            self.assertEqual(subj.dispatch_id, "DSP-ACCEPTANCE-SOURCE",
+                             "dispatch_id must come from acceptance reviewed_dispatch_id")
+            self.assertNotEqual(subj.dispatch_id, "N/A",
+                                "N/A fallback must not be reachable")
+            self.assertEqual(subj.accepted_commit, "c" * 40)
+        finally:
+            tmpdir.cleanup()
+
+    def test_DELIVERY_ACCEPTED_clears_current_dispatch(self) -> None:
+        """Verify DELIVERY_ACCEPTED continues to clear current_dispatch
+        (existing invariant preserved)."""
+        # This is handled by the existing TestDeliveryAcceptedEndToEnd,
+        # but we add an explicit guard here.
+        import json as _jda
+        import sys as _jda_sys
+
+        _before_da = list(_jda_sys.path)
+        try:
+            _scripts_da = str(_REPO_ROOT / "skills" / "agentdesk" / "scripts")
+            if _scripts_da not in _jda_sys.path:
+                _jda_sys.path.insert(0, _scripts_da)
+            from approval_gate import (
+                ApprovalSubject, ApprovalScope,
+                write_grant as _wg_da,
+            )
+        finally:
+            _jda_sys.path[:] = _before_da
+
+        with _temporary_scripts_path():
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+
+        dispatch_id = "DSP-CLEAR"
+        task_id = "TC-603"  # must match ^TC-[0-9]{3,}$
+
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+
+            subprocess.run(["git", "-C", str(root), "init", "-q"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@test"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"],
+                           check=True, timeout=10, capture_output=True)
+
+            for d in ("docs/pm/events", "docs/pm/outbox", "docs/pm/acceptances",
+                      "docs/pm/approvals", "docs/pm/state", "docs/pm/tasks",
+                      "docs/pm/reports", ".agentdesk/runtime"):
+                (root / d.replace("/", os.sep)).mkdir(parents=True, exist_ok=True)
+
+            task_card_path = f"docs/pm/tasks/{task_id}.md"
+            (root / task_card_path).write_text(
+                "---\n"
+                "type: implementation\n"
+                "role_id: worker-basic\n"
+                "base_commit: " + "a" * 40 + "\n"
+                "owner_approval:\n"
+                "  gate: none\n"
+                "  approval_ids: []\n"
+                "---\n\n# Task\n",
+                encoding="utf-8",
+            )
+
+            (root / ".agentdesk" / "runtime" / "worker-slot-lease.yaml").write_text(
+                _jda.dumps({
+                    "schema_version": "agentdesk.worker-slot-lease/v1",
+                    "updated_at": "1970-01-01T00:00:00Z",
+                    "slot_epochs": {f"{t}_agent-{n}": 1
+                                    for t in ("basic", "standard", "advanced", "expert")
+                                    for n in (1, 2)},
+                    "leases": {},
+                }), encoding="utf-8",
+            )
+
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "init"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            task_data = {
+                "task_id": task_id, "revision": 1,
+                "state": "review_ready", "attempt": 1,
+                "task_card_path": task_card_path,
+                "task_card_commit": head,
+                "current_dispatch": {
+                    "dispatch_id": dispatch_id, "role_id": "worker-basic",
+                    "base_commit": head, "branch": "main",
+                    "model_selection": {},
+                },
+                "report_path": f"docs/pm/reports/{task_id}-r1-a1.md",
+                "implementation_commit": "i" * 40,
+                "report_commit": "r" * 40,
+                "accepted_commit": None,
+                "acceptance_path": None,
+                "integrated_commit": None,
+                "delivery_state": "submitted",
+                "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
+                "unblock_condition": None, "review_after": None,
+                "blocked_attempt_valid": None, "resume_state": None,
+                "timestamps": {
+                    "created_at": "2026-07-29T00:00:00Z",
+                    "updated_at": "2026-07-29T00:00:00Z",
+                },
+            }
+            state = {
+                "schema_version": "agentdesk.tasks/v2",
+                "project_id": "test-clear",
+                "updated_at": "2026-07-29T00:00:00Z",
+                "pm_control": {"holder_id": "pm-test-001", "lease_epoch": 1, "mode": "timed"},
+                "tasks": [task_data],
+            }
+            (root / "docs/pm/state/tasks.yaml").write_text(
+                _jda.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+            report = root / f"docs/pm/reports/{task_id}-r1-a1.md"
+            report.write_text(
+                "---\n"
+                "schema_version: agentdesk.delivery-report/v2\n"
+                f"dispatch_id: {dispatch_id}\n"
+                f"task_id: {task_id}\n"
+                "revision: 1\nattempt: 1\n"
+                "implementation_commit: " + "i" * 40 + "\n"
+                "report_commit: " + "r" * 40 + "\n"
+                "---\n",
+                encoding="utf-8",
+            )
+
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "tasks+report"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            now = datetime(2026, 7, 29, 0, 0, 0, tzinfo=UTC)
+            _wg_da(
+                project_root=root, approval_id="APR-CLEAR-ACCEPT",
+                event_id="EVT-CLEAR-ACCEPT-GRANT", scope=ApprovalScope.ACCEPT,
+                subject=ApprovalSubject(task_id=task_id, revision=1, attempt=1,
+                                        dispatch_id=dispatch_id, accepted_commit=None),
+                lease_epoch=1, now=now, reason="Clear test accept",
+                expires_at=None, expected_snapshot_commit=head,
+            )
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "grant"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32, lease_epoch=1,
+                slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id=dispatch_id,
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-29T00:00:00Z",
+                heartbeat_at="2026-07-29T00:00:01Z",
+                expires_at="2026-08-29T10:00:00Z",
+            )
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            acceptance_path = f"docs/pm/acceptances/{task_id}-r1-a1-review1.md"
+            da_payload = self.cpt.DeliveryAcceptedPayload(
+                accepted_commit="c" * 40,
+                acceptance_path=acceptance_path,
+                residual_risks=("None",),
+                criteria_evidence=("All tests pass",),
+                rationale="PM approved",
+            )
+            da_cas = self.cpt.TransitionCAS(
+                task_id=task_id, expected_revision=1,
+                expected_state="review_ready", expected_snapshot_commit=head,
+            )
+            da_dc = self.cpt.DispatchCAS(
+                expected_dispatch_id=dispatch_id, expected_attempt=1,
+            )
+            da_ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            da_req = self.cpt.TransitionRequest(
+                cas=da_cas, dispatch_cas=da_dc,
+                event_id="EVT-CLEAR-DA",
+                event_type="DELIVERY_ACCEPTED",
+                payload=da_payload, event_context=da_ctx,
+            )
+            da_result = svc.apply_transition(da_req, lease, now)
+
+            self.assertEqual(da_result.to_state, "accepted")
+
+            with _temporary_scripts_path():
+                from state_provider import StateProvider
+            snap = StateProvider(root).snapshot()
+            tasks = [t for t in snap.tasks if t.task_id == task_id]
+            self.assertEqual(len(tasks), 1)
+            self.assertIsNone(tasks[0].current_dispatch,
+                              "DELIVERY_ACCEPTED must clear current_dispatch")
+        finally:
+            tmpdir.cleanup()
 
 
 class TestTASK_DISPATCHEDFailureAndReplay(TestControlPlaneTransitionBase):

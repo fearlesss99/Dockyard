@@ -3849,16 +3849,79 @@ def _coerce_custom_yaml_value(val: str) -> object:
     return v
 
 
+def _read_acceptance_frontmatter(
+    project_root: Path,
+    acceptance_path: str,
+) -> dict[str, Any]:
+    """Read and parse the acceptance record frontmatter from disk.
+
+    Returns a flat dict of frontmatter key-value pairs.
+    Raises ``TransitionSchemaError`` on any structural failure — zero writes.
+    """
+    abs_path = project_root / acceptance_path
+    try:
+        content = abs_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise TransitionSchemaError(
+            "acceptance record not found"
+        ) from None
+    except OSError:
+        raise TransitionSchemaError(
+            "cannot read acceptance record"
+        ) from None
+
+    lines = content.splitlines()
+    if len(lines) < 2 or lines[0].strip() != "---":
+        raise TransitionSchemaError(
+            "acceptance record missing frontmatter start"
+        )
+    end_idx: int | None = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end_idx = i
+            break
+    if end_idx is None:
+        raise TransitionSchemaError(
+            "acceptance record missing frontmatter end"
+        )
+
+    fm: dict[str, Any] = {}
+    for line in lines[1:end_idx]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" in stripped:
+            key, _, val = stripped.partition(":")
+            key = key.strip()
+            val = val.strip()
+            if val == "null":
+                val = None
+            elif val == "true":
+                val = True
+            elif val == "false":
+                val = False
+            elif val.isdigit() or (val.startswith("-") and val[1:].isdigit()):
+                val = int(val)
+            fm[key] = val
+
+    return fm
+
+
 def _build_approval_subject(
     spec: _TransitionSpec,
     request: TransitionRequest,
     task: dict[str, Any],
+    project_root: Path,
 ) -> Any:
     """Build an ``ApprovalSubject`` from CAS-verified sources.
 
     All field values come from TransitionCAS, DispatchCAS, payload,
     or the CAS-verified canonical task — never from caller-supplied
     free text, prompt, provider, or model.
+
+    For CHANGE_INTEGRATED, the dispatch identity is read from the
+    acceptance record's ``reviewed_dispatch_id`` field, not from
+    ``current_dispatch`` (which was cleared by DELIVERY_ACCEPTED).
     """
     from approval_gate import ApprovalSubject
 
@@ -3898,23 +3961,61 @@ def _build_approval_subject(
             raise TransitionSchemaError(
                 "CHANGE_INTEGRATED payload must be IntegrationPayload"
             )
-        # Attempt and dispatch_id from current task ledger.
-        task_attempt = task.get("attempt")
-        ledger_attempt: int | None = None
-        if isinstance(task_attempt, int) and not isinstance(task_attempt, bool):
-            ledger_attempt = task_attempt
+        # Acceptance path from canonical task (set by DELIVERY_ACCEPTED).
+        acceptance_path = task.get("acceptance_path")
+        if not isinstance(acceptance_path, str) or not acceptance_path:
+            raise TransitionSchemaError(
+                "acceptance_path missing from task — "
+                "cannot resolve integration dispatch identity"
+            )
+        acceptance_fm = _read_acceptance_frontmatter(project_root, acceptance_path)
 
-        cd = task.get("current_dispatch")
-        ledger_dispatch_id: str | None = None
-        if isinstance(cd, dict) and isinstance(cd.get("dispatch_id"), str):
-            ledger_dispatch_id = str(cd["dispatch_id"])
+        # Validate acceptance identity against the task ledger before
+        # trusting reviewed_dispatch_id.
+        if acceptance_fm.get("task_id") != task_id:
+            raise TransitionSchemaError(
+                "acceptance task_id does not match integration task"
+            )
+        if acceptance_fm.get("revision") != revision:
+            raise TransitionSchemaError(
+                "acceptance revision does not match integration revision"
+            )
+
+        # Attempt from task ledger (required, never guessed).
+        task_attempt = task.get("attempt")
+        if not isinstance(task_attempt, int) or isinstance(task_attempt, bool):
+            raise TransitionSchemaError(
+                "attempt missing from task ledger — "
+                "cannot resolve integration dispatch identity"
+            )
+        ledger_attempt: int = task_attempt
+
+        acceptance_attempt = acceptance_fm.get("attempt")
+        if acceptance_attempt != ledger_attempt:
+            raise TransitionSchemaError(
+                "acceptance attempt does not match task ledger"
+            )
+
+        accepted_commit_from_payload = request.payload.integrated_commit
+        acceptance_accepted_commit = acceptance_fm.get("accepted_commit")
+        if acceptance_accepted_commit != accepted_commit_from_payload:
+            raise TransitionSchemaError(
+                "acceptance accepted_commit does not match "
+                "integration payload"
+            )
+
+        reviewed_dispatch_id = acceptance_fm.get("reviewed_dispatch_id")
+        if not isinstance(reviewed_dispatch_id, str) or not reviewed_dispatch_id:
+            raise TransitionSchemaError(
+                "reviewed_dispatch_id missing or invalid in acceptance record"
+            )
 
         return ApprovalSubject(
             task_id=task_id,
             revision=revision,
-            attempt=ledger_attempt if ledger_attempt is not None else 1,
-            dispatch_id=ledger_dispatch_id if ledger_dispatch_id is not None else "N/A",
-            accepted_commit=request.payload.integrated_commit,
+            attempt=ledger_attempt,
+            dispatch_id=reviewed_dispatch_id,
+            accepted_commit=accepted_commit_from_payload,
         )
 
     raise TransitionSchemaError(
@@ -4277,7 +4378,7 @@ def _execute_transition_core(
         _validate_cas(task, request, spec, head_commit)
 
         # 12. ApprovalGate.require() — inside the state lock.
-        gate_subject = _build_approval_subject(spec, request, task)
+        gate_subject = _build_approval_subject(spec, request, task, project_root)
         gate = ApprovalGate(project_root=project_root)
 
         scope_enum = ApprovalScope(scope_value)
