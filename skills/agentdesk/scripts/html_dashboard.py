@@ -141,6 +141,18 @@ _STATE_SYMBOL: dict[str, str] = {
 
 _NONE_DISPLAY = "—"  # — em dash for absent optional values
 
+# Frozen section navigation (contract §7 keyboard accessibility).  href
+# fragments are module constants — never derived from snapshot or user
+# input — so the only hrefs that can ever reach the output are the five
+# allow-listed fragments below.
+_NAV_ITEMS: tuple[tuple[str, str], ...] = (
+    ("Overview", "#overview"),
+    ("Task Board", "#task-board"),
+    ("Task Details", "#task-details"),
+    ("System Health", "#system-health"),
+)
+_SKIP_LINK_HREF = "#main-content"
+
 # Security-invariant scanners (contract §6).  Every pattern is anchored
 # on a leading ``<`` so static CSS / CSP text never matches.
 _SCRIPT_RE = re.compile(r"<script", re.IGNORECASE)
@@ -298,12 +310,22 @@ _CSS = """\
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif;
 background:var(--bg);color:var(--fg);line-height:1.45}
+.skip-link{position:absolute;left:-9999px;top:auto;width:1px;height:1px;
+overflow:hidden;white-space:nowrap}
+.skip-link:focus,.skip-link:focus-visible{position:fixed;top:.5rem;left:.5rem;
+width:auto;height:auto;padding:.75rem 1rem;margin:0;overflow:visible;
+background:var(--info);color:#fff;z-index:1000;border-radius:4px;
+outline:2px solid #fff;outline-offset:1px}
 header{background:#111827;color:#ffffff;padding:1rem 1.25rem}
 header h1{margin:0;font-size:1.25rem}
 header .meta{margin:.3rem 0 0;color:#cbd5e1;font-size:.85rem}
 nav{background:#1f2937;color:#e5e7eb;padding:.5rem 1.25rem}
 nav ul{margin:0;padding:0;list-style:none;display:flex;flex-wrap:wrap;gap:.85rem;font-size:.85rem}
 nav li{font-weight:600}
+nav a{color:#e5e7eb;text-decoration:none;display:inline-block;
+padding:.15rem .25rem;border-radius:2px}
+nav a:focus-visible{outline:2px solid var(--info);outline-offset:2px;
+color:#fff;background:rgba(255,255,255,.12)}
 main{padding:1.25rem 1.25rem 2rem;max-width:1440px;margin:0 auto}
 section{margin-bottom:1.75rem}
 h2{border-bottom:2px solid var(--line);padding-bottom:.3rem;margin:0 0 .85rem;font-size:1.1rem}
@@ -331,6 +353,9 @@ dl.row dd{margin:0}
 @media (max-width:320px){
 body{font-size:.85rem}
 main{padding:.5rem}
+nav{padding:.4rem .5rem}
+nav ul{gap:.5rem}
+nav a:focus-visible{outline-offset:1px}
 .metrics{grid-template-columns:1fr}
 table{font-size:.74rem}
 th,td{padding:.28rem .32rem}
@@ -629,6 +654,10 @@ def _build_html(
     lines.append("</style>")
     lines.append("</head>")
     lines.append("<body>")
+    lines.append(
+        '<a class="skip-link" href="' + _SKIP_LINK_HREF
+        + '">Skip to main content</a>'
+    )
     lines.append("<header>")
     lines.append("<h1>AgentDesk Operations Console</h1>")
     lines.append(
@@ -637,18 +666,15 @@ def _build_html(
         + " | Generated " + _esc(gen_str) + "</p>"
     )
     lines.append("</header>")
-    lines.append("<nav>")
+    lines.append('<nav aria-label="Dashboard sections">')
     lines.append("<ul>")
-    for label, href in (
-        ("Overview", "#overview"),
-        ("Task Board", "#task-board"),
-        ("Task Details", "#task-details"),
-        ("System Health", "#system-health"),
-    ):
-        lines.append(f"<li>{_esc(label)}</li>")
+    for label, href in _NAV_ITEMS:
+        lines.append(
+            '<li><a href="' + href + '">' + _esc(label) + "</a></li>"
+        )
     lines.append("</ul>")
     lines.append("</nav>")
-    lines.append("<main>")
+    lines.append('<main id="main-content" tabindex="-1">')
     lines.extend(_overview_section(snapshot, gen_str))
     lines.extend(_task_board_section(snapshot))
     lines.extend(_task_details_section(snapshot))

@@ -20,6 +20,7 @@ import sys
 import unittest
 from dataclasses import fields, is_dataclass
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 
 _SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -311,6 +312,197 @@ def _rich_snapshot():
 
 
 # ── tests ──────────────────────────────────────────────────────────────────
+
+
+class _StructureParser(HTMLParser):
+    """Parse real rendered HTML to collect anchors, nav/main attrs,
+    section ids, and tag order — used instead of source-string matching."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.anchors: list[dict] = []
+        self.nav_attrs: dict | None = None
+        self.main_attrs: dict | None = None
+        self.section_ids: list[str] = []
+        self.tag_order: list[tuple[str, dict]] = []
+        self.all_attr_names: set[str] = set()
+        self._nav_depth = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        d = dict(attrs)
+        self.tag_order.append((tag, d))
+        for name in d:
+            self.all_attr_names.add(name)
+        if tag == "nav":
+            self._nav_depth += 1
+            if self.nav_attrs is None:
+                self.nav_attrs = d
+        elif tag == "main":
+            if self.main_attrs is None:
+                self.main_attrs = d
+        elif tag == "section":
+            sid = d.get("id")
+            if sid:
+                self.section_ids.append(sid)
+        elif tag == "a":
+            self.anchors.append({
+                "href": d.get("href"),
+                "classes": (d.get("class") or "").split(),
+                "in_nav": self._nav_depth > 0,
+            })
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "nav":
+            self._nav_depth -= 1
+
+
+class TC1320b1HtmlDashboardNavigationTests(unittest.TestCase):
+    """TC-13.20b.1 — keyboard navigation fix for the HTML Dashboard.
+
+    Every assertion inspects the real ``render_dashboard()`` output via
+    ``html.parser`` rather than source-string matching, except where a
+    content/CSS ban can only be expressed as a text check.
+    """
+
+    _ALLOWED_HREFS = {
+        "#main-content", "#overview", "#task-board",
+        "#task-details", "#system-health",
+    }
+    _SECTION_IDS = ("overview", "task-board", "task-details", "system-health")
+
+    def setUp(self) -> None:
+        self._art = render_dashboard(_req(_rich_snapshot()))
+        self._text = self._art.html.decode("utf-8")
+        self._p = _StructureParser()
+        self._p.feed(self._text)
+
+    # 1. exactly one skip link
+    def test_exactly_one_skip_link(self) -> None:
+        skips = [a for a in self._p.anchors if "skip-link" in a["classes"]]
+        self.assertEqual(len(skips), 1)
+        self.assertEqual(skips[0]["href"], "#main-content")
+
+    # 2. nav contains exactly 4 anchors
+    def test_nav_exactly_four_anchors(self) -> None:
+        nav_anchors = [a for a in self._p.anchors if a["in_nav"]]
+        self.assertEqual(len(nav_anchors), 4)
+
+    # 3. all hrefs match the allow-list exactly
+    def test_href_set_matches_allowlist(self) -> None:
+        hrefs = {a["href"] for a in self._p.anchors}
+        self.assertEqual(hrefs, self._ALLOWED_HREFS)
+        for href in hrefs:
+            self.assertTrue(href.startswith("#"))
+
+    # 4. nav has aria-label="Dashboard sections"
+    def test_nav_aria_label(self) -> None:
+        self.assertIsNotNone(self._p.nav_attrs)
+        self.assertEqual(self._p.nav_attrs.get("aria-label"), "Dashboard sections")
+
+    # 5. main has id="main-content"
+    def test_main_has_main_content_id(self) -> None:
+        self.assertIsNotNone(self._p.main_attrs)
+        self.assertEqual(self._p.main_attrs.get("id"), "main-content")
+
+    # 6. main has tabindex="-1"
+    def test_main_has_tabindex_minus_one(self) -> None:
+        self.assertIsNotNone(self._p.main_attrs)
+        self.assertEqual(self._p.main_attrs.get("tabindex"), "-1")
+
+    # 7. four section ids all present
+    def test_four_section_ids_present(self) -> None:
+        self.assertEqual(set(self._p.section_ids), set(self._SECTION_IDS))
+
+    # 8. skip link precedes header, nav, and main
+    def test_skip_link_precedes_header_nav_main(self) -> None:
+        order = self._p.tag_order
+        skip_idx = next(i for i, (t, d) in enumerate(order)
+                        if t == "a" and "skip-link" in (d.get("class") or "").split())
+        header_idx = next(i for i, (t, _) in enumerate(order) if t == "header")
+        nav_idx = next(i for i, (t, _) in enumerate(order) if t == "nav")
+        main_idx = next(i for i, (t, _) in enumerate(order) if t == "main")
+        self.assertLess(skip_idx, header_idx)
+        self.assertLess(header_idx, nav_idx)
+        self.assertLess(nav_idx, main_idx)
+
+    # 9. skip-link focus CSS exists
+    def test_skip_link_focus_css_exists(self) -> None:
+        self.assertIn(".skip-link:focus", self._text)
+
+    # 10. :focus-visible outline is not none/0
+    def test_focus_visible_outline_not_none(self) -> None:
+        self.assertIn(":focus-visible", self._text)
+        self.assertIn("outline:2px solid", self._text)
+        self.assertNotIn("outline:none", self._text)
+        self.assertNotIn("outline:0", self._text)
+
+    # 11. no external href
+    def test_no_external_href(self) -> None:
+        for a in self._p.anchors:
+            href = a["href"] or ""
+            self.assertTrue(href.startswith("#"), f"non-fragment href: {href}")
+            for bad in ("http://", "https://", "//", "data:", "ftp:", "javascript:"):
+                self.assertNotIn(bad, href, f"banned scheme in href: {href}")
+
+    # 12. no javascript: URL
+    def test_no_javascript_url(self) -> None:
+        self.assertNotIn("javascript:", self._text.lower())
+
+    # 13. no event-handler attributes, no target="_blank"
+    def test_no_event_handler_attributes(self) -> None:
+        for name in self._p.all_attr_names:
+            self.assertFalse(
+                name.startswith("on"),
+                f"forbidden event-handler attribute: {name}",
+            )
+        self.assertNotIn("target", self._p.all_attr_names)
+
+    # 14. malicious snapshot fields cannot inject extra anchors
+    def test_malicious_snapshot_cannot_inject_anchors(self) -> None:
+        evil = '<a href="#evil">inject</a>'
+        snap = _snapshot(
+            tasks=(_task(task_id=evil, state="ready"),),
+            project_id=evil,
+        )
+        art = render_dashboard(_req(snap))
+        p = _StructureParser()
+        p.feed(art.html.decode("utf-8"))
+        # still exactly 1 skip link + 4 nav anchors = 5 total
+        self.assertEqual(len(p.anchors), 5)
+        hrefs = {a["href"] for a in p.anchors}
+        self.assertEqual(hrefs, self._ALLOWED_HREFS)
+        self.assertNotIn("#evil", hrefs)
+        # the raw malicious markup is escaped, never present as a live tag
+        self.assertIn("&lt;a href=&quot;#evil&quot;&gt;", art.html.decode("utf-8"))
+
+    # 15. same request still produces byte-identical HTML
+    def test_byte_identical_for_same_request(self) -> None:
+        req = _req(_rich_snapshot())
+        self.assertEqual(render_dashboard(req).html, render_dashboard(req).html)
+
+    # 16. snapshot digest is independent of navigation static HTML
+    def test_snapshot_digest_independent_of_nav_html(self) -> None:
+        snap = _rich_snapshot()
+        art = render_dashboard(_req(snap))
+        self.assertEqual(
+            art.snapshot_digest,
+            "sha256:" + hd._compute_snapshot_digest(snap),
+        )
+
+    # 17. __all__ still exactly 7 symbols
+    def test_all_still_exactly_seven(self) -> None:
+        expected = {
+            "DashboardRenderRequest", "DashboardArtifact", "render_dashboard",
+            "DashboardError", "DashboardInputError",
+            "DashboardRenderError", "DashboardSecurityError",
+        }
+        self.assertEqual(set(hd.__all__), expected)
+        self.assertEqual(len(hd.__all__), 7)
+
+    # 18. CSP exactly unchanged
+    def test_csp_exactly_unchanged(self) -> None:
+        self.assertIn(_FROZEN_CSP, self._text)
+        self.assertIn('http-equiv="Content-Security-Policy"', self._text)
 
 
 class TC1320bHtmlDashboardUnitTests(unittest.TestCase):
