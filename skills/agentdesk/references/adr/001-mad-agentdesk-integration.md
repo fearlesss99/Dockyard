@@ -34,7 +34,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
 | 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Target; TASK_SUPERSEDED: Target; retry loop, fault recovery: Target) |
 | 23 | E2E / Recovery tests | **Current** — TC-13.19j | E2E validation and recovery scenarios — nine scenario E2E tests committed; quiescent cancellation/supersession, expert user-decision paths, escalation chain, integration failure, and happy-path audit/accept/integrate all covered |
-| 24 | AgentDesk HTML Dashboard | **Target** | TC-13.20 | Read-only dashboard via StateProvider |
+| 24 | AgentDesk HTML Dashboard | **Current** | TC-13.20b | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target 鈫?Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
 | 26 | `agentdesk.mad-refs/v1` runtime schema | **Current** | TC-13.6 | Gitignored runtime record of MAD invocations |
 | 27 | AgentDesk shared core data types | **Current** | TC-13.4 | `TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind` enums; no budget calculation or WorkerAdapter implementation |
@@ -6798,7 +6798,7 @@ or secrets.
 
 ---
 
-#### 2.21 AgentDesk HTML Dashboard — Frozen Contract (Target — TC-13.20)
+#### 2.21 AgentDesk HTML Dashboard — Frozen Contract (Current — TC-13.20b)
 
 TC-13.20a freezes the contract for a fully read-only, offline,
 self-contained HTML Dashboard.  The Dashboard consumes only a
@@ -6910,20 +6910,20 @@ iteration order.
 
 | Scope | Status |
 |-------|--------|
-| Interface #24 — HTML Dashboard contract | **Target** — TC-13.20a (this document) |
-| ``html_dashboard.py`` production module | Target — TC-13.20b |
-| ``render_dashboard()`` implementation | Target — TC-13.20b |
-| HTML/CSS/JS page templates | Target — TC-13.20b |
-| Dashboard unit tests | Target — TC-13.20b |
-| Interface #24 status promotion to Current | Target — TC-13.20b |
+| Interface #24 — HTML Dashboard contract | **Current** — TC-13.20b (this document) |
+| ``html_dashboard.py`` production module | Current — TC-13.20b |
+| ``render_dashboard()`` implementation | Current — TC-13.20b |
+| HTML/CSS/JS page templates | Current — TC-13.20b |
+| Dashboard unit tests | Current — TC-13.20b |
+| Interface #24 status promotion to Current | Current — TC-13.20b |
 
 ##### 2.21.9 Status
 
 * ADR Interface Status row #24 "AgentDesk HTML Dashboard"
-  remains **Target** — TC-13.20.
-* This section (§2.21) is the Frozen Contract for TC-13.20a.
-* No production module is shipped under TC-13.20a.
-* TC-13.20b will deliver ``html_dashboard.py`` against this contract.
+  is **Current** — TC-13.20b.
+* This section (§2.21) is the Frozen Contract for TC-13.20a, delivered
+  as production under TC-13.20b.
+* The production module ``html_dashboard.py`` ships under TC-13.20b.
 * All prior Current interfaces remain **Current**.
 
 ---

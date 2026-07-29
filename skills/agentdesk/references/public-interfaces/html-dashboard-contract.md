@@ -6,10 +6,10 @@ production `html_dashboard.py` module.
 
 ## Status
 
-**Target** as of TC-13.20a.  This document is the authoritative frozen
+**Current** as of TC-13.20b.  This document is the authoritative frozen
 specification for the Dashboard public API, data model, security
-boundary, exception hierarchy, and snapshot digest algorithm.  No
-production module is shipped under TC-13.20a.
+boundary, exception hierarchy, and snapshot digest algorithm.  The
+production module ships under TC-13.20b.
 
 The ADR contract is in `001-mad-agentdesk-integration.md` §2.21;
 this document expands the per-interface details.
@@ -428,16 +428,15 @@ literal string `None`.  Each sub-digest line is terminated with `\n`.
 
 | Scope | Status |
 |-------|--------|
-| Interface #24 — HTML Dashboard contract | **Target** — this document |
-| `html_dashboard.py` production module | Target — TC-13.20b |
-| `render_dashboard()` implementation | Target — TC-13.20b |
-| HTML/CSS/JS page templates | Target — TC-13.20b |
-| Dashboard unit tests | Target — TC-13.20b |
-| Interface #24 status promotion to Current | Target — TC-13.20b |
+| Interface #24 — HTML Dashboard contract | **Current** — TC-13.20b |
+| `html_dashboard.py` production module | Current — TC-13.20b |
+| `render_dashboard()` implementation | Current — TC-13.20b |
+| HTML/CSS/JS page templates | Current — TC-13.20b |
+| Dashboard unit tests | Current — TC-13.20b |
+| Interface #24 status promotion to Current | Current — TC-13.20b |
 
-No production code, HTML page, CSS, JS, or dashboard directory is
-created under TC-13.20a.  TC-13.20b will implement the full production
-module against this frozen contract.
+The production module, HTML/CSS templates, and dashboard unit tests
+ship under TC-13.20b against this frozen contract.
 
 ---
 

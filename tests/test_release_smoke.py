@@ -9945,7 +9945,7 @@ class TC1320aHtmlDashboardContractFreezeTests(unittest.TestCase):
 
     # -- 2. ADR §2.21 exists and is Target --
 
-    def test_adr_section_221_exists_and_target(self) -> None:
+    def test_adr_section_221_exists_and_current(self) -> None:
         """ADR §2.21 AgentDesk HTML Dashboard — Frozen Contract must exist."""
         self.assertIn(
             "#### 2.21 AgentDesk HTML Dashboard",
@@ -9953,21 +9953,21 @@ class TC1320aHtmlDashboardContractFreezeTests(unittest.TestCase):
             "ADR: §2.21 AgentDesk HTML Dashboard Frozen Contract must exist",
         )
         self.assertIn(
-            "Target — TC-13.20",
+            "Current — TC-13.20b",
             self.adr_text,
-            "ADR §2.21 must declare Target — TC-13.20",
+            "ADR §2.21 must declare Current — TC-13.20b after delivery",
         )
 
     # -- 3. Interface #24 is Target --
 
-    def test_interface_24_is_target(self) -> None:
-        """Interface #24 (HTML Dashboard) must remain Target."""
+    def test_interface_24_is_current(self) -> None:
+        """Interface #24 (HTML Dashboard) must be Current after TC-13.20b."""
         found = False
         for line in self.adr_text.splitlines():
             if "| 24 |" in line and "Dashboard" in line:
                 self.assertIn(
-                    "**Target**", line,
-                    f"Interface #24 must be Target: {line!r}",
+                    "**Current**", line,
+                    f"Interface #24 must be Current: {line!r}",
                 )
                 found = True
                 break
@@ -10229,11 +10229,11 @@ class TC1320aHtmlDashboardContractFreezeTests(unittest.TestCase):
 
     # -- 18. html_dashboard.py does NOT exist yet --
 
-    def test_html_dashboard_py_does_not_exist(self) -> None:
-        """html_dashboard.py must NOT exist under TC-13.20a."""
-        self.assertFalse(
-            self.dashboard_py.exists(),
-            "html_dashboard.py must NOT exist — production is TC-13.20b",
+    def test_html_dashboard_py_exists(self) -> None:
+        """html_dashboard.py must exist under TC-13.20b."""
+        self.assertTrue(
+            self.dashboard_py.is_file(),
+            "html_dashboard.py must exist as a regular file — TC-13.20b delivered",
         )
 
     # -- 19. No dashboard assets/build directory --
@@ -10358,3 +10358,169 @@ class TC1320aHtmlDashboardContractFreezeTests(unittest.TestCase):
                           f"ADR __all__ must contain: {sym}")
             self.assertIn(sym, contract_all_block,
                           f"Contract __all__ must contain: {sym}")
+
+
+class TC1320bHtmlDashboardProductionSmokeTests(unittest.TestCase):
+    """TC-13.20b — production smoke for the HTML Dashboard renderer.
+
+    Covers only the stable public surface declared by the frozen
+    contract (html-dashboard-contract.md): module presence, the 7-symbol
+    API, dataclass shape, synchronous renderer, HTML bytes, CSP,
+    determinism, input rejection, and zero side effects at import and
+    render time.
+    """
+
+    def setUp(self) -> None:
+        self.scripts = SKILL_ROOT / "scripts"
+        if str(self.scripts) not in sys.path:
+            sys.path.insert(0, str(self.scripts))
+        import importlib
+        from datetime import datetime, timezone, timedelta
+        self._datetime = datetime
+        self._timezone = timezone
+        self._timedelta = timedelta
+        self.sp = importlib.import_module("state_provider")
+        self.hd = importlib.import_module("html_dashboard")
+
+    def _minimal_snapshot(self):
+        return self.sp.StateSnapshot(
+            project_root=Path("C:/proj"),
+            schema_version="agentdesk.tasks/v2",
+            project_id="smoke",
+            adoption_level="standard",
+            updated_at="2026-07-29T10:00:00Z",
+            pm_holder_id="pm-1",
+            pm_lease_epoch=1,
+            pm_mode="manual",
+            tasks=(),
+            events=(),
+            outbox=(),
+            acceptances=(),
+            mad_refs=None,
+            read_hexsha="a" * 64,
+        )
+
+    def _req(self, snap, gen=None):
+        if gen is None:
+            gen = self._datetime(2026, 7, 29, 12, 0, 0, tzinfo=self._timezone.utc)
+        return self.hd.DashboardRenderRequest(snapshot=snap, generated_at=gen)
+
+    def test_module_exists(self) -> None:
+        self.assertTrue((self.scripts / "html_dashboard.py").is_file())
+
+    def test_exact_7_symbol_api(self) -> None:
+        expected = {
+            "DashboardRenderRequest", "DashboardArtifact", "render_dashboard",
+            "DashboardError", "DashboardInputError",
+            "DashboardRenderError", "DashboardSecurityError",
+        }
+        self.assertEqual(set(self.hd.__all__), expected)
+        for name in expected:
+            self.assertTrue(hasattr(self.hd, name), f"missing public symbol: {name}")
+
+    def test_field_shapes_and_types(self) -> None:
+        from dataclasses import fields as _fields
+        req_names = {f.name for f in _fields(self.hd.DashboardRenderRequest)}
+        self.assertEqual(req_names, {"snapshot", "generated_at"})
+        art_names = {f.name for f in _fields(self.hd.DashboardArtifact)}
+        self.assertEqual(art_names,
+                         {"html", "snapshot_digest", "generated_at", "task_count"})
+        art = self.hd.render_dashboard(self._req(self._minimal_snapshot()))
+        self.assertIsInstance(art.html, bytes)
+        self.assertIsInstance(art.snapshot_digest, str)
+        self.assertIsInstance(art.generated_at, str)
+        self.assertIsInstance(art.task_count, int)
+        self.assertNotIsInstance(art.task_count, bool)
+
+    def test_dataclasses_frozen_and_slots(self) -> None:
+        for cls in (self.hd.DashboardRenderRequest, self.hd.DashboardArtifact):
+            self.assertTrue(cls.__dataclass_params__.frozen)
+            self.assertTrue(hasattr(cls, "__slots__"))
+
+    def test_renderer_is_synchronous(self) -> None:
+        import inspect
+        self.assertFalse(inspect.iscoroutinefunction(self.hd.render_dashboard))
+
+    def test_renders_html_bytes(self) -> None:
+        art = self.hd.render_dashboard(self._req(self._minimal_snapshot()))
+        self.assertIsInstance(art.html, bytes)
+        self.assertTrue(art.html.startswith(b"<!doctype html>"))
+        self.assertIn(b"</html>", art.html)
+
+    def test_csp_present(self) -> None:
+        art = self.hd.render_dashboard(self._req(self._minimal_snapshot()))
+        self.assertIn(b"Content-Security-Policy", art.html)
+        self.assertIn(b"default-src 'none'", art.html)
+
+    def test_empty_snapshot_renders(self) -> None:
+        art = self.hd.render_dashboard(self._req(self._minimal_snapshot()))
+        self.assertEqual(art.task_count, 0)
+        self.assertIn(b"No tasks", art.html)
+
+    def test_deterministic_output(self) -> None:
+        req = self._req(self._minimal_snapshot())
+        a = self.hd.render_dashboard(req)
+        b = self.hd.render_dashboard(req)
+        self.assertEqual(a.html, b.html)
+        self.assertEqual(a.snapshot_digest, b.snapshot_digest)
+        self.assertTrue(a.snapshot_digest.startswith("sha256:"))
+
+    def test_non_utc_datetime_rejected(self) -> None:
+        snap = self._minimal_snapshot()
+        naive = self._datetime(2026, 7, 29, 12, 0, 0)
+        with self.assertRaises(self.hd.DashboardInputError):
+            self.hd.DashboardRenderRequest(snapshot=snap, generated_at=naive)
+        cst = self._timezone(self._timedelta(hours=8))
+        with self.assertRaises(self.hd.DashboardInputError):
+            self.hd.DashboardRenderRequest(
+                snapshot=snap,
+                generated_at=self._datetime(2026, 7, 29, 12, 0, 0, tzinfo=cst),
+            )
+
+    def test_non_state_snapshot_rejected(self) -> None:
+        with self.assertRaises(self.hd.DashboardInputError):
+            self.hd.DashboardRenderRequest(
+                snapshot=object(),
+                generated_at=self._datetime(2026, 7, 29, 12, 0, 0,
+                                            tzinfo=self._timezone.utc),
+            )
+
+    def test_zero_import_side_effects(self) -> None:
+        script = (
+            "import sys, builtins, hashlib, html, re, dataclasses, "
+            "datetime, typing, pathlib, os, json, stat;\n"
+            "sys.path.insert(0, " + repr(str(self.scripts)) + ");\n"
+            "def _guard(*a, **k):\n"
+            "    raise AssertionError('open called during import');\n"
+            "_real = builtins.open;\n"
+            "builtins.open = _guard;\n"
+            "try:\n"
+            "    import html_dashboard, state_provider;\n"
+            "finally:\n"
+            "    builtins.open = _real;\n"
+            "print('ok');\n"
+        )
+        res = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(res.returncode, 0, msg=res.stderr)
+        self.assertIn("ok", res.stdout)
+
+    def test_render_zero_file_io(self) -> None:
+        import builtins
+        import os
+        real_open = builtins.open
+        real_os_open = os.open
+
+        def _guard(*a, **k):
+            raise AssertionError("open called during render")
+
+        builtins.open = _guard  # type: ignore
+        os.open = _guard  # type: ignore
+        try:
+            art = self.hd.render_dashboard(self._req(self._minimal_snapshot()))
+        finally:
+            builtins.open = real_open  # type: ignore
+            os.open = real_os_open  # type: ignore
+        self.assertIsInstance(art.html, bytes)
