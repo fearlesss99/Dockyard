@@ -63,12 +63,12 @@ def _valid_input(**overrides):
         "dispatch_id": "DSP-TC031-R2-A1-7F3C",
         "question": "审议问题？",
         "workspace": Path(tempfile.gettempdir()),
-        "task_card_commit": "a" * 64,
+        "task_card_commit": "a" * 40,
         "task_card_path": "tasks/TC-031-r2.md",
         "delivery_report_path": "reports/TC-031-r2-a1.md",
-        "report_commit": "b" * 64,
-        "base_commit": "c" * 64,
-        "implementation_commit": "d" * 64,
+        "report_commit": "b" * 40,
+        "base_commit": "c" * 40,
+        "implementation_commit": "d" * 40,
         "depth": MadDeliberationDepth.DEEP,
     }
     defaults.update(overrides)
@@ -92,7 +92,7 @@ def _make_audit_result_payload(**overrides) -> dict:
                 "location": {
                     "file": "src/main.py",
                     "line": "42",
-                    "commit": "cd0123456789abcdef0123456789abcdef012345",
+                    "commit": "cd0123456789abcdef0123456789abcd00112233",
                 },
                 "recommendation": "Add tests for edge case X.",
             }
@@ -311,8 +311,10 @@ class InputValidationTests(unittest.TestCase):
         with self.assertRaises(mad_gateway.GatewayInputError):
             _validate_audit_input(cfg, inp)
 
-    def test_commit_must_be_64_char_hex(self) -> None:
-        """All four commit fields must be 64-char lowercase hex."""
+    # -- Git SHA-1 commit validation ----------------------------------------
+
+    def test_four_valid_40_char_commits_pass(self) -> None:
+        """All four commit fields with 40-char lowercase hex pass validation."""
         from mad_audit_gateway import _validate_audit_input
         cfg = mad_gateway.MadGatewayConfig(
             mad_executable="mad", mad_home=str(_ABS_ROOT / "MAD_HOME"),
@@ -320,9 +322,136 @@ class InputValidationTests(unittest.TestCase):
             planning_agent_ids=("x",), planning_report_agent_id="x",
             audit_agent_ids=("a",), audit_report_agent_id="a",
         )
-        inp = _valid_input(task_card_commit="abc123")  # too short
+        inp = _valid_input(
+            task_card_commit="f" * 40,
+            report_commit="e" * 40,
+            base_commit="d" * 40,
+            implementation_commit="c" * 40,
+        )
+        _validate_audit_input(cfg, inp)  # no raise
+
+    def test_commit_39_chars_rejected(self) -> None:
+        """Each commit field with 39 chars is rejected."""
+        from mad_audit_gateway import _validate_audit_input
+        cfg = mad_gateway.MadGatewayConfig(
+            mad_executable="mad", mad_home=str(_ABS_ROOT / "MAD_HOME"),
+            timeout_seconds=600,
+            planning_agent_ids=("x",), planning_report_agent_id="x",
+            audit_agent_ids=("a",), audit_report_agent_id="a",
+        )
+        for field in ("task_card_commit", "report_commit",
+                       "base_commit", "implementation_commit"):
+            with self.subTest(field=field):
+                inp = _valid_input(**{field: "a" * 39})
+                with self.assertRaises(mad_gateway.GatewayInputError):
+                    _validate_audit_input(cfg, inp)
+
+    def test_commit_41_chars_rejected(self) -> None:
+        """Each commit field with 41 chars is rejected."""
+        from mad_audit_gateway import _validate_audit_input
+        cfg = mad_gateway.MadGatewayConfig(
+            mad_executable="mad", mad_home=str(_ABS_ROOT / "MAD_HOME"),
+            timeout_seconds=600,
+            planning_agent_ids=("x",), planning_report_agent_id="x",
+            audit_agent_ids=("a",), audit_report_agent_id="a",
+        )
+        for field in ("task_card_commit", "report_commit",
+                       "base_commit", "implementation_commit"):
+            with self.subTest(field=field):
+                inp = _valid_input(**{field: "a" * 41})
+                with self.assertRaises(mad_gateway.GatewayInputError):
+                    _validate_audit_input(cfg, inp)
+
+    def test_commit_64_chars_rejected(self) -> None:
+        """Each commit field with 64 chars is rejected (not SHA-256)."""
+        from mad_audit_gateway import _validate_audit_input
+        cfg = mad_gateway.MadGatewayConfig(
+            mad_executable="mad", mad_home=str(_ABS_ROOT / "MAD_HOME"),
+            timeout_seconds=600,
+            planning_agent_ids=("x",), planning_report_agent_id="x",
+            audit_agent_ids=("a",), audit_report_agent_id="a",
+        )
+        for field in ("task_card_commit", "report_commit",
+                       "base_commit", "implementation_commit"):
+            with self.subTest(field=field):
+                inp = _valid_input(**{field: "a" * 64})
+                with self.assertRaises(mad_gateway.GatewayInputError):
+                    _validate_audit_input(cfg, inp)
+
+    def test_commit_uppercase_rejected(self) -> None:
+        """Uppercase hex in commit fields is rejected."""
+        from mad_audit_gateway import _validate_audit_input
+        cfg = mad_gateway.MadGatewayConfig(
+            mad_executable="mad", mad_home=str(_ABS_ROOT / "MAD_HOME"),
+            timeout_seconds=600,
+            planning_agent_ids=("x",), planning_report_agent_id="x",
+            audit_agent_ids=("a",), audit_report_agent_id="a",
+        )
+        inp = _valid_input(task_card_commit="A" * 40)
         with self.assertRaises(mad_gateway.GatewayInputError):
             _validate_audit_input(cfg, inp)
+
+    def test_commit_non_hex_rejected(self) -> None:
+        """Non-hex characters in commit fields are rejected."""
+        from mad_audit_gateway import _validate_audit_input
+        cfg = mad_gateway.MadGatewayConfig(
+            mad_executable="mad", mad_home=str(_ABS_ROOT / "MAD_HOME"),
+            timeout_seconds=600,
+            planning_agent_ids=("x",), planning_report_agent_id="x",
+            audit_agent_ids=("a",), audit_report_agent_id="a",
+        )
+        inp = _valid_input(task_card_commit="g" * 40)
+        with self.assertRaises(mad_gateway.GatewayInputError):
+            _validate_audit_input(cfg, inp)
+
+    def test_commit_whitespace_rejected(self) -> None:
+        """Leading or trailing whitespace in commit is rejected."""
+        from mad_audit_gateway import _validate_audit_input
+        cfg = mad_gateway.MadGatewayConfig(
+            mad_executable="mad", mad_home=str(_ABS_ROOT / "MAD_HOME"),
+            timeout_seconds=600,
+            planning_agent_ids=("x",), planning_report_agent_id="x",
+            audit_agent_ids=("a",), audit_report_agent_id="a",
+        )
+        for bad_value in (" " + "a" * 39, "a" * 39 + " "):
+            with self.subTest(bad_value=repr(bad_value)):
+                inp = _valid_input(task_card_commit=bad_value)
+                with self.assertRaises(mad_gateway.GatewayInputError):
+                    _validate_audit_input(cfg, inp)
+
+    def test_commit_none_bool_int_rejected(self) -> None:
+        """None, bool, or int commit values are rejected."""
+        from mad_audit_gateway import _validate_audit_input
+        cfg = mad_gateway.MadGatewayConfig(
+            mad_executable="mad", mad_home=str(_ABS_ROOT / "MAD_HOME"),
+            timeout_seconds=600,
+            planning_agent_ids=("x",), planning_report_agent_id="x",
+            audit_agent_ids=("a",), audit_report_agent_id="a",
+        )
+        for bad_value in (None, True, False, 42):
+            with self.subTest(bad_value=repr(bad_value)):
+                inp = _valid_input(task_card_commit=bad_value)
+                with self.assertRaises(mad_gateway.GatewayInputError):
+                    _validate_audit_input(cfg, inp)
+
+    def test_commit_error_message_contains_field_name(self) -> None:
+        """Error message must contain the field name and '40 lowercase hex characters'."""
+        from mad_audit_gateway import _validate_git_commit_sha
+        try:
+            _validate_git_commit_sha("bad", "task_card_commit")
+        except mad_gateway.GatewayInputError as exc:
+            msg = str(exc)
+            self.assertIn("task_card_commit", msg)
+            self.assertIn("40 lowercase hex characters", msg)
+
+    def test_commit_error_message_does_not_contain_value(self) -> None:
+        """Error message must not contain the invalid commit value."""
+        from mad_audit_gateway import _validate_git_commit_sha
+        try:
+            _validate_git_commit_sha("bad123", "task_card_commit")
+        except mad_gateway.GatewayInputError as exc:
+            msg = str(exc)
+            self.assertNotIn("bad123", msg)
 
     def test_safe_path_rejects_backslash(self) -> None:
         """Repo-relative paths must not contain backslashes."""
@@ -969,7 +1098,7 @@ class DataModelImmutabilityTests(unittest.TestCase):
         """MadAuditIssueLocation is frozen and slotted."""
         loc = mad_audit_gateway.MadAuditIssueLocation(
             file="src/x.py", line="10",
-            commit="c" * 64,
+            commit="c" * 40,
         )
         self.assertTrue(hasattr(loc, "__slots__"))
         with self.assertRaises(Exception):
@@ -979,7 +1108,7 @@ class DataModelImmutabilityTests(unittest.TestCase):
         """MadAuditIssue is frozen and slotted."""
         loc = mad_audit_gateway.MadAuditIssueLocation(
             file="src/x.py", line=None,
-            commit="c" * 64,
+            commit="c" * 40,
         )
         issue = mad_audit_gateway.MadAuditIssue(
             id="ISS-001", severity="medium", category="completeness",

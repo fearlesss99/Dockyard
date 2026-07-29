@@ -201,7 +201,7 @@ _ALLOWED_EVIDENCE_TYPES: frozenset[str] = frozenset({
     "commit-message", "check-output", "model-output",
 })
 
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_GIT_SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 
 # Safe repo-relative path: no absolute, no backslash, no . or .. segments,
 # no NUL / CR / LF.
@@ -239,15 +239,15 @@ def _safe_stderr_preview(stderr_bytes: bytes, max_len: int = 500) -> str:
 # ── validation helpers ────────────────────────────────────────────────────
 
 
-def _validate_sha(value: Any, field_name: str) -> str:
-    """Validate *value* is a 40-char lowercase hex SHA.  Returns the string."""
+def _validate_git_commit_sha(value: Any, field_name: str) -> str:
+    """Validate *value* is a 40-char lowercase hex Git SHA-1.  Returns the string."""
     if not isinstance(value, str):
         raise GatewayInputError(
             f"{field_name} must be a string, got {type(value).__name__}"
         )
-    if not _SHA256_RE.fullmatch(value):
+    if not _GIT_SHA1_RE.fullmatch(value):
         raise GatewayInputError(
-            f"{field_name} must be 64 lowercase hex characters"
+            f"{field_name} must be 40 lowercase hex characters"
         )
     return value
 
@@ -318,10 +318,10 @@ def _validate_audit_input(
         )
 
     # ── four commit SHA fields ─────────────────────────────────────────
-    _validate_sha(inp.task_card_commit, "task_card_commit")
-    _validate_sha(inp.report_commit, "report_commit")
-    _validate_sha(inp.base_commit, "base_commit")
-    _validate_sha(inp.implementation_commit, "implementation_commit")
+    _validate_git_commit_sha(inp.task_card_commit, "task_card_commit")
+    _validate_git_commit_sha(inp.report_commit, "report_commit")
+    _validate_git_commit_sha(inp.base_commit, "base_commit")
+    _validate_git_commit_sha(inp.implementation_commit, "implementation_commit")
 
     # ── safe repo-relative paths ───────────────────────────────────────
     _validate_safe_path(inp.task_card_path, "task_card_path")
