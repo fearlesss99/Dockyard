@@ -19,7 +19,7 @@ Public API
 ``StateProvider.snapshot()`` — execute the multi-file consistency protocol
 ``StateSnapshot``       — frozen/slots dataclass with all parsed data
 ``TaskEntry``           — frozen task record (24 fields)
-``TaskTimestamps``      — frozen timestamps sub-record (9 fields)
+``TaskTimestamps``      — frozen timestamps sub-record (11 fields)
 ``DispatchInfo``        — frozen dispatch sub-record (7 fields)
 ``EventEntry``          — frozen event record (17 fields)
 ``GuardInput``          — frozen guard key-value pair (2 fields)
@@ -174,11 +174,13 @@ _TASK_FIELDS: tuple[str, ...] = (
     "resume_state", "timestamps",
 )
 
-# Timestamp fields (9)
+# Timestamp fields (11 — §4.2 of state-provider-contract.md)
+# cancelled_at and superseded_at are optional; their keys may be absent
+# in canonical tasks.yaml for non-terminal states.
 _TIMESTAMP_FIELDS: tuple[str, ...] = (
     "created_at", "ready_at", "dispatched_at", "started_at",
     "delivered_at", "blocked_at", "accepted_at", "integrated_at",
-    "updated_at",
+    "cancelled_at", "superseded_at", "updated_at",
 )
 
 # Event common fields
@@ -621,7 +623,13 @@ class OutboxPayload:
 
 @dataclass(frozen=True, slots=True)
 class TaskTimestamps:
-    """Frozen task timestamps sub-record (9 fields)."""
+    """Frozen task timestamps sub-record (11 fields).
+
+    ``cancelled_at`` and ``superseded_at`` are terminal-state timestamps
+    that may be absent in canonical ``tasks.yaml`` for non-terminal
+    states.  They default to ``None`` so existing construction code
+    remains compatible.
+    """
 
     created_at: str
     ready_at: str | None
@@ -632,6 +640,8 @@ class TaskTimestamps:
     accepted_at: str | None
     integrated_at: str | None
     updated_at: str
+    cancelled_at: str | None = None
+    superseded_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1218,10 +1228,28 @@ def _build_timestamps(raw: Any) -> TaskTimestamps:
         raise StateProviderSchemaError("timestamps must be an object")
     allowed = frozenset(_TIMESTAMP_FIELDS)
     _validate_extra_keys(raw, allowed, "timestamps")
-    _validate_missing_keys(raw, allowed, "timestamps")
+
+    # Original 9 fields are required — validate before parsing.
+    _required_9 = frozenset((
+        "created_at", "ready_at", "dispatched_at", "started_at",
+        "delivered_at", "blocked_at", "accepted_at", "integrated_at",
+        "updated_at",
+    ))
+    _validate_missing_keys(raw, _required_9, "timestamps")
 
     def _opt(key: str) -> str | None:
         v = raw.get(key)
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            raise StateProviderSchemaError("timestamp must be str or null")
+        return _freeze(v)
+
+    def _opt_terminal(key: str) -> str | None:
+        """Parse optional terminal timestamp — key may be absent in the dict."""
+        if key not in raw:
+            return None
+        v = raw[key]
         if v is None:
             return None
         if not isinstance(v, str):
@@ -1238,6 +1266,8 @@ def _build_timestamps(raw: Any) -> TaskTimestamps:
         accepted_at=_opt("accepted_at"),
         integrated_at=_opt("integrated_at"),
         updated_at=_freeze(_require_str(raw.get("updated_at"))),
+        cancelled_at=_opt_terminal("cancelled_at"),
+        superseded_at=_opt_terminal("superseded_at"),
     )
 
 

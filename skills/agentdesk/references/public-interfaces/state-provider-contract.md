@@ -3,6 +3,8 @@
 Interface #21 frozen contract.  TC-13.17a froze the contract; TC-13.17b
 produced the production module; TC-13.17b.1 aligned YAML format compatibility;
 TC-13.17b.2 finalised this document against the current production API.
+TC-13.17b.3 fixed terminal timestamp read compatibility (cancelled_at,
+superseded_at).
 
 This document is the authoritative frozen specification.
 Every field count, field name, field order, field type, and collection
@@ -196,7 +198,16 @@ Each task object in the `tasks` array has exactly 24 fields:
 | `blocked_at` | `str \| None` | `TASK_BLOCKED` / `INTEGRATION_FAILED` |
 | `accepted_at` | `str \| None` | `DELIVERY_ACCEPTED` |
 | `integrated_at` | `str \| None` | `CHANGE_INTEGRATED` |
+| `cancelled_at` | `str \| None` | `BLOCKER_CANCELLED` / `TASK_CANCELLED` |
+| `superseded_at` | `str \| None` | `TASK_SUPERSEDED` |
 | `updated_at` | `str` | Every transition |
+
+`cancelled_at` and `superseded_at` are optional terminal-state timestamps.
+They may be absent in canonical `tasks.yaml` for non-terminal states; when
+absent, the corresponding `TaskTimestamps` dataclass attribute is `None`.
+When present, both must be a non-empty string or the JSON `null` value.
+Non-string types (int, bool, array, object) are rejected fail-closed.
+Unknown/extra timestamp keys remain rejected.
 
 ### 4.3 Task States (Frozen Set)
 
@@ -394,7 +405,7 @@ Frozen/slots dataclass:
 | 23 | `resume_state` | `str \| None` |
 | 24 | `timestamps` | `TaskTimestamps` |
 
-### 9.3 `TaskTimestamps` — Exact Fields (9)
+### 9.3 `TaskTimestamps` — Exact Fields (11)
 
 Frozen/slots nested dataclass:
 
@@ -409,6 +420,8 @@ Frozen/slots nested dataclass:
 | 7 | `accepted_at` | `str \| None` |
 | 8 | `integrated_at` | `str \| None` |
 | 9 | `updated_at` | `str` |
+| 10 | `cancelled_at` | `str \| None` |
+| 11 | `superseded_at` | `str \| None` |
 
 ### 9.4 `DispatchInfo` — Exact Fields (7)
 

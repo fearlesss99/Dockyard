@@ -775,6 +775,183 @@ class TC1317bProductionTests(unittest.TestCase):
         finally:
             tree.cleanup()
 
+    # ── 22. Cancelled timestamp read (TC-13.17b.3) ────────────────────────
+
+    def test_snapshot_accepts_cancelled_at_and_defaults_superseded_at(self) -> None:
+        """cancelled_at is read; superseded_at defaults to None when absent."""
+        tree = _ProjectTree()
+        try:
+            did = "DSP-CANCEL"
+            ts = {
+                "created_at": "2026-07-28T00:00:00Z", "ready_at": None,
+                "dispatched_at": "2026-07-28T00:00:01Z", "started_at": None,
+                "delivered_at": None, "blocked_at": "2026-07-28T00:00:02Z",
+                "accepted_at": None, "integrated_at": None,
+                "cancelled_at": "2026-07-28T00:00:03Z",
+                "updated_at": "2026-07-28T00:00:03Z",
+            }
+            tasks_doc = _make_tasks_doc(state="cancelled")
+            tasks_doc["tasks"][0]["timestamps"] = ts
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+
+            out_doc = _make_outbox_doc(dispatch_id=did, event_id="EVT-CANCEL")
+            out_raw = _write_outbox_yaml(out_doc, "MSG-CANCEL.yaml",
+                                          tree.root / "docs" / "pm" / "outbox")
+            digest = "sha256:" + hashlib.sha256(out_raw).hexdigest()
+            ev = _make_event_doc(
+                event_id=out_doc["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev, "EVT-CANCEL.yaml",
+                              tree.root / "docs" / "pm" / "events")
+
+            snapshot = StateProvider(tree.root).snapshot()
+            self.assertEqual(len(snapshot.tasks), 1)
+            task = snapshot.tasks[0]
+            self.assertEqual(task.state, "cancelled")
+            self.assertEqual(task.timestamps.cancelled_at, "2026-07-28T00:00:03Z")
+            self.assertIsNone(task.timestamps.superseded_at)
+
+            # Verify frozen
+            with self.assertRaises(Exception):
+                task.timestamps.cancelled_at = "modified"  # type: ignore[misc]
+        finally:
+            tree.cleanup()
+
+    # ── 23. Superseded timestamp read (TC-13.17b.3) ───────────────────────
+
+    def test_snapshot_accepts_superseded_at_and_defaults_cancelled_at(self) -> None:
+        """superseded_at is read; cancelled_at defaults to None when absent."""
+        tree = _ProjectTree()
+        try:
+            did = "DSP-SUPERSEDE"
+            ts = {
+                "created_at": "2026-07-28T00:00:00Z", "ready_at": None,
+                "dispatched_at": "2026-07-28T00:00:01Z", "started_at": None,
+                "delivered_at": None, "blocked_at": None,
+                "accepted_at": None, "integrated_at": None,
+                "superseded_at": "2026-07-28T00:00:04Z",
+                "updated_at": "2026-07-28T00:00:04Z",
+            }
+            tasks_doc = _make_tasks_doc(state="superseded")
+            tasks_doc["tasks"][0]["timestamps"] = ts
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+
+            out_doc = _make_outbox_doc(dispatch_id=did, event_id="EVT-SUPERSEDE")
+            out_raw = _write_outbox_yaml(out_doc, "MSG-SUPERSEDE.yaml",
+                                          tree.root / "docs" / "pm" / "outbox")
+            digest = "sha256:" + hashlib.sha256(out_raw).hexdigest()
+            ev = _make_event_doc(
+                event_id=out_doc["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev, "EVT-SUPERSEDE.yaml",
+                              tree.root / "docs" / "pm" / "events")
+
+            snapshot = StateProvider(tree.root).snapshot()
+            self.assertEqual(len(snapshot.tasks), 1)
+            task = snapshot.tasks[0]
+            self.assertEqual(task.state, "superseded")
+            self.assertEqual(task.timestamps.superseded_at, "2026-07-28T00:00:04Z")
+            self.assertIsNone(task.timestamps.cancelled_at)
+        finally:
+            tree.cleanup()
+
+    # ── 24. Terminal timestamp type validation (TC-13.17b.3) ──────────────
+
+    def test_terminal_timestamp_types_remain_fail_closed(self) -> None:
+        """Non-string cancelled_at/superseded_at and unknown keys are rejected."""
+        tree = _ProjectTree()
+        try:
+            did = "DSP-TERM-TYPE"
+
+            # ── non-string cancelled_at ──
+            ts_bad_cancelled = {
+                "created_at": "2026-07-28T00:00:00Z", "ready_at": None,
+                "dispatched_at": "2026-07-28T00:00:01Z", "started_at": None,
+                "delivered_at": None, "blocked_at": "2026-07-28T00:00:02Z",
+                "accepted_at": None, "integrated_at": None,
+                "cancelled_at": 12345,
+                "updated_at": "2026-07-28T00:00:03Z",
+            }
+            tasks_doc = _make_tasks_doc(state="cancelled")
+            tasks_doc["tasks"][0]["timestamps"] = ts_bad_cancelled
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+            out_doc = _make_outbox_doc(dispatch_id=did, event_id="EVT-TYPE1")
+            out_raw = _write_outbox_yaml(out_doc, "MSG-TYPE1.yaml",
+                                          tree.root / "docs" / "pm" / "outbox")
+            digest = "sha256:" + hashlib.sha256(out_raw).hexdigest()
+            ev = _make_event_doc(
+                event_id=out_doc["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev, "EVT-TYPE1.yaml",
+                              tree.root / "docs" / "pm" / "events")
+            with self.assertRaises(StateProviderSchemaError):
+                StateProvider(tree.root).snapshot()
+            tree.cleanup()
+
+            # ── non-string superseded_at ──
+            tree = _ProjectTree()
+            ts_bad_superseded = {
+                "created_at": "2026-07-28T00:00:00Z", "ready_at": None,
+                "dispatched_at": "2026-07-28T00:00:01Z", "started_at": None,
+                "delivered_at": None, "blocked_at": None,
+                "accepted_at": None, "integrated_at": None,
+                "superseded_at": True,
+                "updated_at": "2026-07-28T00:00:04Z",
+            }
+            tasks_doc = _make_tasks_doc(state="superseded")
+            tasks_doc["tasks"][0]["timestamps"] = ts_bad_superseded
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+            out2 = _make_outbox_doc(dispatch_id=did, event_id="EVT-TYPE2")
+            out_raw2 = _write_outbox_yaml(out2, "MSG-TYPE2.yaml",
+                                           tree.root / "docs" / "pm" / "outbox")
+            digest2 = "sha256:" + hashlib.sha256(out_raw2).hexdigest()
+            ev2 = _make_event_doc(
+                event_id=out2["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest2,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev2, "EVT-TYPE2.yaml",
+                              tree.root / "docs" / "pm" / "events")
+            with self.assertRaises(StateProviderSchemaError):
+                StateProvider(tree.root).snapshot()
+            tree.cleanup()
+
+            # ── unknown timestamp key still rejected ──
+            tree = _ProjectTree()
+            ts_unknown_key = {
+                "created_at": "2026-07-28T00:00:00Z", "ready_at": None,
+                "dispatched_at": None, "started_at": None,
+                "delivered_at": None, "blocked_at": None,
+                "accepted_at": None, "integrated_at": None,
+                "unknown_extra": "should be rejected",
+                "updated_at": "2026-07-28T00:00:00Z",
+            }
+            tasks_doc = _make_tasks_doc(state="draft")
+            tasks_doc["tasks"][0]["timestamps"] = ts_unknown_key
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+            # Minimal event to allow read — dispatch anyway
+            out3 = _make_outbox_doc(dispatch_id=did, event_id="EVT-TYPE3")
+            out_raw3 = _write_outbox_yaml(out3, "MSG-TYPE3.yaml",
+                                           tree.root / "docs" / "pm" / "outbox")
+            digest3 = "sha256:" + hashlib.sha256(out_raw3).hexdigest()
+            ev3 = _make_event_doc(
+                event_id=out3["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest3,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev3, "EVT-TYPE3.yaml",
+                              tree.root / "docs" / "pm" / "events")
+            with self.assertRaises(StateProviderSchemaError):
+                StateProvider(tree.root).snapshot()
+        finally:
+            tree.cleanup()
+
 
 def load_tests(loader: unittest.TestLoader, standard_tests: unittest.TestSuite,
                pattern: str | None) -> unittest.TestSuite:  # type: ignore[override]

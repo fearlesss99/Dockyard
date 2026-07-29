@@ -7839,7 +7839,7 @@ class TC1317b2ContractFreezeTests(unittest.TestCase):
     _dc_map = {
         "StateSnapshot": 14,
         "TaskEntry": 24,
-        "TaskTimestamps": 9,
+        "TaskTimestamps": 11,
         "DispatchInfo": 7,
         "EventEntry": 17,
         "GuardInput": 2,
