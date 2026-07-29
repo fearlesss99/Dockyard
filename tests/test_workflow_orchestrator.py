@@ -442,6 +442,11 @@ def _init_tasks_yaml(project_root: Path, task_id: str = "TC-001", state: str = "
                 "review_after": None,
                 "blocked_attempt_valid": None,
                 "resume_state": None,
+                **(
+                    {"superseded_by": "TC-002"}
+                    if state == "superseded"
+                    else {}
+                ),
                 "timestamps": {
                     "created_at": "2026-07-28T12:00:00Z",
                     "ready_at": "2026-07-28T12:00:00Z",
@@ -554,17 +559,27 @@ def _write_approval_grant(project_root: Path) -> None:
 class TestWorkflowOrchestratorAPI(unittest.TestCase):
     """Test __all__ exactness and dataclass frozen/slots properties."""
 
-    def test_all_exactly_twenty_two(self) -> None:
+    def test_all_exactly_thirty_six(self) -> None:
         import workflow_orchestrator as wo
         self.assertEqual(
-            len(wo.__all__), 22,
-            f"__all__ must have exactly 22 entries, got {len(wo.__all__)}: {wo.__all__}"
+            len(wo.__all__), 36,
+            f"__all__ must have exactly 36 entries, got {len(wo.__all__)}: {wo.__all__}"
         )
         expected = sorted([
             "AcceptanceCycleRequest",
             "AcceptanceCycleResult",
+            "ActiveDispatchCancellationRequest",
+            "ActiveDispatchCancellationResult",
+            "ActiveDispatchExecution",
+            "ActiveDispatchHandle",
+            "ActiveDispatchSupersessionRequest",
+            "ActiveDispatchSupersessionResult",
             "BlockedAuditRequest",
             "BlockedAuditResult",
+            "BlockedCancellationRequest",
+            "BlockedCancellationResult",
+            "BlockedRescopeRequest",
+            "BlockedRescopeResult",
             "DeliveryReceipt",
             "DeliveryRemediationRequest",
             "DeliveryRemediationResult",
@@ -574,6 +589,10 @@ class TestWorkflowOrchestratorAPI(unittest.TestCase):
             "EscalatedRedispatchResult",
             "IntegrationFailureRequest",
             "IntegrationFailureResult",
+            "TaskCancellationRequest",
+            "TaskCancellationResult",
+            "TaskSupersessionRequest",
+            "TaskSupersessionResult",
             "WorkerOutput",
             "WorkflowClock",
             "WorkflowHeartbeatError",
@@ -3320,6 +3339,738 @@ class _WorkflowOrchestratorEscalatedRedispatchTestsBase:
                 ("transition", "BLOCKER_RESOLVED"),
                 "dispatch_cycle",
             ])
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+
+# -- TC-13.18d.10b active-dispatch supersession -----------------------------
+
+
+class ActiveDispatchSupersessionTests(unittest.TestCase):
+    """Production state-machine tests for creator-owned live supersession."""
+
+    @staticmethod
+    def _add_replacement_task(project_root: Path) -> None:
+        """Add and commit a quiescent replacement task for real transitions."""
+        import copy
+        import json
+        import subprocess
+
+        tasks_path = (
+            project_root / "docs" / "pm" / "state" / "tasks.yaml"
+        )
+        document = json.loads(tasks_path.read_text(encoding="utf-8"))
+        replacement = copy.deepcopy(document["tasks"][0])
+        replacement.update({
+            "task_id": "TC-002",
+            "revision": 1,
+            "task_card_path": "tasks/TC-002/task.md",
+            "task_card_commit": "c" * 40,
+            "state": "draft",
+            "attempt": None,
+            "current_dispatch": None,
+            "report_path": None,
+        })
+        replacement.pop("superseded_by", None)
+        replacement["timestamps"].update({
+            "created_at": "2026-07-28T12:00:00Z",
+            "ready_at": None,
+            "dispatched_at": None,
+            "started_at": None,
+            "updated_at": "2026-07-28T12:00:00Z",
+        })
+        document["tasks"].append(replacement)
+        tasks_path.write_text(
+            json.dumps(document, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "add", "docs/pm/state/tasks.yaml"],
+            cwd=str(project_root),
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "add replacement task"],
+            cwd=str(project_root),
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+
+    @staticmethod
+    def _supersession_request(
+        execution: Any,
+        *,
+        superseded_by: str = "TC-002",
+    ) -> tuple[Any, TransitionRequest]:
+        from control_plane_transition import SupersededPayload
+        from workflow_orchestrator import ActiveDispatchSupersessionRequest
+
+        handle = execution.handle
+        caller_transition = TransitionRequest(
+            cas=TransitionCAS(
+                task_id=handle.task_id,
+                expected_revision=handle.revision,
+                expected_state="in_progress",
+                expected_snapshot_commit="a" * 40,
+            ),
+            dispatch_cas=None,
+            event_id="EVT-ACTIVE-SUPERSEDE-001",
+            event_type="TASK_SUPERSEDED",
+            payload=SupersededPayload(superseded_by=superseded_by),
+            event_context=TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(),
+                guard_results=(),
+            ),
+        )
+        return (
+            ActiveDispatchSupersessionRequest(
+                handle=handle,
+                supersession_transition_request=caller_transition,
+            ),
+            caller_transition,
+        )
+
+    @staticmethod
+    def _terminal_result(transition: Any) -> TransitionResult:
+        return TransitionResult(
+            task_id=transition.cas.task_id,
+            event_id=transition.event_id,
+            from_state="in_progress",
+            to_state="superseded",
+            occurred_at="2026-07-28T12:00:10Z",
+            outbox_message_id=None,
+        )
+
+    @staticmethod
+    async def _never_worker(
+        request: Any,
+        worker_kind: Any,
+        difficulty: Any,
+        providers: Any,
+        observer: Any,
+    ) -> WorkerResult:
+        from dispatcher_gateway import DispatchCancelledError
+
+        selection = request.model_selection
+        await observer.on_dispatch_started(
+            DispatchStarted(
+                identity=request.identity,
+                provider=selection.selected_model_provider,
+                model_id=selection.selected_model_id,
+            )
+        )
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise DispatchCancelledError() from None
+
+    def test_public_types_and_immutable_dispatch_cas_binding(self) -> None:
+        import workflow_orchestrator as wo
+
+        handle = wo.ActiveDispatchHandle(
+            task_id="TC-001",
+            revision=3,
+            attempt=2,
+            dispatch_id="DSP-002",
+            holder_instance_id="INST-001",
+            lease_epoch=4,
+            lease=WorkerSlotLease(
+                lease_id="WSL-" + ("1" * 32),
+                slot_id="standard_agent-1",
+                worker_kind=WorkerKind.STANDARD_AGENT,
+                holder_dispatch_id="DSP-002",
+                holder_instance_id="INST-001",
+                lease_epoch=4,
+                canonical_worktree="C:\\worktree",
+                acquired_at="2026-07-28T12:00:00Z",
+                heartbeat_at="2026-07-28T12:00:00Z",
+                expires_at="2026-07-28T12:05:00Z",
+            ),
+        )
+        execution = object.__new__(wo.ActiveDispatchExecution)
+        object.__setattr__(execution, "_handle", handle)
+        request, caller_transition = self._supersession_request(execution)
+
+        self.assertTrue({
+            "ActiveDispatchSupersessionRequest",
+            "ActiveDispatchSupersessionResult",
+        }.issubset(set(wo.__all__)))
+        self.assertEqual(len(dc_fields(wo.ActiveDispatchSupersessionRequest)), 2)
+        self.assertEqual(len(dc_fields(wo.ActiveDispatchSupersessionResult)), 4)
+        self.assertIsNone(caller_transition.dispatch_cas)
+        bound = request.supersession_transition_request
+        self.assertIsNot(bound, caller_transition)
+        self.assertEqual(
+            bound.dispatch_cas.expected_dispatch_id, handle.dispatch_id
+        )
+        self.assertEqual(
+            bound.dispatch_cas.expected_attempt, handle.attempt
+        )
+        with self.assertRaises((AttributeError, TypeError)):
+            request.handle = handle  # type: ignore[misc]
+
+    def test_minimal_live_supersession_chain_and_shared_waiters(self) -> None:
+        """Stop Worker/hb, release once, transition once, never redispatch."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            from dispatcher_gateway import DispatchCancelledError
+
+            self._add_replacement_task(tmp)
+            release_calls = 0
+            supersession_calls = 0
+            real_release = wo.release_worker_slot
+            real_apply = wo.ControlPlaneTransitionService.apply_transition
+
+            def _release(*args: Any, **kwargs: Any) -> None:
+                nonlocal release_calls
+                release_calls += 1
+                real_release(*args, **kwargs)
+
+            def _apply(
+                service: Any,
+                transition: Any,
+                lease: Any,
+                now: Any,
+            ) -> TransitionResult:
+                nonlocal supersession_calls
+                if transition.event_type == "TASK_SUPERSEDED":
+                    supersession_calls += 1
+                    self.assertIsNone(lease)
+                return real_apply(service, transition, lease, now)
+
+            async def _run() -> None:
+                with mock.patch.object(
+                    wo, "run_worker_observed", side_effect=self._never_worker
+                ), mock.patch.object(
+                    wo, "release_worker_slot", side_effect=_release
+                ), mock.patch.object(
+                    wo.ControlPlaneTransitionService,
+                    "apply_transition",
+                    autospec=True,
+                    side_effect=_apply,
+                ), mock.patch.object(
+                    wo.WorkflowOrchestrator,
+                    "run_dispatch_cycle",
+                    autospec=True,
+                ) as redispatch:
+                    orch = _new_orch(tmp)
+                    execution = await orch.start_dispatch_cycle(
+                        _make_dispatch_cycle_request(tmp=tmp),
+                        {"claude": FakeProvider()},
+                    )
+                    request, caller_transition = self._supersession_request(
+                        execution
+                    )
+                    self.assertIsNone(caller_transition.dispatch_cas)
+                    object.__setattr__(
+                        request.supersession_transition_request.cas,
+                        "expected_snapshot_commit",
+                        _git_head(tmp),
+                    )
+                    waiters = [
+                        asyncio.create_task(execution.wait()),
+                        asyncio.create_task(execution.wait()),
+                    ]
+                    result = await orch.supersede_active_dispatch(
+                        execution, request
+                    )
+                    self.assertEqual(result.task_id, "TC-001")
+                    self.assertEqual(result.dispatch_id, "DSP-001")
+                    self.assertEqual(result.superseded_by, "TC-002")
+                    for waiter in waiters:
+                        with self.assertRaises(DispatchCancelledError):
+                            await waiter
+                    with self.assertRaises(DispatchCancelledError):
+                        await execution.wait()
+                    await asyncio.sleep(0)
+                    self.assertTrue(execution._worker_task.done())
+                    self.assertTrue(execution._heartbeat_task.done())
+                    self.assertTrue(execution._runner_task.done())
+                    redispatch.assert_not_called()
+                    self.assertEqual(release_calls, 1)
+                    self.assertEqual(supersession_calls, 1)
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_active_dispatch(
+                            execution, request
+                        )
+                    self.assertEqual(release_calls, 1)
+                    self.assertEqual(supersession_calls, 1)
+
+            asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_owner_handle_payload_and_stale_attempt_fail_closed(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            from control_plane_transition import DispatchCAS
+            from dispatcher_gateway import DispatchCancelledError
+
+            async def _run() -> None:
+                with mock.patch.object(
+                    wo, "run_worker_observed", side_effect=self._never_worker
+                ):
+                    owner = _new_orch(tmp)
+                    other = _new_orch(tmp)
+                    execution = await owner.start_dispatch_cycle(
+                        _make_dispatch_cycle_request(tmp=tmp),
+                        {"claude": FakeProvider()},
+                    )
+                    request, _ = self._supersession_request(execution)
+                    with self.assertRaises(WorkflowInputError):
+                        await other.supersede_active_dispatch(
+                            execution, request
+                        )
+
+                    wrong_handle = wo.ActiveDispatchHandle(
+                        task_id=execution.handle.task_id,
+                        revision=execution.handle.revision,
+                        attempt=execution.handle.attempt,
+                        dispatch_id=execution.handle.dispatch_id,
+                        holder_instance_id=(
+                            execution.handle.holder_instance_id
+                        ),
+                        lease_epoch=execution.handle.lease_epoch,
+                        lease=execution.handle.lease,
+                    )
+                    object.__setattr__(wrong_handle, "task_id", "TC-WRONG")
+                    wrong_request = wo.ActiveDispatchSupersessionRequest(
+                        wrong_handle,
+                        request.supersession_transition_request,
+                    )
+                    with self.assertRaises(WorkflowInputError):
+                        await owner.supersede_active_dispatch(
+                            execution, wrong_request
+                        )
+
+                    stale_request, _ = self._supersession_request(execution)
+                    object.__setattr__(
+                        stale_request.supersession_transition_request,
+                        "dispatch_cas",
+                        DispatchCAS(
+                            expected_dispatch_id="DSP-STALE",
+                            expected_attempt=99,
+                        ),
+                    )
+                    with self.assertRaises(WorkflowInputError):
+                        await owner.supersede_active_dispatch(
+                            execution, stale_request
+                        )
+
+                    self_request, _ = self._supersession_request(
+                        execution, superseded_by=execution.handle.task_id
+                    )
+                    with self.assertRaises(WorkflowInputError):
+                        await owner.supersede_active_dispatch(
+                            execution, self_request
+                        )
+
+                    execution._worker_task.cancel()
+                    with self.assertRaises(DispatchCancelledError):
+                        await execution.wait()
+
+            asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_worker_first_completion_rejects_supersession(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            finish_worker = asyncio.Event()
+            worker_finished = asyncio.Event()
+            decoded = mock.Mock()
+            receipt = mock.Mock(
+                implementation_commit="d" * 40,
+                report_commit="e" * 40,
+            )
+
+            async def _worker(
+                request: Any,
+                worker_kind: Any,
+                difficulty: Any,
+                providers: Any,
+                observer: Any,
+            ) -> WorkerResult:
+                selection = request.model_selection
+                await observer.on_dispatch_started(
+                    DispatchStarted(
+                        identity=request.identity,
+                        provider=selection.selected_model_provider,
+                        model_id=selection.selected_model_id,
+                    )
+                )
+                await finish_worker.wait()
+                worker_finished.set()
+                return _make_worker_result()
+
+            async def _run() -> None:
+                with mock.patch.object(
+                    wo, "run_worker_observed", side_effect=_worker
+                ), mock.patch.object(
+                    wo, "decode_worker_result", return_value=decoded
+                ), mock.patch.object(
+                    wo, "require_delivery_receipt", return_value=receipt
+                ):
+                    orch = _new_orch(tmp)
+                    execution = await orch.start_dispatch_cycle(
+                        _make_dispatch_cycle_request(tmp=tmp),
+                        {"claude": FakeProvider()},
+                    )
+                    finish_worker.set()
+                    await worker_finished.wait()
+                    for _ in range(20):
+                        if execution._completion.done():
+                            break
+                        await asyncio.sleep(0)
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.supersede_active_dispatch(
+                            execution,
+                            self._supersession_request(execution)[0],
+                        )
+                    first = await execution.wait()
+                    second = await execution.wait()
+                    self.assertIs(first, second)
+                    self.assertIs(first.worker_output, decoded)
+
+            asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_cancellation_and_supersession_compete_for_one_winner(self) -> None:
+        import workflow_orchestrator as wo
+        from dispatcher_gateway import DispatchCancelledError
+
+        for winner in ("cancellation", "supersession"):
+            with self.subTest(winner=winner):
+                tmp = _setup_project()
+                worker_is_cleaning = asyncio.Event()
+                allow_cleanup = asyncio.Event()
+                terminal_events: list[str] = []
+                real_apply = (
+                    wo.ControlPlaneTransitionService.apply_transition
+                )
+
+                async def _worker(
+                    request: Any,
+                    worker_kind: Any,
+                    difficulty: Any,
+                    providers: Any,
+                    observer: Any,
+                ) -> WorkerResult:
+                    selection = request.model_selection
+                    await observer.on_dispatch_started(
+                        DispatchStarted(
+                            identity=request.identity,
+                            provider=selection.selected_model_provider,
+                            model_id=selection.selected_model_id,
+                        )
+                    )
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        worker_is_cleaning.set()
+                        await allow_cleanup.wait()
+                        raise DispatchCancelledError() from None
+
+                def _apply(
+                    service: Any,
+                    transition: Any,
+                    lease: Any,
+                    now: Any,
+                ) -> TransitionResult:
+                    if transition.event_type in (
+                        "TASK_CANCELLED", "TASK_SUPERSEDED"
+                    ):
+                        terminal_events.append(transition.event_type)
+                        if transition.event_type == "TASK_SUPERSEDED":
+                            return self._terminal_result(transition)
+                        return TransitionResult(
+                            task_id=transition.cas.task_id,
+                            event_id=transition.event_id,
+                            from_state="in_progress",
+                            to_state="cancelled",
+                            occurred_at="2026-07-28T12:00:10Z",
+                            outbox_message_id=None,
+                        )
+                    return real_apply(service, transition, lease, now)
+
+                async def _run() -> None:
+                    with mock.patch.object(
+                        wo, "run_worker_observed", side_effect=_worker
+                    ), mock.patch.object(
+                        wo.ControlPlaneTransitionService,
+                        "apply_transition",
+                        autospec=True,
+                        side_effect=_apply,
+                    ):
+                        orch = _new_orch(tmp)
+                        execution = await orch.start_dispatch_cycle(
+                            _make_dispatch_cycle_request(tmp=tmp),
+                            {"claude": FakeProvider()},
+                        )
+                        cancel_request = (
+                            ActiveDispatchCancellationTests
+                            ._cancel_request(execution)
+                        )
+                        supersede_request = self._supersession_request(
+                            execution
+                        )[0]
+                        if winner == "cancellation":
+                            winning_task = asyncio.create_task(
+                                orch.cancel_active_dispatch(
+                                    execution, cancel_request
+                                )
+                            )
+                            await worker_is_cleaning.wait()
+                            with self.assertRaises(WorkflowInputError):
+                                await orch.supersede_active_dispatch(
+                                    execution, supersede_request
+                                )
+                        else:
+                            winning_task = asyncio.create_task(
+                                orch.supersede_active_dispatch(
+                                    execution, supersede_request
+                                )
+                            )
+                            await worker_is_cleaning.wait()
+                            with self.assertRaises(WorkflowInputError):
+                                await orch.cancel_active_dispatch(
+                                    execution, cancel_request
+                                )
+                        allow_cleanup.set()
+                        await winning_task
+                        await asyncio.sleep(0)
+                        self.assertTrue(execution._runner_task.done())
+
+                try:
+                    asyncio.run(_run())
+                    expected = (
+                        "TASK_CANCELLED"
+                        if winner == "cancellation"
+                        else "TASK_SUPERSEDED"
+                    )
+                    self.assertEqual(terminal_events, [expected])
+                finally:
+                    import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_cleanup_heartbeat_release_and_cas_failures(self) -> None:
+        import workflow_orchestrator as wo
+        from control_plane_transition import TransitionCASConflictError
+        from dispatcher_gateway import DispatchCancelledError
+
+        for case in ("cleanup", "heartbeat", "release", "cas"):
+            with self.subTest(case=case):
+                tmp = _setup_project()
+                heartbeat_gate: asyncio.Event | None = None
+                release_calls = 0
+                supersession_calls = 0
+                real_release = wo.release_worker_slot
+                real_apply = (
+                    wo.ControlPlaneTransitionService.apply_transition
+                )
+
+                class _GatedClock(FakeClock):
+                    async def sleep(self, seconds: float) -> None:
+                        assert heartbeat_gate is not None
+                        await heartbeat_gate.wait()
+                        raise WorkerSlotNotHeldError("heartbeat fenced")
+
+                async def _worker(
+                    request: Any,
+                    worker_kind: Any,
+                    difficulty: Any,
+                    providers: Any,
+                    observer: Any,
+                ) -> WorkerResult:
+                    selection = request.model_selection
+                    await observer.on_dispatch_started(
+                        DispatchStarted(
+                            identity=request.identity,
+                            provider=selection.selected_model_provider,
+                            model_id=selection.selected_model_id,
+                        )
+                    )
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        if case == "cleanup":
+                            raise RuntimeError("cleanup not confirmed")
+                        raise DispatchCancelledError() from None
+
+                def _release(*args: Any, **kwargs: Any) -> None:
+                    nonlocal release_calls
+                    release_calls += 1
+                    if case == "release":
+                        raise WorkerSlotNotHeldError("release failed")
+                    real_release(*args, **kwargs)
+
+                def _apply(
+                    service: Any,
+                    transition: Any,
+                    lease: Any,
+                    now: Any,
+                ) -> TransitionResult:
+                    nonlocal supersession_calls
+                    if transition.event_type == "TASK_SUPERSEDED":
+                        supersession_calls += 1
+                        if case == "cas":
+                            raise TransitionCASConflictError(
+                                "stale active attempt"
+                            )
+                        return self._terminal_result(transition)
+                    return real_apply(service, transition, lease, now)
+
+                async def _run() -> None:
+                    nonlocal heartbeat_gate
+                    heartbeat_gate = asyncio.Event()
+                    clock = (
+                        _GatedClock()
+                        if case == "heartbeat"
+                        else FakeClock()
+                    )
+                    with mock.patch.object(
+                        wo, "run_worker_observed", side_effect=_worker
+                    ), mock.patch.object(
+                        wo, "release_worker_slot", side_effect=_release
+                    ), mock.patch.object(
+                        wo.ControlPlaneTransitionService,
+                        "apply_transition",
+                        autospec=True,
+                        side_effect=_apply,
+                    ):
+                        orch = _new_orch(tmp, clock=clock)
+                        execution = await orch.start_dispatch_cycle(
+                            _make_dispatch_cycle_request(tmp=tmp),
+                            {"claude": FakeProvider()},
+                        )
+                        if case == "heartbeat":
+                            heartbeat_gate.set()
+                            await asyncio.sleep(0)
+                        expected = {
+                            "cleanup": RuntimeError,
+                            "heartbeat": WorkerSlotNotHeldError,
+                            "release": WorkerSlotNotHeldError,
+                            "cas": TransitionCASConflictError,
+                        }[case]
+                        with self.assertRaises(expected):
+                            await orch.supersede_active_dispatch(
+                                execution,
+                                self._supersession_request(execution)[0],
+                            )
+                        await asyncio.sleep(0)
+                        self.assertTrue(execution._worker_task.done())
+                        self.assertTrue(execution._heartbeat_task.done())
+                        self.assertTrue(execution._runner_task.done())
+
+                try:
+                    asyncio.run(_run())
+                    self.assertEqual(
+                        release_calls,
+                        0 if case == "cleanup" else 1,
+                    )
+                    self.assertEqual(
+                        supersession_calls,
+                        1 if case == "cas" else 0,
+                    )
+                finally:
+                    import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_outer_cancel_shields_started_supersession_cleanup(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            from dispatcher_gateway import DispatchCancelledError
+
+            worker_is_cleaning = asyncio.Event()
+            allow_cleanup = asyncio.Event()
+            release_calls = 0
+            supersession_calls = 0
+            real_release = wo.release_worker_slot
+            real_apply = wo.ControlPlaneTransitionService.apply_transition
+
+            async def _worker(
+                request: Any,
+                worker_kind: Any,
+                difficulty: Any,
+                providers: Any,
+                observer: Any,
+            ) -> WorkerResult:
+                selection = request.model_selection
+                await observer.on_dispatch_started(
+                    DispatchStarted(
+                        identity=request.identity,
+                        provider=selection.selected_model_provider,
+                        model_id=selection.selected_model_id,
+                    )
+                )
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    worker_is_cleaning.set()
+                    await allow_cleanup.wait()
+                    raise DispatchCancelledError() from None
+
+            def _release(*args: Any, **kwargs: Any) -> None:
+                nonlocal release_calls
+                release_calls += 1
+                real_release(*args, **kwargs)
+
+            def _apply(
+                service: Any,
+                transition: Any,
+                lease: Any,
+                now: Any,
+            ) -> TransitionResult:
+                nonlocal supersession_calls
+                if transition.event_type == "TASK_SUPERSEDED":
+                    supersession_calls += 1
+                    return self._terminal_result(transition)
+                return real_apply(service, transition, lease, now)
+
+            async def _run() -> None:
+                with mock.patch.object(
+                    wo, "run_worker_observed", side_effect=_worker
+                ), mock.patch.object(
+                    wo, "release_worker_slot", side_effect=_release
+                ), mock.patch.object(
+                    wo.ControlPlaneTransitionService,
+                    "apply_transition",
+                    autospec=True,
+                    side_effect=_apply,
+                ):
+                    orch = _new_orch(tmp)
+                    execution = await orch.start_dispatch_cycle(
+                        _make_dispatch_cycle_request(tmp=tmp),
+                        {"claude": FakeProvider()},
+                    )
+                    task = asyncio.create_task(
+                        orch.supersede_active_dispatch(
+                            execution,
+                            self._supersession_request(execution)[0],
+                        )
+                    )
+                    await worker_is_cleaning.wait()
+                    task.cancel()
+                    await asyncio.sleep(0)
+                    allow_cleanup.set()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                    await asyncio.sleep(0)
+                    self.assertEqual(release_calls, 1)
+                    self.assertEqual(supersession_calls, 1)
+                    self.assertTrue(execution._worker_task.done())
+                    self.assertTrue(execution._heartbeat_task.done())
+                    self.assertTrue(execution._runner_task.done())
+
+            asyncio.run(_run())
         finally:
             import shutil; shutil.rmtree(tmp, ignore_errors=True)
 
@@ -15730,6 +16481,7 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-29T12:00:00Z",
                             ready_at=None,
@@ -15754,6 +16506,7 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-29T12:00:00Z",
                             ready_at=None,
@@ -15837,6 +16590,7 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-29T12:00:00Z",
                             ready_at="2026-07-29T12:00:00Z",
@@ -15861,6 +16615,7 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-29T12:00:00Z",
                             ready_at=None,
@@ -15941,6 +16696,7 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-29T12:00:00Z",
                             ready_at=None,
@@ -15965,6 +16721,7 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-29T12:00:00Z",
                             ready_at=None,
@@ -16034,8 +16791,8 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                 pm_lease_epoch=1,
                 pm_mode="manual",
                 tasks=(
-                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
-                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
                 ),
                 events=(), outbox=(), acceptances=(), mad_refs=None,
                 read_hexsha="a" * 40,
@@ -16095,8 +16852,8 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                 pm_lease_epoch=1,
                 pm_mode="manual",
                 tasks=(
-                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
-                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
                 ),
                 events=(), outbox=(), acceptances=(), mad_refs=None,
                 read_hexsha="a" * 40,
@@ -16159,6 +16916,7 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                 blocked_owner=None, unblock_condition=None,
                 review_after=None, blocked_attempt_valid=None,
                 resume_state=None,
+                superseded_by=None,
                 timestamps=TaskTimestamps(
                     created_at="2026-07-29T12:00:00Z",
                     ready_at=None,
@@ -16193,6 +16951,7 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-29T12:00:00Z",
                             ready_at=None,
@@ -16282,6 +17041,7 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-29T12:00:00Z",
                             ready_at=None,
@@ -16307,6 +17067,7 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-29T12:00:00Z",
                             ready_at=None,
@@ -16457,6 +17218,7 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-29T12:00:00Z",
                             ready_at=None,
@@ -16889,8 +17651,8 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                 updated_at="2026-07-29T12:00:00Z",
                 pm_holder_id="pm-1", pm_lease_epoch=1, pm_mode="manual",
                 tasks=(
-                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
-                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
                 ),
                 events=(), outbox=(), acceptances=(), mad_refs=None,
                 read_hexsha="a" * 40,
@@ -16961,8 +17723,8 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                 updated_at="2026-07-29T12:00:00Z",
                 pm_holder_id="pm-1", pm_lease_epoch=1, pm_mode="manual",
                 tasks=(
-                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
-                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
                 ),
                 events=(), outbox=(), acceptances=(), mad_refs=None,
                 read_hexsha="a" * 40,
@@ -17011,8 +17773,8 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                 updated_at="2026-07-29T12:00:00Z",
                 pm_holder_id="pm-1", pm_lease_epoch=1, pm_mode="manual",
                 tasks=(
-                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
-                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
                 ),
                 events=(), outbox=(), acceptances=(), mad_refs=None,
                 read_hexsha="a" * 40,
@@ -17185,8 +17947,8 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                 updated_at="2026-07-29T12:00:00Z",
                 pm_holder_id="pm-1", pm_lease_epoch=1, pm_mode="manual",
                 tasks=(
-                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
-                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
                 ),
                 events=(), outbox=(), acceptances=(), mad_refs=None,
                 read_hexsha="a" * 40,
@@ -17263,8 +18025,8 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                 updated_at="2026-07-29T12:00:00Z",
                 pm_holder_id="pm-1", pm_lease_epoch=1, pm_mode="manual",
                 tasks=(
-                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
-                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
                 ),
                 events=(), outbox=(), acceptances=(), mad_refs=None,
                 read_hexsha="a" * 40,
@@ -17309,8 +18071,8 @@ class WorkflowOrchestratorQuiescentSupersessionTests(unittest.TestCase):
                 updated_at="2026-07-29T12:00:00Z",
                 pm_holder_id="pm-1", pm_lease_epoch=1, pm_mode="manual",
                 tasks=(
-                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
-                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-001", revision=1, task_card_path="tasks/TC-001/task.md", task_card_commit="b"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
+                    TaskEntry(task_id="TC-002", revision=1, task_card_path="tasks/TC-002/task.md", task_card_commit="c"*40, state="draft", attempt=None, current_dispatch=None, report_path=None, granted_approval_ids=None, delivery_state=None, integration_state=None, implementation_commit=None, report_commit=None, accepted_commit=None, acceptance_path=None, integrated_commit=None, blocked_reason=None, blocked_kind=None, blocked_owner=None, unblock_condition=None, review_after=None, blocked_attempt_valid=None, resume_state=None, superseded_by=None, timestamps=TaskTimestamps(created_at="2026-07-29T12:00:00Z", ready_at=None, dispatched_at=None, started_at=None, delivered_at=None, blocked_at=None, accepted_at=None, integrated_at=None, updated_at="2026-07-29T12:00:00Z")),
                 ),
                 events=(), outbox=(), acceptances=(), mad_refs=None,
                 read_hexsha="a" * 40,

@@ -1,4 +1,4 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation — Current — TC-13.18d.9b; Active Supersession Contract — Current — TC-13.18d.10a)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation — Current — TC-13.18d.9b; Active Supersession — Current — TC-13.18d.10b)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
@@ -15,7 +15,8 @@ TC-13.18d.8 extends it with TASK_SUPERSEDED (quiescent path — no active dispat
 TC-13.18d.9a freezes the active-dispatch cancellation contract.
 TC-13.18d.9a.1 repairs the contract (execution-based model). Production implementation is TC-13.18d.9b.
 TC-13.18d.10a freezes the active-dispatch supersession contract on the same
-creator-owned execution model. Production implementation is TC-13.18d.10b.
+creator-owned execution model. TC-13.18d.10b provides the production
+implementation.
 
 ## Status
 
@@ -23,7 +24,7 @@ creator-owned execution model. Production implementation is TC-13.18d.10b.
 Active-dispatch cancellation contract frozen as of TC-13.18d.9a; production
 implementation is Current — TC-13.18d.9b.
 Active-dispatch supersession is Contract Current — TC-13.18d.10a and
-Runtime Target — TC-13.18d.10b.
+Current — TC-13.18d.10b.
 TASK_DISPATCHED → heartbeat + run_worker →
 DISPATCH_ACKNOWLEDGED → decode_worker_result →
 require_delivery_receipt → DELIVERY_SUBMITTED → stop heartbeat → release
@@ -44,9 +45,9 @@ active dispatch → TASK_CANCELLED (lease=None) → TaskCancellationResult),
 and quiescent task supersession (StateProvider.snapshot() → validate no
 active dispatch → TASK_SUPERSEDED (lease=None) → TaskSupersessionResult)
 are implemented and callable.  The E2E evidence program (TC-13.19a–j)
-validates all Current runtime paths.  Active-dispatch supersession runtime,
-Codex decoding, Codex rate-limit classification, and retry-loop fault
-recovery remain Target.  Active-dispatch cancellation
+validates all Current runtime paths. Active-dispatch supersession production
+is Current — TC-13.18d.10b. Codex decoding, Codex rate-limit classification,
+and retry-loop fault recovery remain Target. Active-dispatch cancellation
 contract is repaired and frozen as of TC-13.18d.9a.1 (execution-based
 model); production implementation is Current — TC-13.18d.9b.  See
 `reports/tc-13.19-final-delivery-report.md` and `test_release_smoke.py`
@@ -357,7 +358,7 @@ defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
 | 14 | `TASK_CANCELLED` (quiescent path) | Current — TC-13.18d.7 |
 | 15 | `TASK_CANCELLED` (active dispatch path) | Current — TC-13.18d.9b |
 | 16 | `TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8 |
-| 17 | `TASK_SUPERSEDED` (active dispatch path) | Contract Current — TC-13.18d.10a / Runtime Target — TC-13.18d.10b |
+| 17 | `TASK_SUPERSEDED` (active dispatch path) | Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b |
 
 The orchestrator does **not** duplicate `_TRANSITION_SPECS`.  It constructs
 typed `TransitionRequest` objects and passes them to `apply_transition()`.
@@ -529,7 +530,7 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18d.9a.1** | Active-dispatch cancellation contract repair (execution model) | TC-13.18d.9a | Contract Current |
 | **TC-13.18d.9b** | Active-dispatch cancellation production implementation | TC-13.18d.9a.1 | Current |
 | **TC-13.18d.10a** | Active-dispatch supersession contract freeze | TC-13.18d.9b | Contract Current |
-| **TC-13.18d.10b** | Active-dispatch supersession production implementation | TC-13.18d.10a | Runtime Target |
+| **TC-13.18d.10b** | Active-dispatch supersession production implementation | TC-13.18d.10a | Current |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Current — TC-13.19j |
 | **TC-13.20** | HTML Dashboard | TC-13.17, TC-13.19 | Read-only UI |
@@ -547,7 +548,7 @@ TC-13.18d.5 does **not** implement:
 - `TASK_CANCELLED` (quiescent path) → Current — TC-13.18d.7
 - `TASK_CANCELLED` (active dispatch path) → Current — TC-13.18d.9b
 - `TASK_SUPERSEDED` (quiescent path) → Current — TC-13.18d.8
-- `TASK_SUPERSEDED` (active dispatch path) → Contract Current — TC-13.18d.10a / Runtime Target — TC-13.18d.10b
+- `TASK_SUPERSEDED` (active dispatch path) → Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b
 - `INTEGRATION_FAILED` → TC-13.18d.4 (already implemented)
 - User notification / UI → Target
 - Expert user-decision external interaction (chat UI, approval UI) → Target
@@ -557,7 +558,7 @@ TC-13.18d.5 does **not** implement:
 
 TC-13.18d.9b still does **not** implement:
 
-- Active-dispatch supersession → Contract Current — TC-13.18d.10a / Runtime Target — TC-13.18d.10b
+- Active-dispatch supersession → Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b
 - RateLimit retry → Target
 - Retry-loop fault recovery → Target
 - Codex decoding → Target
@@ -1165,7 +1166,7 @@ Active-dispatch supersession is the `TASK_SUPERSEDED` counterpart to
 TC-13.18d.9b cancellation. It acts on the same creator-owned
 `ActiveDispatchExecution`, terminates the old dispatch, and records the
 replacement identity only after process, heartbeat, and lease cleanup.
-Production implementation is Runtime Target — TC-13.18d.10b.
+Production implementation is Current — TC-13.18d.10b.
 
 This path does **not** dispatch the replacement task. It performs one
 terminal transition for the source task and returns.
@@ -1296,7 +1297,7 @@ confirmed.
 | Path | Execution | `dispatch_cas` | Lease at transition | Replacement dispatch |
 |---|---|---|---|---|
 | Quiescent — TC-13.18d.8 | None | None | None | Never automatic |
-| Active — TC-13.18d.10a | Creator-owned `ActiveDispatchExecution` | Required and exact | None, after release | Never automatic |
+| Active — TC-13.18d.10b | Creator-owned `ActiveDispatchExecution` | Required and exact | None, after release | Never automatic |
 
 `supersede_quiescent_task()` and its existing
 `TaskSupersessionRequest`/`TaskSupersessionResult` remain unchanged.
@@ -1307,7 +1308,7 @@ and `run_dispatch_cycle()` retains its signature and compatibility behavior.
 
 - `TASK_SUPERSEDED` active-dispatch contract:
   **Contract Current — TC-13.18d.10a**.
-- Production implementation: **Runtime Target — TC-13.18d.10b**.
+- Production implementation: **Current — TC-13.18d.10b**.
 - `TASK_CANCELLED` active-dispatch path remains
   **Current — TC-13.18d.9b**.
 - WorkflowOrchestrator Interface #22 remains **Target** until retry,

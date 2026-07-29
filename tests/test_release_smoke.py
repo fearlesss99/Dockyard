@@ -11486,7 +11486,7 @@ class TC1318d10aActiveDispatchSupersessionContractTests(unittest.TestCase):
             "(Contract Current — TC-13.18d.10a)",
             self.contract_text,
         )
-        self.assertIn("Runtime Target — TC-13.18d.10b", self.contract_text)
+        self.assertIn("Current — TC-13.18d.10b", self.contract_text)
 
     def test_02_adr_section(self) -> None:
         self.assertIn("2.19.13 Active-Dispatch Supersession", self.adr_text)
@@ -11654,11 +11654,12 @@ class TC1318d10aActiveDispatchSupersessionContractTests(unittest.TestCase):
         )
         self.assertIn("Target — TC-13.18", row)
         self.assertIn("Contract Current — TC-13.18d.10a", row)
+        self.assertIn("Current — TC-13.18d.10b", row)
 
     def test_20_later_statuses_unchanged(self) -> None:
         self.assertIn(
             "TC-13.19 and TC-13.20 statuses are unchanged", self.adr_text
         )
         self.assertIn(
-            "retry-loop fault\nrecovery remain Target", self.contract_text
+            "retry-loop fault recovery remain Target", self.contract_text
         )

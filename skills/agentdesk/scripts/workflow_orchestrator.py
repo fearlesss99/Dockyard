@@ -1,4 +1,4 @@
-"""AgentDesk WorkflowOrchestrator — through TC-13.18d.9b.
+"""AgentDesk WorkflowOrchestrator — through TC-13.18d.10b.
 
 Single dispatch-cycle execution: snapshot -> acquire lease ->
 TASK_DISPATCHED -> heartbeat + run_worker_observed ->
@@ -24,7 +24,6 @@ TaskCancellationResult.
 
 Non-goals (explicitly excluded):
 * Escalation, retry, automatic blocked/fail remediation
-* Active-dispatch supersession → Target
 * New subprocess termination implementation (the gateway owns termination)
 * Codex output decoding (blocked until TC-13.9c.2)
 * Parsing stdout/stderr manually, guessing commits from Git HEAD
@@ -110,6 +109,8 @@ __all__ = [
     "ActiveDispatchCancellationResult",
     "ActiveDispatchExecution",
     "ActiveDispatchHandle",
+    "ActiveDispatchSupersessionRequest",
+    "ActiveDispatchSupersessionResult",
     "BlockedAuditRequest",
     "BlockedAuditResult",
     "BlockedCancellationRequest",
@@ -479,6 +480,30 @@ class ActiveDispatchHandle:
             raise ValueError("lease_epoch must match lease lease_epoch")
 
 
+def _bind_active_dispatch_cas(
+    handle: ActiveDispatchHandle,
+    transition: TransitionRequest,
+) -> TransitionRequest:
+    """Return an immutable transition copy bound to *handle* when needed."""
+    if transition.dispatch_cas is not None:
+        return transition
+    bound = object.__new__(TransitionRequest)
+    object.__setattr__(bound, "cas", transition.cas)
+    object.__setattr__(
+        bound,
+        "dispatch_cas",
+        DispatchCAS(
+            expected_dispatch_id=handle.dispatch_id,
+            expected_attempt=handle.attempt,
+        ),
+    )
+    object.__setattr__(bound, "event_id", transition.event_id)
+    object.__setattr__(bound, "event_type", transition.event_type)
+    object.__setattr__(bound, "payload", transition.payload)
+    object.__setattr__(bound, "event_context", transition.event_context)
+    return bound
+
+
 @dataclass(frozen=True, slots=True)
 class ActiveDispatchCancellationRequest:
     """Immutable request to cancel a creator-owned live dispatch."""
@@ -498,24 +523,10 @@ class ActiveDispatchCancellationRequest:
             # supports optional DispatchCAS for its active path.  Bind the
             # immutable request to the execution handle without mutating the
             # caller's TransitionRequest or the lower-level production module.
-            bound = object.__new__(TransitionRequest)
-            object.__setattr__(bound, "cas", transition.cas)
             object.__setattr__(
-                bound,
-                "dispatch_cas",
-                DispatchCAS(
-                    expected_dispatch_id=self.handle.dispatch_id,
-                    expected_attempt=self.handle.attempt,
-                ),
-            )
-            object.__setattr__(bound, "event_id", transition.event_id)
-            object.__setattr__(bound, "event_type", transition.event_type)
-            object.__setattr__(bound, "payload", transition.payload)
-            object.__setattr__(
-                bound, "event_context", transition.event_context
-            )
-            object.__setattr__(
-                self, "cancellation_transition_request", bound
+                self,
+                "cancellation_transition_request",
+                _bind_active_dispatch_cas(self.handle, transition),
             )
 
 
@@ -526,6 +537,37 @@ class ActiveDispatchCancellationResult:
     task_id: str
     dispatch_id: str
     cancellation_transition: TransitionResult
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveDispatchSupersessionRequest:
+    """Immutable request to supersede a creator-owned live dispatch."""
+
+    handle: ActiveDispatchHandle
+    supersession_transition_request: TransitionRequest
+
+    def __post_init__(self) -> None:
+        transition = self.supersession_transition_request
+        if (
+            type(self.handle) is ActiveDispatchHandle
+            and type(transition) is TransitionRequest
+            and transition.dispatch_cas is None
+        ):
+            object.__setattr__(
+                self,
+                "supersession_transition_request",
+                _bind_active_dispatch_cas(self.handle, transition),
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveDispatchSupersessionResult:
+    """Result of an active-dispatch TASK_SUPERSEDED transition."""
+
+    task_id: str
+    dispatch_id: str
+    superseded_by: str
+    supersession_transition: TransitionResult
 
 
 class ActiveDispatchExecution:
@@ -1730,16 +1772,22 @@ class WorkflowOrchestrator:
         self,
         execution: ActiveDispatchExecution,
         cancellation_request: ActiveDispatchCancellationRequest | None,
-    ) -> ActiveDispatchCancellationResult | None:
-        """Single cleanup owner for normal, failed, and cancelled dispatches."""
+        supersession_request: ActiveDispatchSupersessionRequest | None = None,
+    ) -> (
+        ActiveDispatchCancellationResult
+        | ActiveDispatchSupersessionResult
+        | None
+    ):
+        """Single cleanup owner for every active-dispatch terminal path."""
         async with execution._finalize_lock:
             winner = execution._winner
             primary_error: BaseException | None = None
             normal_result: DispatchCycleResult | None = None
             cancellation_result: ActiveDispatchCancellationResult | None = None
+            supersession_result: ActiveDispatchSupersessionResult | None = None
             worker_cancel_error: DispatchCancelledError | None = None
 
-            if winner == "cancellation":
+            if winner in ("cancellation", "supersession"):
                 execution._worker_task.cancel()
                 try:
                     await execution._worker_task
@@ -1861,15 +1909,15 @@ class WorkflowOrchestrator:
                 )
                 primary_error.__cause__ = exc
 
-            # An unconfirmed worker cancellation must not release the lease or
-            # publish TASK_CANCELLED.
-            cancellation_cleanup_confirmed = not (
-                winner == "cancellation"
+            # An unconfirmed terminal-action cleanup must not release the
+            # lease or publish TASK_CANCELLED / TASK_SUPERSEDED.
+            terminal_cleanup_confirmed = not (
+                winner in ("cancellation", "supersession")
                 and worker_cancel_error is None
                 and primary_error is not None
             )
 
-            if cancellation_cleanup_confirmed:
+            if terminal_cleanup_confirmed:
                 execution._release_started = True
                 try:
                     release_worker_slot(
@@ -1915,6 +1963,41 @@ class WorkflowOrchestrator:
                     except BaseException as exc:
                         primary_error = exc
 
+            if (
+                winner == "supersession"
+                and primary_error is None
+                and execution._release_completed
+            ):
+                if supersession_request is None:
+                    primary_error = WorkflowInvariantError(
+                        "supersession finalizer requires its request"
+                    )
+                else:
+                    try:
+                        request_transition = (
+                            supersession_request
+                            .supersession_transition_request
+                        )
+                        transition = ControlPlaneTransitionService(
+                            self.project_root
+                        ).apply_transition(
+                            request_transition,
+                            lease=None,
+                            now=self.clock.now(),
+                        )
+                        supersession_result = (
+                            ActiveDispatchSupersessionResult(
+                                task_id=execution._handle.task_id,
+                                dispatch_id=execution._handle.dispatch_id,
+                                superseded_by=(
+                                    request_transition.payload.superseded_by
+                                ),
+                                supersession_transition=transition,
+                            )
+                        )
+                    except BaseException as exc:
+                        primary_error = exc
+
             if primary_error is not None:
                 if not execution._completion.done():
                     execution._completion.set_exception(primary_error)
@@ -1929,6 +2012,12 @@ class WorkflowOrchestrator:
                         worker_cancel_error or DispatchCancelledError()
                     )
                 return cancellation_result
+            if supersession_result is not None:
+                if not execution._completion.done():
+                    execution._completion.set_exception(
+                        worker_cancel_error or DispatchCancelledError()
+                    )
+                return supersession_result
             if winner == "outer_cancellation":
                 if not execution._completion.done():
                     execution._completion.set_exception(
@@ -1972,6 +2061,47 @@ class WorkflowOrchestrator:
                 raise
         if result is None:
             raise WorkflowInvariantError("cancellation produced no result")
+        return result
+
+    async def supersede_active_dispatch(
+        self,
+        execution: ActiveDispatchExecution,
+        request: ActiveDispatchSupersessionRequest,
+    ) -> ActiveDispatchSupersessionResult:
+        """Supersede a live dispatch owned by this orchestrator instance."""
+        self._validate_active_dispatch_supersession(execution, request)
+
+        wait_for_heartbeat_failure = False
+        async with execution._state_lock:
+            if execution._winner is not None:
+                raise WorkflowInputError("dispatch already terminal")
+            if execution._heartbeat_task.done():
+                wait_for_heartbeat_failure = True
+            elif execution._worker_task.done():
+                raise WorkflowInputError("dispatch already completed")
+            else:
+                execution._winner = "supersession"
+
+        if wait_for_heartbeat_failure:
+            return await execution.wait()  # type: ignore[return-value]
+
+        execution._worker_task.cancel()
+        cleanup_task = asyncio.ensure_future(
+            self._finalize_active_dispatch(
+                execution,
+                cancellation_request=None,
+                supersession_request=request,
+            )
+        )
+        try:
+            result = await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(cleanup_task)
+            finally:
+                raise
+        if not isinstance(result, ActiveDispatchSupersessionResult):
+            raise WorkflowInvariantError("supersession produced no result")
         return result
 
     def _validate_active_dispatch_cancellation(
@@ -2026,6 +2156,64 @@ class WorkflowOrchestrator:
         ):
             raise WorkflowInputError(
                 "cancellation dispatch_cas must match handle"
+            )
+
+    def _validate_active_dispatch_supersession(
+        self,
+        execution: ActiveDispatchExecution,
+        request: ActiveDispatchSupersessionRequest,
+    ) -> None:
+        if type(execution) is not ActiveDispatchExecution:
+            raise WorkflowInputError(
+                "execution must be ActiveDispatchExecution"
+            )
+        if execution._owner is not self:
+            raise WorkflowInputError(
+                "execution is not owned by this WorkflowOrchestrator"
+            )
+        if type(request) is not ActiveDispatchSupersessionRequest:
+            raise WorkflowInputError(
+                "request must be ActiveDispatchSupersessionRequest"
+            )
+        if type(request.handle) is not ActiveDispatchHandle:
+            raise WorkflowInputError(
+                "request handle must be ActiveDispatchHandle"
+            )
+        if request.handle != execution._handle:
+            raise WorkflowInputError("request handle does not match execution")
+        transition = request.supersession_transition_request
+        if type(transition) is not TransitionRequest:
+            raise WorkflowInputError(
+                "supersession_transition_request must be TransitionRequest"
+            )
+        if transition.event_type != "TASK_SUPERSEDED":
+            raise WorkflowInputError(
+                "supersession transition event_type must be TASK_SUPERSEDED"
+            )
+        if type(transition.payload) is not SupersededPayload:
+            raise WorkflowInputError(
+                "supersession transition payload must be SupersededPayload"
+            )
+        if transition.cas.task_id != execution._handle.task_id:
+            raise WorkflowInputError(
+                "supersession transition task_id must match handle"
+            )
+        if transition.payload.superseded_by == execution._handle.task_id:
+            raise WorkflowInputError(
+                "supersession replacement must differ from active task"
+            )
+        dispatch_cas = transition.dispatch_cas
+        if dispatch_cas is None:
+            raise WorkflowInputError(
+                "active supersession requires dispatch_cas"
+            )
+        if (
+            dispatch_cas.expected_dispatch_id
+            != execution._handle.dispatch_id
+            or dispatch_cas.expected_attempt != execution._handle.attempt
+        ):
+            raise WorkflowInputError(
+                "supersession dispatch_cas must match handle"
             )
 
     async def run_acceptance_cycle(
