@@ -32,7 +32,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 19 | AgentDesk RateLimit service | **Current** — TC-13.14b / Provider Detection Target — TC-13.14c | TC-13.14 | Provider-neutral rate-limit policy with multi-scope and combined signal semantics; provider detection (TC-13.14c) is evidence-dependent Target |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
-| 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Current — TC-13.18d.9b; TASK_SUPERSEDED: Target; retry loop, fault recovery: Target) |
+| 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Current — TC-13.18d.9b; TASK_SUPERSEDED quiescent path: Current — TC-13.18d.8; TASK_SUPERSEDED active dispatch path: Contract Current — TC-13.18d.10a / Runtime Target — TC-13.18d.10b; retry loop, fault recovery: Target) |
 | 23 | E2E / Recovery tests | **Current** — TC-13.19j | E2E validation and recovery scenarios — nine scenario E2E tests committed; quiescent cancellation/supersession, expert user-decision paths, escalation chain, integration failure, and happy-path audit/accept/integrate all covered |
 | 24 | AgentDesk HTML Dashboard | **Current** | TC-13.20b | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target 鈫?Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
@@ -6463,7 +6463,7 @@ in `ControlPlaneTransitionService._TRANSITION_SPECS` (搂2.14.8):
 | 14 | `TASK_CANCELLED` (quiescent path) | Current — TC-13.18d.7 |
 | 15 | `TASK_CANCELLED` (active dispatch path) | Current — TC-13.18d.9b |
 | 16 | `TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8 |
-| 17 | TASK_SUPERSEDED (active dispatch path) | Target |
+| 17 | `TASK_SUPERSEDED` (active dispatch path) | Contract Current — TC-13.18d.10a / Runtime Target — TC-13.18d.10b |
 
 WorkflowOrchestrator does **not** duplicate `_TRANSITION_SPECS` 鈥?it
 constructs typed `TransitionRequest` objects and passes them to
@@ -6509,6 +6509,8 @@ TC-13.20  鈥?HTML Dashboard
 | TC-13.18d.1 | TC-13.18c | Return + requeue (fail remediation) | **Current** |
 | TC-13.18d.2 | TC-13.18d.1 | Blocked audit escalation (TASK_BLOCKED + EscalationDecision) | **Current** |
 | TC-13.18d.3 | TC-13.18d.2 | Escalation dispatch retry + cancel + replay | **Target** |
+| TC-13.18d.10a | TC-13.18d.9b | Active-dispatch supersession contract | **Contract Current** |
+| TC-13.18d.10b | TC-13.18d.10a | Active-dispatch supersession production | **Runtime Target** |
 | TC-13.19 | TC-13.18d.3 | E2E / recovery tests | **Target** → **Current — TC-13.19j** |
 
 ---
@@ -6599,7 +6601,46 @@ No second kill/terminate implementation is created.
 No `WorkflowCancellationError`, `ActiveDispatchError`, or other parallel
 exception hierarchy.  All exceptions are existing types from underlying services.
 
-#### 2.19.13 Status
+#### 2.19.13 Active-Dispatch Supersession — Frozen Contract (Contract Current — TC-13.18d.10a)
+
+TC-13.18d.10a freezes active-dispatch supersession on the creator-owned
+runtime execution shipped by TC-13.18d.9b. Production implementation is
+Runtime Target — TC-13.18d.10b. The complete per-interface contract is
+`public-interfaces/workflow-orchestrator-contract.md` §15.
+
+The public request is a frozen two-field
+`ActiveDispatchSupersessionRequest(handle,
+supersession_transition_request)`. The frozen four-field result is
+`ActiveDispatchSupersessionResult(task_id, dispatch_id, superseded_by,
+supersession_transition)` and has no `worker_result`.
+
+The request binds the exact `ActiveDispatchHandle` and derives the precise
+`DispatchCAS` on an immutable transition copy, using the same compatibility
+rule as active cancellation. The caller's transition is not mutated.
+
+Completion, cancellation, supersession, heartbeat failure, and outer
+cancellation share one execution `_state_lock`, winner, completion future,
+runner, and finalizer. Supersession does not own a separate release path and
+the orchestrator does not implement a second kill/terminate operation.
+
+Fixed order: validate exact owner and handle; choose the winner under the
+execution lock; cancel and await the real Worker; stop and await heartbeat;
+release the lease exactly once; apply `TASK_SUPERSEDED` with `lease=None`
+and exact `DispatchCAS`; return the result. The replacement task is never
+automatically dispatched.
+
+Fail-closed rules: Worker-first means completion wins; cancellation and
+supersession cannot both win; heartbeat failure has priority; unconfirmed
+Worker cleanup prevents release and transition; release failure skips the
+transition; CAS conflict does not roll back cleanup; stale attempts cannot
+affect a new dispatch; duplicate calls have zero repeated side effects; and
+an outer `CancelledError` is re-raised only after shielded cleanup finishes.
+
+The quiescent `supersede_quiescent_task()` API remains Current and unchanged.
+`DispatchCycleRequest` and `DispatchCycleResult` remain exactly nine fields.
+Interface #22 remains Target; TC-13.19 and TC-13.20 statuses are unchanged.
+
+#### 2.19.14 Status
 
 * ADR Interface Status row #22 "AgentDesk WorkflowOrchestrator"
   remains **Target** — TC-13.18a.
@@ -6611,6 +6652,8 @@ exception hierarchy.  All exceptions are existing types from underlying services
 * **Active-dispatch cancellation** contract is repaired and frozen as of
   TC-13.18d.9a.1 (execution-based model); production implementation is
   TC-13.18d.9b (Current).
+* **Active-dispatch supersession** is Contract Current — TC-13.18d.10a;
+  production implementation is Runtime Target — TC-13.18d.10b.
 * All prior Current interfaces remain **Current**.
 
 * ADR Interface Status row #22 "AgentDesk WorkflowOrchestrator"

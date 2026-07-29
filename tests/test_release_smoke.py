@@ -11463,3 +11463,202 @@ class TC1318d9a1AsyncReferenceModelTests(unittest.IsolatedAsyncioTestCase):
         second_transition = 0
         self.assertEqual(second_release, 0)
         self.assertEqual(second_transition, 0)
+
+
+class TC1318d10aActiveDispatchSupersessionContractTests(unittest.TestCase):
+    """TC-13.18d.10a active-dispatch supersession contract freeze."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.repo_root = Path(__file__).resolve().parents[1]
+        cls.contract_text = (
+            cls.repo_root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "workflow-orchestrator-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr_text = (
+            cls.repo_root / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+
+    def test_01_contract_status(self) -> None:
+        self.assertIn(
+            "Active-Dispatch Supersession — Frozen Contract "
+            "(Contract Current — TC-13.18d.10a)",
+            self.contract_text,
+        )
+        self.assertIn("Runtime Target — TC-13.18d.10b", self.contract_text)
+
+    def test_02_adr_section(self) -> None:
+        self.assertIn("2.19.13 Active-Dispatch Supersession", self.adr_text)
+        self.assertIn("TC-13.18d.10a", self.adr_text)
+        self.assertIn("TC-13.18d.10b", self.adr_text)
+
+    def test_03_request_exact_shape(self) -> None:
+        block = self.contract_text.split(
+            "class ActiveDispatchSupersessionRequest:", 1
+        )[1].split("```", 1)[0]
+        self.assertIn("handle: ActiveDispatchHandle", block)
+        self.assertIn(
+            "supersession_transition_request: TransitionRequest", block
+        )
+        self.assertNotIn("worker_result", block)
+
+    def test_04_result_exact_shape(self) -> None:
+        block = self.contract_text.split(
+            "class ActiveDispatchSupersessionResult:", 1
+        )[1].split("```", 1)[0]
+        for field in (
+            "task_id: str",
+            "dispatch_id: str",
+            "superseded_by: str",
+            "supersession_transition: TransitionResult",
+        ):
+            self.assertIn(field, block)
+        self.assertNotIn("worker_result", block)
+
+    def test_05_value_types_frozen_and_slotted(self) -> None:
+        section = self.contract_text.split("### 15.1 Public Types", 1)[1]
+        self.assertGreaterEqual(
+            section.count("@dataclass(frozen=True, slots=True)"), 2
+        )
+
+    def test_06_method_signature(self) -> None:
+        self.assertIn("async def supersede_active_dispatch(", self.contract_text)
+        self.assertIn(
+            "execution: ActiveDispatchExecution", self.contract_text
+        )
+        self.assertIn(
+            "request: ActiveDispatchSupersessionRequest", self.contract_text
+        )
+        self.assertIn(
+            ") -> ActiveDispatchSupersessionResult", self.contract_text
+        )
+
+    def test_07_creator_exact_instance_ownership(self) -> None:
+        section = self.contract_text.split("### 15.2 Public Method", 1)[1]
+        self.assertIn("execution._owner is self", section)
+        self.assertIn("Cross-instance control", section)
+        self.assertIn("execution registry remain prohibited", section)
+
+    def test_08_exact_handle_and_dispatch_cas(self) -> None:
+        section = self.contract_text.split("### 15.1 Public Types", 1)[1]
+        self.assertIn("request.handle ==\nexecution.handle", self.contract_text)
+        self.assertIn("handle.dispatch_id", section)
+        self.assertIn("handle.attempt", section)
+        self.assertIn("DispatchCAS", section)
+
+    def test_09_immutable_binding_does_not_mutate_caller(self) -> None:
+        self.assertIn("immutable binding rule", self.contract_text)
+        self.assertIn("caller's transition is not mutated", self.contract_text)
+
+    def test_10_shared_winner_and_finalizer(self) -> None:
+        section = self.contract_text.split(
+            "### 15.3 One Winner Across Completion", 1
+        )[1]
+        for term in (
+            "_state_lock",
+            "_winner",
+            "completion future",
+            "runner",
+            "shared finalizer",
+        ):
+            self.assertIn(term, section)
+        self.assertIn("must not add a second state machine", section)
+
+    def test_11_cancellation_and_supersession_mutually_exclusive(self) -> None:
+        self.assertIn(
+            "Cancellation and supersession can never both publish",
+            self.contract_text,
+        )
+
+    def test_12_fixed_cleanup_order(self) -> None:
+        section = self.contract_text.split(
+            "### 15.4 Fixed Supersession Order", 1
+        )[1].split("### 15.5", 1)[0]
+        ordered = (
+            "Validate execution exact type",
+            "Under execution._state_lock",
+            "cancel the real Worker task",
+            "Await DispatcherGateway-confirmed",
+            "Stop and await heartbeat",
+            "Release WorkerSlotLease exactly once",
+            "Apply TASK_SUPERSEDED with lease=None",
+            "Return ActiveDispatchSupersessionResult",
+        )
+        positions = [section.index(item) for item in ordered]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_13_no_second_termination(self) -> None:
+        section = self.contract_text.split(
+            "### 15.4 Fixed Supersession Order", 1
+        )[1]
+        self.assertIn(
+            "never calls `_terminate_process()` directly", section
+        )
+        self.assertIn("DispatchCancelledError", section)
+
+    def test_14_fail_closed_rules(self) -> None:
+        section = self.contract_text.split(
+            "### 15.5 Fail-Closed Race Rules", 1
+        )[1].split("### 15.6", 1)[0]
+        for term in (
+            "Worker completed before supersession",
+            "Cancellation already won",
+            "Supersession already won",
+            "Heartbeat already failed",
+            "Worker cleanup unconfirmed",
+            "Lease release failed",
+            "Transition CAS conflict",
+            "Stale attempt or dispatch",
+            "Duplicate supersession",
+            "Outer `CancelledError`",
+            "Concurrent `execution.wait()`",
+        ):
+            self.assertIn(term, section)
+
+    def test_15_no_automatic_replacement_dispatch(self) -> None:
+        self.assertIn(
+            "does **not** dispatch the replacement task", self.contract_text
+        )
+        self.assertIn("Never automatic", self.contract_text)
+
+    def test_16_quiescent_supersession_unchanged(self) -> None:
+        self.assertIn("supersede_quiescent_task()", self.contract_text)
+        self.assertIn(
+            "TaskSupersessionRequest`/`TaskSupersessionResult` remain "
+            "unchanged",
+            self.contract_text,
+        )
+
+    def test_17_dispatch_cycle_shapes_unchanged(self) -> None:
+        section = self.contract_text.split(
+            "### 15.6 Active vs Quiescent Supersession", 1
+        )[1]
+        self.assertIn(
+            "`DispatchCycleRequest` and `DispatchCycleResult` remain "
+            "exactly nine fields",
+            section,
+        )
+
+    def test_18_active_cancellation_remains_current(self) -> None:
+        self.assertIn(
+            "`TASK_CANCELLED` active-dispatch path remains\n"
+            "  **Current — TC-13.18d.9b**",
+            self.contract_text,
+        )
+
+    def test_19_interface_22_remains_target(self) -> None:
+        row = next(
+            line for line in self.adr_text.splitlines()
+            if line.startswith("| 22 | AgentDesk WorkflowOrchestrator")
+        )
+        self.assertIn("Target — TC-13.18", row)
+        self.assertIn("Contract Current — TC-13.18d.10a", row)
+
+    def test_20_later_statuses_unchanged(self) -> None:
+        self.assertIn(
+            "TC-13.19 and TC-13.20 statuses are unchanged", self.adr_text
+        )
+        self.assertIn(
+            "retry-loop fault\nrecovery remain Target", self.contract_text
+        )
