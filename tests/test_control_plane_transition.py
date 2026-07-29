@@ -4363,7 +4363,6 @@ class _TransitionTestHarness:
             "review_after": None,
             "blocked_attempt_valid": None,
             "resume_state": None,
-            "superseded_by": None,
             "granted_approval_ids": None,
             "timestamps": {
                 "created_at": "2026-07-27T00:00:00Z",
@@ -4375,8 +4374,6 @@ class _TransitionTestHarness:
                 "accepted_at": None,
                 "integrated_at": None,
                 "blocked_at": None,
-                "cancelled_at": None,
-                "superseded_at": None,
             },
         }
         if extra_task_fields:
@@ -6615,7 +6612,6 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             "review_after": None,
             "blocked_attempt_valid": None,
             "resume_state": None,
-            "superseded_by": None,
             "timestamps": {
                 "created_at": "2026-07-27T00:00:00Z",
                 "updated_at": "2026-07-27T00:00:00Z",
@@ -7708,7 +7704,8 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
                 "blocked_reason": None, "blocked_kind": None,
                 "blocked_owner": None, "unblock_condition": None,
                 "review_after": None, "blocked_attempt_valid": None,
-                "resume_state": None, "superseded_by": None,
+                "resume_state": None,
+                "granted_approval_ids": None, "integration_state": None,
                 "timestamps": {
                     "created_at": "2026-07-27T00:00:00Z",
                     "updated_at": "2026-07-27T00:00:00Z",
@@ -8010,7 +8007,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
                 "review_after": None,
                 "blocked_attempt_valid": None,
                 "resume_state": None,
-                "superseded_by": None,
+                "granted_approval_ids": None, "integration_state": None,
                 "timestamps": {
                     "created_at": "2026-07-27T00:00:00Z",
                     "updated_at": "2026-07-27T00:00:00Z",
@@ -9176,7 +9173,8 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
             "blocked_reason": None, "blocked_kind": None,
             "blocked_owner": None, "unblock_condition": None,
             "review_after": None, "blocked_attempt_valid": None,
-            "resume_state": None, "superseded_by": None,
+            "resume_state": None,
+            "granted_approval_ids": None, "integration_state": None,
             "timestamps": {
                 "created_at": "2026-07-27T00:00:00Z",
                 "updated_at": "2026-07-27T00:00:00Z",
@@ -10539,6 +10537,45 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                         expected_dispatch_id="DSP-GT", expected_attempt=1,
                     )
                 else:  # CHANGE_INTEGRATED
+                    # Write the acceptance record so _build_approval_subject
+                    # can read reviewed_dispatch_id from disk.
+                    acc_dir = root / "docs" / "pm" / "acceptances"
+                    acc_dir.mkdir(parents=True, exist_ok=True)
+                    acc_path = acc_dir / "TC-600-r1-a1-review1.md"
+                    acc_path.write_text(
+                        "---\n"
+                        "schema_version: agentdesk.acceptance/v2\n"
+                        "task_id: TC-600\n"
+                        "revision: 1\n"
+                        "decision: accepted\n"
+                        "reviewed_dispatch_id: DSP-GT\n"
+                        "attempt: 1\n"
+                        "type: implementation\n"
+                        "role_id: worker-basic\n"
+                        "reviewer_role_id: PM\n"
+                        "reviewer_id: pm-test-001\n"
+                        "lease_epoch: 1\n"
+                        "base_commit: " + "a" * 40 + "\n"
+                        "implementation_commit: " + "c" * 40 + "\n"
+                        "report_commit: " + "c" * 40 + "\n"
+                        "accepted_commit: " + "d" * 40 + "\n"
+                        "owner_approval:\n"
+                        "  gate: none\n"
+                        "  approval_ids: []\n"
+                        "evidence_refs: []\n"
+                        "residual_risks: []\n"
+                        "created_at: 2026-07-27T01:00:00Z\n"
+                        "---\n",
+                        encoding="utf-8",
+                    )
+                    subprocess.run(["git", "-C", str(root), "add", "-A"],
+                                   check=True, timeout=10, capture_output=True)
+                    subprocess.run(["git", "-C", str(root), "commit", "-m", "acc"],
+                                   check=True, timeout=10, capture_output=True)
+                    r_acc = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                           check=True, timeout=10, capture_output=True, text=True)
+                    head2 = r_acc.stdout.strip()
+
                     payload = self.cpt.IntegrationPayload(
                         integrated_commit="d" * 40,
                         equivalence_method=None,
@@ -10626,7 +10663,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
         task_id = "TC-600"
         accepted_commit = "c" * 40
         implementation_commit = "c" * 40  # same as accepted_commit for the acceptance invariant
-        report_commit_sh = "r" * 40
+        report_commit_sh = "b" * 40
 
         tmpdir = tempfile.TemporaryDirectory()
         try:
@@ -10706,7 +10743,20 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 "current_dispatch": {
                     "dispatch_id": dispatch_id, "role_id": "worker-basic",
                     "base_commit": head, "branch": "main",
-                    "model_selection": {},
+                    "dispatched_at": "2026-07-29T00:00:00Z",
+                    "attempt_id": "WSL-" + "a" * 32,
+                    "model_selection": {
+                        "required_model_tier": "basic",
+                        "required_model_capabilities": ["code"],
+                        "model_binding_id": "mb-1",
+                        "selected_model_provider": "anthropic",
+                        "selected_model_id": "claude-sonnet-4-20250514",
+                        "selected_model_tier": "medium",
+                        "selected_deliberation_tier": "low",
+                        "selected_context_window_tokens": 200000,
+                        "selected_model_capabilities": ["code"],
+                        "model_degradation_approval_id": None,
+                    },
                 },
                 "report_path": f"docs/pm/reports/{task_id}-r1-a1.md",
                 "implementation_commit": implementation_commit,
@@ -10715,12 +10765,21 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 "acceptance_path": None,
                 "integrated_commit": None,
                 "delivery_state": "submitted",
+                "integration_state": None,
+                "granted_approval_ids": None,
                 "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
                 "unblock_condition": None, "review_after": None,
                 "blocked_attempt_valid": None, "resume_state": None,
                 "timestamps": {
                     "created_at": "2026-07-29T00:00:00Z",
                     "updated_at": "2026-07-29T00:00:00Z",
+                    "ready_at": None,
+                    "dispatched_at": None,
+                    "started_at": None,
+                    "delivered_at": None,
+                    "accepted_at": None,
+                    "integrated_at": None,
+                    "blocked_at": None,
                 },
             }
             state = {
@@ -10951,6 +11010,13 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 "timestamps": {
                     "created_at": "2026-07-29T00:00:00Z",
                     "updated_at": "2026-07-29T00:00:00Z",
+                    "ready_at": None,
+                    "dispatched_at": None,
+                    "started_at": None,
+                    "delivered_at": None,
+                    "accepted_at": None,
+                    "integrated_at": None,
+                    "blocked_at": None,
                 },
             }
             state = {
@@ -11098,8 +11164,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                         "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
                         "unblock_condition": None, "review_after": None,
                         "blocked_attempt_valid": None, "resume_state": None,
-                        "superseded_by": None,
-                        "granted_approval_ids": None,
+                        "granted_approval_ids": None, "integration_state": None,
                         "timestamps": {
                             "created_at": "2026-07-29T00:00:00Z",
                             "updated_at": "2026-07-29T00:00:00Z",
@@ -11230,8 +11295,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                         "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
                         "unblock_condition": None, "review_after": None,
                         "blocked_attempt_valid": None, "resume_state": None,
-                        "superseded_by": None,
-                        "granted_approval_ids": None,
+                        "granted_approval_ids": None, "integration_state": None,
                         "timestamps": {
                             "created_at": "2026-07-29T00:00:00Z",
                             "updated_at": "2026-07-29T00:00:00Z",
@@ -11337,8 +11401,8 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 "reviewer_id: pm-test-001\n"
                 "lease_epoch: 1\n"
                 "base_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
-                "implementation_commit: iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii\n"
-                "report_commit: rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\n"
+                "implementation_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                "report_commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
                 f"accepted_commit: {accepted_commit}\n"
                 "owner_approval:\n"
                 "  gate: none\n"
@@ -11357,12 +11421,14 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 "task_card_path": "docs/pm/tasks/TC-602.md",
                 "task_card_commit": "0" * 40,
                 "current_dispatch": None,  # ← explicitly None
-                "implementation_commit": "i" * 40,
-                "report_commit": "r" * 40,
+                "implementation_commit": "a" * 40,
+                "report_commit": "b" * 40,
                 "accepted_commit": accepted_commit,
                 "acceptance_path": acceptance_path,
                 "integrated_commit": None,
                 "delivery_state": "accepted",
+                "integration_state": None,
+                "granted_approval_ids": None,
                 "report_path": None,
                 "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
                 "unblock_condition": None, "review_after": None,
@@ -11370,6 +11436,13 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 "timestamps": {
                     "created_at": "2026-07-29T00:00:00Z",
                     "updated_at": "2026-07-29T00:00:00Z",
+                    "ready_at": None,
+                    "dispatched_at": None,
+                    "started_at": None,
+                    "delivered_at": None,
+                    "accepted_at": None,
+                    "integrated_at": None,
+                    "blocked_at": None,
                 },
             }
             state = {
@@ -11534,6 +11607,13 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 "timestamps": {
                     "created_at": "2026-07-29T00:00:00Z",
                     "updated_at": "2026-07-29T00:00:00Z",
+                    "ready_at": None,
+                    "dispatched_at": None,
+                    "started_at": None,
+                    "delivered_at": None,
+                    "accepted_at": None,
+                    "integrated_at": None,
+                    "blocked_at": None,
                 },
             }
             state = {
@@ -11787,6 +11867,13 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 "timestamps": {
                     "created_at": "2026-07-29T00:00:00Z",
                     "updated_at": "2026-07-29T00:00:00Z",
+                    "ready_at": None,
+                    "dispatched_at": None,
+                    "started_at": None,
+                    "delivered_at": None,
+                    "accepted_at": None,
+                    "integrated_at": None,
+                    "blocked_at": None,
                 },
             }
             state = {
