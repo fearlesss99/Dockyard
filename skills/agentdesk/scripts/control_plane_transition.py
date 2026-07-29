@@ -2726,9 +2726,6 @@ def _mutate_task_for_transition(
             "branch": payload.branch,
             "model_selection": _serialize_model_selection(payload.model_selection),
         }
-        new_task["model_selection"] = _serialize_model_selection(
-            payload.model_selection
-        )
         new_task["report_path"] = payload.report_path
         timestamps["dispatched_at"] = now_str
 

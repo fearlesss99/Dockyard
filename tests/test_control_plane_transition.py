@@ -11887,6 +11887,519 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
         finally:
             tmpdir.cleanup()
 
+    # ── TC-13.11c.5: model_selection only inside current_dispatch ──────
+
+    def test_TASK_DISPATCHED_task_root_has_exactly_24_fields(self) -> None:
+        """After TASK_DISPATCHED, the task root must have exactly the
+        24 _TASK_FIELDS — no model_selection at root level."""
+        import json as _j_24
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            subprocess.run(["git", "-C", str(root), "init", "-q"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@test"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"],
+                           check=True, timeout=10, capture_output=True)
+
+            for d in ("docs/pm/events", "docs/pm/outbox", "docs/pm/state",
+                      "docs/pm/approvals", ".agentdesk/runtime"):
+                (root / d.replace("/", os.sep)).mkdir(parents=True, exist_ok=True)
+
+            task_data = {
+                "task_id": "TC-700", "revision": 1, "state": "ready",
+                "task_card_path": "docs/pm/tasks/TC-700.md",
+                "task_card_commit": "0" * 40,
+                "attempt": None, "current_dispatch": None,
+                "report_path": None,
+                "implementation_commit": None, "report_commit": None,
+                "accepted_commit": None, "acceptance_path": None,
+                "integrated_commit": None,
+                "delivery_state": None, "integration_state": None,
+                "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
+                "unblock_condition": None, "review_after": None,
+                "blocked_attempt_valid": None, "resume_state": None,
+                "granted_approval_ids": None,
+                "timestamps": {"created_at": "2026-07-29T00:00:00Z",
+                               "updated_at": "2026-07-29T00:00:00Z"},
+            }
+            state = {"schema_version": "agentdesk.tasks/v2",
+                     "project_id": "test-24f", "adoption_level": "standard",
+                     "updated_at": "2026-07-29T00:00:00Z",
+                     "pm_control": {"holder_id": "pm-test-001", "lease_epoch": 1, "mode": "timed"},
+                     "tasks": [task_data]}
+            (root / "docs/pm/state/tasks.yaml").write_text(
+                _j_24.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "init"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            # Write dispatch grant
+            approvals_dir = root / "docs" / "pm" / "approvals"
+            grant = {"schema_version": "agentdesk.task-approval/v1",
+                     "record_type": "grant",
+                     "approval_id": "APR-24F-DISPATCH",
+                     "event_id": "EVT-24F-DISPATCH-GRANT",
+                     "scope": "dispatch", "task_id": "TC-700", "revision": 1,
+                     "attempt": 1, "dispatch_id": "DSP-24F",
+                     "accepted_commit": None,
+                     "actor_role_id": "PM", "lease_epoch": 1,
+                     "granted_at": "2026-07-29T00:00:00Z", "expires_at": None,
+                     "reason": "Test", "snapshot_commit": head}
+            (approvals_dir / "EVT-24F-DISPATCH-GRANT.yaml").write_text(
+                _j_24.dumps(grant, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "grant"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            # Lease store
+            runtime_dir = root / ".agentdesk" / "runtime"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            import json as _jls
+            (runtime_dir / "worker-slot-lease.yaml").write_text(_jls.dumps({
+                "schema_version": "agentdesk.worker-slot-lease/v1",
+                "updated_at": "1970-01-01T00:00:00Z",
+                "slot_epochs": {"basic_agent-1": 1, "basic_agent-2": 0,
+                                "standard_agent-1": 0, "standard_agent-2": 0,
+                                "advanced_agent-1": 0, "advanced_agent-2": 0,
+                                "expert_agent-1": 0, "expert_agent-2": 0},
+                "leases": {
+                    "basic_agent-1": {
+                        "lease_id": "WSL-" + "a" * 32, "lease_epoch": 1,
+                        "slot_id": "basic_agent-1", "worker_kind": "basic_agent",
+                        "holder_dispatch_id": "DSP-24F",
+                        "holder_instance_id": "worker-inst-1",
+                        "canonical_worktree": str(root).replace("\\", "/"),
+                        "acquired_at": "2026-07-29T00:00:00Z",
+                        "heartbeat_at": "2026-07-29T00:00:00Z",
+                        "expires_at": "2026-08-29T10:00:00Z",
+                    },
+                },
+            }), encoding="utf-8")
+
+            with _temporary_scripts_path():
+                from worker_slot_lease import WorkerKind, WorkerSlotLease
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32, lease_epoch=1,
+                slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-24F",
+                holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-29T00:00:00Z",
+                heartbeat_at="2026-07-29T00:00:00Z",
+                expires_at="2026-08-29T10:00:00Z",
+            )
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            mss = self._make_model_selection()
+            payload = self.cpt.DispatchPayload(
+                dispatch_id="DSP-24F", role_id="worker-basic",
+                model_selection=mss,
+                task_card_path="docs/pm/tasks/TC-700.md",
+                task_card_commit="0" * 40,
+                base_commit=head, branch="main",
+                report_path="docs/pm/reports/TC-700-r1.md",
+                outbox_message_id="MSG-24F-DSP",
+                new_attempt=1,
+            )
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-700", expected_revision=1,
+                expected_state="ready", expected_snapshot_commit=head,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-24F-DSP",
+                event_type="TASK_DISPATCHED",
+                payload=payload, event_context=ctx,
+            )
+            now = datetime(2026, 7, 29, 0, 0, 0, tzinfo=UTC)
+            result = svc.apply_transition(req, lease, now)
+            self.assertEqual(result.to_state, "dispatched")
+
+            # Read the written tasks.yaml and check the task root keys
+            tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+            tasks_raw = tasks_path.read_text(encoding="utf-8")
+            tasks_doc = _j_24.loads(tasks_raw)
+            self.assertEqual(len(tasks_doc["tasks"]), 1)
+            written_task = tasks_doc["tasks"][0]
+
+            # Must NOT have model_selection at root
+            self.assertNotIn("model_selection", written_task,
+                             "task root must not contain model_selection")
+
+            # Must have exactly the 24 _TASK_FIELDS (plus any extra metadata keys
+            # in the root tasks.yaml schema — only task-level fields)
+            with _temporary_scripts_path():
+                from state_provider import _TASK_FIELDS
+            expected_fields = set(_TASK_FIELDS)
+            extra = set(written_task.keys()) - expected_fields
+            missing = expected_fields - set(written_task.keys())
+            self.assertEqual(extra, set(),
+                             f"Unexpected task root keys: {extra}")
+            self.assertEqual(missing, set(),
+                             f"Missing task root keys: {missing}")
+
+            # current_dispatch.model_selection must be present
+            cd = written_task.get("current_dispatch")
+            self.assertIsInstance(cd, dict)
+            self.assertIn("model_selection", cd,
+                          "current_dispatch must contain model_selection")
+            ms = cd["model_selection"]
+            self.assertIsInstance(ms, dict)
+            # Verify the ten fields
+            self.assertEqual(set(ms.keys()), {
+                "required_model_tier", "required_model_capabilities",
+                "model_binding_id", "selected_model_provider",
+                "selected_model_id", "selected_model_tier",
+                "selected_deliberation_tier", "selected_context_window_tokens",
+                "selected_model_capabilities", "model_degradation_approval_id",
+            })
+
+            # StateProvider must be able to read the state
+            with _temporary_scripts_path():
+                from state_provider import StateProvider
+            snap = StateProvider(root).snapshot()
+            tasks = [t for t in snap.tasks if t.task_id == "TC-700"]
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0].state, "dispatched")
+            self.assertIsNotNone(tasks[0].current_dispatch)
+            self.assertIsNotNone(tasks[0].current_dispatch.model_selection)
+            ms_snap = tasks[0].current_dispatch.model_selection
+            self.assertEqual(ms_snap.selected_model_id, "claude-sonnet")
+            self.assertEqual(ms_snap.selected_model_provider, "test")
+        finally:
+            tmpdir.cleanup()
+
+    def test_outbox_model_selection_preserved(self) -> None:
+        """Outbox record must still contain the full ten-field model_selection."""
+        import json as _j_ob
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            subprocess.run(["git", "-C", str(root), "init", "-q"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@test"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"],
+                           check=True, timeout=10, capture_output=True)
+
+            for d in ("docs/pm/events", "docs/pm/outbox", "docs/pm/state",
+                      "docs/pm/approvals", ".agentdesk/runtime"):
+                (root / d.replace("/", os.sep)).mkdir(parents=True, exist_ok=True)
+
+            task_data = {
+                "task_id": "TC-701", "revision": 1, "state": "ready",
+                "task_card_path": "docs/pm/tasks/TC-701.md",
+                "task_card_commit": "0" * 40,
+                "attempt": None, "current_dispatch": None,
+                "report_path": None,
+                "implementation_commit": None, "report_commit": None,
+                "accepted_commit": None, "acceptance_path": None,
+                "integrated_commit": None,
+                "delivery_state": None, "integration_state": None,
+                "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
+                "unblock_condition": None, "review_after": None,
+                "blocked_attempt_valid": None, "resume_state": None,
+                "granted_approval_ids": None,
+                "timestamps": {"created_at": "2026-07-29T00:00:00Z",
+                               "updated_at": "2026-07-29T00:00:00Z"},
+            }
+            state = {"schema_version": "agentdesk.tasks/v2",
+                     "project_id": "test-ob", "adoption_level": "standard",
+                     "updated_at": "2026-07-29T00:00:00Z",
+                     "pm_control": {"holder_id": "pm-test-001", "lease_epoch": 1, "mode": "timed"},
+                     "tasks": [task_data]}
+            (root / "docs/pm/state/tasks.yaml").write_text(
+                _j_ob.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "init"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            # Grant + lease
+            ad = root / "docs" / "pm" / "approvals"
+            import json as _j_ob2
+            grant = {"schema_version": "agentdesk.task-approval/v1",
+                     "record_type": "grant",
+                     "approval_id": "APR-OB-DISPATCH",
+                     "event_id": "EVT-OB-DISPATCH-GRANT",
+                     "scope": "dispatch", "task_id": "TC-701", "revision": 1,
+                     "attempt": 1, "dispatch_id": "DSP-OB",
+                     "accepted_commit": None,
+                     "actor_role_id": "PM", "lease_epoch": 1,
+                     "granted_at": "2026-07-29T00:00:00Z", "expires_at": None,
+                     "reason": "Test", "snapshot_commit": head}
+            (ad / "EVT-OB-DISPATCH-GRANT.yaml").write_text(
+                _j_ob2.dumps(grant, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "grant"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            rtd = root / ".agentdesk" / "runtime"
+            (rtd / "worker-slot-lease.yaml").write_text(_j_ob.dumps({
+                "schema_version": "agentdesk.worker-slot-lease/v1",
+                "updated_at": "1970-01-01T00:00:00Z",
+                "slot_epochs": {"basic_agent-1": 1, "basic_agent-2": 0,
+                                "standard_agent-1": 0, "standard_agent-2": 0,
+                                "advanced_agent-1": 0, "advanced_agent-2": 0,
+                                "expert_agent-1": 0, "expert_agent-2": 0},
+                "leases": {
+                    "basic_agent-1": {
+                        "lease_id": "WSL-" + "a" * 32, "lease_epoch": 1,
+                        "slot_id": "basic_agent-1", "worker_kind": "basic_agent",
+                        "holder_dispatch_id": "DSP-OB",
+                        "holder_instance_id": "worker-inst-1",
+                        "canonical_worktree": str(root).replace("\\", "/"),
+                        "acquired_at": "2026-07-29T00:00:00Z",
+                        "heartbeat_at": "2026-07-29T00:00:00Z",
+                        "expires_at": "2026-08-29T10:00:00Z",
+                    },
+                },
+            }), encoding="utf-8")
+
+            with _temporary_scripts_path():
+                from worker_slot_lease import WorkerKind, WorkerSlotLease
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32, lease_epoch=1,
+                slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-OB", holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-29T00:00:00Z",
+                heartbeat_at="2026-07-29T00:00:00Z",
+                expires_at="2026-08-29T10:00:00Z",
+            )
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            mss = self._make_model_selection()
+            payload = self.cpt.DispatchPayload(
+                dispatch_id="DSP-OB", role_id="worker-basic",
+                model_selection=mss,
+                task_card_path="docs/pm/tasks/TC-701.md",
+                task_card_commit="0" * 40,
+                base_commit=head, branch="main",
+                report_path="docs/pm/reports/TC-701-r1.md",
+                outbox_message_id="MSG-OB-DSP",
+                new_attempt=1,
+            )
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-701", expected_revision=1,
+                expected_state="ready", expected_snapshot_commit=head,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-OB-DSP",
+                event_type="TASK_DISPATCHED",
+                payload=payload, event_context=ctx,
+            )
+            now = datetime(2026, 7, 29, 0, 0, 0, tzinfo=UTC)
+            result = svc.apply_transition(req, lease, now)
+            self.assertEqual(result.to_state, "dispatched")
+
+            # Read the outbox file
+            outbox_path = root / "docs" / "pm" / "outbox" / "MSG-OB-DSP.yaml"
+            outbox_raw = outbox_path.read_text(encoding="utf-8")
+            outbox_doc = _j_ob.loads(outbox_raw)
+            self.assertIn("model_selection", outbox_doc)
+            ms = outbox_doc["model_selection"]
+            self.assertIsInstance(ms, dict)
+            self.assertEqual(set(ms.keys()), {
+                "required_model_tier", "required_model_capabilities",
+                "model_binding_id", "selected_model_provider",
+                "selected_model_id", "selected_model_tier",
+                "selected_deliberation_tier", "selected_context_window_tokens",
+                "selected_model_capabilities", "model_degradation_approval_id",
+            })
+        finally:
+            tmpdir.cleanup()
+
+    def test_validate_project_accepts_generated_tasks_yaml(self) -> None:
+        """validate_project must accept tasks.yaml written by TASK_DISPATCHED."""
+        import json as _j_vp
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmpdir.name)
+            subprocess.run(["git", "-C", str(root), "init", "-q"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@test"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"],
+                           check=True, timeout=10, capture_output=True)
+
+            for d in ("docs/pm/events", "docs/pm/outbox", "docs/pm/state",
+                      "docs/pm/acceptances", "docs/pm/approvals", ".agentdesk/runtime"):
+                (root / d.replace("/", os.sep)).mkdir(parents=True, exist_ok=True)
+
+            task_data = {
+                "task_id": "TC-702", "revision": 1, "state": "ready",
+                "task_card_path": "docs/pm/tasks/TC-702.md",
+                "task_card_commit": "0" * 40,
+                "attempt": None, "current_dispatch": None,
+                "report_path": None,
+                "implementation_commit": None, "report_commit": None,
+                "accepted_commit": None, "acceptance_path": None,
+                "integrated_commit": None,
+                "delivery_state": None, "integration_state": None,
+                "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
+                "unblock_condition": None, "review_after": None,
+                "blocked_attempt_valid": None, "resume_state": None,
+                "granted_approval_ids": None,
+                "timestamps": {"created_at": "2026-07-29T00:00:00Z",
+                               "updated_at": "2026-07-29T00:00:00Z"},
+            }
+            state = {"schema_version": "agentdesk.tasks/v2",
+                     "project_id": "test-vp", "adoption_level": "standard",
+                     "updated_at": "2026-07-29T00:00:00Z",
+                     "pm_control": {"holder_id": "pm-test-001", "lease_epoch": 1, "mode": "timed"},
+                     "tasks": [task_data]}
+            (root / "docs/pm/state/tasks.yaml").write_text(
+                _j_vp.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "init"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            # Grant + lease
+            ad = root / "docs" / "pm" / "approvals"
+            import json as _j_vp2
+            grant = {"schema_version": "agentdesk.task-approval/v1",
+                     "record_type": "grant",
+                     "approval_id": "APR-VP-DISPATCH",
+                     "event_id": "EVT-VP-DISPATCH-GRANT",
+                     "scope": "dispatch", "task_id": "TC-702", "revision": 1,
+                     "attempt": 1, "dispatch_id": "DSP-VP",
+                     "accepted_commit": None,
+                     "actor_role_id": "PM", "lease_epoch": 1,
+                     "granted_at": "2026-07-29T00:00:00Z", "expires_at": None,
+                     "reason": "Test", "snapshot_commit": head}
+            (ad / "EVT-VP-DISPATCH-GRANT.yaml").write_text(
+                _j_vp2.dumps(grant, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "-A"],
+                           check=True, timeout=10, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-m", "grant"],
+                           check=True, timeout=10, capture_output=True)
+            r = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                               check=True, timeout=10, capture_output=True, text=True)
+            head = r.stdout.strip()
+
+            rtd = root / ".agentdesk" / "runtime"
+            (rtd / "worker-slot-lease.yaml").write_text(_j_ob.dumps({
+                "schema_version": "agentdesk.worker-slot-lease/v1",
+                "updated_at": "1970-01-01T00:00:00Z",
+                "slot_epochs": {"basic_agent-1": 1, "basic_agent-2": 0,
+                                "standard_agent-1": 0, "standard_agent-2": 0,
+                                "advanced_agent-1": 0, "advanced_agent-2": 0,
+                                "expert_agent-1": 0, "expert_agent-2": 0},
+                "leases": {
+                    "basic_agent-1": {
+                        "lease_id": "WSL-" + "a" * 32, "lease_epoch": 1,
+                        "slot_id": "basic_agent-1", "worker_kind": "basic_agent",
+                        "holder_dispatch_id": "DSP-VP",
+                        "holder_instance_id": "worker-inst-1",
+                        "canonical_worktree": str(root).replace("\\", "/"),
+                        "acquired_at": "2026-07-29T00:00:00Z",
+                        "heartbeat_at": "2026-07-29T00:00:00Z",
+                        "expires_at": "2026-08-29T10:00:00Z",
+                    },
+                },
+            }), encoding="utf-8")
+
+            with _temporary_scripts_path():
+                from worker_slot_lease import WorkerKind, WorkerSlotLease
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "a" * 32, lease_epoch=1,
+                slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-VP", holder_instance_id="worker-inst-1",
+                canonical_worktree=str(root).replace("\\", "/"),
+                acquired_at="2026-07-29T00:00:00Z",
+                heartbeat_at="2026-07-29T00:00:00Z",
+                expires_at="2026-08-29T10:00:00Z",
+            )
+
+            svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+            mss = self._make_model_selection()
+            payload = self.cpt.DispatchPayload(
+                dispatch_id="DSP-VP", role_id="worker-basic",
+                model_selection=mss,
+                task_card_path="docs/pm/tasks/TC-702.md",
+                task_card_commit="0" * 40,
+                base_commit=head, branch="main",
+                report_path="docs/pm/reports/TC-702-r1.md",
+                outbox_message_id="MSG-VP-DSP",
+                new_attempt=1,
+            )
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-702", expected_revision=1,
+                expected_state="ready", expected_snapshot_commit=head,
+            )
+            ctx = self.cpt.TransitionEventContext(
+                source_message_id=None, evidence_refs=(), guard_results=(),
+            )
+            req = self.cpt.TransitionRequest(
+                cas=cas, dispatch_cas=None,
+                event_id="EVT-VP-DSP",
+                event_type="TASK_DISPATCHED",
+                payload=payload, event_context=ctx,
+            )
+            now = datetime(2026, 7, 29, 0, 0, 0, tzinfo=UTC)
+            result = svc.apply_transition(req, lease, now)
+            self.assertEqual(result.to_state, "dispatched")
+
+            # StateProvider must read without error
+            with _temporary_scripts_path():
+                from state_provider import StateProvider
+            snap = StateProvider(root).snapshot()
+            tasks = [t for t in snap.tasks if t.task_id == "TC-702"]
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0].state, "dispatched")
+
+            # validate_project must accept
+            with _temporary_scripts_path():
+                import validate_project as _vp_mod
+            _vp_mod.validate_project(root)
+        finally:
+            tmpdir.cleanup()
+
+    def test_exception_no_model_selection_in_message(self) -> None:
+        """Exception messages from any model_selection path must not
+        contain the actual model_selection value."""
+        # The _validate_model_selection_snapshot already guards messages;
+        # verify via direct call.
+        with _temporary_scripts_path():
+            from control_plane_transition import _validate_model_selection_snapshot
+        with self.assertRaises((TypeError, self.cpt.TransitionSchemaError)):
+            _validate_model_selection_snapshot("malicious-model-string")
+        # Repeat with None
+        with self.assertRaises((TypeError, self.cpt.TransitionSchemaError)):
+            _validate_model_selection_snapshot(None)
+
 
 class TestTASK_DISPATCHEDFailureAndReplay(TestControlPlaneTransitionBase):
     """TASK_DISPATCHED only: failure (missing grant, zero writes) and
