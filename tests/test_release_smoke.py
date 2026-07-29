@@ -9973,38 +9973,67 @@ class TC1320aHtmlDashboardContractFreezeTests(unittest.TestCase):
                 break
         self.assertTrue(found, "Interface #24 row not found in ADR")
 
-    # -- 4. Exactly 3 __all__ symbols --
+    # -- 4. Exactly 7 __all__ symbols --
 
-    def test_exact_3_all_symbols(self) -> None:
-        """Contract must declare exactly 3 __all__ symbols."""
+    def test_exact_7_all_symbols(self) -> None:
+        """Contract must declare exactly 7 __all__ symbols."""
+        self.assertIn(
+            "Exactly 7 Symbols", self.contract_text,
+            "Contract §3 heading must say Exactly 7 Symbols",
+        )
         self.assertIn(
             "__all__ = [", self.contract_text,
             "Contract must declare __all__",
         )
-        self.assertIn("DashboardRenderRequest", self.contract_text)
-        self.assertIn("DashboardArtifact", self.contract_text)
-        self.assertIn("render_dashboard", self.contract_text)
-        # Verify exactly 3 symbols and no extras
-        all_idx = self.contract_text.find("__all__")
-        self.assertGreater(all_idx, -1, "__all__ not found in contract")
-        all_block = self.contract_text[all_idx:all_idx + 500]
-        # Count the 3 expected symbols
-        for sym in (
+        expected_7 = (
             "DashboardRenderRequest",
             "DashboardArtifact",
             "render_dashboard",
-        ):
-            self.assertIn(sym, all_block,
+            "DashboardError",
+            "DashboardInputError",
+            "DashboardRenderError",
+            "DashboardSecurityError",
+        )
+        for sym in expected_7:
+            self.assertIn(sym, self.contract_text,
                           f"__all__ must contain: {sym}")
-        # Ensure no extra public symbols beyond the 3
-        # Extract just the __all__ list portion
+        # Extract the __all__ list portion from contract
+        all_idx = self.contract_text.find("__all__ = [")
+        self.assertGreater(all_idx, -1, "__all__ = [ not found in contract")
+        all_block = self.contract_text[all_idx:all_idx + 600]
         all_start = all_block.find("[")
         all_end = all_block.find("]")
+        self.assertGreater(all_end, -1, "__all__ closing ] not found")
         all_list = all_block[all_start:all_end]
+        # Count commas to verify exactly 7 symbols (6 commas between, possibly 1 trailing)
+        commas = all_list.count(",")
+        self.assertGreaterEqual(
+            commas, 6,
+            f"__all__ must have at least 6 commas for 7 symbols; found {commas}",
+        )
+        self.assertLessEqual(
+            commas, 7,
+            f"__all__ must have at most 7 commas for 7 symbols; found {commas}",
+        )
+        # Verify no extra symbols beyond the 7
         for bad in ("render_html", "build_dashboard", "DashboardConfig",
-                     "create_dashboard", "DashboardRenderer"):
+                     "create_dashboard", "DashboardRenderer",
+                     "DashboardTimeoutError", "DashboardNetworkError"):
             self.assertNotIn(bad, all_list,
                              f"__all__ must not contain extra symbol: {bad}")
+
+    # -- 4b. Old 3-symbol declarations do not exist --
+
+    def test_no_stale_3_symbol_declaration(self) -> None:
+        """Contract and ADR must NOT declare exactly 3 symbols."""
+        for text, label in (
+            (self.contract_text, "Contract"),
+            (self.adr_text, "ADR"),
+        ):
+            self.assertNotIn(
+                "Exactly 3 Symbols", text,
+                f"{label} must not contain stale 'Exactly 3 Symbols'",
+            )
 
     # -- 5. DashboardRenderRequest exactly 2 fields --
 
@@ -10236,3 +10265,96 @@ class TC1320aHtmlDashboardContractFreezeTests(unittest.TestCase):
             "html_dashboard.py", self.contract_text,
             "Contract must reference html_dashboard.py module path",
         )
+
+    # ── 13.20a.1 additions — exception contract closure ──
+
+    # -- 21. Three exception subclasses each inherit DashboardError --
+
+    def test_three_exception_subclasses_inherit_dashboard_error(self) -> None:
+        """DashboardInputError, DashboardRenderError, DashboardSecurityError
+        must each inherit DashboardError."""
+        for subclass in (
+            "DashboardInputError(DashboardError)",
+            "DashboardRenderError(DashboardError)",
+            "DashboardSecurityError(DashboardError)",
+        ):
+            self.assertIn(
+                subclass, self.contract_text,
+                f"Contract must declare: {subclass}",
+            )
+
+    # -- 22. No fifth exception class --
+
+    def test_no_fifth_exception_class(self) -> None:
+        """Exception hierarchy must not contain a fifth exception type."""
+        # Extract the exception hierarchy section
+        exc_start = self.contract_text.find("class DashboardError(Exception)")
+        self.assertGreater(exc_start, -1, "DashboardError class not found")
+        exc_block = self.contract_text[exc_start:exc_start + 1200]
+        # Find the end of the code block
+        triple_end = exc_block.find("```", exc_block.find("class DashboardSecurityError"))
+        self.assertGreater(triple_end, -1, "Exception code block end not found")
+        code_block = exc_block[:triple_end]
+        # Count class definitions — must be exactly 4
+        class_count = code_block.count("class Dashboard")
+        self.assertEqual(
+            class_count, 4,
+            f"Exception hierarchy must have exactly 4 classes; found {class_count}",
+        )
+
+    # -- 23. Artifact html field type is bytes --
+
+    def test_artifact_html_field_type_is_bytes(self) -> None:
+        """DashboardArtifact.html field must be declared as bytes type."""
+        self.assertIn(
+            "html: bytes", self.contract_text,
+            "DashboardArtifact must declare html: bytes",
+        )
+
+    # -- 24. Contract includes exception message safety rules --
+
+    def test_contract_includes_exception_message_safety_rules(self) -> None:
+        """Contract must contain exception message leak-prevention rules."""
+        for kw in (
+            "must never contain",
+            "project_root",
+            "task_id",
+            "repr()",
+        ):
+            self.assertIn(
+                kw, self.contract_text,
+                f"Contract must include exception message safety rule: {kw}",
+            )
+
+    # -- 25. ADR and contract __all__ lists are consistent --
+
+    def test_adr_and_contract_all_lists_consistent(self) -> None:
+        """ADR §2.21 __all__ and contract §3 __all__ must list the same 7 symbols."""
+        # Extract __all__ from ADR — search for the Dashboard-specific __all__
+        adr_all_idx = self.adr_text.find("__all__ = [\n    \"DashboardRenderRequest\"")
+        self.assertGreater(adr_all_idx, -1, "ADR __all__ with DashboardRenderRequest not found")
+        adr_all_end = self.adr_text.find("]", adr_all_idx)
+        self.assertGreater(adr_all_end, -1, "ADR __all__ closing ] not found")
+        adr_all_block = self.adr_text[adr_all_idx:adr_all_end + 1]
+
+        # Extract __all__ from contract
+        contract_all_idx = self.contract_text.find("__all__ = [")
+        self.assertGreater(contract_all_idx, -1, "Contract __all__ not found")
+        contract_all_end = self.contract_text.find("]", contract_all_idx)
+        contract_all_block = self.contract_text[contract_all_idx:contract_all_end + 1]
+
+        # Both must contain the same 7 symbols
+        expected = [
+            "DashboardRenderRequest",
+            "DashboardArtifact",
+            "render_dashboard",
+            "DashboardError",
+            "DashboardInputError",
+            "DashboardRenderError",
+            "DashboardSecurityError",
+        ]
+        for sym in expected:
+            self.assertIn(sym, adr_all_block,
+                          f"ADR __all__ must contain: {sym}")
+            self.assertIn(sym, contract_all_block,
+                          f"Contract __all__ must contain: {sym}")

@@ -6823,13 +6823,17 @@ DashboardArtifact(html bytes)
 caller displays or saves
 ```
 
-##### 2.21.2 Public API — Exactly 3 Symbols
+##### 2.21.2 Public API — Exactly 7 Symbols
 
 ```python
 __all__ = [
     "DashboardRenderRequest",
     "DashboardArtifact",
     "render_dashboard",
+    "DashboardError",
+    "DashboardInputError",
+    "DashboardRenderError",
+    "DashboardSecurityError",
 ]
 ```
 
@@ -6838,6 +6842,10 @@ __all__ = [
 - ``DashboardArtifact`` — exactly 4 fields: ``html: bytes``,
   ``snapshot_digest: str``, ``generated_at: str``, ``task_count: int``.
 - ``render_dashboard`` — synchronous pure function, not ``async def``.
+- ``DashboardError`` — base for all Dashboard errors.
+- ``DashboardInputError`` — wrong type, non-UTC datetime, invalid input.
+- ``DashboardRenderError`` — internal precondition; preserves ``__cause__``.
+- ``DashboardSecurityError`` — security boundary violation; fail-closed.
 
 ##### 2.21.3 Data Scope
 
@@ -6881,8 +6889,14 @@ Python ``repr()`` output.
 ##### 2.21.6 Exception Hierarchy — Exactly 4 Types
 
 ``DashboardError`` → ``DashboardInputError`` (wrong type, non-UTC
-datetime), ``DashboardRenderError`` (internal precondition),
-``DashboardSecurityError`` (unsafe content — fail-closed).
+datetime), ``DashboardRenderError`` (internal precondition; preserves
+``__cause__``), ``DashboardSecurityError`` (unsafe content — fail-closed).
+
+All exception messages must never contain: absolute paths, task_id,
+dispatch_id, event_id, message_id, deliberation_id (actual input values),
+prompt text, stdout, stderr, MAD report body, issue text, acceptance
+body, raw HTML, secrets, tokens, API keys, or ``repr()``/``str()`` of
+any untrusted object.
 
 ##### 2.21.7 Snapshot Digest
 

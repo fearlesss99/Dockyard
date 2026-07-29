@@ -63,13 +63,17 @@ The Dashboard renderer must **never**:
 
 ---
 
-## 3. Public API — Exactly 3 Symbols
+## 3. Public API — Exactly 7 Symbols
 
 ```python
 __all__ = [
     "DashboardRenderRequest",
     "DashboardArtifact",
     "render_dashboard",
+    "DashboardError",
+    "DashboardInputError",
+    "DashboardRenderError",
+    "DashboardSecurityError",
 ]
 ```
 
@@ -327,12 +331,41 @@ class DashboardInputError(DashboardError):
 
 
 class DashboardRenderError(DashboardError):
-    """Render failure — internal precondition violated."""
+    """Render failure — internal precondition violated.
+
+    Must preserve the underlying exception as __cause__.
+    """
 
 
 class DashboardSecurityError(DashboardError):
     """Security boundary violation — unsafe content rejected."""
 ```
+
+### 8.1 Exception Semantics
+
+| Exception | Trigger |
+|-----------|---------|
+| `DashboardInputError` | Request type invalid; `snapshot` is not `StateSnapshot`; `generated_at` is not timezone-aware UTC datetime; any data type or required input violates the contract |
+| `DashboardRenderError` | Valid input encounters an internal rendering failure during deterministic HTML construction; must preserve the underlying exception as `__cause__` |
+| `DashboardSecurityError` | Rendered output violates the frozen security boundary (e.g. forbidden tag detected, forbidden resource reference, CSP invariant not met) |
+
+`DashboardRenderError` and `DashboardSecurityError` must not return HTML,
+paths, or user-generated content in the exception message.
+
+### 8.2 Exception Message Safety — All Types
+
+Exception messages must **never** contain:
+
+- `project_root` or any absolute filesystem path
+- `task_id`, `dispatch_id`, `event_id`, `message_id`, `deliberation_id` (actual input values)
+- Prompt text, `stdout`, `stderr`
+- MAD report body, issue text, acceptance Markdown body
+- Raw HTML fragments
+- Secrets, tokens, API keys
+- `repr()` or `str()` of any untrusted object
+
+Exception messages **may** contain: `type(x).__name__`, field names, and
+the exception class name.
 
 Rules:
 
@@ -340,8 +373,6 @@ Rules:
 - Non-`StateSnapshot` input → `DashboardInputError`
 - Non-UTC `generated_at` → `DashboardInputError`
 - Illegal dynamic content or unsafe encoding → `DashboardSecurityError` (fail-closed)
-- Exception messages must **never** contain: paths, task content,
-  identifier values, or `repr()` of any input field
 
 ---
 
