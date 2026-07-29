@@ -519,8 +519,10 @@ TC-13.18d.5 does **not** implement:
 - Automatic `run_dispatch_cycle()` on escalation → TC-13.18d.3
 - Auto-retry → TC-13.18d.3
 - Auto-unblock → TC-13.18d.3
-- `BLOCKER_CANCELLED` → Target
-- `TASK_CANCELLED` / `TASK_SUPERSEDED` → Target
+- `BLOCKER_CANCELLED` → Current — TC-13.18d.6
+- `TASK_CANCELLED` (quiescent path) → Current — TC-13.18d.7
+- `TASK_CANCELLED` (active dispatch path) → Target
+- `TASK_SUPERSEDED` → Target
 - `INTEGRATION_FAILED` → TC-13.18d.4 (already implemented)
 - User notification / UI → Target
 - Expert user-decision external interaction (chat UI, approval UI) → Target

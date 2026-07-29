@@ -8884,11 +8884,11 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
     # ── 2. Interface #22 remains Target ──────────────────────────────────
 
     def test_interface_22_is_target(self) -> None:
-        """Interface #22 must remain Target — TC-13.18."""
+        """Interface #22 must be Target — TC-13.18."""
         self.assertIn(
-            "| 22 | AgentDesk WorkflowOrchestrator | **Target** | TC-13.18",
+            "| 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18",
             self.adr_text,
-            "ADR: Interface #22 must remain Target — TC-13.18",
+            "ADR: Interface #22 must be Target — TC-13.18",
         )
 
     def test_interface_22_not_current(self) -> None:
@@ -9203,6 +9203,95 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
             "TC-13.18a",
             section,
             "ADR §2.19.11 must reference TC-13.18a",
+        )
+
+    # ── 14. TC-13.18d.7 quiescent cancellation status consistency ──────────
+
+    def test_quiescent_cancellation_current_in_adr(self) -> None:
+        """TASK_CANCELLED quiescent path must be Current — TC-13.18d.7."""
+        self.assertIn(
+            "TASK_CANCELLED quiescent path: Current — TC-13.18d.7",
+            self.adr_text,
+            "ADR: TASK_CANCELLED quiescent path must be Current",
+        )
+
+    def test_active_dispatch_cancellation_target_in_adr(self) -> None:
+        """TASK_CANCELLED active dispatch path must be Target."""
+        self.assertIn(
+            "TASK_CANCELLED active dispatch path: Target",
+            self.adr_text,
+            "ADR: TASK_CANCELLED active dispatch path must be Target",
+        )
+
+    def test_superseded_target_in_adr(self) -> None:
+        """TASK_SUPERSEDED must be Target."""
+        self.assertIn(
+            "TASK_SUPERSEDED: Target",
+            self.adr_text,
+            "ADR: TASK_SUPERSEDED must be Target",
+        )
+
+    def test_no_stale_blanket_tc_target_line(self) -> None:
+        """No stale line that declares both TASK_CANCELLED and
+        TASK_SUPERSEDED as blanket Target without quiescent qualifier."""
+        for line in self.adr_text.splitlines():
+            stripped = line.strip()
+            if "TASK_CANCELLED" in stripped and "TASK_SUPERSEDED" in stripped:
+                if "quiescent" not in stripped.lower():
+                    self.assertNotIn(
+                        "Target",
+                        stripped,
+                        "ADR: stale combined Target line found for "
+                        "TASK_CANCELLED / TASK_SUPERSEDED",
+                    )
+
+    def test_interface_22_is_target_not_partial(self) -> None:
+        """Interface #22 must NOT contain Partial — only Target."""
+        for line in self.adr_text.splitlines():
+            if line.strip().startswith("| 22 |"):
+                self.assertNotIn(
+                    "**Partial**",
+                    line,
+                    "ADR: Interface #22 must NOT be Partial",
+                )
+                self.assertIn(
+                    "Target",
+                    line,
+                    "ADR: Interface #22 must be Target",
+                )
+                break
+
+    def test_contract_quiescent_current_in_transition_table(self) -> None:
+        """Contract transition table must have quiescent path as Current."""
+        self.assertIn(
+            "TASK_CANCELLED` (quiescent path) | Current",
+            self.contract_text,
+            "Contract: TASK_CANCELLED quiescent path must be Current",
+        )
+
+    def test_contract_active_dispatch_target_in_transition_table(self) -> None:
+        """Contract transition table must have active dispatch as Target."""
+        self.assertIn(
+            "TASK_CANCELLED` (active dispatch path) | Target",
+            self.contract_text,
+            "Contract: TASK_CANCELLED active dispatch must be Target",
+        )
+
+    def test_contract_task_superseded_target_in_transition_table(self) -> None:
+        """Contract transition table must have superseded as Target."""
+        self.assertIn(
+            "TASK_SUPERSEDED` | Target",
+            self.contract_text,
+            "Contract: TASK_SUPERSEDED must be Target",
+        )
+
+    def test_contract_no_stale_blanket_cancelled_superseded_target(self) -> None:
+        """Contract must not have a stale combined
+        TASK_CANCELLED / TASK_SUPERSEDED → Target line."""
+        self.assertNotIn(
+            "TASK_CANCELLED` / `TASK_SUPERSEDED` → Target",
+            self.contract_text,
+            "Contract: no stale blanket cancelled / superseded Target line",
         )
 
 
