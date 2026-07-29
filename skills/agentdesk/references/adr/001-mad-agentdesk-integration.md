@@ -32,7 +32,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 19 | AgentDesk RateLimit service | **Current** — TC-13.14b / Provider Detection Target — TC-13.14c | TC-13.14 | Provider-neutral rate-limit policy with multi-scope and combined signal semantics; provider detection (TC-13.14c) is evidence-dependent Target |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
-| 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Contract Repair — TC-13.18d.9a.1 / Runtime Target — TC-13.18d.9b; TASK_SUPERSEDED: Target; retry loop, fault recovery: Target) |
+| 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Current — TC-13.18d.9b; TASK_SUPERSEDED: Target; retry loop, fault recovery: Target) |
 | 23 | E2E / Recovery tests | **Current** — TC-13.19j | E2E validation and recovery scenarios — nine scenario E2E tests committed; quiescent cancellation/supersession, expert user-decision paths, escalation chain, integration failure, and happy-path audit/accept/integrate all covered |
 | 24 | AgentDesk HTML Dashboard | **Current** | TC-13.20b | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target 鈫?Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
@@ -6461,7 +6461,7 @@ in `ControlPlaneTransitionService._TRANSITION_SPECS` (搂2.14.8):
 | 12 | `BLOCKER_RESCOPED` | Current — TC-13.18d.5 rescope path |
 | 13 | `BLOCKER_CANCELLED` | Current — TC-13.18d.6 cancel path |
 | 14 | `TASK_CANCELLED` (quiescent path) | Current — TC-13.18d.7 |
-| 15 | `TASK_CANCELLED` (active dispatch path) | Contract Repair — TC-13.18d.9a.1 / Runtime Target — TC-13.18d.9b |
+| 15 | `TASK_CANCELLED` (active dispatch path) | Current — TC-13.18d.9b |
 | 16 | `TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8 |
 | 17 | TASK_SUPERSEDED (active dispatch path) | Target |
 
@@ -6522,7 +6522,7 @@ handle could never reach a still-running task, and a frozen value could not
 call `asyncio.Task.cancel()`.  TC-13.18d.9a.1 repairs the model with an
 in-process runtime controller (`ActiveDispatchExecution`) returned by
 `start_dispatch_cycle()` before the Worker completes.  Production
-implementation is TC-13.18d.9b (Runtime Target).
+implementation is Current — TC-13.18d.9b.
 
 The full per-interface contract is in
 `public-interfaces/workflow-orchestrator-contract.md` §14; this subsection
@@ -6610,7 +6610,7 @@ exception hierarchy.  All exceptions are existing types from underlying services
 * Completed TC-13.18 subpaths retain their individually recorded Current statuses.
 * **Active-dispatch cancellation** contract is repaired and frozen as of
   TC-13.18d.9a.1 (execution-based model); production implementation is
-  TC-13.18d.9b (Runtime Target).
+  TC-13.18d.9b (Current).
 * All prior Current interfaces remain **Current**.
 
 * ADR Interface Status row #22 "AgentDesk WorkflowOrchestrator"

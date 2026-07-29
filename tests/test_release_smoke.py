@@ -9216,12 +9216,12 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
             "ADR: TASK_CANCELLED quiescent path must be Current",
         )
 
-    def test_active_dispatch_cancellation_target_in_adr(self) -> None:
-        """TASK_CANCELLED active dispatch path must be Target."""
+    def test_active_dispatch_cancellation_current_in_adr(self) -> None:
+        """TASK_CANCELLED active dispatch path must be Current."""
         self.assertIn(
-            "TASK_CANCELLED active dispatch path: Target",
+            "TASK_CANCELLED active dispatch path: Current — TC-13.18d.9b",
             self.adr_text,
-            "ADR: TASK_CANCELLED active dispatch path must be Target",
+            "ADR: TASK_CANCELLED active dispatch path must be Current",
         )
 
     def test_superseded_target_in_adr(self) -> None:
@@ -9270,12 +9270,12 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
             "Contract: TASK_CANCELLED quiescent path must be Current",
         )
 
-    def test_contract_active_dispatch_target_in_transition_table(self) -> None:
-        """Contract transition table must have active dispatch as Target."""
+    def test_contract_active_dispatch_current_in_transition_table(self) -> None:
+        """Contract transition table must have active dispatch as Current."""
         self.assertIn(
-            "TASK_CANCELLED` (active dispatch path) | Target",
+            "TASK_CANCELLED` (active dispatch path) | Current — TC-13.18d.9b",
             self.contract_text,
-            "Contract: TASK_CANCELLED active dispatch must be Target",
+            "Contract: TASK_CANCELLED active dispatch must be Current",
         )
 
     def test_contract_task_superseded_target_in_transition_table(self) -> None:
@@ -11266,12 +11266,11 @@ class TC1318d9a1ActiveDispatchCancellationContractRepairTests(unittest.TestCase)
                 found = True
         self.assertTrue(found)
 
-    # -- 16. Active cancellation marked Contract Repair / Runtime Target --
+    # -- 16. Active cancellation runtime is Current --
 
     def test_active_cancellation_status(self) -> None:
-        """Active cancellation must be Contract Repair — TC-13.18d.9a.1."""
-        self.assertIn("Contract Repair — TC-13.18d.9a.1", self.contract_text)
-        self.assertIn("Runtime Target", self.contract_text)
+        """Active cancellation must be Current — TC-13.18d.9b."""
+        self.assertIn("Current — TC-13.18d.9b", self.contract_text)
 
     # -- 17. cancel_active_dispatch takes execution + request --
 

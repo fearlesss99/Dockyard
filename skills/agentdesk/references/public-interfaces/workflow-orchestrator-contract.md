@@ -1,4 +1,4 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation Contract Repair — TC-13.18d.9a.1)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation — Current — TC-13.18d.9b)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
@@ -19,7 +19,7 @@ TC-13.18d.9a.1 repairs the contract (execution-based model). Production implemen
 
 **Current** as of TC-13.18d.8; E2E evidence program closed as of TC-13.19j.
 Active-dispatch cancellation contract frozen as of TC-13.18d.9a; production
-implementation is TC-13.18d.9b (Runtime Target).
+implementation is Current — TC-13.18d.9b.
 TASK_DISPATCHED → heartbeat + run_worker →
 DISPATCH_ACKNOWLEDGED → decode_worker_result →
 require_delivery_receipt → DELIVERY_SUBMITTED → stop heartbeat → release
@@ -44,7 +44,7 @@ validates all Current paths.  Active-dispatch cancellation, active-dispatch
 supersession, Codex decoding, Codex rate-limit classification, and
 retry-loop fault recovery remain Target.  Active-dispatch cancellation
 contract is repaired and frozen as of TC-13.18d.9a.1 (execution-based
-model); production implementation is TC-13.18d.9b (Runtime Target).  See
+model); production implementation is Current — TC-13.18d.9b.  See
 `reports/tc-13.19-final-delivery-report.md` and `test_release_smoke.py`
 class `TC1319jE2EProgramClosureTests`.  TC-13.20 (HTML Dashboard) is Target.
 
@@ -351,7 +351,7 @@ defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
 | 12 | `BLOCKER_RESCOPED` | Current — TC-13.18d.5 (expert blocked → draft rescope) |
 | 13 | `BLOCKER_CANCELLED` | Current — TC-13.18d.6 (expert blocked → cancelled) |
 | 14 | `TASK_CANCELLED` (quiescent path) | Current — TC-13.18d.7 |
-| 15 | `TASK_CANCELLED` (active dispatch path) | Contract Repair — TC-13.18d.9a.1 / Runtime Target — TC-13.18d.9b |
+| 15 | `TASK_CANCELLED` (active dispatch path) | Current — TC-13.18d.9b |
 | 16 | `TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8 |
 | 17 | TASK_SUPERSEDED (active dispatch path) | Target |
 
@@ -523,7 +523,7 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18d-ext** | Retry loop, escalation replay, cancellation, fault recovery | TC-13.18d.3 | Target |
 | **TC-13.18d.9a** | Active-dispatch cancellation contract freeze (non-implementable) | TC-13.18d.7 | Superseded |
 | **TC-13.18d.9a.1** | Active-dispatch cancellation contract repair (execution model) | TC-13.18d.9a | Contract Current |
-| **TC-13.18d.9b** | Active-dispatch cancellation production implementation | TC-13.18d.9a.1 | Runtime Target |
+| **TC-13.18d.9b** | Active-dispatch cancellation production implementation | TC-13.18d.9a.1 | Current |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Current — TC-13.19j |
 | **TC-13.20** | HTML Dashboard | TC-13.17, TC-13.19 | Read-only UI |
@@ -539,7 +539,7 @@ TC-13.18d.5 does **not** implement:
 - Auto-unblock → TC-13.18d.3
 - `BLOCKER_CANCELLED` → Current — TC-13.18d.6
 - `TASK_CANCELLED` (quiescent path) → Current — TC-13.18d.7
-- `TASK_CANCELLED` (active dispatch path) → Contract Repair — TC-13.18d.9a.1 / Runtime Target — TC-13.18d.9b
+- `TASK_CANCELLED` (active dispatch path) → Current — TC-13.18d.9b
 - `TASK_SUPERSEDED` (quiescent path) → Current — TC-13.18d.8
 - TASK_SUPERSEDED (active dispatch path) → Target
 - `INTEGRATION_FAILED` → TC-13.18d.4 (already implemented)
@@ -549,13 +549,12 @@ TC-13.18d.5 does **not** implement:
 - Rescue execution boundary — rescope is a PM control-plane only action
 - `BLOCKER_RESOLVED` → TC-13.18d.3 (already implemented)
 
-TC-13.18d.9a.1 does **not** implement:
+TC-13.18d.9b still does **not** implement:
 
 - Active-dispatch supersession → Target
 - RateLimit retry → Target
 - Retry-loop fault recovery → Target
 - Codex decoding → Target
-- Active-dispatch cancellation production code → TC-13.18d.9b
 - Modification of `dispatcher_gateway` termination implementation
 - Modification of `WorkflowOrchestrator` existing frozen/slots three-field shape
 - Persistence of `ActiveDispatchExecution` to YAML/events/outbox/runtime files
@@ -578,8 +577,8 @@ Worker completes**, via an in-process runtime controller
 (`ActiveDispatchExecution`) returned by `start_dispatch_cycle()`.
 
 This is the active-dispatch counterpart to the quiescent
-`cancel_quiescent_task` (TC-13.18d.7).  Production implementation remains
-TC-13.18d.9b (Runtime Target).
+`cancel_quiescent_task` (TC-13.18d.7).  Production implementation is
+Current — TC-13.18d.9b.
 
 ### 14.0 Revisions Relative to TC-13.18d.9a
 
@@ -772,8 +771,8 @@ class ActiveDispatchExecution:
 
 - **Not** a `@dataclass(frozen=True)` — it is a runtime controller with
   private mutable state behind `__slots__`.
-- **Not** exposed in `__all__` as a persisted type; it is a runtime
-  capability returned by `start_dispatch_cycle` and consumed by
+- Exposed in `__all__` as a runtime capability, never as a persisted type;
+  it is returned by `start_dispatch_cycle` and consumed by
   `cancel_active_dispatch` / `wait()`.
 - No public attribute exposes `asyncio.Task`, `Future`, `dict`, `Any`, or
   `object`.  The live tasks live in private `_`-prefixed `__slots__`.
@@ -803,6 +802,11 @@ class ActiveDispatchCancellationRequest:
     matching the handle's `dispatch_id` and `attempt`
 - `dispatch_cas` is **mandatory** for the active path (unlike the quiescent
   path where `dispatch_cas=None`)
+- Because the frozen lower-level `TransitionRequest` constructor still
+  accepts `TASK_CANCELLED` only without `DispatchCAS`, constructing
+  `ActiveDispatchCancellationRequest` binds an otherwise-valid
+  no-`DispatchCAS` transition to an immutable copy carrying the handle's
+  exact `dispatch_id` and `attempt`; the caller's transition is not mutated.
 - The request does **not** carry the execution — the execution is passed
   separately to `cancel_active_dispatch` so creator-ownership can be
   checked structurally
@@ -1132,8 +1136,8 @@ appears in any **public** type or in the execution's public surface.
 | Path | Status | Relationship |
 |------|--------|-------------|
 | `cancel_quiescent_task` | Current — TC-13.18d.7 | **Unchanged** — no active dispatch, no execution, no DispatchCAS |
-| `cancel_active_dispatch` | Contract Repair — TC-13.18d.9a.1 | **Revised** — takes execution + request; creator-owned; no `worker_result` in result |
-| `start_dispatch_cycle` | Contract Repair — TC-13.18d.9a.1 | **New** — returns live execution before Worker completes |
+| `cancel_active_dispatch` | Current — TC-13.18d.9b | **Revised** — takes execution + request; creator-owned; no `worker_result` in result |
+| `start_dispatch_cycle` | Current — TC-13.18d.9b | **New** — returns live execution before Worker completes |
 | `run_dispatch_cycle` | Current — TC-13.18b | **Unchanged signature** — compatibility wrapper over start+wait; 9-field result |
 | `run_dispatch_observed` | Current — TC-13.18b | **Unchanged** — `DispatchCancelledError` and `_terminate_process` are reused as-is |
 | `WorkerSlotLease` | Current — TC-13.10c | **Unchanged** — `release_worker_slot` is reused as-is |
@@ -1145,4 +1149,4 @@ appears in any **public** type or in the execution's public surface.
 |------|-------------|--------|
 | **TC-13.18d.9a** | Active-dispatch cancellation contract freeze (non-implementable) | Superseded by TC-13.18d.9a.1 |
 | **TC-13.18d.9a.1** | Active-dispatch cancellation contract repair (execution model) | Contract Current |
-| **TC-13.18d.9b** | Active-dispatch cancellation production implementation | Runtime Target |
+| **TC-13.18d.9b** | Active-dispatch cancellation production implementation | Current |

@@ -3233,7 +3233,7 @@ class EscalatedRedispatchResultFourFieldTests(unittest.TestCase):
 # ── WorkflowOrchestratorEscalatedRedispatch Tests ──────────────────────────
 
 
-class WorkflowOrchestratorEscalatedRedispatchTests(unittest.TestCase):
+class _WorkflowOrchestratorEscalatedRedispatchTestsBase:
     """TC-13.18d.3: escalated redispatch — 30 targeted tests."""
 
     @staticmethod
@@ -3322,6 +3322,622 @@ class WorkflowOrchestratorEscalatedRedispatchTests(unittest.TestCase):
             ])
         finally:
             import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+
+# -- TC-13.18d.9b active-dispatch cancellation -------------------------------
+
+
+class ActiveDispatchCancellationTests(unittest.TestCase):
+    """Production state-machine tests for creator-owned live cancellation."""
+
+    @staticmethod
+    def _cancel_request(execution: Any) -> Any:
+        from control_plane_transition import CancelledPayload
+        from workflow_orchestrator import ActiveDispatchCancellationRequest
+
+        handle = execution.handle
+        transition = TransitionRequest(
+            cas=TransitionCAS(
+                task_id=handle.task_id,
+                expected_revision=handle.revision,
+                expected_state="in_progress",
+                expected_snapshot_commit="a" * 40,
+            ),
+            dispatch_cas=None,
+            event_id="EVT-ACTIVE-CANCEL-001",
+            event_type="TASK_CANCELLED",
+            payload=CancelledPayload(),
+            event_context=TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(),
+                guard_results=(),
+            ),
+        )
+        return ActiveDispatchCancellationRequest(
+            handle=handle,
+            cancellation_transition_request=transition,
+        )
+
+    def test_minimal_live_cancellation_chain(self) -> None:
+        """start returns live; worker/hb stop; release/transition happen once."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            from dispatcher_gateway import DispatchCancelledError
+
+            worker_started = asyncio.Event()
+            worker_cancelled = asyncio.Event()
+            release_count = 0
+            cancellation_transitions = 0
+            real_release = wo.release_worker_slot
+            real_apply = wo.ControlPlaneTransitionService.apply_transition
+
+            async def _worker(
+                request: Any,
+                worker_kind: Any,
+                difficulty: Any,
+                providers: Any,
+                observer: Any,
+            ) -> WorkerResult:
+                selection = request.model_selection
+                await observer.on_dispatch_started(
+                    DispatchStarted(
+                        identity=request.identity,
+                        provider=selection.selected_model_provider,
+                        model_id=selection.selected_model_id,
+                    )
+                )
+                worker_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    worker_cancelled.set()
+                    raise DispatchCancelledError() from None
+
+            def _release(*args: Any, **kwargs: Any) -> None:
+                nonlocal release_count
+                release_count += 1
+                real_release(*args, **kwargs)
+
+            def _apply(
+                service: Any,
+                transition: Any,
+                lease: Any,
+                now: Any,
+            ) -> TransitionResult:
+                nonlocal cancellation_transitions
+                if transition.event_type == "TASK_CANCELLED":
+                    cancellation_transitions += 1
+                    self.assertIsNone(lease)
+                return real_apply(service, transition, lease, now)
+
+            req = _make_dispatch_cycle_request(tmp=tmp)
+            head = _git_head(tmp)
+
+            async def _run() -> None:
+                nonlocal head
+                with mock.patch.object(
+                    wo, "run_worker_observed", side_effect=_worker
+                ), mock.patch.object(
+                    wo, "release_worker_slot", side_effect=_release
+                ), mock.patch.object(
+                    wo.ControlPlaneTransitionService,
+                    "apply_transition",
+                    autospec=True,
+                    side_effect=_apply,
+                ):
+                    orch = _new_orch(tmp)
+                    execution = await orch.start_dispatch_cycle(
+                        req, {"claude": FakeProvider()}
+                    )
+                    self.assertTrue(worker_started.is_set())
+                    self.assertFalse(execution._worker_task.done())
+                    cancel_request = self._cancel_request(execution)
+                    self.assertEqual(
+                        (
+                            cancel_request.cancellation_transition_request
+                            .dispatch_cas.expected_dispatch_id
+                        ),
+                        execution.handle.dispatch_id,
+                    )
+                    self.assertEqual(
+                        (
+                            cancel_request.cancellation_transition_request
+                            .dispatch_cas.expected_attempt
+                        ),
+                        execution.handle.attempt,
+                    )
+                    object.__setattr__(
+                        cancel_request.cancellation_transition_request.cas,
+                        "expected_snapshot_commit",
+                        head,
+                    )
+                    result = await orch.cancel_active_dispatch(
+                        execution, cancel_request
+                    )
+                    self.assertEqual(result.task_id, "TC-001")
+                    self.assertTrue(worker_cancelled.is_set())
+                    self.assertTrue(execution._heartbeat_task.done())
+                    await asyncio.sleep(0)
+                    self.assertTrue(execution._runner_task.done())
+                    self.assertEqual(release_count, 1)
+                    self.assertEqual(cancellation_transitions, 1)
+                    with self.assertRaises(DispatchCancelledError):
+                        await execution.wait()
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.cancel_active_dispatch(
+                            execution, cancel_request
+                        )
+                    self.assertEqual(release_count, 1)
+                    self.assertEqual(cancellation_transitions, 1)
+
+            asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_public_types_and_execution_surface(self) -> None:
+        from workflow_orchestrator import (
+            ActiveDispatchCancellationRequest,
+            ActiveDispatchCancellationResult,
+            ActiveDispatchExecution,
+            ActiveDispatchHandle,
+        )
+        import workflow_orchestrator as wo
+
+        self.assertTrue({
+            "ActiveDispatchHandle",
+            "ActiveDispatchExecution",
+            "ActiveDispatchCancellationRequest",
+            "ActiveDispatchCancellationResult",
+        }.issubset(set(wo.__all__)))
+        self.assertEqual(len(dc_fields(ActiveDispatchHandle)), 7)
+        self.assertEqual(len(dc_fields(ActiveDispatchCancellationRequest)), 2)
+        self.assertEqual(len(dc_fields(ActiveDispatchCancellationResult)), 3)
+        self.assertNotIn("worker_result", {
+            field.name for field in dc_fields(ActiveDispatchCancellationResult)
+        })
+        self.assertFalse(hasattr(ActiveDispatchExecution, "__dataclass_fields__"))
+        public = {
+            name for name in dir(ActiveDispatchExecution)
+            if not name.startswith("_")
+        }
+        self.assertEqual(public, {"handle", "wait"})
+
+    def test_creator_ownership_and_handle_binding_fail_closed(self) -> None:
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            from dispatcher_gateway import DispatchCancelledError
+
+            async def _worker(
+                request: Any, *args: Any, **kwargs: Any
+            ) -> WorkerResult:
+                observer = args[3]
+                selection = request.model_selection
+                await observer.on_dispatch_started(
+                    DispatchStarted(
+                        identity=request.identity,
+                        provider=selection.selected_model_provider,
+                        model_id=selection.selected_model_id,
+                    )
+                )
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    raise DispatchCancelledError() from None
+
+            async def _run() -> None:
+                with mock.patch.object(
+                    wo, "run_worker_observed", side_effect=_worker
+                ):
+                    owner = _new_orch(tmp)
+                    other = _new_orch(tmp)
+                    execution = await owner.start_dispatch_cycle(
+                        _make_dispatch_cycle_request(tmp=tmp),
+                        {"claude": FakeProvider()},
+                    )
+                    request = self._cancel_request(execution)
+                    with self.assertRaises(WorkflowInputError):
+                        await other.cancel_active_dispatch(execution, request)
+                    wrong_handle = wo.ActiveDispatchHandle(
+                        task_id=execution.handle.task_id,
+                        revision=execution.handle.revision,
+                        attempt=execution.handle.attempt,
+                        dispatch_id=execution.handle.dispatch_id,
+                        holder_instance_id=execution.handle.holder_instance_id,
+                        lease_epoch=execution.handle.lease_epoch,
+                        lease=execution.handle.lease,
+                    )
+                    object.__setattr__(wrong_handle, "task_id", "TC-WRONG")
+                    wrong_request = wo.ActiveDispatchCancellationRequest(
+                        wrong_handle,
+                        request.cancellation_transition_request,
+                    )
+                    with self.assertRaises(WorkflowInputError):
+                        await owner.cancel_active_dispatch(
+                            execution, wrong_request
+                        )
+                    execution._worker_task.cancel()
+                    with self.assertRaises(DispatchCancelledError):
+                        await execution.wait()
+
+            asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_worker_first_rejects_cancel_and_runner_finishes(self) -> None:
+        """A completed Worker wins; cancellation cannot suppress delivery."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            finish_worker = asyncio.Event()
+            worker_finished = asyncio.Event()
+            decoded = mock.Mock()
+            receipt = mock.Mock(
+                implementation_commit="d" * 40,
+                report_commit="e" * 40,
+            )
+
+            async def _worker(
+                request: Any,
+                worker_kind: Any,
+                difficulty: Any,
+                providers: Any,
+                observer: Any,
+            ) -> WorkerResult:
+                selection = request.model_selection
+                await observer.on_dispatch_started(
+                    DispatchStarted(
+                        identity=request.identity,
+                        provider=selection.selected_model_provider,
+                        model_id=selection.selected_model_id,
+                    )
+                )
+                await finish_worker.wait()
+                worker_finished.set()
+                return _make_worker_result()
+
+            async def _run() -> None:
+                with mock.patch.object(
+                    wo, "run_worker_observed", side_effect=_worker
+                ), mock.patch.object(
+                    wo, "decode_worker_result", return_value=decoded
+                ), mock.patch.object(
+                    wo, "require_delivery_receipt", return_value=receipt
+                ):
+                    orch = _new_orch(tmp)
+                    execution = await orch.start_dispatch_cycle(
+                        _make_dispatch_cycle_request(tmp=tmp),
+                        {"claude": FakeProvider()},
+                    )
+                    finish_worker.set()
+                    await worker_finished.wait()
+                    for _ in range(20):
+                        if execution._completion.done():
+                            break
+                        await asyncio.sleep(0)
+                    self.assertTrue(
+                        execution._completion.done(),
+                        "runner must finalize without an early wait() call",
+                    )
+                    with self.assertRaises(WorkflowInputError):
+                        await orch.cancel_active_dispatch(
+                            execution, self._cancel_request(execution)
+                        )
+                    first = await execution.wait()
+                    second = await execution.wait()
+                    self.assertIs(first, second)
+                    self.assertIs(first.worker_output, decoded)
+
+            asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_release_failure_and_cas_conflict_fail_closed(self) -> None:
+        """Release failure skips transition; CAS conflict keeps cleanup done."""
+        import workflow_orchestrator as wo
+        from control_plane_transition import TransitionCASConflictError
+        from dispatcher_gateway import DispatchCancelledError
+
+        for case in ("release", "cas"):
+            with self.subTest(case=case):
+                tmp = _setup_project()
+                cancellation_calls = 0
+                real_apply = (
+                    wo.ControlPlaneTransitionService.apply_transition
+                )
+
+                async def _worker(
+                    request: Any,
+                    worker_kind: Any,
+                    difficulty: Any,
+                    providers: Any,
+                    observer: Any,
+                ) -> WorkerResult:
+                    selection = request.model_selection
+                    await observer.on_dispatch_started(
+                        DispatchStarted(
+                            identity=request.identity,
+                            provider=selection.selected_model_provider,
+                            model_id=selection.selected_model_id,
+                        )
+                    )
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        raise DispatchCancelledError() from None
+
+                def _apply(
+                    service: Any,
+                    transition: Any,
+                    lease: Any,
+                    now: Any,
+                ) -> TransitionResult:
+                    nonlocal cancellation_calls
+                    if transition.event_type == "TASK_CANCELLED":
+                        cancellation_calls += 1
+                        if case == "cas":
+                            raise TransitionCASConflictError(
+                                "stale active attempt"
+                            )
+                    return real_apply(service, transition, lease, now)
+
+                release_patch = (
+                    mock.patch.object(
+                        wo,
+                        "release_worker_slot",
+                        side_effect=WorkerSlotNotHeldError("release failed"),
+                    )
+                    if case == "release"
+                    else mock.patch.object(
+                        wo,
+                        "release_worker_slot",
+                        wraps=wo.release_worker_slot,
+                    )
+                )
+
+                async def _run() -> None:
+                    with mock.patch.object(
+                        wo, "run_worker_observed", side_effect=_worker
+                    ), mock.patch.object(
+                        wo.ControlPlaneTransitionService,
+                        "apply_transition",
+                        autospec=True,
+                        side_effect=_apply,
+                    ), release_patch:
+                        orch = _new_orch(tmp)
+                        execution = await orch.start_dispatch_cycle(
+                            _make_dispatch_cycle_request(tmp=tmp),
+                            {"claude": FakeProvider()},
+                        )
+                        expected = (
+                            WorkerSlotNotHeldError
+                            if case == "release"
+                            else TransitionCASConflictError
+                        )
+                        with self.assertRaises(expected):
+                            await orch.cancel_active_dispatch(
+                                execution,
+                                self._cancel_request(execution),
+                            )
+                        self.assertTrue(execution._worker_task.done())
+                        self.assertTrue(execution._heartbeat_task.done())
+
+                try:
+                    asyncio.run(_run())
+                    self.assertEqual(
+                        cancellation_calls, 0 if case == "release" else 1
+                    )
+                finally:
+                    import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_heartbeat_and_worker_cleanup_failures_skip_cancel(self) -> None:
+        """Neither fencing nor unconfirmed Worker cleanup publishes cancel."""
+        import workflow_orchestrator as wo
+        from dispatcher_gateway import DispatchCancelledError
+
+        for case in ("heartbeat", "worker_cleanup"):
+            with self.subTest(case=case):
+                tmp = _setup_project()
+                gate: asyncio.Event | None = None
+                cancellation_calls = 0
+                release_calls = 0
+                real_apply = (
+                    wo.ControlPlaneTransitionService.apply_transition
+                )
+                real_release = wo.release_worker_slot
+
+                class _GatedClock(FakeClock):
+                    async def sleep(self, seconds: float) -> None:
+                        assert gate is not None
+                        await gate.wait()
+                        raise WorkerSlotNotHeldError("heartbeat fenced")
+
+                async def _worker(
+                    request: Any,
+                    worker_kind: Any,
+                    difficulty: Any,
+                    providers: Any,
+                    observer: Any,
+                ) -> WorkerResult:
+                    selection = request.model_selection
+                    await observer.on_dispatch_started(
+                        DispatchStarted(
+                            identity=request.identity,
+                            provider=selection.selected_model_provider,
+                            model_id=selection.selected_model_id,
+                        )
+                    )
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        if case == "worker_cleanup":
+                            raise RuntimeError("cleanup not confirmed")
+                        raise DispatchCancelledError() from None
+
+                def _apply(
+                    service: Any,
+                    transition: Any,
+                    lease: Any,
+                    now: Any,
+                ) -> TransitionResult:
+                    nonlocal cancellation_calls
+                    if transition.event_type == "TASK_CANCELLED":
+                        cancellation_calls += 1
+                    return real_apply(service, transition, lease, now)
+
+                def _release(*args: Any, **kwargs: Any) -> None:
+                    nonlocal release_calls
+                    release_calls += 1
+                    real_release(*args, **kwargs)
+
+                async def _run() -> None:
+                    nonlocal gate
+                    gate = asyncio.Event()
+                    clock = (
+                        _GatedClock()
+                        if case == "heartbeat"
+                        else FakeClock()
+                    )
+                    with mock.patch.object(
+                        wo, "run_worker_observed", side_effect=_worker
+                    ), mock.patch.object(
+                        wo.ControlPlaneTransitionService,
+                        "apply_transition",
+                        autospec=True,
+                        side_effect=_apply,
+                    ), mock.patch.object(
+                        wo, "release_worker_slot", side_effect=_release
+                    ):
+                        orch = _new_orch(tmp, clock=clock)
+                        execution = await orch.start_dispatch_cycle(
+                            _make_dispatch_cycle_request(tmp=tmp),
+                            {"claude": FakeProvider()},
+                        )
+                        if case == "heartbeat":
+                            gate.set()
+                            await asyncio.sleep(0)
+                            expected: type[BaseException] = (
+                                WorkerSlotNotHeldError
+                            )
+                        else:
+                            expected = RuntimeError
+                        with self.assertRaises(expected):
+                            await orch.cancel_active_dispatch(
+                                execution,
+                                self._cancel_request(execution),
+                            )
+
+                try:
+                    asyncio.run(_run())
+                    self.assertEqual(cancellation_calls, 0)
+                    self.assertEqual(
+                        release_calls, 1 if case == "heartbeat" else 0
+                    )
+                finally:
+                    import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_outer_cancel_waits_for_started_cancellation_cleanup(self) -> None:
+        """Cancelling the caller cannot interrupt the chosen cleanup path."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+            from dispatcher_gateway import DispatchCancelledError
+
+            worker_is_cleaning = asyncio.Event()
+            allow_cleanup = asyncio.Event()
+            release_calls = 0
+            cancellation_calls = 0
+            real_release = wo.release_worker_slot
+            real_apply = wo.ControlPlaneTransitionService.apply_transition
+
+            async def _worker(
+                request: Any,
+                worker_kind: Any,
+                difficulty: Any,
+                providers: Any,
+                observer: Any,
+            ) -> WorkerResult:
+                selection = request.model_selection
+                await observer.on_dispatch_started(
+                    DispatchStarted(
+                        identity=request.identity,
+                        provider=selection.selected_model_provider,
+                        model_id=selection.selected_model_id,
+                    )
+                )
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    worker_is_cleaning.set()
+                    await allow_cleanup.wait()
+                    raise DispatchCancelledError() from None
+
+            def _release(*args: Any, **kwargs: Any) -> None:
+                nonlocal release_calls
+                release_calls += 1
+                real_release(*args, **kwargs)
+
+            def _apply(
+                service: Any,
+                transition: Any,
+                lease: Any,
+                now: Any,
+            ) -> TransitionResult:
+                nonlocal cancellation_calls
+                if transition.event_type == "TASK_CANCELLED":
+                    cancellation_calls += 1
+                return real_apply(service, transition, lease, now)
+
+            async def _run() -> None:
+                with mock.patch.object(
+                    wo, "run_worker_observed", side_effect=_worker
+                ), mock.patch.object(
+                    wo, "release_worker_slot", side_effect=_release
+                ), mock.patch.object(
+                    wo.ControlPlaneTransitionService,
+                    "apply_transition",
+                    autospec=True,
+                    side_effect=_apply,
+                ):
+                    orch = _new_orch(tmp)
+                    execution = await orch.start_dispatch_cycle(
+                        _make_dispatch_cycle_request(tmp=tmp),
+                        {"claude": FakeProvider()},
+                    )
+                    cancel_request = self._cancel_request(execution)
+                    object.__setattr__(
+                        cancel_request.cancellation_transition_request.cas,
+                        "expected_snapshot_commit",
+                        _git_head(tmp),
+                    )
+                    cancel_task = asyncio.create_task(
+                        orch.cancel_active_dispatch(
+                            execution,
+                            cancel_request,
+                        )
+                    )
+                    await worker_is_cleaning.wait()
+                    cancel_task.cancel()
+                    await asyncio.sleep(0)
+                    allow_cleanup.set()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await cancel_task
+                    self.assertEqual(release_calls, 1)
+                    self.assertEqual(cancellation_calls, 1)
+                    self.assertTrue(execution._heartbeat_task.done())
+
+            asyncio.run(_run())
+        finally:
+            import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+
+class WorkflowOrchestratorEscalatedRedispatchTests(
+    _WorkflowOrchestratorEscalatedRedispatchTestsBase,
+    unittest.TestCase,
+):
+    """Continuation of the pre-existing targeted redispatch test class."""
 
     # -- 3. STANDARD→ADVANCED success ----------------------------------------
 

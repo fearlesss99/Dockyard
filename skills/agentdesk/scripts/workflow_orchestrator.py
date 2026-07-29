@@ -1,4 +1,4 @@
-"""AgentDesk WorkflowOrchestrator — TC-13.18b / TC-13.18b.2 / TC-13.18c.1 / TC-13.18c.2 / TC-13.18d.1 / TC-13.18d.2 / TC-13.18d.3 / TC-13.18d.4 / TC-13.18d.5 / TC-13.18d.6 / TC-13.18d.7.
+"""AgentDesk WorkflowOrchestrator — through TC-13.18d.9b.
 
 Single dispatch-cycle execution: snapshot -> acquire lease ->
 TASK_DISPATCHED -> heartbeat + run_worker_observed ->
@@ -24,9 +24,8 @@ TaskCancellationResult.
 
 Non-goals (explicitly excluded):
 * Escalation, retry, automatic blocked/fail remediation
-* Active-dispatch cooperative cancellation →Target
-* Subprocess termination →Target
-* Heartbeat cleanup →Target
+* Active-dispatch supersession → Target
+* New subprocess termination implementation (the gateway owns termination)
 * Codex output decoding (blocked until TC-13.9c.2)
 * Parsing stdout/stderr manually, guessing commits from Git HEAD
 * Git worktree lifecycle, subprocess invocation, file I/O
@@ -69,6 +68,7 @@ from control_plane_transition import (
 from core_types import TaskDifficulty, WorkerKind
 from dispatcher_gateway import (
     AgentCliProvider,
+    DispatchCancelledError,
     DispatchRequest,
     DispatchStarted,
     DispatchStartedObserver,
@@ -93,6 +93,7 @@ from worker_output_decoder import (
     require_delivery_receipt,
 )
 from worker_slot_lease import (
+    WorkerSlotLease,
     WorkerSlotLeaseError,
     acquire_worker_slot,
     release_worker_slot,
@@ -105,6 +106,10 @@ from mad_audit_gateway import run_audit_gateway
 __all__ = [
     "AcceptanceCycleRequest",
     "AcceptanceCycleResult",
+    "ActiveDispatchCancellationRequest",
+    "ActiveDispatchCancellationResult",
+    "ActiveDispatchExecution",
+    "ActiveDispatchHandle",
     "BlockedAuditRequest",
     "BlockedAuditResult",
     "BlockedCancellationRequest",
@@ -436,6 +441,163 @@ class DispatchCycleResult:
     slot_id: str
     lease_epoch: int
     duration_seconds: float
+
+
+# -- ActiveDispatchCancellation types (TC-13.18d.9b) -------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveDispatchHandle:
+    """Immutable identity snapshot for a live dispatch."""
+
+    task_id: str
+    revision: int
+    attempt: int
+    dispatch_id: str
+    holder_instance_id: str
+    lease_epoch: int
+    lease: WorkerSlotLease
+
+    def __post_init__(self) -> None:
+        for name in ("task_id", "dispatch_id", "holder_instance_id"):
+            value = getattr(self, name)
+            if type(value) is not str or not value:
+                raise TypeError(f"{name} must be a non-empty str")
+        for name in ("revision", "attempt", "lease_epoch"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 1:
+                raise TypeError(f"{name} must be a positive int")
+        if type(self.lease) is not WorkerSlotLease:
+            raise TypeError("lease must be WorkerSlotLease")
+        if self.dispatch_id != self.lease.holder_dispatch_id:
+            raise ValueError("dispatch_id must match lease holder_dispatch_id")
+        if self.holder_instance_id != self.lease.holder_instance_id:
+            raise ValueError(
+                "holder_instance_id must match lease holder_instance_id"
+            )
+        if self.lease_epoch != self.lease.lease_epoch:
+            raise ValueError("lease_epoch must match lease lease_epoch")
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveDispatchCancellationRequest:
+    """Immutable request to cancel a creator-owned live dispatch."""
+
+    handle: ActiveDispatchHandle
+    cancellation_transition_request: TransitionRequest
+
+    def __post_init__(self) -> None:
+        transition = self.cancellation_transition_request
+        if (
+            type(self.handle) is ActiveDispatchHandle
+            and type(transition) is TransitionRequest
+            and transition.dispatch_cas is None
+        ):
+            # TransitionRequest's legacy constructor still treats
+            # TASK_CANCELLED as PM-only, while the transition service already
+            # supports optional DispatchCAS for its active path.  Bind the
+            # immutable request to the execution handle without mutating the
+            # caller's TransitionRequest or the lower-level production module.
+            bound = object.__new__(TransitionRequest)
+            object.__setattr__(bound, "cas", transition.cas)
+            object.__setattr__(
+                bound,
+                "dispatch_cas",
+                DispatchCAS(
+                    expected_dispatch_id=self.handle.dispatch_id,
+                    expected_attempt=self.handle.attempt,
+                ),
+            )
+            object.__setattr__(bound, "event_id", transition.event_id)
+            object.__setattr__(bound, "event_type", transition.event_type)
+            object.__setattr__(bound, "payload", transition.payload)
+            object.__setattr__(
+                bound, "event_context", transition.event_context
+            )
+            object.__setattr__(
+                self, "cancellation_transition_request", bound
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveDispatchCancellationResult:
+    """Result of an active-dispatch TASK_CANCELLED transition."""
+
+    task_id: str
+    dispatch_id: str
+    cancellation_transition: TransitionResult
+
+
+class ActiveDispatchExecution:
+    """In-process controller for one live dispatch.
+
+    The task and future attributes are deliberately private.  Public callers
+    can inspect only the frozen identity handle and await the final outcome.
+    """
+
+    __slots__ = (
+        "_owner",
+        "_handle",
+        "_request",
+        "_worker_task",
+        "_heartbeat_task",
+        "_state_lock",
+        "_finalize_lock",
+        "_completion",
+        "_runner_task",
+        "_winner",
+        "_release_started",
+        "_release_completed",
+        "_dispatch_transition",
+        "_ack_transition",
+        "_start_monotonic",
+        "_ready",
+    )
+
+    def __init__(
+        self,
+        owner: WorkflowOrchestrator,
+        handle: ActiveDispatchHandle,
+        request: DispatchCycleRequest,
+        worker_task: asyncio.Task[WorkerResult],
+        heartbeat_task: asyncio.Task[None],
+        dispatch_transition: TransitionResult,
+        acknowledge_transition: TransitionResult,
+        start_monotonic: float,
+    ) -> None:
+        self._owner = owner
+        self._handle = handle
+        self._request = request
+        self._worker_task = worker_task
+        self._heartbeat_task = heartbeat_task
+        self._state_lock = asyncio.Lock()
+        self._finalize_lock = asyncio.Lock()
+        self._completion: asyncio.Future[DispatchCycleResult] = (
+            asyncio.get_running_loop().create_future()
+        )
+        # Retrieve stored failures even if a caller intentionally never waits.
+        self._completion.add_done_callback(
+            lambda future: future.exception()
+            if not future.cancelled()
+            else None
+        )
+        self._runner_task: asyncio.Task[None] | None = None
+        self._winner: str | None = None
+        self._release_started = False
+        self._release_completed = False
+        self._dispatch_transition = dispatch_transition
+        self._ack_transition = acknowledge_transition
+        self._start_monotonic = start_monotonic
+        self._ready = False
+
+    @property
+    def handle(self) -> ActiveDispatchHandle:
+        """Return the immutable dispatch identity, never a live Task."""
+        return self._handle
+
+    async def wait(self) -> DispatchCycleResult:
+        """Observe the single stored result or exception."""
+        return await asyncio.shield(self._completion)
 
 
 # -- AcceptanceCycle types -----------------------------------------------------
@@ -956,8 +1118,8 @@ class _AckObserver:
     """Internal observer that validates DispatchStarted identity and
     applies DISPATCH_ACKNOWLEDGED under the same WorkerSlotLease.
 
-    Must be callable only while the lease is still valid (before release)
-    and heartbeat is active.
+    Must be callable while the lease is valid and before the post-ACK
+    heartbeat handshake starts.
     """
 
     def __init__(
@@ -978,10 +1140,16 @@ class _AckObserver:
         self._selected_model_provider = selected_model_provider
         self._selected_model_id = selected_model_id
         self._ack_result: TransitionResult | None = None
+        self._acknowledged = asyncio.Event()
 
     @property
     def ack_result(self) -> TransitionResult | None:
         return self._ack_result
+
+    @property
+    def acknowledged(self) -> asyncio.Event:
+        """Private orchestration handshake; not part of the public API."""
+        return self._acknowledged
 
     async def on_dispatch_started(
         self,
@@ -1007,6 +1175,7 @@ class _AckObserver:
         self._ack_result = ControlPlaneTransitionService(
             self._project_root
         ).apply_transition(self._ack_tr, self._lease, now_ack)
+        self._acknowledged.set()
 
 
 # -- WorkflowOrchestrator -----------------------------------------------------
@@ -1275,27 +1444,31 @@ class WorkflowOrchestrator:
         request: DispatchCycleRequest,
         providers: Mapping[str, AgentCliProvider],
     ) -> DispatchCycleResult:
-        """Execute a single dispatch cycle with ACK and DELIVERY_SUBMITTED.
+        """Compatibility wrapper over the live-execution API."""
+        execution = await self.start_dispatch_cycle(request, providers)
+        try:
+            return await execution.wait()
+        except asyncio.CancelledError as outer_cancel:
+            cleanup_task = asyncio.ensure_future(
+                self._abort_active_dispatch(execution)
+            )
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                try:
+                    await asyncio.shield(cleanup_task)
+                finally:
+                    raise
+            except BaseException as cleanup_error:
+                raise outer_cancel from cleanup_error
+            raise
 
-        Execution order:
-        1. Validate request/providers/Claude 2.1.214
-        2. StateProvider.snapshot()
-        3. acquire WorkerSlotLease
-        4. apply TASK_DISPATCHED
-        5. Start heartbeat + complete heartbeat_started Event handshake
-        6. run_worker_observed()
-        7. Process start → _AckObserver applies DISPATCH_ACKNOWLEDGED
-        8. Worker exit 0 → WorkerResult
-        9. heartbeat still running
-        10. decode_worker_result(worker_result, "2.1.214")
-        11. require_delivery_receipt(worker_output)
-        12. Construct DELIVERY_SUBMITTED TransitionRequest
-        13. Apply DELIVERY_SUBMITTED under same lease
-        14. Stop and await heartbeat
-        15. Release lease (exactly once)
-        16. Return nine-field DispatchCycleResult
-        """
-        # -- 1. Validate request ----------------------------------------------
+    async def start_dispatch_cycle(
+        self,
+        request: DispatchCycleRequest,
+        providers: Mapping[str, AgentCliProvider],
+    ) -> ActiveDispatchExecution:
+        """Start a dispatch and return after ACK, before waiting for exit."""
         if not isinstance(request, DispatchCycleRequest):
             raise WorkflowInputError(
                 "request must be DispatchCycleRequest, "
@@ -1327,13 +1500,11 @@ class WorkflowOrchestrator:
 
         start_mono = self.clock.monotonic()
 
-        # -- 2. Snapshot ------------------------------------------------------
         try:
             snapshot = StateProvider(self.project_root).snapshot()
         except StateProviderError:
-            raise  # propagate as-is
+            raise
 
-        # -- 3. Verify target task --------------------------------------------
         tr = request.dispatch_transition_request
         task_id = tr.cas.task_id
         task = None
@@ -1354,7 +1525,6 @@ class WorkflowOrchestrator:
                 "task revision does not match transition CAS expected_revision"
             )
 
-        # -- 4. Acquire worker slot -------------------------------------------
         now_acquire = self.clock.now()
         dr = request.dispatch_request
         lease = acquire_worker_slot(
@@ -1365,19 +1535,9 @@ class WorkflowOrchestrator:
             dr.workspace,
             now_acquire,
         )
-        acquired = True
-
-        # Track the primary body exception for release-priority logic.
-        body_error: BaseException | None = None
-        dispatch_transition_result: TransitionResult | None = None
-        ack_transition_result: TransitionResult | None = None
-        delivery_transition_result: TransitionResult | None = None
-
-        # Pre-declare task references so all exit paths can cancel + await.
         worker_task: asyncio.Task[WorkerResult] | None = None
         hb_task: asyncio.Task[None] | None = None
 
-        # Build observer before any async operations that could fail.
         snapshot_sn = dr.model_selection
         ack_observer = _AckObserver(
             project_root=self.project_root,
@@ -1390,41 +1550,10 @@ class WorkflowOrchestrator:
         )
 
         try:
-            # -- 5. Apply dispatch transition ---------------------------------
             now_transition = self.clock.now()
             dispatch_transition_result = ControlPlaneTransitionService(
                 self.project_root
             ).apply_transition(tr, lease, now_transition)
-
-            # -- 6-7. Start heartbeat first, THEN worker_observed --------------
-
-            heartbeat_started = asyncio.Event()
-
-            async def _heartbeat_loop() -> None:
-                """Heartbeat coroutine -- loop until cancelled or error."""
-                heartbeat_started.set()
-                while True:
-                    await self.clock.sleep(self.heartbeat_interval_seconds)
-                    now_hb = self.clock.now()
-                    renew_worker_slot(self.project_root, lease, now_hb)
-
-            hb_task = asyncio.ensure_future(_heartbeat_loop())
-
-            # Wait for heartbeat to confirm it has entered its loop.
-            await heartbeat_started.wait()
-
-            # If heartbeat failed before worker started, propagate immediately.
-            if hb_task.done():
-                hb_exc = hb_task.exception()
-                if hb_exc is not None:
-                    if isinstance(hb_exc, WorkerSlotLeaseError):
-                        raise hb_exc
-                    raise WorkflowHeartbeatError(
-                        "heartbeat task failed before worker started"
-                    ) from hb_exc
-                raise WorkflowHeartbeatError(
-                    "heartbeat task terminated before worker started"
-                )
 
             worker_task = asyncio.ensure_future(
                 run_worker_observed(
@@ -1436,149 +1565,468 @@ class WorkflowOrchestrator:
                 )
             )
 
-            # -- 8. Wait for first completion ---------------------------------
-            done, _pending = await asyncio.wait(
-                [worker_task, hb_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
-            # Heartbeat failure ALWAYS takes priority over Worker success.
-            if hb_task in done:
-                # Cancel worker first, then examine heartbeat.
-                worker_task.cancel()
+            ack_wait = asyncio.ensure_future(ack_observer.acknowledged.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    (worker_task, ack_wait),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if ack_wait not in done:
+                    # Propagate a launch/observer failure before returning a
+                    # cancellation capability that never became ready.
+                    worker_task.result()
+                await ack_wait
+            finally:
+                if not ack_wait.done():
+                    ack_wait.cancel()
                 try:
-                    await worker_task
+                    await ack_wait
                 except asyncio.CancelledError:
                     pass
 
-                hb_exc = hb_task.exception()
-                if hb_exc is not None:
-                    if isinstance(hb_exc, WorkerSlotLeaseError):
-                        raise hb_exc
-                    raise WorkflowHeartbeatError(
-                        "heartbeat task failed with unexpected exception"
-                    ) from hb_exc
-
-                # Heartbeat ended without exception -- should not happen.
-                raise WorkflowHeartbeatError(
-                    "heartbeat task terminated unexpectedly"
-                )
-
-            # Heartbeat is still running -- Worker completed first.
-
-            # Worker result (may raise if worker failed).
-            worker_result = worker_task.result()
-
-            # Collect ACK result from observer.
             ack_transition_result = ack_observer.ack_result
             if ack_transition_result is None:
                 raise WorkflowInvariantError(
                     "ACK transition was not applied — observer did not run"
                 )
 
-            # -- 9. Decode Worker output --------------------------------------
-            worker_output = decode_worker_result(
-                worker_result,
-                request.provider_cli_version,
-            )
+            heartbeat_started = asyncio.Event()
+            async def _heartbeat_loop() -> None:
+                heartbeat_started.set()
+                while True:
+                    await self.clock.sleep(self.heartbeat_interval_seconds)
+                    now_hb = self.clock.now()
+                    renew_worker_slot(self.project_root, lease, now_hb)
 
-            # -- 10. Require delivery receipt ----------------------------------
-            delivery_receipt = require_delivery_receipt(worker_output)
-
-            # -- 11. Construct DELIVERY_SUBMITTED transition -------------------
-            ack_tr = request.acknowledge_transition_request
-            delivery_tr = TransitionRequest(
-                cas=TransitionCAS(
-                    task_id=tr.cas.task_id,
-                    expected_revision=ack_tr.cas.expected_revision,
-                    expected_state="in_progress",
-                    expected_snapshot_commit=tr.cas.expected_snapshot_commit,
-                ),
-                dispatch_cas=ack_tr.dispatch_cas,
-                event_id=request.delivery_event_id,
-                event_type="DELIVERY_SUBMITTED",
-                payload=DeliverySubmittedPayload(
-                    implementation_commit=delivery_receipt.implementation_commit,
-                    report_commit=delivery_receipt.report_commit,
-                ),
-                event_context=request.delivery_event_context,
-            )
-
-            # -- 12. Apply DELIVERY_SUBMITTED under same lease -----------------
-            now_delivery = self.clock.now()
-            delivery_transition_result = ControlPlaneTransitionService(
-                self.project_root
-            ).apply_transition(delivery_tr, lease, now_delivery)
-
-            # -- 13. Stop heartbeat --------------------------------------------
-            hb_task.cancel()
-            try:
-                await hb_task
-            except asyncio.CancelledError:
-                # Expected -- heartbeat was running, cancellation succeeded.
-                pass
-            except WorkerSlotLeaseError:
-                # Heartbeat renewal was racing with cancellation and lost.
-                raise
-            except Exception as hb_exc:
-                # Heartbeat failed for unexpected reason -- do NOT swallow.
+            hb_task = asyncio.ensure_future(_heartbeat_loop())
+            await heartbeat_started.wait()
+            if hb_task.done():
+                hb_exc = hb_task.exception()
+                if hb_exc is not None:
+                    if isinstance(hb_exc, WorkerSlotLeaseError):
+                        raise hb_exc
+                    raise WorkflowHeartbeatError(
+                        "heartbeat task failed before worker started"
+                    ) from hb_exc
                 raise WorkflowHeartbeatError(
-                    "heartbeat failed during shutdown"
-                ) from hb_exc
+                    "heartbeat task terminated before execution became ready"
+                )
 
-            # -- 14. Compute and validate duration ----------------------------
-            end_mono = self.clock.monotonic()
-            duration = _validate_monotonic_delta(start_mono, end_mono)
-
-            return DispatchCycleResult(
-                worker_result=worker_result,
-                worker_output=worker_output,
-                delivery_receipt=delivery_receipt,
+            handle = ActiveDispatchHandle(
+                task_id=dr.identity.task_id,
+                revision=dr.identity.revision,
+                attempt=dr.identity.attempt,
+                dispatch_id=dr.identity.dispatch_id,
+                holder_instance_id=request.holder_instance_id,
+                lease_epoch=lease.lease_epoch,
+                lease=lease,
+            )
+            execution = ActiveDispatchExecution(
+                owner=self,
+                handle=handle,
+                request=request,
+                worker_task=worker_task,
+                heartbeat_task=hb_task,
                 dispatch_transition=dispatch_transition_result,
                 acknowledge_transition=ack_transition_result,
-                delivery_transition=delivery_transition_result,
-                slot_id=lease.slot_id,
-                lease_epoch=lease.lease_epoch,
-                duration_seconds=duration,
+                start_monotonic=start_mono,
+            )
+            execution._runner_task = asyncio.ensure_future(
+                self._run_active_dispatch(execution)
+            )
+            execution._ready = True
+            return execution
+        except BaseException as body_error:
+            async def _cleanup_failed_start() -> None:
+                for active_task in (worker_task, hb_task):
+                    if active_task is not None and not active_task.done():
+                        active_task.cancel()
+                for active_task in (worker_task, hb_task):
+                    if active_task is not None:
+                        try:
+                            await active_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                release_worker_slot(
+                    self.project_root, lease, self.clock.now()
+                )
+
+            cleanup_task = asyncio.ensure_future(_cleanup_failed_start())
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                try:
+                    await asyncio.shield(cleanup_task)
+                finally:
+                    raise
+            except BaseException as release_error:
+                raise body_error from release_error
+            raise
+
+    async def _run_active_dispatch(
+        self,
+        execution: ActiveDispatchExecution,
+    ) -> None:
+        """Select the non-cancellation winner and drive finalization."""
+        done, _ = await asyncio.wait(
+            (execution._worker_task, execution._heartbeat_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        async with execution._state_lock:
+            if execution._winner is not None:
+                return
+            if execution._heartbeat_task in done:
+                execution._winner = "heartbeat"
+            else:
+                execution._winner = "completion"
+        try:
+            await self._finalize_active_dispatch(execution, None)
+        except BaseException:
+            # The shared completion future is the public error channel.
+            return
+
+    async def _abort_active_dispatch(
+        self,
+        execution: ActiveDispatchExecution,
+    ) -> None:
+        """Preserve legacy run_dispatch_cycle outer-cancellation cleanup."""
+        finalize_outer = False
+        async with execution._state_lock:
+            if execution._winner is None:
+                execution._winner = "outer_cancellation"
+                finalize_outer = True
+
+        if finalize_outer:
+            execution._worker_task.cancel()
+            await self._finalize_active_dispatch(execution, None)
+        else:
+            try:
+                await execution.wait()
+            except BaseException:
+                pass
+
+        runner = execution._runner_task
+        if runner is not None and not runner.done():
+            await asyncio.shield(runner)
+
+    @staticmethod
+    def _heartbeat_failure(
+        heartbeat_task: asyncio.Task[None],
+    ) -> BaseException:
+        heartbeat_error = heartbeat_task.exception()
+        if isinstance(heartbeat_error, WorkerSlotLeaseError):
+            return heartbeat_error
+        if heartbeat_error is not None:
+            wrapped = WorkflowHeartbeatError(
+                "heartbeat task failed with unexpected exception"
+            )
+            wrapped.__cause__ = heartbeat_error
+            return wrapped
+        return WorkflowHeartbeatError(
+            "heartbeat task terminated unexpectedly"
+        )
+
+    async def _finalize_active_dispatch(
+        self,
+        execution: ActiveDispatchExecution,
+        cancellation_request: ActiveDispatchCancellationRequest | None,
+    ) -> ActiveDispatchCancellationResult | None:
+        """Single cleanup owner for normal, failed, and cancelled dispatches."""
+        async with execution._finalize_lock:
+            winner = execution._winner
+            primary_error: BaseException | None = None
+            normal_result: DispatchCycleResult | None = None
+            cancellation_result: ActiveDispatchCancellationResult | None = None
+            worker_cancel_error: DispatchCancelledError | None = None
+
+            if winner == "cancellation":
+                execution._worker_task.cancel()
+                try:
+                    await execution._worker_task
+                except DispatchCancelledError as exc:
+                    worker_cancel_error = exc
+                except asyncio.CancelledError:
+                    # Test doubles without a subprocess gateway terminate with
+                    # bare task cancellation; the real gateway reports the
+                    # more precise DispatchCancelledError.
+                    worker_cancel_error = DispatchCancelledError()
+                except BaseException as exc:
+                    primary_error = exc
+            elif winner == "outer_cancellation":
+                if not execution._worker_task.done():
+                    execution._worker_task.cancel()
+                try:
+                    await execution._worker_task
+                except (
+                    DispatchCancelledError,
+                    asyncio.CancelledError,
+                    Exception,
+                ):
+                    pass
+            elif winner == "heartbeat":
+                primary_error = self._heartbeat_failure(
+                    execution._heartbeat_task
+                )
+                if not execution._worker_task.done():
+                    execution._worker_task.cancel()
+                try:
+                    await execution._worker_task
+                except (DispatchCancelledError, asyncio.CancelledError):
+                    pass
+                except BaseException:
+                    # Heartbeat fencing is the primary failure.
+                    pass
+            elif winner == "completion":
+                try:
+                    worker_result = execution._worker_task.result()
+                    request = execution._request
+                    worker_output = decode_worker_result(
+                        worker_result, request.provider_cli_version
+                    )
+                    delivery_receipt = require_delivery_receipt(worker_output)
+                    dispatch_tr = request.dispatch_transition_request
+                    ack_tr = request.acknowledge_transition_request
+                    delivery_tr = TransitionRequest(
+                        cas=TransitionCAS(
+                            task_id=dispatch_tr.cas.task_id,
+                            expected_revision=ack_tr.cas.expected_revision,
+                            expected_state="in_progress",
+                            expected_snapshot_commit=(
+                                dispatch_tr.cas.expected_snapshot_commit
+                            ),
+                        ),
+                        dispatch_cas=ack_tr.dispatch_cas,
+                        event_id=request.delivery_event_id,
+                        event_type="DELIVERY_SUBMITTED",
+                        payload=DeliverySubmittedPayload(
+                            implementation_commit=(
+                                delivery_receipt.implementation_commit
+                            ),
+                            report_commit=delivery_receipt.report_commit,
+                        ),
+                        event_context=request.delivery_event_context,
+                    )
+                    delivery_transition = ControlPlaneTransitionService(
+                        self.project_root
+                    ).apply_transition(
+                        delivery_tr,
+                        execution._handle.lease,
+                        self.clock.now(),
+                    )
+                    duration = _validate_monotonic_delta(
+                        execution._start_monotonic,
+                        self.clock.monotonic(),
+                    )
+                    normal_result = DispatchCycleResult(
+                        worker_result=worker_result,
+                        worker_output=worker_output,
+                        delivery_receipt=delivery_receipt,
+                        dispatch_transition=execution._dispatch_transition,
+                        acknowledge_transition=execution._ack_transition,
+                        delivery_transition=delivery_transition,
+                        slot_id=execution._handle.lease.slot_id,
+                        lease_epoch=execution._handle.lease_epoch,
+                        duration_seconds=duration,
+                    )
+                except BaseException as exc:
+                    primary_error = exc
+            else:
+                primary_error = WorkflowInvariantError(
+                    "active dispatch has no terminal winner"
+                )
+
+            # A heartbeat failure that was already observable wins even when a
+            # cancellation request acquired the state lock first.
+            if execution._heartbeat_task.done():
+                try:
+                    heartbeat_error = self._heartbeat_failure(
+                        execution._heartbeat_task
+                    )
+                except asyncio.CancelledError:
+                    heartbeat_error = None
+                if heartbeat_error is not None:
+                    primary_error = heartbeat_error
+
+            if not execution._heartbeat_task.done():
+                execution._heartbeat_task.cancel()
+            try:
+                await execution._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            except WorkerSlotLeaseError as exc:
+                primary_error = exc
+            except BaseException as exc:
+                primary_error = WorkflowHeartbeatError(
+                    "heartbeat failed during shutdown"
+                )
+                primary_error.__cause__ = exc
+
+            # An unconfirmed worker cancellation must not release the lease or
+            # publish TASK_CANCELLED.
+            cancellation_cleanup_confirmed = not (
+                winner == "cancellation"
+                and worker_cancel_error is None
+                and primary_error is not None
             )
 
-        except BaseException as exc:
-            body_error = exc
-            raise
-        finally:
-            # -- Cancel any still-running subtasks before release -------------
-            if hb_task is not None and not hb_task.done():
-                hb_task.cancel()
-            if worker_task is not None and not worker_task.done():
-                worker_task.cancel()
-
-            # Await both to avoid "Task exception was never retrieved".
-            if hb_task is not None:
+            if cancellation_cleanup_confirmed:
+                execution._release_started = True
                 try:
-                    await hb_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            if worker_task is not None:
-                try:
-                    await worker_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                    release_worker_slot(
+                        self.project_root,
+                        execution._handle.lease,
+                        self.clock.now(),
+                    )
+                    execution._release_completed = True
+                except BaseException as release_error:
+                    if primary_error is None:
+                        primary_error = release_error
+                    else:
+                        primary_error.__cause__ = release_error
 
-            # -- 15. Release (exactly once, if acquired) ----------------------
-            if acquired:
-                try:
-                    now_release = self.clock.now()
-                    release_worker_slot(self.project_root, lease, now_release)
-                except BaseException as release_exc:
-                    if body_error is None:
-                        # Success-path release failure -> propagate.
-                        raise
-                    # Both body and release failed -- body is primary.
-                    # Attach release error as __cause__ for diagnostics.
-                    raise body_error from release_exc
+            if (
+                winner == "cancellation"
+                and primary_error is None
+                and execution._release_completed
+            ):
+                if cancellation_request is None:
+                    primary_error = WorkflowInvariantError(
+                        "cancellation finalizer requires its request"
+                    )
+                else:
+                    try:
+                        transition = ControlPlaneTransitionService(
+                            self.project_root
+                        ).apply_transition(
+                            (
+                                cancellation_request
+                                .cancellation_transition_request
+                            ),
+                            lease=None,
+                            now=self.clock.now(),
+                        )
+                        cancellation_result = (
+                            ActiveDispatchCancellationResult(
+                                task_id=execution._handle.task_id,
+                                dispatch_id=execution._handle.dispatch_id,
+                                cancellation_transition=transition,
+                            )
+                        )
+                    except BaseException as exc:
+                        primary_error = exc
 
-        # body_error was already re-raised above -- unreachable.
-        raise WorkflowInvariantError("unreachable")
+            if primary_error is not None:
+                if not execution._completion.done():
+                    execution._completion.set_exception(primary_error)
+                raise primary_error
+            if normal_result is not None:
+                if not execution._completion.done():
+                    execution._completion.set_result(normal_result)
+                return None
+            if cancellation_result is not None:
+                if not execution._completion.done():
+                    execution._completion.set_exception(
+                        worker_cancel_error or DispatchCancelledError()
+                    )
+                return cancellation_result
+            if winner == "outer_cancellation":
+                if not execution._completion.done():
+                    execution._completion.set_exception(
+                        DispatchCancelledError()
+                    )
+                return None
+            raise WorkflowInvariantError("active dispatch finalizer incomplete")
+
+    async def cancel_active_dispatch(
+        self,
+        execution: ActiveDispatchExecution,
+        request: ActiveDispatchCancellationRequest,
+    ) -> ActiveDispatchCancellationResult:
+        """Cancel a live dispatch owned by this exact orchestrator instance."""
+        self._validate_active_dispatch_cancellation(execution, request)
+
+        wait_for_heartbeat_failure = False
+        async with execution._state_lock:
+            if execution._winner is not None:
+                raise WorkflowInputError("dispatch already terminal")
+            if execution._heartbeat_task.done():
+                wait_for_heartbeat_failure = True
+            elif execution._worker_task.done():
+                raise WorkflowInputError("dispatch already completed")
+            else:
+                execution._winner = "cancellation"
+
+        if wait_for_heartbeat_failure:
+            return await execution.wait()  # type: ignore[return-value]
+
+        execution._worker_task.cancel()
+        cleanup_task = asyncio.ensure_future(
+            self._finalize_active_dispatch(execution, request)
+        )
+        try:
+            result = await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(cleanup_task)
+            finally:
+                raise
+        if result is None:
+            raise WorkflowInvariantError("cancellation produced no result")
+        return result
+
+    def _validate_active_dispatch_cancellation(
+        self,
+        execution: ActiveDispatchExecution,
+        request: ActiveDispatchCancellationRequest,
+    ) -> None:
+        if type(execution) is not ActiveDispatchExecution:
+            raise WorkflowInputError(
+                "execution must be ActiveDispatchExecution"
+            )
+        if execution._owner is not self:
+            raise WorkflowInputError(
+                "execution is not owned by this WorkflowOrchestrator"
+            )
+        if type(request) is not ActiveDispatchCancellationRequest:
+            raise WorkflowInputError(
+                "request must be ActiveDispatchCancellationRequest"
+            )
+        if type(request.handle) is not ActiveDispatchHandle:
+            raise WorkflowInputError(
+                "request handle must be ActiveDispatchHandle"
+            )
+        if request.handle != execution._handle:
+            raise WorkflowInputError("request handle does not match execution")
+        transition = request.cancellation_transition_request
+        if type(transition) is not TransitionRequest:
+            raise WorkflowInputError(
+                "cancellation_transition_request must be TransitionRequest"
+            )
+        if transition.event_type != "TASK_CANCELLED":
+            raise WorkflowInputError(
+                "cancellation transition event_type must be TASK_CANCELLED"
+            )
+        if type(transition.payload) is not CancelledPayload:
+            raise WorkflowInputError(
+                "cancellation transition payload must be CancelledPayload"
+            )
+        if transition.cas.task_id != execution._handle.task_id:
+            raise WorkflowInputError(
+                "cancellation transition task_id must match handle"
+            )
+        dispatch_cas = transition.dispatch_cas
+        if dispatch_cas is None:
+            raise WorkflowInputError(
+                "active cancellation requires dispatch_cas"
+            )
+        if (
+            dispatch_cas.expected_dispatch_id
+            != execution._handle.dispatch_id
+            or dispatch_cas.expected_attempt != execution._handle.attempt
+        ):
+            raise WorkflowInputError(
+                "cancellation dispatch_cas must match handle"
+            )
 
     async def run_acceptance_cycle(
         self,
