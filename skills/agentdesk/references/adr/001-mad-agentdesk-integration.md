@@ -32,7 +32,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 19 | AgentDesk RateLimit service | **Current** — TC-13.14b / Provider Detection Target — TC-13.14c | TC-13.14 | Provider-neutral rate-limit policy with multi-scope and combined signal semantics; provider detection (TC-13.14c) is evidence-dependent Target |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
-| 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Contract Current — TC-13.18d.9a / Runtime Target — TC-13.18d.9b; TASK_SUPERSEDED: Target; retry loop, fault recovery: Target) |
+| 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Contract Repair — TC-13.18d.9a.1 / Runtime Target — TC-13.18d.9b; TASK_SUPERSEDED: Target; retry loop, fault recovery: Target) |
 | 23 | E2E / Recovery tests | **Current** — TC-13.19j | E2E validation and recovery scenarios — nine scenario E2E tests committed; quiescent cancellation/supersession, expert user-decision paths, escalation chain, integration failure, and happy-path audit/accept/integrate all covered |
 | 24 | AgentDesk HTML Dashboard | **Current** | TC-13.20b | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target 鈫?Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
@@ -6461,7 +6461,7 @@ in `ControlPlaneTransitionService._TRANSITION_SPECS` (搂2.14.8):
 | 12 | `BLOCKER_RESCOPED` | Current — TC-13.18d.5 rescope path |
 | 13 | `BLOCKER_CANCELLED` | Current — TC-13.18d.6 cancel path |
 | 14 | `TASK_CANCELLED` (quiescent path) | Current — TC-13.18d.7 |
-| 15 | `TASK_CANCELLED` (active dispatch path) | Contract Current — TC-13.18d.9a / Runtime Target — TC-13.18d.9b |
+| 15 | `TASK_CANCELLED` (active dispatch path) | Contract Repair — TC-13.18d.9a.1 / Runtime Target — TC-13.18d.9b |
 | 16 | `TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8 |
 | 17 | TASK_SUPERSEDED (active dispatch path) | Target |
 
@@ -6513,71 +6513,88 @@ TC-13.20  鈥?HTML Dashboard
 
 ---
 
-#### 2.19.12 Active-Dispatch Cancellation — Frozen Contract (Contract Current — TC-13.18d.9a)
+#### 2.19.12 Active-Dispatch Cancellation — Frozen Contract (Contract Repair — TC-13.18d.9a.1)
 
-TC-13.18d.9a freezes the contract for cancelling a task that has an active
-in-flight dispatch.  Production implementation is TC-13.18d.9b (Runtime Target).
+TC-13.18d.9a froze an active-dispatch cancellation contract that was **not
+implementable**: it returned the cancellation handle inside the final
+`DispatchCycleResult` — i.e. only after the Worker completed — so the
+handle could never reach a still-running task, and a frozen value could not
+call `asyncio.Task.cancel()`.  TC-13.18d.9a.1 repairs the model with an
+in-process runtime controller (`ActiveDispatchExecution`) returned by
+`start_dispatch_cycle()` before the Worker completes.  Production
+implementation is TC-13.18d.9b (Runtime Target).
 
 The full per-interface contract is in
 `public-interfaces/workflow-orchestrator-contract.md` §14; this subsection
 records the frozen rules within the ADR.
 
-##### 2.19.12.1 Ownership Model — Caller-Owned Typed Dispatch Handle
+##### 2.19.12.1 Ownership Model — Creator-Owned Runtime Execution
 
-The active-dispatch cancellation uses a **caller-owned typed dispatch handle**
-(`ActiveDispatchHandle`).  The orchestrator returns this handle as a value
-object alongside the `DispatchCycleResult`.  The caller holds the handle and
-passes it to `cancel_active_dispatch` to request cancellation.
+The active-dispatch cancellation uses a **creator-owned runtime controller**
+(`ActiveDispatchExecution`).  `start_dispatch_cycle()` returns this
+execution **before the Worker completes**, after lease + TASK_DISPATCHED +
+Worker task + DISPATCH_ACKNOWLEDGED + heartbeat are all in place.  The
+execution holds the real running `asyncio.Task` references behind private
+`__slots__`; only the creating orchestrator may cancel it (exact-instance
+owner check).  The execution is **not** persisted to YAML/events/outbox/
+runtime files; its lifetime is bounded by the in-process dispatch.
 
-This model was chosen over alternatives because it:
-
-- Does **not** leak bare `asyncio.Task` to the public API
-- Does **not** introduce unverifiable task identity (six-field structural
-  identity from existing `DispatchIdentity` and `WorkerSlotLease`)
-- Does **not** break the `WorkflowOrchestrator` three-field shape
-  (`project_root`, `clock`, `heartbeat_interval_seconds`) — the handle is a
-  return value, not an instance attribute
-- Does **not** create cross-instance cancellation problems — the handle is a
-  value object usable by any orchestrator instance with the same `project_root`
-
-No global mutable registry, no injection-style cancellation token.
+Retractions relative to TC-13.18d.9a: `request_active_handle`,
+`active_dispatch_handle`, "any same-project_root orchestrator may use the
+handle", `worker_result` as a required result field, and any claim that a
+frozen value handle can call `asyncio.Task.cancel()`.  `DispatchCycleRequest`
+and `DispatchCycleResult` are restored to exactly 9 fields each.
 
 ##### 2.19.12.2 Precise Identity — Six Fields
 
 Cancellation must bind to exactly: `task_id`, `revision`, `attempt`,
 `dispatch_id`, `holder_instance_id`, `lease_epoch`.  Cancellation by
-`task_id` alone is prohibited.
+`task_id` alone is prohibited.  The handle is an identity snapshot; the
+execution owns the cancellation capability.
 
-##### 2.19.12.3 Execution Order
+##### 2.19.12.3 Start Order
 
-1. Validate request and active handle identity
-2. Cancel worker dispatch task (`asyncio.Task.cancel`)
-3. Await worker task completion (expect `DispatchCancelledError`)
-4. Cancel and await heartbeat task
-5. Release `WorkerSlotLease`
-6. Apply `TASK_CANCELLED` with `lease=None` + `DispatchCAS`
-7. Return `ActiveDispatchCancellationResult`
+`start_dispatch_cycle` must not return until: (1) lease acquired,
+(2) TASK_DISPATCHED applied, (3) Worker task created, (4) DISPATCH_ACKNOWLEDGED
+applied, (5) heartbeat started + handshake, (6) execution bound to the real
+cycle/worker task.  `run_dispatch_cycle` becomes a compatibility wrapper:
+`start_dispatch_cycle` then `execution.wait()`.
 
-`TASK_CANCELLED` must not occur while the process or heartbeat is still active.
+##### 2.19.12.4 Cancellation Order
 
-##### 2.19.12.4 Race Conditions — Exhaustive
+1. Validate execution owner (exact-instance) + handle identity
+2. Under execution `_state_lock`, decide completion/cancellation winner
+3. If cancellation wins: cancel real cycle/worker task
+4. Await worker task completion (`DispatchCancelledError` caught)
+5. Cancel and await heartbeat task
+6. Release `WorkerSlotLease` — exactly once
+7. Apply `TASK_CANCELLED` with `lease=None` + precise `DispatchCAS`
+8. Return `ActiveDispatchCancellationResult`
 
-Nine race conditions are classified with unique primary exception and
-`__cause__` rules.  See contract §14.5 for the full table.
+`TASK_CANCELLED` must not be applied while the process or heartbeat is still active.
 
-##### 2.19.12.5 Active vs Quiescent Transition
+##### 2.19.12.5 Race Conditions — Explicit Winner Rules
+
+Every race has exactly one winner decided atomically under the execution's
+private `_state_lock`: worker-first → completion wins (no TASK_CANCELLED);
+heartbeat-failure → priority over cancellation; release failure →
+propagates, transition skipped; CAS conflict → propagated, no rollback of
+cleanup; duplicate cancellation → fail-closed; outer CancelledError →
+cleanup completes first.  See contract §14.6 for the full table.
+
+##### 2.19.12.6 Active vs Quiescent Transition
 
 Active path: `DispatchCAS` required, `lease=None` (released before transition).
 Quiescent path: `dispatch_cas=None`, `lease=None` (no active dispatch).
 
-##### 2.19.12.6 Reuse — No Second Kill/Terminate
+##### 2.19.12.7 Reuse — No Second Kill/Terminate
 
 The protocol reuses: `asyncio.Task.cancel()`, `dispatcher_gateway._terminate_process`,
 `DispatchCancelledError`, `WorkerSlotLease` release, `CancelledPayload`,
 `TransitionRequest`, `DispatchCAS`, and `ControlPlaneTransitionService.apply_transition()`.
 No second kill/terminate implementation is created.
 
-##### 2.19.12.7 No New Exception Hierarchy
+##### 2.19.12.8 No New Exception Hierarchy
 
 No `WorkflowCancellationError`, `ActiveDispatchError`, or other parallel
 exception hierarchy.  All exceptions are existing types from underlying services.
@@ -6591,8 +6608,9 @@ exception hierarchy.  All exceptions are existing types from underlying services
 * TC-13.19 is Current — TC-13.19j.
 * WorkflowOrchestrator Interface #22 and TC-13.20 remain Target.
 * Completed TC-13.18 subpaths retain their individually recorded Current statuses.
-* **Active-dispatch cancellation** contract is frozen as of TC-13.18d.9a;
-  production implementation is TC-13.18d.9b (Runtime Target).
+* **Active-dispatch cancellation** contract is repaired and frozen as of
+  TC-13.18d.9a.1 (execution-based model); production implementation is
+  TC-13.18d.9b (Runtime Target).
 * All prior Current interfaces remain **Current**.
 
 * ADR Interface Status row #22 "AgentDesk WorkflowOrchestrator"

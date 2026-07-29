@@ -1,4 +1,4 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation Contract — TC-13.18d.9a)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation Contract Repair — TC-13.18d.9a.1)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
@@ -13,7 +13,7 @@ TC-13.18d.6 extends it with BLOCKER_CANCELLED (expert blocked task cancellation)
 TC-13.18d.7 extends it with TASK_CANCELLED (quiescent path — no active dispatch).
 TC-13.18d.8 extends it with TASK_SUPERSEDED (quiescent path — no active dispatch).
 TC-13.18d.9a freezes the active-dispatch cancellation contract.
-Production implementation is TC-13.18d.9b.
+TC-13.18d.9a.1 repairs the contract (execution-based model). Production implementation is TC-13.18d.9b.
 
 ## Status
 
@@ -43,8 +43,8 @@ are implemented and callable.  The E2E evidence program (TC-13.19a–j)
 validates all Current paths.  Active-dispatch cancellation, active-dispatch
 supersession, Codex decoding, Codex rate-limit classification, and
 retry-loop fault recovery remain Target.  Active-dispatch cancellation
-contract is frozen (Contract Current — TC-13.18d.9a); production
-implementation is TC-13.18d.9b (Runtime Target).  See
+contract is repaired and frozen as of TC-13.18d.9a.1 (execution-based
+model); production implementation is TC-13.18d.9b (Runtime Target).  See
 `reports/tc-13.19-final-delivery-report.md` and `test_release_smoke.py`
 class `TC1319jE2EProgramClosureTests`.  TC-13.20 (HTML Dashboard) is Target.
 
@@ -351,7 +351,7 @@ defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
 | 12 | `BLOCKER_RESCOPED` | Current — TC-13.18d.5 (expert blocked → draft rescope) |
 | 13 | `BLOCKER_CANCELLED` | Current — TC-13.18d.6 (expert blocked → cancelled) |
 | 14 | `TASK_CANCELLED` (quiescent path) | Current — TC-13.18d.7 |
-| 15 | `TASK_CANCELLED` (active dispatch path) | Contract Current — TC-13.18d.9a / Runtime Target — TC-13.18d.9b |
+| 15 | `TASK_CANCELLED` (active dispatch path) | Contract Repair — TC-13.18d.9a.1 / Runtime Target — TC-13.18d.9b |
 | 16 | `TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8 |
 | 17 | TASK_SUPERSEDED (active dispatch path) | Target |
 
@@ -521,8 +521,9 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18d.5** | BLOCKER_RESCOPED (expert blocked → draft rescope) | TC-13.18d.2 | Current |
 | **TC-13.18d.6** | BLOCKER_CANCELLED (expert blocked → cancelled) | TC-13.18d.2 | Current |
 | **TC-13.18d-ext** | Retry loop, escalation replay, cancellation, fault recovery | TC-13.18d.3 | Target |
-| **TC-13.18d.9a** | Active-dispatch cancellation contract freeze | TC-13.18d.7 | Contract Current |
-| **TC-13.18d.9b** | Active-dispatch cancellation production implementation | TC-13.18d.9a | Runtime Target |
+| **TC-13.18d.9a** | Active-dispatch cancellation contract freeze (non-implementable) | TC-13.18d.7 | Superseded |
+| **TC-13.18d.9a.1** | Active-dispatch cancellation contract repair (execution model) | TC-13.18d.9a | Contract Current |
+| **TC-13.18d.9b** | Active-dispatch cancellation production implementation | TC-13.18d.9a.1 | Runtime Target |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Current — TC-13.19j |
 | **TC-13.20** | HTML Dashboard | TC-13.17, TC-13.19 | Read-only UI |
@@ -538,7 +539,7 @@ TC-13.18d.5 does **not** implement:
 - Auto-unblock → TC-13.18d.3
 - `BLOCKER_CANCELLED` → Current — TC-13.18d.6
 - `TASK_CANCELLED` (quiescent path) → Current — TC-13.18d.7
-- `TASK_CANCELLED` (active dispatch path) → Contract Current — TC-13.18d.9a / Runtime Target — TC-13.18d.9b
+- `TASK_CANCELLED` (active dispatch path) → Contract Repair — TC-13.18d.9a.1 / Runtime Target — TC-13.18d.9b
 - `TASK_SUPERSEDED` (quiescent path) → Current — TC-13.18d.8
 - TASK_SUPERSEDED (active dispatch path) → Target
 - `INTEGRATION_FAILED` → TC-13.18d.4 (already implemented)
@@ -548,7 +549,7 @@ TC-13.18d.5 does **not** implement:
 - Rescue execution boundary — rescope is a PM control-plane only action
 - `BLOCKER_RESOLVED` → TC-13.18d.3 (already implemented)
 
-TC-13.18d.9a does **not** implement:
+TC-13.18d.9a.1 does **not** implement:
 
 - Active-dispatch supersession → Target
 - RateLimit retry → Target
@@ -557,58 +558,120 @@ TC-13.18d.9a does **not** implement:
 - Active-dispatch cancellation production code → TC-13.18d.9b
 - Modification of `dispatcher_gateway` termination implementation
 - Modification of `WorkflowOrchestrator` existing frozen/slots three-field shape
+- Persistence of `ActiveDispatchExecution` to YAML/events/outbox/runtime files
 - Real Worker or subprocess execution
 - Model/API/network calls
 - Any change to the quiescent `cancel_quiescent_task` API
+- Any change to `DispatchCycleRequest` (9 fields) or `DispatchCycleResult`
+  (9 fields) field counts
 
 ---
 
-## 14. Active-Dispatch Cancellation — Frozen Contract (Contract Current — TC-13.18d.9a)
+## 14. Active-Dispatch Cancellation — Frozen Contract (Contract Repair — TC-13.18d.9a.1)
 
-TC-13.18d.9a freezes the contract for cancelling a task that has an active
-in-flight dispatch.  This is the active-dispatch counterpart to the quiescent
-`cancel_quiescent_task` (TC-13.18d.7).  Production implementation is
-TC-13.18d.9b.
+TC-13.18d.9a froze an active-dispatch cancellation contract that was **not
+implementable**: it returned the cancellation handle inside the final
+`DispatchCycleResult` — i.e. only after the Worker had already completed — so
+the handle could never reach a still-running task.  TC-13.18d.9a.1 revises
+the model so the running dispatch is **reachable for cancellation before the
+Worker completes**, via an in-process runtime controller
+(`ActiveDispatchExecution`) returned by `start_dispatch_cycle()`.
 
-### 14.1 Ownership Model — Caller-Owned Typed Dispatch Handle
+This is the active-dispatch counterpart to the quiescent
+`cancel_quiescent_task` (TC-13.18d.7).  Production implementation remains
+TC-13.18d.9b (Runtime Target).
 
-The active-dispatch cancellation protocol uses a **caller-owned typed dispatch
-handle**.  The `WorkflowOrchestrator.run_dispatch_cycle` method returns an
-`ActiveDispatchHandle` alongside the `DispatchCycleResult` when the caller
-requests an active handle.  The caller holds this handle and passes it to
-`cancel_active_dispatch` to request cancellation.
+### 14.0 Revisions Relative to TC-13.18d.9a
 
-**Why this model was chosen:**
+The following TC-13.18d.9a provisions are **retracted**:
+
+- `DispatchCycleRequest.request_active_handle` (field removed)
+- `DispatchCycleResult.active_dispatch_handle` (field removed)
+- "the active handle is returned alongside the `DispatchCycleResult`"
+- "any `WorkflowOrchestrator` instance with the same `project_root` can
+  process the handle" (cross-instance control is now **prohibited**)
+- `ActiveDispatchCancellationResult.worker_result` as a required field
+- any statement that a frozen value handle alone can call
+  `asyncio.Task.cancel()`
+
+Restored:
+
+- `DispatchCycleRequest` — exactly **9 fields** (unchanged from TC-13.18b)
+- `DispatchCycleResult` — exactly **9 fields** (unchanged from TC-13.18b)
+- Existing `run_dispatch_cycle()` call-site compatibility — it becomes a
+  thin compatibility wrapper over `start_dispatch_cycle()` + `wait()`
+
+### 14.1 Ownership Model — Creator-Owned Runtime Execution
+
+The active-dispatch cancellation protocol uses a **creator-owned runtime
+controller**.  `WorkflowOrchestrator.start_dispatch_cycle()` returns an
+`ActiveDispatchExecution` — an in-process object that **holds the real
+running Worker task and heartbeat task** and is returned **before the Worker
+completes**.  The caller holds this execution and passes it to
+`cancel_active_dispatch()` to request cancellation.
+
+The execution is **not** a persisted data model, **not** a frozen dataclass,
+and **not** written to YAML, events, outbox, or runtime files.  It is an
+in-process capability with a bounded lifetime that ends when the dispatch
+terminates (completes or is cancelled).
+
+#### 14.1.1 Why a Frozen Value Handle Alone Is Insufficient
+
+A `frozen=True, slots=True` value object cannot, by construction, hold a
+live `asyncio.Task` reference and invoke `asyncio.Task.cancel()` on it.
+Any handle that is a pure value can only describe *identity*; it cannot
+*act* on the running task.  TC-13.18d.9a tried to return such a handle from
+the final result, which is doubly broken: (a) the handle arrives after the
+Worker is done, so there is nothing to cancel; (b) even if it arrived
+earlier, a value object has no path to the live task.
+
+TC-13.18d.9a.1 separates the two concerns:
+
+- **`ActiveDispatchHandle`** (frozen/slots value) — identity snapshot only,
+  suitable for logging, transition `DispatchCAS` construction, and
+  cross-boundary naming.  It does **not** claim cancellation capability.
+- **`ActiveDispatchExecution`** (mutable runtime controller) — holds the
+  live tasks, owns the cancellation path, and is the only object that may
+  call `asyncio.Task.cancel()` on the Worker task it created.
+
+#### 14.1.2 Why the Execution Is Creator-Owned
+
+An execution may only be cancelled by the `WorkflowOrchestrator` instance
+that created it.  This is enforced structurally:
+
+- The execution carries a private owner reference to its creating
+  orchestrator instance.
+- `cancel_active_dispatch` performs an exact-instance check
+  (`execution._owner is self`); a mismatch raises `WorkflowInputError`.
+- No global registry, no `dict[str, ...]` lookup by `task_id` or
+  `dispatch_id`, no cross-instance dispatch.
 
 | Alternative | Rejected because |
 |------------|-----------------|
-| **Injection-style cancellation token** | Would require the orchestrator to mutate a shared token object, violating deep immutability. The token would need to carry a mutable `.cancel()` method, breaking the frozen/slots contract. |
-| **Orchestrator-owned active task registry** | Would require a global mutable `dict[str, asyncio.Task]` inside the orchestrator, creating unverifiable task identity (two orchestrator instances cannot cancel each other's tasks), and leaking bare `asyncio.Task` references into orchestrator internals. |
-| **Global mutable registry** | Explicitly forbidden by the task card. Creates cross-instance cancellation problems and makes deterministic testing impossible. |
+| Frozen value handle returned from final result | Arrives after Worker completes; cannot reach the running task (TC-13.18d.9a failure mode). |
+| Injection-style cancellation token | Requires a mutable `.cancel()` method on a shared token that the orchestrator mutates — but the token still needs the live task reference, which the caller never had. |
+| Orchestrator-owned global task registry | `dict[str, asyncio.Task]` inside the orchestrator; creates unverifiable identity, cross-instance leakage of bare `asyncio.Task`, and non-deterministic testing. |
+| Cross-instance cancellation by handle | Explicitly prohibited — a value handle has no owner binding and cannot be made to reach the correct live task without a registry. |
 
-**Why the chosen model does not:**
+#### 14.1.3 Why the Chosen Model Does Not Violate the Frozen Rules
 
-- **Leak bare `asyncio.Task` to public API**: `ActiveDispatchHandle` is a
-  `frozen=True, slots=True` dataclass containing only typed, serialisable
-  fields (six identity strings/ints and a `WorkerSlotLease`).  No `Task`,
-  `Future`, `dict`, `Any`, or `object` field appears in the handle.
-
-- **Introduce unverifiable task identity**: The handle carries six identity
-  fields (`task_id`, `revision`, `attempt`, `dispatch_id`,
-  `holder_instance_id`, `lease_epoch`) — all derived from existing
-  `DispatchIdentity` and `WorkerSlotLease` fields.  Identity is verified
-  structurally at cancellation time, not by object reference.
-
-- **Break WorkflowOrchestrator's existing frozen/slots three-field shape**:
-  `WorkflowOrchestrator` remains `project_root: Path`, `clock: WorkflowClock`,
-  `heartbeat_interval_seconds: float`.  The active handle is a *return value*,
-  not an instance attribute.  No new instance state is added.
-
-- **Create cross-instance cancellation problems**: The handle is a value
-  object.  Any `WorkflowOrchestrator` instance with the same `project_root`
-  can process the handle.  The six-field identity plus the `WorkerSlotLease`
-  ensure the cancellation targets the correct dispatch, regardless of which
-  orchestrator instance receives the request.
+- **Does not leak bare `asyncio.Task` to public API**: `ActiveDispatchExecution`
+  exposes `wait()` and a `handle` property only.  No `Task`/`Future`/`dict`/
+  `Any`/`object` appears in any *public* type.  The live tasks live behind
+  private `__slots__` attributes the caller never touches.
+- **Does not introduce unverifiable task identity**: the six-field identity
+  snapshot (`ActiveDispatchHandle`) is derived from existing
+  `DispatchIdentity` and `WorkerSlotLease`; the owner binding is structural
+  (`execution._owner is self`), not a free-form string.
+- **Does not break `WorkflowOrchestrator`'s three-field shape**: the
+  orchestrator remains `project_root`, `clock`, `heartbeat_interval_seconds`.
+  The execution is a *return value*, not an instance attribute.
+- **Does not create cross-instance cancellation**: creator-ownership + exact
+  instance check make cross-instance cancellation raise `WorkflowInputError`
+  by construction.
+- **Does not persist mutable state**: the execution is never serialised to
+  YAML/events/outbox/runtime files; its lifetime is bounded by the
+  in-process dispatch.
 
 ### 14.2 Precise Identity — Six Fields
 
@@ -632,15 +695,17 @@ identity ensures that:
 
 ### 14.3 Public Types
 
-#### 14.3.1 `ActiveDispatchHandle` — Exactly 7 Fields
+#### 14.3.1 `ActiveDispatchHandle` — Exactly 7 Fields (Identity Snapshot)
 
 ```python
 @dataclass(frozen=True, slots=True)
 class ActiveDispatchHandle:
-    """Immutable, caller-owned handle for an active dispatch.
+    """Immutable identity snapshot for an active dispatch.
 
-    Returned by run_dispatch_cycle when the caller requests an active
-    handle.  Passed to cancel_active_dispatch to request cancellation.
+    A value object only — it carries NO behaviour, NO callbacks, and NO
+    reference to the live asyncio.Task.  It is used for transition
+    DispatchCAS construction and cross-boundary naming.  It does NOT claim
+    cancellation capability; only ActiveDispatchExecution can cancel.
     Contains no asyncio.Task, Future, dict, Any, or object.
     """
 
@@ -659,10 +724,64 @@ class ActiveDispatchHandle:
 - All six identity fields are non-empty `str` or positive `int`
 - `lease` must be a `WorkerSlotLease` instance (exact type check)
 - No `asyncio.Task`, `Future`, `dict`, `Any`, or `object` field
-- The handle is a **value object** — it carries no behaviour, no callbacks,
-  and no mutable references
+- The handle is a **value object** — it cannot cancel anything by itself
 
-#### 14.3.2 `ActiveDispatchCancellationRequest` — Exactly 2 Fields
+#### 14.3.2 `ActiveDispatchExecution` — Runtime Controller (NOT frozen)
+
+```python
+class ActiveDispatchExecution:
+    """In-process runtime controller for a live dispatch.
+
+    Returned by start_dispatch_cycle BEFORE the Worker completes.
+    Holds the real running Worker task and heartbeat task behind private
+    __slots__ the caller never touches.  Only the creating
+    WorkflowOrchestrator instance may cancel it.
+
+    NOT a persisted data model.  NOT a frozen dataclass.  NOT written to
+    YAML, events, outbox, or runtime files.  Lifetime is bounded by the
+    in-process dispatch (completes or is cancelled).
+    """
+
+    __slots__ = (
+        "_owner",            # the creating WorkflowOrchestrator instance
+        "_handle",           # ActiveDispatchHandle (frozen snapshot)
+        "_worker_task",      # asyncio.Task[WorkerResult] (private)
+        "_heartbeat_task",   # asyncio.Task[None] (private)
+        "_lease",            # WorkerSlotLease (acquired)
+        "_state_lock",       # asyncio.Lock (private winner decision)
+        "_ready",            # bool: start_dispatch_cycle fully set up
+        "_completed",        # bool: dispatch reached terminal state
+        "_result",           # DispatchCycleResult | None (set by wait)
+    )
+
+    @property
+    def handle(self) -> ActiveDispatchHandle:
+        """Return the frozen identity snapshot.  Does not expose the live task."""
+        ...
+
+    async def wait(self) -> DispatchCycleResult:
+        """Await normal completion.  Returns the DispatchCycleResult.
+
+        Must NOT expose the bare asyncio.Task.  Idempotent: a second call
+        returns the same result (or raises the same stored exception).
+        """
+        ...
+```
+
+**Frozen rules:**
+
+- **Not** a `@dataclass(frozen=True)` — it is a runtime controller with
+  private mutable state behind `__slots__`.
+- **Not** exposed in `__all__` as a persisted type; it is a runtime
+  capability returned by `start_dispatch_cycle` and consumed by
+  `cancel_active_dispatch` / `wait()`.
+- No public attribute exposes `asyncio.Task`, `Future`, `dict`, `Any`, or
+  `object`.  The live tasks live in private `_`-prefixed `__slots__`.
+- The `handle` property returns the frozen `ActiveDispatchHandle` snapshot
+  only — never the live task.
+- `wait()` is the only public path to the final `DispatchCycleResult`.
+
+#### 14.3.3 `ActiveDispatchCancellationRequest` — Exactly 2 Fields
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -684,60 +803,45 @@ class ActiveDispatchCancellationRequest:
     matching the handle's `dispatch_id` and `attempt`
 - `dispatch_cas` is **mandatory** for the active path (unlike the quiescent
   path where `dispatch_cas=None`)
+- The request does **not** carry the execution — the execution is passed
+  separately to `cancel_active_dispatch` so creator-ownership can be
+  checked structurally
 
-#### 14.3.3 `ActiveDispatchCancellationResult` — Exactly 3 Fields
+#### 14.3.4 `ActiveDispatchCancellationResult` — Exactly 3 Fields
 
 ```python
 @dataclass(frozen=True, slots=True)
 class ActiveDispatchCancellationResult:
-    """Immutable result of active-dispatch cancellation — exactly three fields."""
+    """Immutable result of active-dispatch cancellation — exactly three fields.
+
+    Does NOT require a WorkerResult.  When cancellation wins, the Worker
+    task was cancelled before producing a usable result, and the result is
+    defined solely by the TASK_CANCELLED transition.
+    """
 
     task_id: str
-    worker_result: WorkerResult | None
+    dispatch_id: str
     cancellation_transition: TransitionResult
 ```
 
 **Frozen rules:**
 
 - `frozen=True`, `slots=True`
-- `worker_result` is `None` when the worker was cancelled before producing
-  a result; it is a `WorkerResult` when the worker completed despite the
-  cancellation request (race: worker finished first)
+- **No `worker_result` field** — the cancellation path does not promise a
+  `WorkerResult` (the Worker was cancelled).  This is the key correction
+  to TC-13.18d.9a, which made `worker_result` a required field.
 - `cancellation_transition` is the result of the `TASK_CANCELLED` transition
 
-#### 14.3.4 `DispatchCycleResult` Extension — Exactly 1 Additional Field
-
-```python
-@dataclass(frozen=True, slots=True)
-class DispatchCycleResult:
-    """Immutable result — ten fields (was nine)."""
-    worker_result: WorkerResult
-    worker_output: WorkerOutput
-    delivery_receipt: DeliveryReceipt
-    dispatch_transition: TransitionResult
-    acknowledge_transition: TransitionResult
-    delivery_transition: TransitionResult
-    slot_id: str
-    lease_epoch: int
-    duration_seconds: float
-    active_dispatch_handle: ActiveDispatchHandle | None  # new field
-```
-
-**Frozen rules:**
-
-- `active_dispatch_handle` is `None` when the caller did not request an
-  active handle (existing behaviour unchanged)
-- `active_dispatch_handle` is a populated `ActiveDispatchHandle` when the
-  caller requested an active handle via `DispatchCycleRequest`
-- This field is **not** a breaking change: existing callers that do not
-  access the new field are unaffected
-
-#### 14.3.5 `DispatchCycleRequest` Extension — Exactly 1 Additional Field
+#### 14.3.5 `DispatchCycleRequest` — Exactly 9 Fields (Unchanged)
 
 ```python
 @dataclass(frozen=True, slots=True)
 class DispatchCycleRequest:
-    """Immutable input for a single dispatch + delivery cycle — ten fields (was nine)."""
+    """Immutable input for a single dispatch + delivery cycle — nine fields.
+
+    Unchanged from TC-13.18b.  The request_active_handle field proposed by
+    TC-13.18d.9a is RETRACTED.
+    """
     dispatch_request: DispatchRequest
     dispatch_transition_request: TransitionRequest
     acknowledge_transition_request: TransitionRequest
@@ -747,93 +851,167 @@ class DispatchCycleRequest:
     worker_kind: WorkerKind
     task_difficulty: TaskDifficulty
     holder_instance_id: str
-    request_active_handle: bool  # new field — default False
 ```
 
-**Frozen rules:**
+#### 14.3.6 `DispatchCycleResult` — Exactly 9 Fields (Unchanged)
 
-- `request_active_handle: bool` — when `True`, the orchestrator populates
-  `DispatchCycleResult.active_dispatch_handle`; when `False` (default),
-  the handle is `None`
-- Default is `False` — existing callers that do not pass this field get
-  the existing behaviour
+```python
+@dataclass(frozen=True, slots=True)
+class DispatchCycleResult:
+    """Immutable result — nine fields.
 
-### 14.4 Execution Order — Active-Dispatch Cancellation
+    Unchanged from TC-13.18b.  The active_dispatch_handle field proposed by
+    TC-13.18d.9a is RETRACTED — the handle/execution is returned by
+    start_dispatch_cycle, never embedded in the final result.
+    """
+    worker_result: WorkerResult
+    worker_output: WorkerOutput
+    delivery_receipt: DeliveryReceipt
+    dispatch_transition: TransitionResult
+    acknowledge_transition: TransitionResult
+    delivery_transition: TransitionResult
+    slot_id: str
+    lease_epoch: int
+    duration_seconds: float
+```
+
+### 14.4 Start Order — `start_dispatch_cycle`
+
+`start_dispatch_cycle` MUST NOT return the `ActiveDispatchExecution` until
+all six preconditions hold:
+
+```text
+1. WorkerSlotLease acquired
+2. TASK_DISPATCHED transition applied successfully
+3. Worker task created (asyncio.ensure_future(run_worker_observed(...)))
+4. DISPATCH_ACKNOWLEDGED transition applied successfully
+5. heartbeat task started and handshake confirmed
+6. execution bound to the real cycle/worker task (owner, handle, tasks,
+   state_lock, _ready=True)
+```
+
+Only after step 6 is the execution **reachable for cancellation**.  The
+caller may then either `await execution.wait()` for normal completion or
+`await orchestrator.cancel_active_dispatch(execution, request)` to cancel.
+
+The existing `run_dispatch_cycle()` becomes a thin compatibility wrapper:
+
+```python
+async def run_dispatch_cycle(self, request, providers) -> DispatchCycleResult:
+    execution = await self.start_dispatch_cycle(request, providers)
+    return await execution.wait()
+```
+
+### 14.5 Cancellation Order — `cancel_active_dispatch`
 
 `cancel_active_dispatch` MUST execute in this exact order:
 
 ```text
-1. Validate request (type, identity, dispatch_cas consistency)
-2. Cancel worker dispatch task (asyncio.Task.cancel)
-3. Await worker task completion (DispatchCancelledError expected)
-4. Cancel and await heartbeat task
-5. Release WorkerSlotLease
-6. Apply TASK_CANCELLED transition with lease=None + DispatchCAS
-7. Return ActiveDispatchCancellationResult
+1. Validate execution owner (exact-instance check) and handle identity
+   (six-field match between request.handle and execution.handle)
+2. Acquire execution private state lock; decide the completion/cancellation
+   winner atomically:
+     - if worker_task.done(): completion wins → raise WorkflowInputError,
+       do NOT write TASK_CANCELLED
+     - else: cancellation wins → record cancellation-won flag
+3. Cancel the real cycle/worker task (asyncio.Task.cancel on the live task)
+4. Await worker task completion (DispatchCancelledError expected and caught)
+5. Cancel and await heartbeat task
+6. Release WorkerSlotLease — exactly once
+7. Apply TASK_CANCELLED transition with lease=None + precise DispatchCAS
+8. Return ActiveDispatchCancellationResult
 ```
 
-**Step 2** calls `worker_task.cancel()` which propagates to
-`run_dispatch_observed` → `_terminate_process` → `DispatchCancelledError`.
+**Step 2** is the winner decision: under the execution's private
+`_state_lock`, the method checks `worker_task.done()`.  If the Worker
+already completed, **completion wins** and the cancellation request is
+rejected with `WorkflowInputError` (no `TASK_CANCELLED` is written).
+Otherwise cancellation wins and is recorded so a concurrent `wait()` cannot
+overwrite the cancellation.
 
-**Step 3** awaits the worker task, which completes with
-`DispatchCancelledError` (the normal cancellation path).
+**Step 3** cancels the real `asyncio.Task` that `start_dispatch_cycle`
+created and that lives inside the execution.  This is the only code path
+that calls `worker_task.cancel()`.
 
-**Step 4** cancels and awaits the heartbeat task, which is still running
-from the dispatch cycle.
+**Step 4** awaits the worker task, which completes with
+`DispatchCancelledError` (the normal cancellation path inside
+`run_dispatch_observed`).
 
-**Step 5** calls `release_worker_slot` after both tasks are done.
+**Step 6** calls `release_worker_slot` exactly once, after both tasks are
+done.  A duplicate cancellation must NOT release again (guarded by the
+`_completed` / cancellation-won flag).
 
-**Step 6** applies the `TASK_CANCELLED` transition with `lease=None`
-(because the lease was already released) and `DispatchCAS` populated
-from the handle's `dispatch_id` and `attempt`.
+**Step 7** applies `TASK_CANCELLED` with `lease=None` (lease already
+released) and `DispatchCAS` populated from the handle's `dispatch_id` and
+`attempt`.
 
-**Invariant**: `TASK_CANCELLED` MUST NOT be applied while the worker
-process or heartbeat is still active.  Steps 2–4 complete before step 6.
+**Invariant**: `TASK_CANCELLED` MUST NOT be applied while the Worker
+process or heartbeat is still active.  Steps 3–5 complete before step 7.
 
-### 14.5 Race Conditions — Exhaustive Classification
+### 14.6 Race Conditions — Explicit Winner Rules
 
-| # | Race | Primary exception | `__cause__` rule |
-|---|------|-------------------|-----------------|
-| R1 | Worker completes before cancellation request | `DispatchCancelledError` is NOT raised; worker_result is populated in `ActiveDispatchCancellationResult`. Cancellation proceeds: heartbeat → release → `TASK_CANCELLED`. | No `__cause__`. |
-| R2 | Worker and cancellation complete simultaneously | Same as R1: worker may or may not have produced a result. The `worker_result` field reflects the actual outcome. | No `__cause__`. |
-| R3 | Heartbeat fails concurrently with cancellation | `WorkerSlotLeaseError` from heartbeat. Cancellation continues: worker cancel → await worker → release (may fail with `WorkerSlotFencingError`) → `TASK_CANCELLED`. | If both body and release fail: body exception is primary, release exception is `__cause__`. |
-| R4 | Subprocess termination fails | `DispatchCancelledError` is still raised by `run_dispatch_observed` after `_terminate_process` completes (even if process was already dead). The gateway's existing `_terminate_process` handles `ProcessLookupError` silently. | No `__cause__`. |
-| R5 | Lease release fails | `WorkerSlotLeaseError` (or subclass). If cancellation body succeeded: release failure propagates. If cancellation body also failed: body exception is primary, release exception is `__cause__`. | Same as `run_dispatch_cycle` finally-block pattern. |
-| R6 | Termination succeeds but transition CAS conflict | `TransitionCASConflictError`. The worker was terminated and the lease was released, but the state transition could not be applied. This is a terminal inconsistency — the caller must resolve the CAS conflict. | No `__cause__`. |
-| R7 | Outer coroutine receives CancelledError again | The `cancel_active_dispatch` method must be cancellation-safe: it catches `CancelledError` in its body, but if the outer coroutine is cancelled while the method is running, the `finally` block ensures: heartbeat cancelled, worker cancelled, both awaited, lease released. The outer `CancelledError` propagates after cleanup. | No `__cause__`. |
-| R8 | Duplicate cancellation of the same dispatch | Second cancellation receives the same `ActiveDispatchHandle`. The worker task is already done (cancelled or completed). Steps 2–4 are no-ops (task already done). Step 5: lease already released → `WorkerSlotNotHeldError`. Step 6: transition CAS conflict (state already `cancelled`) → `TransitionCASConflictError`. | Primary: `TransitionCASConflictError`. `__cause__`: `WorkerSlotNotHeldError` if both fail. |
-| R9 | Cancel old attempt, but new attempt already started | The handle carries `attempt` and `lease_epoch`. The new attempt has a different `dispatch_id`, `attempt`, and `lease_epoch`. The cancellation request's `dispatch_cas` does not match the current state. Result: `TransitionCASConflictError`. | No `__cause__`. |
+Every race has exactly one winner, decided atomically under the execution's
+private `_state_lock`.  The rules:
 
-### 14.6 Transition — Active vs Quiescent
+| # | Race | Winner | Result / Primary exception | `__cause__` |
+|---|------|--------|-----------------------------|-------------|
+| R1 | Worker completes before cancellation request | **Completion** | `wait()` returns the `DispatchCycleResult` normally.  `cancel_active_dispatch` raises `WorkflowInputError` ("dispatch already completed"); `TASK_CANCELLED` is NOT written. | No `__cause__`. |
+| R2 | Worker and cancellation request arrive simultaneously | Decided atomically under `_state_lock`: check `worker_task.done()` before recording cancellation-won.  Exactly one wins. | Whoever wins; the loser is rejected with `WorkflowInputError` (cancellation) or proceeds (completion). | No `__cause__`. |
+| R3 | Heartbeat fails concurrently with cancellation | **Heartbeat failure** takes priority. | `WorkerSlotLeaseError` propagates; `TASK_CANCELLED` is NOT written.  Cleanup still cancels the worker and releases the lease. | If body and release both fail: body is primary, release is `__cause__`. |
+| R4 | Subprocess termination fails | Cancellation still proceeds. | `DispatchCancelledError` is still raised by `run_dispatch_observed` after `_terminate_process` (the gateway swallows `ProcessLookupError` silently). | No `__cause__`. |
+| R5 | Lease release fails | Release failure propagates. | `WorkerSlotLeaseError` (or subclass); `TASK_CANCELLED` is NOT written (transition is skipped — see §14.5 step 7 precondition). | If body and release both fail: body is primary, release is `__cause__`. |
+| R6 | Termination succeeds but transition CAS conflict | Process cleanup is already done; CAS conflict is terminal. | `TransitionCASConflictError` propagates; the already-completed process/lease cleanup is NOT rolled back. | No `__cause__`. |
+| R7 | Duplicate cancellation of the same dispatch | Second call fail-closed. | `_completed` / cancellation-won flag is already set; second call raises `WorkflowInputError` ("dispatch already terminal"); does NOT release again or write `TASK_CANCELLED` again. | No `__cause__`. |
+| R8 | Cancel old attempt, but new attempt already started | CAS conflict — cannot cancel new attempt. | The handle's `attempt` / `lease_epoch` / `dispatch_id` do not match the current state; `TransitionCASConflictError` (or `WorkflowInputError` if owner/identity mismatch). | No `__cause__`. |
+| R9 | Outer coroutine receives `CancelledError` while `cancel_active_dispatch` runs | Cleanup completes first, then outer `CancelledError` propagates. | The `finally` block completes worker cancel + heartbeat cancel + lease release; then the outer `CancelledError` re-raises. | No `__cause__`. |
+
+**Key rules:**
+
+- A single WAIT candidate must not be overridden by completion: once
+  cancellation wins under `_state_lock`, `wait()` must NOT return the
+  Worker's result.
+- **Completion winning** (R1, R2) means `TASK_CANCELLED` is NOT written —
+  the task reaches its normal terminal transition via the dispatch cycle.
+- **Heartbeat failure** (R3) always takes priority over cancellation —
+  `TASK_CANCELLED` is NOT written.
+- **Lease release failure** (R5) skips the transition — the
+  `TASK_CANCELLED` precondition (lease released) is violated, so the
+  transition must NOT be attempted.
+- No `CONFLICT` reason or exception — races are resolved by the
+  deterministic winner rules above.
+
+### 14.7 Transition — Active vs Quiescent
 
 | Path | `dispatch_cas` | `lease` | Rationale |
 |------|---------------|---------|-----------|
-| **Active** (TC-13.18d.9a) | **Required** — `expected_dispatch_id` and `expected_attempt` from handle | `None` (lease already released in step 5) | Active cancellation must bind to the exact dispatch identity to prevent stale/ambiguous cancellations. |
+| **Active** (TC-13.18d.9a.1) | **Required** — `expected_dispatch_id` and `expected_attempt` from the execution's handle | `None` (lease released in step 6 before the transition) | Active cancellation must bind to the exact dispatch identity to prevent stale/ambiguous cancellations. |
 | **Quiescent** (TC-13.18d.7) | `None` | `None` | No active dispatch — no dispatch identity to bind. |
 
 Both paths use `CancelledPayload` and `TASK_CANCELLED` event type.
 
-### 14.7 Reuse — No Second Kill/Terminate Implementation
+### 14.8 Reuse — No Second Kill/Terminate Implementation
 
 The active-dispatch cancellation protocol **reuses** existing capabilities:
 
 | Capability | Reused from | How |
 |-----------|-------------|-----|
-| `asyncio.Task.cancel()` | Python stdlib | `worker_task.cancel()` and `hb_task.cancel()` |
-| Subprocess termination | `dispatcher_gateway._terminate_process` | `DispatchCancelledError` raised by `run_dispatch_observed` |
-| `DispatchCancelledError` | `dispatcher_gateway` | Propagated through `run_dispatch_observed` |
-| `WorkerSlotLease` release | `worker_slot_lease.release_worker_slot` | Same release path as `run_dispatch_cycle` finally block |
+| `asyncio.Task.cancel()` | Python stdlib | the execution calls `worker_task.cancel()` and `hb_task.cancel()` on the tasks it created |
+| Subprocess termination | `dispatcher_gateway._terminate_process` | `DispatchCancelledError` raised by `run_dispatch_observed` when its `communicate()` is cancelled |
+| `DispatchCancelledError` | `dispatcher_gateway` | Propagated through `run_dispatch_observed`, caught in step 4 |
+| `WorkerSlotLease` release | `worker_slot_lease.release_worker_slot` | Same release path as `run_dispatch_cycle` finally block — exactly once |
 | `CancelledPayload` | `control_plane_transition` | Same payload type as quiescent path |
 | `TransitionRequest` | `control_plane_transition` | Same request type, with `dispatch_cas` populated |
 | `DispatchCAS` | `control_plane_transition` | Same CAS type, with `expected_dispatch_id` and `expected_attempt` |
 | `ControlPlaneTransitionService.apply_transition()` | `control_plane_transition` | Same apply method |
 
-**No second kill/terminate implementation is created.**  The cancellation
-protocol delegates to the existing `run_dispatch_observed` cancellation path,
-which calls `_terminate_process` on the subprocess.  The orchestrator never
-calls `_terminate_process` directly.
+**No second kill/terminate implementation is created.**  The orchestrator
+never calls `_terminate_process` directly; the Worker task's
+`asyncio.Task.cancel()` propagates into `run_dispatch_observed`, which
+calls `_terminate_process` on the subprocess exactly as it already does.
+The execution merely owns the live `asyncio.Task` reference so cancellation
+can reach it before completion.
 
-### 14.8 WorkflowOrchestrator Method Signatures
+### 14.9 WorkflowOrchestrator Method Signatures
 
 ```python
 class WorkflowOrchestrator:
@@ -843,35 +1021,63 @@ class WorkflowOrchestrator:
     clock: WorkflowClock
     heartbeat_interval_seconds: float
 
+    async def start_dispatch_cycle(
+        self,
+        request: DispatchCycleRequest,
+        providers: Mapping[str, AgentCliProvider],
+    ) -> ActiveDispatchExecution:
+        """Start a dispatch and return the live execution BEFORE the Worker
+        completes (TC-13.18d.9a.1).
+
+        Preconditions that must hold before returning (§14.4):
+        1. WorkerSlotLease acquired
+        2. TASK_DISPATCHED applied
+        3. Worker task created
+        4. DISPATCH_ACKNOWLEDGED applied
+        5. heartbeat started and handshake confirmed
+        6. execution bound to the real cycle/worker task
+
+        The returned execution is reachable for cancellation.  The caller
+        either awaits execution.wait() for normal completion or calls
+        cancel_active_dispatch(execution, request) to cancel.
+        """
+        ...
+
     async def run_dispatch_cycle(
         self,
         request: DispatchCycleRequest,
         providers: Mapping[str, AgentCliProvider],
     ) -> DispatchCycleResult:
-        """... (existing signature unchanged; result may include active_handle)"""
-        ...
+        """Compatibility wrapper (unchanged signature from TC-13.18b).
+
+        Returns DispatchCycleResult — exactly 9 fields, no embedded handle.
+        """
+        execution = await self.start_dispatch_cycle(request, providers)
+        return await execution.wait()
 
     async def cancel_active_dispatch(
         self,
+        execution: ActiveDispatchExecution,
         request: ActiveDispatchCancellationRequest,
     ) -> ActiveDispatchCancellationResult:
-        """Cancel an active dispatch identified by the handle.
+        """Cancel a live dispatch owned by this orchestrator (§14.5).
 
-        Execution order (§14.4):
-        1. Validate request shape and identity
-        2. Cancel worker dispatch task
-        3. Await worker task completion
-        4. Cancel and await heartbeat task
-        5. Release WorkerSlotLease
-        6. Apply TASK_CANCELLED with lease=None + DispatchCAS
-        7. Return ActiveDispatchCancellationResult
+        Execution order:
+        1. Validate execution owner (exact-instance) + handle identity
+        2. Under execution _state_lock decide winner
+        3. If cancellation wins: cancel real cycle/worker task
+        4. Await worker task completion (DispatchCancelledError caught)
+        5. Cancel and await heartbeat task
+        6. Release WorkerSlotLease — exactly once
+        7. Apply TASK_CANCELLED with lease=None + precise DispatchCAS
+        8. Return ActiveDispatchCancellationResult
 
         Raises:
-            WorkflowInputError: Invalid request type or identity mismatch.
-            DispatchCancelledError: Worker cancelled (expected; caught internally).
-            WorkerSlotLeaseError: Lease release or renewal failure.
+            WorkflowInputError: execution not owned by self; identity
+                mismatch; dispatch already completed (completion won).
+            WorkerSlotLeaseError: heartbeat or release failure.
             TransitionCASConflictError: CAS conflict on TASK_CANCELLED.
-            WorkflowInvariantError: Internal precondition violated.
+            WorkflowInvariantError: internal precondition violated.
         """
         ...
 
@@ -883,7 +1089,7 @@ class WorkflowOrchestrator:
         ...
 ```
 
-### 14.9 Exception Hierarchy — No New Parallel Hierarchy
+### 14.10 Exception Hierarchy — No New Parallel Hierarchy
 
 Active-dispatch cancellation **does not** introduce new exception types.
 All exceptions are existing types from the underlying services:
@@ -900,35 +1106,43 @@ All exceptions are existing types from the underlying services:
 **No** `WorkflowCancellationError`, `ActiveDispatchError`, or other
 parallel exception hierarchy is created.
 
-### 14.10 Deep Immutability
+### 14.11 Deep Immutability
 
-All public data types in this section use `frozen=True, slots=True`:
+The **value** types in this section use `frozen=True, slots=True`:
 
 - `ActiveDispatchHandle` — 7 fields, all typed, no `dict`/`Any`/`object`
 - `ActiveDispatchCancellationRequest` — 2 fields, all typed
-- `ActiveDispatchCancellationResult` — 3 fields, all typed
-- `DispatchCycleResult` — 10 fields (was 9), `active_dispatch_handle` is
-  `ActiveDispatchHandle | None`, not `dict`/`Any`/`object`
-- `DispatchCycleRequest` — 10 fields (was 9), `request_active_handle` is
-  `bool`, not `dict`/`Any`/`object`
+- `ActiveDispatchCancellationResult` — 3 fields, all typed; **no
+  `worker_result` field**
+- `DispatchCycleResult` — exactly **9 fields** (unchanged from TC-13.18b)
+- `DispatchCycleRequest` — exactly **9 fields** (unchanged from TC-13.18b)
+
+The **runtime** type `ActiveDispatchExecution` is **not** frozen (it holds
+live `asyncio.Task` references), but exposes **no public attribute** of
+type `Task`, `Future`, `dict`, `Any`, or `object` — the live tasks live
+behind private `_`-prefixed `__slots__`, and the only public surface is
+`handle` (property returning the frozen snapshot) and `wait()` (coroutine
+returning `DispatchCycleResult`).
 
 No `asyncio.Task`, `Future`, `dict`, `Any`, `object`, or untyped payload
-appears in any public type.
+appears in any **public** type or in the execution's public surface.
 
-### 14.11 Relationship to Existing Paths
+### 14.12 Relationship to Existing Paths
 
 | Path | Status | Relationship |
 |------|--------|-------------|
-| `cancel_quiescent_task` | Current — TC-13.18d.7 | **Unchanged** — no active dispatch, no handle, no DispatchCAS |
-| `cancel_active_dispatch` | Contract Current — TC-13.18d.9a | **New** — active dispatch, handle, DispatchCAS required |
-| `run_dispatch_cycle` | Current — TC-13.18b | **Extended** — `request_active_handle` and `active_dispatch_handle` fields added; existing callers unaffected |
+| `cancel_quiescent_task` | Current — TC-13.18d.7 | **Unchanged** — no active dispatch, no execution, no DispatchCAS |
+| `cancel_active_dispatch` | Contract Repair — TC-13.18d.9a.1 | **Revised** — takes execution + request; creator-owned; no `worker_result` in result |
+| `start_dispatch_cycle` | Contract Repair — TC-13.18d.9a.1 | **New** — returns live execution before Worker completes |
+| `run_dispatch_cycle` | Current — TC-13.18b | **Unchanged signature** — compatibility wrapper over start+wait; 9-field result |
 | `run_dispatch_observed` | Current — TC-13.18b | **Unchanged** — `DispatchCancelledError` and `_terminate_process` are reused as-is |
 | `WorkerSlotLease` | Current — TC-13.10c | **Unchanged** — `release_worker_slot` is reused as-is |
 | `ControlPlaneTransitionService` | Current — TC-13.11c | **Unchanged** — `apply_transition` with `CancelledPayload` and `DispatchCAS` is reused as-is |
 
-### 14.12 Task-Card Split — Active Cancellation
+### 14.13 Task-Card Split — Active Cancellation
 
 | Card | Description | Status |
 |------|-------------|--------|
-| **TC-13.18d.9a** | Active-dispatch cancellation contract freeze | Contract Current |
+| **TC-13.18d.9a** | Active-dispatch cancellation contract freeze (non-implementable) | Superseded by TC-13.18d.9a.1 |
+| **TC-13.18d.9a.1** | Active-dispatch cancellation contract repair (execution model) | Contract Current |
 | **TC-13.18d.9b** | Active-dispatch cancellation production implementation | Runtime Target |
