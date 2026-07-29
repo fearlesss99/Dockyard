@@ -10524,3 +10524,348 @@ class TC1320bHtmlDashboardProductionSmokeTests(unittest.TestCase):
             builtins.open = real_open  # type: ignore
             os.open = real_os_open  # type: ignore
         self.assertIsInstance(art.html, bytes)
+
+
+class TC1314aRateLimitContractFreezeTests(unittest.TestCase):
+    """TC-13.14a — RateLimit Provider-neutral contract freeze verification.
+
+    Verifies the contract document, ADR §2.20, API surface, enum values,
+    dataclass fields, exception hierarchy, and hard boundaries without
+    requiring a production module.
+    """
+
+    def setUp(self) -> None:
+        self.repo_root = Path(__file__).resolve().parents[1]
+        self.adr_text = (
+            self.repo_root / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+        self.contract_path = (
+            self.repo_root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "rate-limit-contract.md"
+        )
+        self.contract_text = self.contract_path.read_text(encoding="utf-8")
+        self.rate_limit_py = (
+            self.repo_root / "skills" / "agentdesk" / "scripts"
+            / "rate_limit.py"
+        )
+
+    # -- 1. Contract file exists --
+
+    def test_contract_file_exists(self) -> None:
+        """rate-limit-contract.md must exist as a regular file."""
+        self.assertTrue(
+            self.contract_path.is_file(),
+            "rate-limit-contract.md must exist as a regular file",
+        )
+
+    # -- 2. ADR §2.20 exists --
+
+    def test_adr_section_220_exists(self) -> None:
+        """ADR §2.20 RateLimitService — Frozen Contract must exist."""
+        self.assertIn(
+            "### 2.20 RateLimitService",
+            self.adr_text,
+            "ADR: §2.20 RateLimitService Frozen Contract must exist",
+        )
+        self.assertIn(
+            "Contract Current — TC-13.14a",
+            self.adr_text,
+            "ADR §2.20 must declare Contract Current — TC-13.14a",
+        )
+
+    # -- 3. Interface #19 status --
+
+    def test_interface_19_is_contract_current(self) -> None:
+        """Interface #19 must be Contract Current — TC-13.14a."""
+        found = False
+        for line in self.adr_text.splitlines():
+            if "| 19 |" in line and "RateLimit" in line:
+                self.assertIn(
+                    "Contract Current", line,
+                    f"Interface #19 must be Contract Current: {line!r}",
+                )
+                found = True
+        self.assertTrue(found, "Interface #19 row not found in ADR status table")
+
+    # -- 4. Exact 12 public symbols --
+
+    def test_exact_12_all_symbols(self) -> None:
+        """Contract must declare exactly 12 __all__ symbols."""
+        self.assertIn(
+            "Exactly 12 Symbols", self.contract_text,
+            "Contract section 3 heading must say Exactly 12 Symbols",
+        )
+        expected_12 = (
+            "RateLimitSignal",
+            "RateLimitScope",
+            "RateLimitSignalSource",
+            "RateLimitCheckRequest",
+            "RateLimitDecision",
+            "RateLimitAction",
+            "RateLimitReason",
+            "RateLimitService",
+            "RateLimitError",
+            "RateLimitInputError",
+            "RateLimitStateError",
+            "RateLimitSecurityError",
+        )
+        for sym in expected_12:
+            self.assertIn(sym, self.contract_text,
+                          f"__all__ must contain: {sym}")
+        # Verify no extra symbols
+        for bad in ("RateLimitBucket", "RateLimitRecord", "RateLimitConfig",
+                     "RateLimitTimer", "RateLimitRetry", "RateLimitDetector"):
+            self.assertNotIn(bad, self.contract_text,
+                             f"__all__ must not contain extra symbol: {bad}")
+
+    # -- 5. RateLimitScope exact 4 values --
+
+    def test_rate_limit_scope_exact_4_values(self) -> None:
+        """Contract must define RateLimitScope with exactly 4 values."""
+        self.assertIn("class RateLimitScope", self.contract_text)
+        for val in ("REQUEST", "TOKEN", "CONCURRENCY", "UNKNOWN"):
+            self.assertIn(f'{val} =', self.contract_text,
+                          f"RateLimitScope must contain {val}")
+        self.assertIn(
+            "str, Enum", self.contract_text,
+            "RateLimitScope must be a str Enum",
+        )
+
+    # -- 6. RateLimitSignalSource exact 3 values --
+
+    def test_rate_limit_signal_source_exact_3_values(self) -> None:
+        """Contract must define RateLimitSignalSource with exactly 3 values."""
+        self.assertIn("class RateLimitSignalSource", self.contract_text)
+        for val in ("PROVIDER_429", "BUDGET_THROTTLE", "MANUAL"):
+            self.assertIn(f'{val} =', self.contract_text,
+                          f"RateLimitSignalSource must contain {val}")
+
+    # -- 7. RateLimitAction exact 3 values --
+
+    def test_rate_limit_action_exact_3_values(self) -> None:
+        """Contract must define RateLimitAction with exactly 3 values."""
+        self.assertIn("class RateLimitAction", self.contract_text)
+        for val in ("ALLOW", "WAIT", "FAIL_CLOSED"):
+            self.assertIn(f'{val} =', self.contract_text,
+                          f"RateLimitAction must contain {val}")
+
+    # -- 8. RateLimitReason exact 5 values --
+
+    def test_rate_limit_reason_exact_5_values(self) -> None:
+        """Contract must define RateLimitReason with exactly 5 values."""
+        self.assertIn("class RateLimitReason", self.contract_text)
+        for val in ("NO_SIGNALS", "WITHIN_LIMIT", "RETRY_AFTER",
+                     "INSUFFICIENT", "EXHAUSTED"):
+            self.assertIn(f'{val} =', self.contract_text,
+                          f"RateLimitReason must contain {val}")
+
+    # -- 9. RateLimitSignal exact 8 fields --
+
+    def test_rate_limit_signal_exact_8_fields(self) -> None:
+        """Contract must define RateLimitSignal with exactly 8 fields."""
+        self.assertIn(
+            "Exactly 8 Fields", self.contract_text,
+            "RateLimitSignal heading must say Exactly 8 Fields",
+        )
+        self.assertIn("frozen=True", self.contract_text)
+        self.assertIn("slots=True", self.contract_text)
+        for field in (
+            "provider: str",
+            "scope: RateLimitScope",
+            "observed_at: datetime",
+            "retry_after_seconds: int | None",
+            "reset_at: datetime | None",
+            "limit: int | None",
+            "remaining: int | None",
+            "source: RateLimitSignalSource",
+        ):
+            self.assertIn(
+                field, self.contract_text,
+                f"RateLimitSignal must declare field: {field}",
+            )
+
+    # -- 10. RateLimitCheckRequest exact 4 fields --
+
+    def test_rate_limit_check_request_exact_4_fields(self) -> None:
+        """Contract must define RateLimitCheckRequest with exactly 4 fields."""
+        self.assertIn(
+            "Exactly 4 Fields", self.contract_text,
+            "RateLimitCheckRequest heading must say Exactly 4 Fields",
+        )
+        for field in (
+            "provider: str",
+            "now: datetime",
+            "units_requested: int",
+            "signals: tuple[RateLimitSignal, ...]",
+        ):
+            self.assertIn(
+                field, self.contract_text,
+                f"RateLimitCheckRequest must declare field: {field}",
+            )
+
+    # -- 11. RateLimitDecision exact 3 fields --
+
+    def test_rate_limit_decision_exact_3_fields(self) -> None:
+        """Contract must define RateLimitDecision with exactly 3 fields."""
+        self.assertIn(
+            "Exactly 3 Fields", self.contract_text,
+            "RateLimitDecision heading must say Exactly 3 Fields",
+        )
+        for field in (
+            "action: RateLimitAction",
+            "wait_seconds: int",
+            "reason: RateLimitReason",
+        ):
+            self.assertIn(
+                field, self.contract_text,
+                f"RateLimitDecision must declare field: {field}",
+            )
+
+    # -- 12. RateLimitService.evaluate signature --
+
+    def test_rate_limit_service_evaluate_signature(self) -> None:
+        """Contract must define RateLimitService.evaluate with correct signature."""
+        self.assertIn("class RateLimitService", self.contract_text)
+        self.assertIn("def evaluate", self.contract_text)
+        self.assertIn("request: RateLimitCheckRequest", self.contract_text)
+        self.assertIn("RateLimitDecision", self.contract_text)
+
+    # -- 13. No record()/consume() methods --
+
+    def test_no_record_or_consume_methods(self) -> None:
+        """Contract must not define record() or consume() methods."""
+        self.assertNotIn(
+            "def record(", self.contract_text,
+            "Contract must not define record() — deferred to TC-13.14b",
+        )
+        self.assertNotIn(
+            "def consume(", self.contract_text,
+            "Contract must not define consume() — deferred to TC-13.14b",
+        )
+
+    # -- 14. No datetime.now()/time.time() calls --
+
+    def test_no_internal_clock_calls(self) -> None:
+        """Contract must not allow datetime.now() or time.time() internally."""
+        self.assertIn(
+            "datetime.now()", self.contract_text,
+            "Contract must explicitly forbid datetime.now()",
+        )
+        self.assertIn(
+            "time.time()", self.contract_text,
+            "Contract must explicitly forbid time.time()",
+        )
+        # The 'now' must be caller-supplied
+        self.assertIn(
+            "now: datetime", self.contract_text,
+            "RateLimitCheckRequest must have caller-supplied now",
+        )
+
+    # -- 15. No dict/Any/object in public API --
+
+    def test_no_untyped_data_in_public_api(self) -> None:
+        """Contract must not use dict, Any, or object in public API fields."""
+        for bad in ("dict", "Any", "object"):
+            self.assertNotIn(
+                f": {bad}", self.contract_text,
+                f"Contract must not use {bad} in field type annotations",
+            )
+
+    # -- 16. All collections use tuple --
+
+    def test_all_collections_use_tuple(self) -> None:
+        """Contract must use tuple for all collection fields."""
+        self.assertIn(
+            "tuple[RateLimitSignal, ...]", self.contract_text,
+            "signals must be tuple[RateLimitSignal, ...]",
+        )
+        self.assertNotIn(
+            "list[RateLimitSignal", self.contract_text,
+            "signals must not use list",
+        )
+
+    # -- 17. Exception hierarchy exact 4 types --
+
+    def test_exception_hierarchy_exact_4_types(self) -> None:
+        """Contract must define exactly 4 exception types."""
+        self.assertIn("class RateLimitError", self.contract_text)
+        self.assertIn("class RateLimitInputError", self.contract_text)
+        self.assertIn("class RateLimitStateError", self.contract_text)
+        self.assertIn("class RateLimitSecurityError", self.contract_text)
+        # Verify inheritance
+        self.assertIn("RateLimitInputError(RateLimitError)", self.contract_text)
+        self.assertIn("RateLimitStateError(RateLimitError)", self.contract_text)
+        self.assertIn("RateLimitSecurityError(RateLimitError)", self.contract_text)
+        # No extra exception types
+        for bad in ("RateLimitTimeoutError", "RateLimitRetryError",
+                     "RateLimitProviderError", "RateLimitDetectionError"):
+            self.assertNotIn(bad, self.contract_text,
+                             f"Contract must not define extra exception: {bad}")
+
+    # -- 18. rate_limit.py must NOT exist --
+
+    def test_rate_limit_py_must_not_exist(self) -> None:
+        """rate_limit.py must not exist — TC-13.14a delivers contract only."""
+        self.assertFalse(
+            self.rate_limit_py.is_file(),
+            "rate_limit.py must not exist — TC-13.14a delivers contract only",
+        )
+
+    # -- 19. No Provider stdout/stderr/exit-code parsing --
+
+    def test_no_provider_output_parsing(self) -> None:
+        """Contract must explicitly exclude provider output parsing."""
+        self.assertIn(
+            "stdout", self.contract_text,
+            "Contract must mention stdout in forbidden/excluded data",
+        )
+        self.assertIn(
+            "stderr", self.contract_text,
+            "Contract must mention stderr in forbidden/excluded data",
+        )
+        self.assertIn(
+            "exit code", self.contract_text,
+            "Contract must mention exit codes in forbidden/excluded data",
+        )
+
+    # -- 20. ADR §2.20 subsection completeness --
+
+    def test_adr_220_subsections_complete(self) -> None:
+        """ADR §2.20 must have all required subsections."""
+        section = _extract_markdown_section(
+            self.adr_text, "### 2.20 RateLimitService"
+        )
+        self.assertIsNotNone(
+            section,
+            "ADR must contain §2.20 RateLimitService section",
+        )
+        for sub in (
+            "2.20.1", "2.20.2", "2.20.3", "2.20.4", "2.20.5",
+            "2.20.6", "2.20.7", "2.20.8", "2.20.9", "2.20.10",
+            "2.20.11", "2.20.12", "2.20.13", "2.20.14", "2.20.15",
+            "2.20.16", "2.20.17", "2.20.18", "2.20.19", "2.20.20",
+            "2.20.21", "2.20.22",
+        ):
+            self.assertIn(
+                sub, section,
+                f"ADR §2.20 must contain subsection {sub}",
+            )
+
+    # -- 21. Escalation boundary preserved --
+
+    def test_escalation_boundary_preserved(self) -> None:
+        """Contract must preserve escalation independence from §2.16.10."""
+        self.assertIn(
+            "evaluate_escalation", self.contract_text,
+            "Contract must reference evaluate_escalation in boundary rules",
+        )
+
+    # -- 22. TC-13.14a/b/c task-card split in ADR --
+
+    def test_task_card_split_in_adr(self) -> None:
+        """ADR must contain TC-13.14a/b/c task-card split."""
+        self.assertIn("TC-13.14a", self.adr_text)
+        self.assertIn("TC-13.14b", self.adr_text)
+        self.assertIn("TC-13.14c", self.adr_text)
+        self.assertIn("evidence-dependent", self.adr_text)

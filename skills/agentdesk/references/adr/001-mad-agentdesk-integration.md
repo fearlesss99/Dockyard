@@ -29,7 +29,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 16 | AgentDesk ControlPlaneTransitionService | **Current** | TC-13.11c | CAS-write tasks, immutable events, replayable outbox |
 | 17 | AgentDesk ApprovalGate | **Current** | TC-13.12d | TASK_APPROVAL with structured scope (dispatch/accept/integrate); runtime gate + ControlPlaneTransitionService integration + offline validator implemented |
 | 18 | AgentDesk EscalationService | **Current** | TC-13.13b | Pure WorkerKind tier progression; frozen contract 搂2.16; production module and full test suite committed |
-| 19 | AgentDesk RateLimit service | **Target** | TC-13.14 | Provider rate-limit handling independent of escalation |
+| 19 | AgentDesk RateLimit service | **Contract Current** — TC-13.14a / Runtime Target — TC-13.14b | TC-13.14 | Provider-neutral rate-limit policy evaluation; provider detection (TC-13.14c) is evidence-dependent Target |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
 | 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Target; TASK_SUPERSEDED: Target; retry loop, fault recovery: Target) |
@@ -6930,7 +6930,328 @@ iteration order.
 
 ---
 
+### 2.20 RateLimitService — Frozen Contract (Contract Current — TC-13.14a)
+
+TC-13.14a freezes the **Provider-neutral RateLimit policy contract** for
+typed signal consumption and deterministic decision evaluation.  No
+production module is shipped under TC-13.14a — the contract itself is the
+deliverable and must be implemented by TC-13.14b.
+
+The full per-interface contract is in
+`public-interfaces/rate-limit-contract.md`; this section records the
+frozen rules within the ADR.
+
+#### 2.20.1 Core Semantic — Provider-Neutral Policy Evaluation
+
+`RateLimitService` is a **deterministic, stateless, pure-function policy
+evaluator**.  It consumes a set of typed `RateLimitSignal` observations
+and produces a `RateLimitDecision`: allow, wait, or fail-closed.
+
+The RateLimit contract is split into two layers:
+
+```text
+Provider-specific detector (TC-13.14c — evidence-dependent Target)
+        ↓ RateLimitSignal
+Provider-neutral RateLimit policy (TC-13.14b — Runtime Target)
+        ↓ RateLimitDecision
+WorkflowOrchestrator (future wiring)
+```
+
+TC-13.14a freezes the **Provider-neutral** layer only.
+
+#### 2.20.2 RateLimitScope — Exact Four Values
+
+```python
+class RateLimitScope(str, Enum):
+    REQUEST = "request"
+    TOKEN = "token"
+    CONCURRENCY = "concurrency"
+    UNKNOWN = "unknown"
+```
+
+`str, Enum` with `@enum.unique`.  No case-folding, no aliases, no
+unknown fallback.  `UNKNOWN` must not be used as a lazy default when the
+type is known.
+
+#### 2.20.3 RateLimitSignalSource — Exact Three Values
+
+```python
+class RateLimitSignalSource(str, Enum):
+    PROVIDER_429 = "provider_429"
+    BUDGET_THROTTLE = "budget_throttle"
+    MANUAL = "manual"
+```
+
+`str, Enum` with `@enum.unique`.  No case-folding, no aliases, no
+unknown fallback.
+
+#### 2.20.4 RateLimitSignal — Exact Eight Fields
+
+```python
+@dataclass(frozen=True, slots=True)
+class RateLimitSignal:
+    provider: str
+    scope: RateLimitScope
+    observed_at: datetime
+    retry_after_seconds: int | None
+    reset_at: datetime | None
+    limit: int | None
+    remaining: int | None
+    source: RateLimitSignalSource
+```
+
+Frozen rules:
+
+* `frozen=True`, `slots=True` — no `__dict__`, no mutable state
+* `provider` — non-empty `str`, no leading/trailing whitespace, no NUL/CR/LF
+* `observed_at` — must be timezone-aware UTC `datetime`
+* `retry_after_seconds` — non-negative `int` or `None`; `0` means "no delay"
+* `reset_at` — timezone-aware UTC `datetime` or `None`
+* `limit` — non-negative `int` or `None`
+* `remaining` — non-negative `int` or `None`
+* **Must not** store raw error text, response body, header mapping,
+  stack trace, or any untyped data
+
+Permanently excluded fields:
+
+| Excluded field | Reason |
+|---------------|--------|
+| Raw stdout/stderr/exit code | Provider-specific — TC-13.14c |
+| HTTP response body or headers | Provider-specific — TC-13.14c |
+| `dict`, `Any`, `object` payload | Untyped data — security boundary |
+| `error_message` or `detail` | Raw provider output — security boundary |
+
+#### 2.20.5 RateLimitCheckRequest — Exact Four Fields
+
+```python
+@dataclass(frozen=True, slots=True)
+class RateLimitCheckRequest:
+    provider: str
+    now: datetime
+    units_requested: int
+    signals: tuple[RateLimitSignal, ...]
+```
+
+Frozen rules:
+
+* `frozen=True`, `slots=True` — no `__dict__`, no mutable state
+* `now` — must be timezone-aware UTC `datetime`; the service must
+  **never** call `datetime.now()` or `time.time()` internally
+* `units_requested` — non-negative `int` (not `bool`)
+* `signals` — `tuple[RateLimitSignal, ...]`; may be empty; must be
+  `tuple`, not `list`, `dict`, `set`, or `Any`
+
+#### 2.20.6 RateLimitAction — Exact Three Values
+
+```python
+class RateLimitAction(str, Enum):
+    ALLOW = "allow"
+    WAIT = "wait"
+    FAIL_CLOSED = "fail_closed"
+```
+
+`str, Enum` with `@enum.unique`.  No case-folding, no aliases, no
+unknown fallback.
+
+#### 2.20.7 RateLimitReason — Exact Five Values
+
+```python
+class RateLimitReason(str, Enum):
+    NO_SIGNALS = "no_signals"
+    WITHIN_LIMIT = "within_limit"
+    RETRY_AFTER = "retry_after"
+    INSUFFICIENT = "insufficient"
+    EXHAUSTED = "exhausted"
+```
+
+`str, Enum` with `@enum.unique`.  No case-folding, no aliases, no
+unknown fallback.  No arbitrary user strings as reason.
+
+#### 2.20.8 RateLimitDecision — Exact Three Fields
+
+```python
+@dataclass(frozen=True, slots=True)
+class RateLimitDecision:
+    action: RateLimitAction
+    wait_seconds: int
+    reason: RateLimitReason
+```
+
+Frozen rules:
+
+* `frozen=True`, `slots=True` — no `__dict__`, no mutable state
+* `wait_seconds` — non-negative `int` (not `bool`); `0` when `ALLOW`
+  or `FAIL_CLOSED`; positive when `WAIT`
+* `action` and `reason` must be consistent:
+  `ALLOW` → `NO_SIGNALS` or `WITHIN_LIMIT`;
+  `WAIT` → `RETRY_AFTER` or `INSUFFICIENT`;
+  `FAIL_CLOSED` → `EXHAUSTED`
+
+#### 2.20.9 Public API — Exact Twelve Symbols
+
+```python
+__all__ = [
+    "RateLimitSignal",
+    "RateLimitScope",
+    "RateLimitSignalSource",
+    "RateLimitCheckRequest",
+    "RateLimitDecision",
+    "RateLimitAction",
+    "RateLimitReason",
+    "RateLimitService",
+    "RateLimitError",
+    "RateLimitInputError",
+    "RateLimitStateError",
+    "RateLimitSecurityError",
+]
+```
+
+No other public names.  No internal helpers are exposed.
+
+#### 2.20.10 RateLimitService — Stateless Policy Evaluator
+
+```python
+class RateLimitService:
+    def evaluate(
+        self,
+        request: RateLimitCheckRequest,
+    ) -> RateLimitDecision:
+        ...
+```
+
+Frozen rules:
+
+* **Deterministic** — same `request` → identical `RateLimitDecision`
+* **Stateless** — no `record()`, no `consume()`, no token bucket, no
+  file storage, no background timer
+* **Pure** — no side effects: no file writes, no network, no subprocess,
+  no clock calls
+* Must not call `datetime.now()`, `time.time()`, or `monotonic`
+* Must not read or parse provider stdout, stderr, exit codes, HTTP
+  headers, or response bodies
+
+#### 2.20.11 Evaluation Semantics
+
+1. **No signals** → `ALLOW` with `wait_seconds=0`, `reason=NO_SIGNALS`
+2. **Filter signals** by `provider` match
+3. **Within limit** — `remaining >= units_requested` and no
+   `retry_after_seconds` → `ALLOW` with `reason=WITHIN_LIMIT`
+4. **Retry-after** — `retry_after_seconds > 0` → `WAIT` with
+   `reason=RETRY_AFTER`
+5. **Insufficient** — `0 < remaining < units_requested` → `WAIT`
+   with `reason=INSUFFICIENT`
+6. **Exhausted** — `remaining == 0` or signals with no remaining and
+   no `retry_after_seconds` → `FAIL_CLOSED` with `reason=EXHAUSTED`
+
+#### 2.20.12 Escalation Boundary — Explicitly Preserved
+
+A rate-limit event (429, quota, backoff) must **never**:
+
+* Call `evaluate_escalation()` (§2.16)
+* Change `WorkerKind` or `TaskDifficulty`
+* Generate an `EscalationDecision`
+* Share types, code paths, or dependency edges with TC-13.13
+
+This preserves the frozen rules from §2.16.10.
+
+#### 2.20.13 Provider Detection Boundary — Explicitly Deferred
+
+TC-13.14a does **not** define how `RateLimitSignal` is produced from
+raw provider output.  The `RateLimitSignal` is a typed, Provider-neutral
+observation that decouples the policy evaluator from provider-specific
+detection logic.  Detection (parsing stdout/stderr/exit codes/HTTP
+headers) is evidence-dependent and must not be inferred.
+
+#### 2.20.14 State & Persistence Boundary — Explicitly Deferred
+
+TC-13.14a does **not** define `record()`, `consume()`, token bucket,
+sliding window, or any stateful storage.  The contract is a pure
+function from `RateLimitCheckRequest` → `RateLimitDecision`.  Stateful
+policy is deferred to TC-13.14b.
+
+#### 2.20.15 Retry Loop Boundary — Explicitly Deferred
+
+`RateLimitService.evaluate()` produces a decision.  It does **not**
+implement retry loops, backoff strategies, or jitter.  The
+WorkflowOrchestrator owns retry decisions based on `RateLimitDecision`.
+
+#### 2.20.16 Deep Immutability
+
+All dataclasses use `frozen=True, slots=True`.  All collections use
+`tuple`, not `list`, `dict`, or `set`.  No `Any`, `object`, or
+untyped payload.  No `datetime.now()` or `time.time()`.
+
+#### 2.20.17 Fail-Closed Rules
+
+| Condition | Result |
+|-----------|--------|
+| `signals` is empty | `ALLOW` — no rate-limit information available |
+| `remaining` is `None` and `retry_after_seconds` is `None` | `ALLOW` — no actionable signal |
+| `remaining == 0` | `FAIL_CLOSED` — explicitly exhausted |
+| `retry_after_seconds > 0` | `WAIT` — provider specified wait time |
+| Conflicting signals for same provider | `FAIL_CLOSED` — safest default |
+| `units_requested == 0` | `ALLOW` — no consumption |
+| `provider` not in signals | `ALLOW` — no rate-limit info for this provider |
+
+#### 2.20.18 Exception Hierarchy — Exact Four Types
+
+```python
+class RateLimitError(Exception):
+    """Base for all RateLimit errors."""
+
+class RateLimitInputError(RateLimitError):
+    """Invalid input — wrong type, missing field, non-UTC datetime."""
+
+class RateLimitStateError(RateLimitError):
+    """Inconsistent state — conflicting signals, invalid combination."""
+
+class RateLimitSecurityError(RateLimitError):
+    """Security boundary violation — unsafe content rejected."""
+```
+
+Exception message safety — messages must **never** contain:
+raw provider output, API keys/tokens, workspace paths, prompt text,
+`repr()`/`str()` of untrusted objects, or HTTP response bodies.
+
+Messages **may** contain: `type(x).__name__`, field names, and
+exception class names.
+
+#### 2.20.19 Explicit Non-Goals
+
+* Provider 429 detection, stdout/stderr parsing, exit-code classification → TC-13.14c
+* Token bucket, sliding window, fixed window implementation → TC-13.14b
+* `record()` or `consume()` methods → TC-13.14b
+* File storage, database, or network persistence → TC-13.14b
+* Retry loop, backoff strategy, or jitter → WorkflowOrchestrator
+* Guessing or inferring any provider's 429 text format → TC-13.14c
+* Real CLI execution, API calls, or network access → TC-13.14c
+
+#### 2.20.20 Dependency
+
+```text
+TC-13.14a (this contract) — no production module dependency
+TC-13.14b (runtime implementation) — depends on TC-13.14a
+TC-13.14c (provider detection) — depends on TC-13.14b + real 429 evidence
+```
+
+#### 2.20.21 Task-Card Split
+
+| Card | Description | Status |
+|------|-------------|--------|
+| **TC-13.14a** | Provider-neutral RateLimit contract freeze | Contract Current |
+| **TC-13.14b** | RateLimitService production module | Runtime Target |
+| **TC-13.14c** | Provider-specific 429 detection (evidence-dependent) | Evidence-dependent Target |
+
+#### 2.20.22 Status
+
+* ADR Interface Status row #19 is **Contract Current — TC-13.14a / Runtime Target — TC-13.14b**.
+* Provider detection (TC-13.14c) is an **evidence-dependent Target** — no real 429 output evidence exists.
+* `rate_limit.py` must **not** exist yet — TC-13.14a delivers the contract only.
+* All prior Current interfaces remain **Current**.
+* TC-13.14a does not promote Interface #19 to fully Current — only the contract is frozen.
+
 ---
+
 ## 3. Ownership Boundaries
 
 | Domain | Owned by | Description |
@@ -6995,7 +7316,9 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.12d | ApprovalGate offline validator, replay, TOCTOU, concurrency hardening | TC-13.12c |
 | TC-13.13a | EscalationService frozen contract (搂2.16) | TC-13.4 |
 | TC-13.13b | EscalationService production implementation | TC-13.13a |
-| TC-13.14 | RateLimit service | TC-13.11 |
+| TC-13.14a | RateLimit Provider-neutral contract freeze (§2.20) | TC-13.11 |
+| TC-13.14b | RateLimitService production module | TC-13.14a |
+| TC-13.14c | Provider-specific 429 detection (evidence-dependent) | TC-13.14b, real 429 output evidence |
 | TC-13.15 | MAD `audit` sub-command (`mad.audit-result/v1`) | TC-13.2 |
 | TC-13.16a/b | AgentDesk MadAuditGateway | TC-13.15 |
 | TC-13.17a/b | StateProvider (read-only) | TC-13.11 |
