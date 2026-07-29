@@ -29,7 +29,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 16 | AgentDesk ControlPlaneTransitionService | **Current** | TC-13.11c | CAS-write tasks, immutable events, replayable outbox |
 | 17 | AgentDesk ApprovalGate | **Current** | TC-13.12d | TASK_APPROVAL with structured scope (dispatch/accept/integrate); runtime gate + ControlPlaneTransitionService integration + offline validator implemented |
 | 18 | AgentDesk EscalationService | **Current** | TC-13.13b | Pure WorkerKind tier progression; frozen contract 搂2.16; production module and full test suite committed |
-| 19 | AgentDesk RateLimit service | **Contract Current** — TC-13.14a / Runtime Target — TC-13.14b | TC-13.14 | Provider-neutral rate-limit policy evaluation; provider detection (TC-13.14c) is evidence-dependent Target |
+| 19 | AgentDesk RateLimit service | **Contract Current** — TC-13.14a.1 / Runtime Target — TC-13.14b | TC-13.14 | Provider-neutral rate-limit policy evaluation with closed semantics; provider detection (TC-13.14c) is evidence-dependent Target |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
 | 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Target; TASK_SUPERSEDED: Target; retry loop, fault recovery: Target) |
@@ -6930,7 +6930,7 @@ iteration order.
 
 ---
 
-### 2.20 RateLimitService — Frozen Contract (Contract Current — TC-13.14a)
+### 2.20 RateLimitService — Frozen Contract (Contract Current — TC-13.14a.1)
 
 TC-13.14a freezes the **Provider-neutral RateLimit policy contract** for
 typed signal consumption and deterministic decision evaluation.  No
@@ -7132,16 +7132,31 @@ Frozen rules:
 
 #### 2.20.11 Evaluation Semantics
 
-1. **No signals** → `ALLOW` with `wait_seconds=0`, `reason=NO_SIGNALS`
-2. **Filter signals** by `provider` match
-3. **Within limit** — `remaining >= units_requested` and no
-   `retry_after_seconds` → `ALLOW` with `reason=WITHIN_LIMIT`
-4. **Retry-after** — `retry_after_seconds > 0` → `WAIT` with
-   `reason=RETRY_AFTER`
-5. **Insufficient** — `0 < remaining < units_requested` → `WAIT`
-   with `reason=INSUFFICIENT`
-6. **Exhausted** — `remaining == 0` or signals with no remaining and
-   no `retry_after_seconds` → `FAIL_CLOSED` with `reason=EXHAUSTED`
+1. **Input validation** — `units_requested` must be a positive `int`
+   `>= 1`; otherwise `RateLimitInputError`
+2. **Provider filter** — retain only signals matching `request.provider`;
+   if none remain → `ALLOW(wait_seconds=0, reason=NO_SIGNALS)`
+3. **Future observation rejection** — if any matching signal has
+   `observed_at > request.now` → `RateLimitStateError`
+4. **Compute effective wait per signal**:
+   - `remaining_retry = max(0, ceil(retry_after_seconds - (now - observed_at).total_seconds()))`
+   - `remaining_reset = max(0, ceil((reset_at - now).total_seconds()))`
+   - `reset_at <= now` → signal's window expired; does not participate
+     in remaining/exhausted judgments
+5. **Classify each signal** (most conservative → most permissive):
+   `WAIT` (retry-after) > `WAIT` (reset-at) > `EXHAUSTED` >
+   `INSUFFICIENT` > `WITHIN_LIMIT` > `UNKNOWN`
+6. **Most conservative result priority** — a single restrictive signal
+   must not be overridden by permissive signals
+7. **Produce decision**:
+   - `WAIT` from retry-after → `reason=RETRY_AFTER`, `wait_seconds` = max remaining_retry
+   - `WAIT` from reset-at only → `reason=INSUFFICIENT`, `wait_seconds` = max remaining_reset
+   - `EXHAUSTED` → `FAIL_CLOSED(reason=EXHAUSTED, wait_seconds=0)`
+   - `INSUFFICIENT` with wait source → `WAIT(reason=INSUFFICIENT)`
+   - `INSUFFICIENT` without wait source → `FAIL_CLOSED(reason=EXHAUSTED)`
+   - `WITHIN_LIMIT` → `ALLOW(reason=WITHIN_LIMIT, wait_seconds=0)`
+   - `UNKNOWN` → `FAIL_CLOSED(reason=EXHAUSTED, wait_seconds=0)`
+   - No `CONFLICT` reason — conflicts resolved by most conservative priority
 
 #### 2.20.12 Escalation Boundary — Explicitly Preserved
 
@@ -7185,13 +7200,18 @@ untyped payload.  No `datetime.now()` or `time.time()`.
 
 | Condition | Result |
 |-----------|--------|
-| `signals` is empty | `ALLOW` — no rate-limit information available |
-| `remaining` is `None` and `retry_after_seconds` is `None` | `ALLOW` — no actionable signal |
-| `remaining == 0` | `FAIL_CLOSED` — explicitly exhausted |
-| `retry_after_seconds > 0` | `WAIT` — provider specified wait time |
-| Conflicting signals for same provider | `FAIL_CLOSED` — safest default |
-| `units_requested == 0` | `ALLOW` — no consumption |
-| `provider` not in signals | `ALLOW` — no rate-limit info for this provider |
+| No matching signals after provider filter | `ALLOW` — no rate-limit information for this provider |
+| `remaining >= units_requested` and no effective wait | `ALLOW` — within limit |
+| `retry_after_seconds` yields `remaining_retry > 0` | `WAIT` — provider specified wait time |
+| `reset_at` yields `remaining_reset > 0` | `WAIT` — window reset pending |
+| `remaining == 0` and no effective wait | `FAIL_CLOSED` — explicitly exhausted |
+| `0 < remaining < units_requested` with effective wait | `WAIT` — insufficient but retry possible |
+| `0 < remaining < units_requested` without effective wait | `FAIL_CLOSED` — insufficient, no wait source |
+| All informational fields absent (`UNKNOWN`) | `FAIL_CLOSED` — no basis for optimistic decision |
+| `observed_at > request.now` (future observation) | `RateLimitStateError` — invalid signal |
+| `units_requested == 0` | `RateLimitInputError` — must be `>= 1` |
+| `remaining > limit` | `RateLimitInputError` — signal invariant violation |
+| `reset_at < observed_at` | `RateLimitInputError` — signal invariant violation |
 
 #### 2.20.18 Exception Hierarchy — Exact Four Types
 
@@ -7239,12 +7259,13 @@ TC-13.14c (provider detection) — depends on TC-13.14b + real 429 evidence
 | Card | Description | Status |
 |------|-------------|--------|
 | **TC-13.14a** | Provider-neutral RateLimit contract freeze | Contract Current |
+| **TC-13.14a.1** | RateLimit evaluation semantics closure | Contract Current |
 | **TC-13.14b** | RateLimitService production module | Runtime Target |
 | **TC-13.14c** | Provider-specific 429 detection (evidence-dependent) | Evidence-dependent Target |
 
 #### 2.20.22 Status
 
-* ADR Interface Status row #19 is **Contract Current — TC-13.14a / Runtime Target — TC-13.14b**.
+* ADR Interface Status row #19 is **Contract Current — TC-13.14a.1 / Runtime Target — TC-13.14b**.
 * Provider detection (TC-13.14c) is an **evidence-dependent Target** — no real 429 output evidence exists.
 * `rate_limit.py` must **not** exist yet — TC-13.14a delivers the contract only.
 * All prior Current interfaces remain **Current**.
@@ -7317,7 +7338,8 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.13a | EscalationService frozen contract (搂2.16) | TC-13.4 |
 | TC-13.13b | EscalationService production implementation | TC-13.13a |
 | TC-13.14a | RateLimit Provider-neutral contract freeze (§2.20) | TC-13.11 |
-| TC-13.14b | RateLimitService production module | TC-13.14a |
+| TC-13.14a.1 | RateLimit evaluation semantics closure | TC-13.14a |
+| TC-13.14b | RateLimitService production module | TC-13.14a.1 |
 | TC-13.14c | Provider-specific 429 detection (evidence-dependent) | TC-13.14b, real 429 output evidence |
 | TC-13.15 | MAD `audit` sub-command (`mad.audit-result/v1`) | TC-13.2 |
 | TC-13.16a/b | AgentDesk MadAuditGateway | TC-13.15 |

@@ -1,4 +1,4 @@
-# AgentDesk RateLimit Service — Frozen Contract (Contract Current — TC-13.14a)
+# AgentDesk RateLimit Service — Frozen Contract (Contract Current — TC-13.14a.1)
 
 Interface #19 frozen contract.  TC-13.14a freezes the Provider-neutral
 RateLimit types, decision semantics, and exception hierarchy.  The
@@ -7,7 +7,7 @@ TC-13.14b / TC-13.14c.
 
 ## Status
 
-**Contract Current** as of TC-13.14a.  This document is the authoritative
+**Contract Current** as of TC-13.14a.1.  This document is the authoritative
 frozen specification for the RateLimit public API, data model, decision
 semantics, and exception hierarchy.  The production module and provider
 detection remain Target.
@@ -158,6 +158,8 @@ Requirements:
   current window
 - `remaining` — non-negative `int` or `None`; the remaining allowance
 - `source` — must be `RateLimitSignalSource` instance
+- If both `limit` and `remaining` are present, `remaining` must be `<= limit`
+- If `reset_at` is present, it must be `>= observed_at`
 - **Must not** store raw error text, response body, header mapping,
   stack trace, or any untyped data
 
@@ -179,7 +181,7 @@ Requirements:
 - `provider` — non-empty `str`, no leading/trailing whitespace, no NUL/CR/LF
 - `now` — must be timezone-aware UTC `datetime`; the service must
   **never** call `datetime.now()` or `time.time()` internally
-- `units_requested` — non-negative `int` (not `bool`); the number of
+- `units_requested` — positive `int` (not `bool`), `>= 1`; the number of
   units the caller intends to consume
 - `signals` — `tuple[RateLimitSignal, ...]`; may be empty; must be
   `tuple`, not `list`, `dict`, `set`, or `Any`
@@ -279,22 +281,99 @@ Requirements:
 
 Given `RateLimitCheckRequest(provider, now, units_requested, signals)`:
 
-1. **No signals** → `ALLOW` with `wait_seconds=0`, `reason=NO_SIGNALS`
-2. **Filter signals** by `provider` match — only signals matching the
-   requested provider are considered
-3. **Within limit** — if any signal has `remaining >= units_requested`
-   and `retry_after_seconds` is `None` or `0` → `ALLOW` with
-   `reason=WITHIN_LIMIT`
-4. **Retry-after** — if any signal has `retry_after_seconds > 0` →
-   `WAIT` with `wait_seconds` = max retry-after across matching signals,
-   `reason=RETRY_AFTER`
-5. **Insufficient** — if `remaining` is present and `0 < remaining <
-   units_requested` → `WAIT` with `reason=INSUFFICIENT`,
-   `wait_seconds` from `retry_after_seconds` or `reset_at` if available,
-   else `0`
-6. **Exhausted** — if `remaining == 0` or signals exist with no
-   `remaining` and no `retry_after_seconds` → `FAIL_CLOSED` with
-   `reason=EXHAUSTED`
+#### Step 1 — Input validation
+
+- `units_requested` must be a positive `int` `>= 1` (not `bool`, not `0`);
+  otherwise `RateLimitInputError`
+
+#### Step 2 — Provider filter
+
+- Retain only signals whose `provider` matches `request.provider` exactly.
+- If no matching signals remain → `ALLOW(wait_seconds=0, reason=NO_SIGNALS)`
+
+#### Step 3 — Future observation rejection
+
+- If any matching signal has `observed_at > request.now` →
+  `RateLimitStateError` (future observation)
+
+#### Step 4 — Compute effective wait times per signal
+
+For each matching signal:
+
+**retry-after effective wait** (if `retry_after_seconds` is not `None`):
+
+```python
+remaining_retry = max(
+    0,
+    ceil(
+        retry_after_seconds
+        - (request.now - observed_at).total_seconds()
+    ),
+)
+```
+
+`ceil` uses `math.ceil`.  `remaining_retry == 0` means the retry-after
+has expired.
+
+**reset-at effective wait** (if `reset_at` is not `None`):
+
+```python
+remaining_reset = max(
+    0,
+    ceil((reset_at - request.now).total_seconds()),
+)
+```
+
+`remaining_reset == 0` means the reset-at has passed — the signal's
+window has expired.  An expired `reset_at` means the signal **does not
+participate** in remaining/exhausted judgments.
+
+#### Step 5 — Classify each signal
+
+Each matching signal is classified into one of these categories
+(ordered from most conservative to most permissive):
+
+| Category | Condition |
+|----------|-----------|
+| `WAIT` (retry-after) | `remaining_retry > 0` |
+| `WAIT` (reset-at) | `remaining_reset > 0` and `reset_at` not expired |
+| `EXHAUSTED` | `remaining == 0` and no effective wait time |
+| `INSUFFICIENT` | `0 < remaining < units_requested` |
+| `WITHIN_LIMIT` | `remaining >= units_requested` |
+| `UNKNOWN` | `remaining is None` and no `retry_after_seconds` and no unexpired `reset_at` |
+
+**Most conservative result priority** (deterministic resolution):
+
+```
+WAIT > EXHAUSTED > INSUFFICIENT > WITHIN_LIMIT > UNKNOWN
+```
+
+A single restrictive signal must not be overridden by permissive signals.
+The overall result is the most conservative category among all matching
+signals.
+
+#### Step 6 — Produce decision
+
+| Overall category | Action | Reason | `wait_seconds` |
+|-----------------|--------|--------|----------------|
+| `WAIT` (retry-after) | `WAIT` | `RETRY_AFTER` | max `remaining_retry` across all matching signals |
+| `WAIT` (reset-at only) | `WAIT` | `INSUFFICIENT` | max `remaining_reset` across all matching signals |
+| `EXHAUSTED` | `FAIL_CLOSED` | `EXHAUSTED` | `0` |
+| `INSUFFICIENT` with effective wait | `WAIT` | `INSUFFICIENT` | max effective wait across all matching signals |
+| `INSUFFICIENT` without effective wait | `FAIL_CLOSED` | `EXHAUSTED` | `0` |
+| `WITHIN_LIMIT` | `ALLOW` | `WITHIN_LIMIT` | `0` |
+| `UNKNOWN` | `FAIL_CLOSED` | `EXHAUSTED` | `0` |
+
+**Key rules:**
+
+- `WAIT` due to `retry_after_seconds` → `reason=RETRY_AFTER`
+- `WAIT` due only to `reset_at` (no retry-after) → `reason=INSUFFICIENT`
+- `INSUFFICIENT` without any wait source → `FAIL_CLOSED` + `EXHAUSTED`
+  (no wait information available, must fail closed)
+- `UNKNOWN` signals (all informational fields absent) → `FAIL_CLOSED` +
+  `EXHAUSTED` (no basis for an optimistic decision)
+- No `CONFLICT` reason — conflicts are resolved by the most conservative
+  priority rule
 
 ---
 
@@ -356,8 +435,8 @@ the exception class name.
 
 | Exception | Trigger |
 |-----------|---------|
-| `RateLimitInputError` | Request type invalid; `provider` not a non-empty str; `now` is not timezone-aware UTC datetime; `units_requested` is negative or bool; `signals` is not a tuple of `RateLimitSignal`; signal field type violations |
-| `RateLimitStateError` | Conflicting signals for the same provider and scope; `action`/`reason` consistency violation in decision construction |
+| `RateLimitInputError` | Request type invalid; `provider` not a non-empty str; `now` is not timezone-aware UTC datetime; `units_requested` is not a positive int >= 1 (including `0` or `bool`); `signals` is not a tuple of `RateLimitSignal`; signal field type violations; `remaining > limit` when both present; `reset_at < observed_at` |
+| `RateLimitStateError` | Signal has `observed_at > request.now` (future observation); `action`/`reason` consistency violation in decision construction |
 | `RateLimitSecurityError` | Signal contains raw provider output in forbidden fields; untyped data detected in public API boundary |
 
 ---
@@ -387,6 +466,7 @@ non-deterministic ordering are introduced during evaluation.
 | Card | Description | Status |
 |------|-------------|--------|
 | **TC-13.14a** | Provider-neutral RateLimit contract freeze | Contract Current |
+| **TC-13.14a.1** | RateLimit evaluation semantics closure | Contract Current |
 | **TC-13.14b** | RateLimitService production module | Runtime Target |
 | **TC-13.14c** | Provider-specific 429 detection (evidence-dependent) | Evidence-dependent Target |
 

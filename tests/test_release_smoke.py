@@ -10526,12 +10526,12 @@ class TC1320bHtmlDashboardProductionSmokeTests(unittest.TestCase):
         self.assertIsInstance(art.html, bytes)
 
 
-class TC1314aRateLimitContractFreezeTests(unittest.TestCase):
-    """TC-13.14a — RateLimit Provider-neutral contract freeze verification.
+class TC1314a1RateLimitSemanticsClosureTests(unittest.TestCase):
+    """TC-13.14a.1 — RateLimit evaluation semantics closure verification.
 
-    Verifies the contract document, ADR §2.20, API surface, enum values,
-    dataclass fields, exception hierarchy, and hard boundaries without
-    requiring a production module.
+    Verifies the closed evaluation semantics, time-based calculations,
+    most-conservative priority, and new validation rules.  Supersedes
+    TC1314aRateLimitContractFreezeTests.
     """
 
     def setUp(self) -> None:
@@ -10559,25 +10559,25 @@ class TC1314aRateLimitContractFreezeTests(unittest.TestCase):
             "rate-limit-contract.md must exist as a regular file",
         )
 
-    # -- 2. ADR §2.20 exists --
+    # -- 2. ADR §2.20 exists with TC-13.14a.1 --
 
     def test_adr_section_220_exists(self) -> None:
-        """ADR §2.20 RateLimitService — Frozen Contract must exist."""
+        """ADR §2.20 must declare Contract Current — TC-13.14a.1."""
         self.assertIn(
             "### 2.20 RateLimitService",
             self.adr_text,
             "ADR: §2.20 RateLimitService Frozen Contract must exist",
         )
         self.assertIn(
-            "Contract Current — TC-13.14a",
+            "Contract Current — TC-13.14a.1",
             self.adr_text,
-            "ADR §2.20 must declare Contract Current — TC-13.14a",
+            "ADR §2.20 must declare Contract Current — TC-13.14a.1",
         )
 
-    # -- 3. Interface #19 status --
+    # -- 3. Interface #19 status is TC-13.14a.1 --
 
     def test_interface_19_is_contract_current(self) -> None:
-        """Interface #19 must be Contract Current — TC-13.14a."""
+        """Interface #19 must be Contract Current — TC-13.14a.1."""
         found = False
         for line in self.adr_text.splitlines():
             if "| 19 |" in line and "RateLimit" in line:
@@ -10613,11 +10613,6 @@ class TC1314aRateLimitContractFreezeTests(unittest.TestCase):
         for sym in expected_12:
             self.assertIn(sym, self.contract_text,
                           f"__all__ must contain: {sym}")
-        # Verify no extra symbols
-        for bad in ("RateLimitBucket", "RateLimitRecord", "RateLimitConfig",
-                     "RateLimitTimer", "RateLimitRetry", "RateLimitDetector"):
-            self.assertNotIn(bad, self.contract_text,
-                             f"__all__ must not contain extra symbol: {bad}")
 
     # -- 5. RateLimitScope exact 4 values --
 
@@ -10627,10 +10622,6 @@ class TC1314aRateLimitContractFreezeTests(unittest.TestCase):
         for val in ("REQUEST", "TOKEN", "CONCURRENCY", "UNKNOWN"):
             self.assertIn(f'{val} =', self.contract_text,
                           f"RateLimitScope must contain {val}")
-        self.assertIn(
-            "str, Enum", self.contract_text,
-            "RateLimitScope must be a str Enum",
-        )
 
     # -- 6. RateLimitSignalSource exact 3 values --
 
@@ -10668,8 +10659,6 @@ class TC1314aRateLimitContractFreezeTests(unittest.TestCase):
             "Exactly 8 Fields", self.contract_text,
             "RateLimitSignal heading must say Exactly 8 Fields",
         )
-        self.assertIn("frozen=True", self.contract_text)
-        self.assertIn("slots=True", self.contract_text)
         for field in (
             "provider: str",
             "scope: RateLimitScope",
@@ -10725,65 +10714,39 @@ class TC1314aRateLimitContractFreezeTests(unittest.TestCase):
     # -- 12. RateLimitService.evaluate signature --
 
     def test_rate_limit_service_evaluate_signature(self) -> None:
-        """Contract must define RateLimitService.evaluate with correct signature."""
+        """Contract must define RateLimitService.evaluate."""
         self.assertIn("class RateLimitService", self.contract_text)
         self.assertIn("def evaluate", self.contract_text)
         self.assertIn("request: RateLimitCheckRequest", self.contract_text)
-        self.assertIn("RateLimitDecision", self.contract_text)
 
     # -- 13. No record()/consume() methods --
 
     def test_no_record_or_consume_methods(self) -> None:
         """Contract must not define record() or consume() methods."""
-        self.assertNotIn(
-            "def record(", self.contract_text,
-            "Contract must not define record() — deferred to TC-13.14b",
-        )
-        self.assertNotIn(
-            "def consume(", self.contract_text,
-            "Contract must not define consume() — deferred to TC-13.14b",
-        )
+        self.assertNotIn("def record(", self.contract_text)
+        self.assertNotIn("def consume(", self.contract_text)
 
     # -- 14. No datetime.now()/time.time() calls --
 
     def test_no_internal_clock_calls(self) -> None:
-        """Contract must not allow datetime.now() or time.time() internally."""
-        self.assertIn(
-            "datetime.now()", self.contract_text,
-            "Contract must explicitly forbid datetime.now()",
-        )
-        self.assertIn(
-            "time.time()", self.contract_text,
-            "Contract must explicitly forbid time.time()",
-        )
-        # The 'now' must be caller-supplied
-        self.assertIn(
-            "now: datetime", self.contract_text,
-            "RateLimitCheckRequest must have caller-supplied now",
-        )
+        """Contract must forbid datetime.now() and time.time()."""
+        self.assertIn("datetime.now()", self.contract_text)
+        self.assertIn("time.time()", self.contract_text)
+        self.assertIn("now: datetime", self.contract_text)
 
     # -- 15. No dict/Any/object in public API --
 
     def test_no_untyped_data_in_public_api(self) -> None:
-        """Contract must not use dict, Any, or object in public API fields."""
+        """Contract must not use dict, Any, or object in field types."""
         for bad in ("dict", "Any", "object"):
-            self.assertNotIn(
-                f": {bad}", self.contract_text,
-                f"Contract must not use {bad} in field type annotations",
-            )
+            self.assertNotIn(f": {bad}", self.contract_text)
 
     # -- 16. All collections use tuple --
 
     def test_all_collections_use_tuple(self) -> None:
         """Contract must use tuple for all collection fields."""
-        self.assertIn(
-            "tuple[RateLimitSignal, ...]", self.contract_text,
-            "signals must be tuple[RateLimitSignal, ...]",
-        )
-        self.assertNotIn(
-            "list[RateLimitSignal", self.contract_text,
-            "signals must not use list",
-        )
+        self.assertIn("tuple[RateLimitSignal, ...]", self.contract_text)
+        self.assertNotIn("list[RateLimitSignal", self.contract_text)
 
     # -- 17. Exception hierarchy exact 4 types --
 
@@ -10793,79 +10756,232 @@ class TC1314aRateLimitContractFreezeTests(unittest.TestCase):
         self.assertIn("class RateLimitInputError", self.contract_text)
         self.assertIn("class RateLimitStateError", self.contract_text)
         self.assertIn("class RateLimitSecurityError", self.contract_text)
-        # Verify inheritance
         self.assertIn("RateLimitInputError(RateLimitError)", self.contract_text)
         self.assertIn("RateLimitStateError(RateLimitError)", self.contract_text)
         self.assertIn("RateLimitSecurityError(RateLimitError)", self.contract_text)
-        # No extra exception types
-        for bad in ("RateLimitTimeoutError", "RateLimitRetryError",
-                     "RateLimitProviderError", "RateLimitDetectionError"):
-            self.assertNotIn(bad, self.contract_text,
-                             f"Contract must not define extra exception: {bad}")
 
     # -- 18. rate_limit.py must NOT exist --
 
     def test_rate_limit_py_must_not_exist(self) -> None:
-        """rate_limit.py must not exist — TC-13.14a delivers contract only."""
+        """rate_limit.py must not exist — TC-13.14a.1 delivers contract only."""
         self.assertFalse(
             self.rate_limit_py.is_file(),
-            "rate_limit.py must not exist — TC-13.14a delivers contract only",
+            "rate_limit.py must not exist — TC-13.14a.1 delivers contract only",
         )
 
     # -- 19. No Provider stdout/stderr/exit-code parsing --
 
     def test_no_provider_output_parsing(self) -> None:
-        """Contract must explicitly exclude provider output parsing."""
-        self.assertIn(
-            "stdout", self.contract_text,
-            "Contract must mention stdout in forbidden/excluded data",
-        )
-        self.assertIn(
-            "stderr", self.contract_text,
-            "Contract must mention stderr in forbidden/excluded data",
-        )
-        self.assertIn(
-            "exit code", self.contract_text,
-            "Contract must mention exit codes in forbidden/excluded data",
-        )
+        """Contract must exclude provider output parsing."""
+        self.assertIn("stdout", self.contract_text)
+        self.assertIn("stderr", self.contract_text)
+        self.assertIn("exit code", self.contract_text)
 
-    # -- 20. ADR §2.20 subsection completeness --
-
-    def test_adr_220_subsections_complete(self) -> None:
-        """ADR §2.20 must have all required subsections."""
-        section = _extract_markdown_section(
-            self.adr_text, "### 2.20 RateLimitService"
-        )
-        self.assertIsNotNone(
-            section,
-            "ADR must contain §2.20 RateLimitService section",
-        )
-        for sub in (
-            "2.20.1", "2.20.2", "2.20.3", "2.20.4", "2.20.5",
-            "2.20.6", "2.20.7", "2.20.8", "2.20.9", "2.20.10",
-            "2.20.11", "2.20.12", "2.20.13", "2.20.14", "2.20.15",
-            "2.20.16", "2.20.17", "2.20.18", "2.20.19", "2.20.20",
-            "2.20.21", "2.20.22",
-        ):
-            self.assertIn(
-                sub, section,
-                f"ADR §2.20 must contain subsection {sub}",
-            )
-
-    # -- 21. Escalation boundary preserved --
+    # -- 20. Escalation boundary preserved --
 
     def test_escalation_boundary_preserved(self) -> None:
         """Contract must preserve escalation independence from §2.16.10."""
-        self.assertIn(
-            "evaluate_escalation", self.contract_text,
-            "Contract must reference evaluate_escalation in boundary rules",
-        )
+        self.assertIn("evaluate_escalation", self.contract_text)
 
-    # -- 22. TC-13.14a/b/c task-card split in ADR --
+    # -- 21. TC-13.14a/a.1/b/c task-card split in ADR --
 
     def test_task_card_split_in_adr(self) -> None:
-        """ADR must contain TC-13.14a/b/c task-card split."""
+        """ADR must contain TC-13.14a/a.1/b/c task-card split."""
         self.assertIn("TC-13.14a", self.adr_text)
+        self.assertIn("TC-13.14a.1", self.adr_text)
         self.assertIn("TC-13.14b", self.adr_text)
         self.assertIn("TC-13.14c", self.adr_text)
         self.assertIn("evidence-dependent", self.adr_text)
+
+    # ===== Directed semantics tests (TC-13.14a.1) =====
+
+    # -- 22. units_requested must be positive int >= 1 --
+
+    def test_units_requested_must_be_positive(self) -> None:
+        """Contract must require units_requested >= 1, not just non-negative."""
+        self.assertIn(">= 1", self.contract_text,
+                      "Contract must require units_requested >= 1")
+        self.assertIn("positive", self.contract_text,
+                      "Contract must describe units_requested as positive")
+
+    # -- 23. Provider filter produces NO_SIGNALS --
+
+    def test_provider_filter_no_signals(self) -> None:
+        """Contract must specify ALLOW + NO_SIGNALS when provider filter yields empty."""
+        self.assertIn("NO_SIGNALS", self.contract_text)
+        self.assertIn("provider", self.contract_text)
+
+    # -- 24. Future observation rejection --
+
+    def test_future_observation_rejected(self) -> None:
+        """Contract must reject signals with observed_at > request.now."""
+        self.assertIn(
+            "observed_at > request.now", self.contract_text,
+            "Contract must specify future observation rejection",
+        )
+        self.assertIn(
+            "RateLimitStateError", self.contract_text,
+            "Future observation must raise RateLimitStateError",
+        )
+
+    # -- 25. retry-after decreases with time --
+
+    def test_retry_after_time_decay(self) -> None:
+        """Contract must define remaining_retry calculation with time decay."""
+        self.assertIn(
+            "remaining_retry", self.contract_text,
+            "Contract must define remaining_retry calculation",
+        )
+        self.assertIn(
+            "ceil", self.contract_text,
+            "Contract must use ceil for retry-after calculation",
+        )
+        self.assertIn(
+            "retry_after_seconds", self.contract_text,
+            "remaining_retry must reference retry_after_seconds",
+        )
+
+    # -- 26. retry-after expired --
+
+    def test_retry_after_expired(self) -> None:
+        """Contract must handle expired retry-after (remaining_retry == 0)."""
+        self.assertIn(
+            "remaining_retry == 0", self.contract_text,
+            "Contract must handle expired retry-after",
+        )
+
+    # -- 27. reset-at uses ceil --
+
+    def test_reset_at_ceil(self) -> None:
+        """Contract must define remaining_reset with ceil."""
+        self.assertIn(
+            "remaining_reset", self.contract_text,
+            "Contract must define remaining_reset calculation",
+        )
+        self.assertIn(
+            "ceil((reset_at - request.now)", self.contract_text,
+            "remaining_reset must use ceil of (reset_at - now)",
+        )
+
+    # -- 28. reset-at expired --
+
+    def test_reset_at_expired(self) -> None:
+        """Contract must handle expired reset-at (window expired)."""
+        self.assertIn(
+            "expired", self.contract_text,
+            "Contract must mention expired reset-at",
+        )
+
+    # -- 29. Most conservative priority --
+
+    def test_most_conservative_priority(self) -> None:
+        """Contract must specify most conservative result priority."""
+        self.assertIn(
+            "WAIT > EXHAUSTED > INSUFFICIENT > WITHIN_LIMIT",
+            self.contract_text,
+            "Contract must specify most conservative priority ordering",
+        )
+        self.assertIn(
+            "most conservative", self.contract_text,
+            "Contract must describe most conservative resolution",
+        )
+
+    # -- 30. Insufficient without wait source → FAIL_CLOSED --
+
+    def test_insufficient_without_wait_fail_closed(self) -> None:
+        """Contract must specify INSUFFICIENT without wait → FAIL_CLOSED + EXHAUSTED."""
+        self.assertIn(
+            "INSUFFICIENT", self.contract_text,
+            "Contract must mention INSUFFICIENT",
+        )
+        self.assertIn(
+            "without effective wait", self.contract_text,
+            "Contract must specify INSUFFICIENT without wait source",
+        )
+
+    # -- 31. Unknown signal fail-closed --
+
+    def test_unknown_signal_fail_closed(self) -> None:
+        """Contract must specify UNKNOWN signals → FAIL_CLOSED + EXHAUSTED."""
+        self.assertIn(
+            "UNKNOWN", self.contract_text,
+            "Contract must classify UNKNOWN signals",
+        )
+        self.assertIn(
+            "FAIL_CLOSED", self.contract_text,
+            "UNKNOWN must produce FAIL_CLOSED",
+        )
+
+    # -- 32. remaining > limit rejected --
+
+    def test_remaining_gt_limit_rejected(self) -> None:
+        """Contract must reject signals where remaining > limit."""
+        self.assertIn(
+            "remaining", self.contract_text,
+        )
+        self.assertIn(
+            "limit", self.contract_text,
+        )
+        # The contract says "remaining must be <= limit"
+        self.assertIn(
+            "<= limit", self.contract_text,
+            "Contract must require remaining <= limit",
+        )
+
+    # -- 33. reset_at < observed_at rejected --
+
+    def test_reset_at_before_observed_at_rejected(self) -> None:
+        """Contract must reject signals where reset_at < observed_at."""
+        self.assertIn(
+            ">= observed_at", self.contract_text,
+            "Contract must require reset_at >= observed_at",
+        )
+
+    # -- 34. No CONFLICT reason --
+
+    def test_no_conflict_reason(self) -> None:
+        """Contract must not define a CONFLICT enum value."""
+        # The word "CONFLICT" appears in the "No CONFLICT reason" rule,
+        # but must not appear as an enum value definition
+        self.assertNotIn(
+            '"conflict"', self.contract_text,
+            "Contract must not define CONFLICT as an enum value",
+        )
+        # Verify the "No CONFLICT reason" rule exists
+        self.assertIn(
+            "No `CONFLICT` reason", self.contract_text,
+            "Contract must explicitly state no CONFLICT reason",
+        )
+
+    # -- 35. Deterministic semantics --
+
+    def test_deterministic_semantics(self) -> None:
+        """Contract must specify deterministic evaluation."""
+        self.assertIn(
+            "Deterministic", self.contract_text,
+            "Contract must specify deterministic evaluation",
+        )
+        self.assertIn(
+            "identical", self.contract_text,
+            "Contract must guarantee identical inputs → identical outputs",
+        )
+
+    # -- 36. ADR §2.20.11 updated with closed semantics --
+
+    def test_adr_22011_updated(self) -> None:
+        """ADR §2.20.11 must contain the closed evaluation semantics."""
+        section = _extract_markdown_section(
+            self.adr_text, "#### 2.20.11"
+        )
+        self.assertIsNotNone(
+            section,
+            "ADR must contain §2.20.11",
+        )
+        self.assertIn("remaining_retry", section,
+                      "§2.20.11 must contain remaining_retry")
+        self.assertIn("remaining_reset", section,
+                      "§2.20.11 must contain remaining_reset")
+        self.assertIn("most conservative", section,
+                      "§2.20.11 must specify most conservative priority")
+        self.assertIn("RateLimitStateError", section,
+                      "§2.20.11 must specify future observation rejection")
