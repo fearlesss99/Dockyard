@@ -11019,3 +11019,226 @@ class TC1314bRateLimitServiceSmokeTests(unittest.TestCase):
             / "public-interfaces" / "rate-limit-contract.md"
         ).read_text(encoding="utf-8")
         self.assertIn("TC-13.14b", contract_text)
+
+
+class TC1318d9aActiveDispatchCancellationContractTests(unittest.TestCase):
+    """TC-13.18d.9a — Active-dispatch cancellation contract freeze.
+
+    Verifies the frozen contract for cancelling a task with an active
+    in-flight dispatch.  Does not implement production code.
+    """
+
+    def setUp(self) -> None:
+        self.repo_root = Path(__file__).resolve().parents[1]
+        self.contract_path = (
+            self.repo_root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "workflow-orchestrator-contract.md"
+        )
+        self.contract_text = self.contract_path.read_text(encoding="utf-8")
+        self.adr_text = (
+            self.repo_root / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+
+    # -- 1. Contract file references TC-13.18d.9a --
+
+    def test_contract_references_9a(self) -> None:
+        """Contract must reference TC-13.18d.9a."""
+        self.assertIn("TC-13.18d.9a", self.contract_text)
+
+    # -- 2. ADR §2.19.12 references active cancellation --
+
+    def test_adr_has_active_cancellation_section(self) -> None:
+        """ADR must contain §2.19.12 active-dispatch cancellation."""
+        self.assertIn("2.19.12", self.adr_text)
+        self.assertIn("Active-Dispatch Cancellation", self.adr_text)
+
+    # -- 3. ActiveDispatchHandle — 7 fields, no bare Task/Future --
+
+    def test_active_dispatch_handle_seven_fields(self) -> None:
+        """Contract must define ActiveDispatchHandle with 7 fields."""
+        self.assertIn("ActiveDispatchHandle", self.contract_text)
+        self.assertIn("task_id", self.contract_text)
+        self.assertIn("revision", self.contract_text)
+        self.assertIn("attempt", self.contract_text)
+        self.assertIn("dispatch_id", self.contract_text)
+        self.assertIn("holder_instance_id", self.contract_text)
+        self.assertIn("lease_epoch", self.contract_text)
+        self.assertIn("lease: WorkerSlotLease", self.contract_text)
+
+    def test_no_bare_asyncio_task_in_handle(self) -> None:
+        """ActiveDispatchHandle must not contain asyncio.Task or Future."""
+        # Find the ActiveDispatchHandle section
+        handle_section = self.contract_text.split("ActiveDispatchHandle")[1] if "ActiveDispatchHandle" in self.contract_text else ""
+        self.assertNotIn("asyncio.Task", handle_section[:500])
+        self.assertNotIn("Future", handle_section[:500])
+
+    # -- 4. ActiveDispatchCancellationRequest — 2 fields --
+
+    def test_cancellation_request_two_fields(self) -> None:
+        """Contract must define ActiveDispatchCancellationRequest with 2 fields."""
+        self.assertIn("ActiveDispatchCancellationRequest", self.contract_text)
+        self.assertIn("handle: ActiveDispatchHandle", self.contract_text)
+        self.assertIn("cancellation_transition_request: TransitionRequest", self.contract_text)
+
+    # -- 5. ActiveDispatchCancellationResult — 3 fields --
+
+    def test_cancellation_result_three_fields(self) -> None:
+        """Contract must define ActiveDispatchCancellationResult with 3 fields."""
+        self.assertIn("ActiveDispatchCancellationResult", self.contract_text)
+        self.assertIn("worker_result: WorkerResult | None", self.contract_text)
+        self.assertIn("cancellation_transition: TransitionResult", self.contract_text)
+
+    # -- 6. Precise six-field identity --
+
+    def test_six_field_identity_required(self) -> None:
+        """Contract must require six-field identity for cancellation."""
+        self.assertIn("task_id", self.contract_text)
+        self.assertIn("revision", self.contract_text)
+        self.assertIn("attempt", self.contract_text)
+        self.assertIn("dispatch_id", self.contract_text)
+        self.assertIn("holder_instance_id", self.contract_text)
+        self.assertIn("lease_epoch", self.contract_text)
+
+    def test_task_id_alone_insufficient(self) -> None:
+        """Contract must prohibit cancellation by task_id alone."""
+        self.assertIn("`task_id` alone", self.contract_text)
+
+    # -- 7. Termination → heartbeat → release → transition order --
+
+    def test_execution_order_defined(self) -> None:
+        """Contract must define the exact execution order."""
+        self.assertIn("Cancel worker dispatch task", self.contract_text)
+        self.assertIn("Await worker task completion", self.contract_text)
+        self.assertIn("Cancel and await heartbeat task", self.contract_text)
+        self.assertIn("Release WorkerSlotLease", self.contract_text)
+        self.assertIn("TASK_CANCELLED", self.contract_text)
+
+    def test_task_cancelled_not_before_cleanup(self) -> None:
+        """TASK_CANCELLED must not occur while process or heartbeat is still active."""
+        self.assertIn("MUST NOT be applied while the worker", self.contract_text)
+
+    # -- 8. Active cancellation uses DispatchCAS --
+
+    def test_active_path_requires_dispatch_cas(self) -> None:
+        """Contract must require DispatchCAS for active cancellation path."""
+        self.assertIn("DispatchCAS", self.contract_text)
+        self.assertIn("Required", self.contract_text)
+
+    def test_quiescent_path_no_dispatch_cas(self) -> None:
+        """Quiescent path must continue using dispatch_cas=None."""
+        self.assertIn("dispatch_cas=None", self.contract_text)
+
+    # -- 9. Quiescent API unchanged --
+
+    def test_quiescent_cancel_unchanged(self) -> None:
+        """Quiescent cancel_quiescent_task API must remain unchanged."""
+        self.assertIn("cancel_quiescent_task", self.contract_text)
+        self.assertIn("Unchanged", self.contract_text)
+
+    # -- 10. Reuse existing Gateway termination --
+
+    def test_reuse_gateway_termination(self) -> None:
+        """Contract must reuse dispatcher_gateway termination, not create a second one."""
+        self.assertIn("dispatcher_gateway", self.contract_text)
+        self.assertIn("DispatchCancelledError", self.contract_text)
+        self.assertIn("_terminate_process", self.contract_text)
+        self.assertIn("No second kill/terminate", self.contract_text)
+
+    # -- 11. No new exception parallel hierarchy --
+
+    def test_no_new_exception_hierarchy(self) -> None:
+        """Contract must not introduce new parallel exception hierarchy."""
+        # §14.9 explicitly states no new exception types
+        self.assertIn("No New Parallel Hierarchy", self.contract_text)
+        # The contract explicitly names these as NOT created
+        self.assertIn("WorkflowCancellationError", self.contract_text)
+        self.assertIn("ActiveDispatchError", self.contract_text)
+
+    # -- 12. No global mutable registry --
+
+    def test_no_global_mutable_registry(self) -> None:
+        """Contract must prohibit global mutable registry."""
+        self.assertIn("Global mutable registry", self.contract_text)
+
+    # -- 13. All public types frozen/slots, deep immutability --
+
+    def test_deep_immutability(self) -> None:
+        """Contract must specify deep immutability for all public types."""
+        self.assertIn("frozen=True, slots=True", self.contract_text)
+        self.assertIn("Deep Immutability", self.contract_text)
+
+    # -- 14. Race conditions classified --
+
+    def test_race_conditions_classified(self) -> None:
+        """Contract must classify race conditions with unique primary exceptions."""
+        self.assertIn("Race Conditions", self.contract_text)
+        # At least some of the 9 races must be mentioned
+        self.assertIn("Worker completes before cancellation", self.contract_text)
+        self.assertIn("Lease release fails", self.contract_text)
+
+    # -- 15. DispatchCycleResult extended with active_handle --
+
+    def test_dispatch_cycle_result_extended(self) -> None:
+        """Contract must extend DispatchCycleResult with active_dispatch_handle field."""
+        self.assertIn("active_dispatch_handle: ActiveDispatchHandle | None", self.contract_text)
+
+    # -- 16. DispatchCycleRequest extended with request_active_handle --
+
+    def test_dispatch_cycle_request_extended(self) -> None:
+        """Contract must extend DispatchCycleRequest with request_active_handle field."""
+        self.assertIn("request_active_handle: bool", self.contract_text)
+
+    # -- 17. WorkflowOrchestrator three-field shape preserved --
+
+    def test_orchestrator_shape_preserved(self) -> None:
+        """Contract must preserve WorkflowOrchestrator's three-field shape."""
+        self.assertIn("project_root: Path", self.contract_text)
+        self.assertIn("clock: WorkflowClock", self.contract_text)
+        self.assertIn("heartbeat_interval_seconds: float", self.contract_text)
+
+    # -- 18. Interface #22 remains Target --
+
+    def test_interface_22_remains_target(self) -> None:
+        """Interface #22 must remain Target overall."""
+        found = False
+        for line in self.adr_text.splitlines():
+            if "| 22 |" in line and "WorkflowOrchestrator" in line:
+                self.assertIn("Target", line)
+                self.assertNotIn("Current — TC-13.18", line.replace("Current — TC-13.18d", ""))
+                found = True
+        self.assertTrue(found)
+
+    # -- 19. Active cancellation marked Contract Current / Runtime Target --
+
+    def test_active_cancellation_contract_current(self) -> None:
+        """Active cancellation must be Contract Current — TC-13.18d.9a."""
+        self.assertIn("Contract Current — TC-13.18d.9a", self.contract_text)
+        self.assertIn("Runtime Target — TC-13.18d.9b", self.contract_text)
+
+    # -- 20. Ownership model is caller-owned typed handle --
+
+    def test_ownership_model_caller_owned(self) -> None:
+        """Contract must specify caller-owned typed dispatch handle model."""
+        self.assertIn("caller-owned", self.contract_text)
+        self.assertIn("ActiveDispatchHandle", self.contract_text)
+
+    # -- 21. cancel_active_dispatch method signature --
+
+    def test_cancel_active_dispatch_method(self) -> None:
+        """Contract must define cancel_active_dispatch method."""
+        self.assertIn("cancel_active_dispatch", self.contract_text)
+        self.assertIn("ActiveDispatchCancellationRequest", self.contract_text)
+        self.assertIn("ActiveDispatchCancellationResult", self.contract_text)
+
+    # -- 22. No dict/Any/object in public types --
+
+    def test_no_untyped_fields_in_public_types(self) -> None:
+        """Public types must not contain dict, Any, or object."""
+        handle_section = ""
+        parts = self.contract_text.split("ActiveDispatchHandle")
+        if len(parts) > 1:
+            # Get the section up to the next major section
+            handle_section = parts[1].split("####" if "####" in parts[1] else "###")[0]
+        self.assertNotIn("dict", handle_section.replace("dict[str", "REPLACED"))
+        self.assertNotIn("Any", handle_section.replace("Mapping[str, Any]", "REPLACED"))
