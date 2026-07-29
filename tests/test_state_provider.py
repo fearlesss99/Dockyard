@@ -949,6 +949,62 @@ class TC1317bProductionTests(unittest.TestCase):
                               tree.root / "docs" / "pm" / "events")
             with self.assertRaises(StateProviderSchemaError):
                 StateProvider(tree.root).snapshot()
+            tree.cleanup()
+
+            # ── empty cancelled_at ──
+            tree = _ProjectTree()
+            ts_empty_cancelled = {
+                "created_at": "2026-07-28T00:00:00Z", "ready_at": None,
+                "dispatched_at": "2026-07-28T00:00:01Z", "started_at": None,
+                "delivered_at": None, "blocked_at": "2026-07-28T00:00:02Z",
+                "accepted_at": None, "integrated_at": None,
+                "cancelled_at": "",
+                "updated_at": "2026-07-28T00:00:03Z",
+            }
+            tasks_doc = _make_tasks_doc(state="cancelled")
+            tasks_doc["tasks"][0]["timestamps"] = ts_empty_cancelled
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+            out4 = _make_outbox_doc(dispatch_id=did, event_id="EVT-TYPE4")
+            out_raw4 = _write_outbox_yaml(out4, "MSG-TYPE4.yaml",
+                                           tree.root / "docs" / "pm" / "outbox")
+            digest4 = "sha256:" + hashlib.sha256(out_raw4).hexdigest()
+            ev4 = _make_event_doc(
+                event_id=out4["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest4,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev4, "EVT-TYPE4.yaml",
+                              tree.root / "docs" / "pm" / "events")
+            with self.assertRaises(StateProviderSchemaError):
+                StateProvider(tree.root).snapshot()
+            tree.cleanup()
+
+            # ── empty superseded_at ──
+            tree = _ProjectTree()
+            ts_empty_superseded = {
+                "created_at": "2026-07-28T00:00:00Z", "ready_at": None,
+                "dispatched_at": "2026-07-28T00:00:01Z", "started_at": None,
+                "delivered_at": None, "blocked_at": None,
+                "accepted_at": None, "integrated_at": None,
+                "superseded_at": "",
+                "updated_at": "2026-07-28T00:00:04Z",
+            }
+            tasks_doc = _make_tasks_doc(state="superseded")
+            tasks_doc["tasks"][0]["timestamps"] = ts_empty_superseded
+            _write_tasks_json(tasks_doc, tree.root / "docs" / "pm" / "state")
+            out5 = _make_outbox_doc(dispatch_id=did, event_id="EVT-TYPE5")
+            out_raw5 = _write_outbox_yaml(out5, "MSG-TYPE5.yaml",
+                                           tree.root / "docs" / "pm" / "outbox")
+            digest5 = "sha256:" + hashlib.sha256(out_raw5).hexdigest()
+            ev5 = _make_event_doc(
+                event_id=out5["event_id"], event_type="TASK_DISPATCHED",
+                dispatch_id=did, payload_digest=digest5,
+                from_state="ready", to_state="dispatched",
+            )
+            _write_event_yaml(ev5, "EVT-TYPE5.yaml",
+                              tree.root / "docs" / "pm" / "events")
+            with self.assertRaises(StateProviderSchemaError):
+                StateProvider(tree.root).snapshot()
         finally:
             tree.cleanup()
 

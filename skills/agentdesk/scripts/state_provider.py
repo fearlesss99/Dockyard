@@ -1254,6 +1254,8 @@ def _build_timestamps(raw: Any) -> TaskTimestamps:
             return None
         if not isinstance(v, str):
             raise StateProviderSchemaError("timestamp must be str or null")
+        if not v:
+            raise StateProviderSchemaError("timestamp must be str or null")
         return _freeze(v)
 
     return TaskTimestamps(
