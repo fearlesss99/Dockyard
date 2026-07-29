@@ -29,7 +29,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 16 | AgentDesk ControlPlaneTransitionService | **Current** | TC-13.11c | CAS-write tasks, immutable events, replayable outbox |
 | 17 | AgentDesk ApprovalGate | **Current** | TC-13.12d | TASK_APPROVAL with structured scope (dispatch/accept/integrate); runtime gate + ControlPlaneTransitionService integration + offline validator implemented |
 | 18 | AgentDesk EscalationService | **Current** | TC-13.13b | Pure WorkerKind tier progression; frozen contract 搂2.16; production module and full test suite committed |
-| 19 | AgentDesk RateLimit service | **Contract Current** — TC-13.14a.2 / Runtime Target — TC-13.14b | TC-13.14 | Provider-neutral rate-limit policy with multi-scope and combined signal semantics; provider detection (TC-13.14c) is evidence-dependent Target |
+| 19 | AgentDesk RateLimit service | **Current** — TC-13.14b / Provider Detection Target — TC-13.14c | TC-13.14 | Provider-neutral rate-limit policy with multi-scope and combined signal semantics; provider detection (TC-13.14c) is evidence-dependent Target |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
 | 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Target; TASK_SUPERSEDED: Target; retry loop, fault recovery: Target) |
@@ -6930,12 +6930,11 @@ iteration order.
 
 ---
 
-### 2.20 RateLimitService — Frozen Contract (Contract Current — TC-13.14a.2)
+### 2.20 RateLimitService — Frozen Contract (Current — TC-13.14b)
 
 TC-13.14a freezes the **Provider-neutral RateLimit policy contract** for
-typed signal consumption and deterministic decision evaluation.  No
-production module is shipped under TC-13.14a — the contract itself is the
-deliverable and must be implemented by TC-13.14b.
+typed signal consumption and deterministic decision evaluation.  TC-13.14b
+delivers the production `rate_limit.py` module implementing this contract.
 
 The full per-interface contract is in
 `public-interfaces/rate-limit-contract.md`; this section records the
@@ -7271,16 +7270,17 @@ TC-13.14c (provider detection) — depends on TC-13.14b + real 429 evidence
 | **TC-13.14a** | Provider-neutral RateLimit contract freeze | Contract Current |
 | **TC-13.14a.1** | RateLimit evaluation semantics closure | Contract Current |
 | **TC-13.14a.2** | RateLimit multi-scope and combined signal closure | Contract Current |
-| **TC-13.14b** | RateLimitService production module | Runtime Target |
+| **TC-13.14b** | RateLimitService production module | Current |
 | **TC-13.14c** | Provider-specific 429 detection (evidence-dependent) | Evidence-dependent Target |
 
 #### 2.20.22 Status
 
-* ADR Interface Status row #19 is **Contract Current — TC-13.14a.2 / Runtime Target — TC-13.14b**.
+* ADR Interface Status row #19 is **Current — TC-13.14b / Provider Detection Target — TC-13.14c**.
 * Provider detection (TC-13.14c) is an **evidence-dependent Target** — no real 429 output evidence exists.
-* `rate_limit.py` must **not** exist yet — TC-13.14a delivers the contract only.
+* `rate_limit.py` now exists — TC-13.14b delivers the production module.
 * All prior Current interfaces remain **Current**.
-* TC-13.14a does not promote Interface #19 to fully Current — only the contract is frozen.
+* TC-13.14b promotes Interface #19 to Current.
+* WorkflowOrchestrator rate-limit wiring remains **not started**.
 
 ---
 

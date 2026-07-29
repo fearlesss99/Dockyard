@@ -1,16 +1,15 @@
-# AgentDesk RateLimit Service — Frozen Contract (Contract Current — TC-13.14a.2)
+# AgentDesk RateLimit Service — Frozen Contract (Current — TC-13.14b)
 
 Interface #19 frozen contract.  TC-13.14a freezes the Provider-neutral
-RateLimit types, decision semantics, and exception hierarchy.  The
-production `rate_limit.py` module and provider detection will ship under
-TC-13.14b / TC-13.14c.
+RateLimit types, decision semantics, and exception hierarchy.  TC-13.14b
+delivers the production `rate_limit.py` module.  Provider detection will
+ship under TC-13.14c.
 
 ## Status
 
-**Contract Current** as of TC-13.14a.2.  This document is the authoritative
-frozen specification for the RateLimit public API, data model, decision
-semantics, and exception hierarchy.  The production module and provider
-detection remain Target.
+**Current** as of TC-13.14b.  The production `rate_limit.py` module now
+implements this frozen contract.  Provider detection remains
+evidence-dependent Target.
 
 The ADR contract is in `001-mad-agentdesk-integration.md` §2.20;
 this document expands the per-interface details.
@@ -482,7 +481,7 @@ non-deterministic ordering are introduced during evaluation.
 | **TC-13.14a** | Provider-neutral RateLimit contract freeze | Contract Current |
 | **TC-13.14a.1** | RateLimit evaluation semantics closure | Contract Current |
 | **TC-13.14a.2** | RateLimit multi-scope and combined signal closure | Contract Current |
-| **TC-13.14b** | RateLimitService production module | Runtime Target |
+| **TC-13.14b** | RateLimitService production module | Current |
 | **TC-13.14c** | Provider-specific 429 detection (evidence-dependent) | Evidence-dependent Target |
 
 ---

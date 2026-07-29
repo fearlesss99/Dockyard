@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -10558,19 +10559,19 @@ class TC1314a2RateLimitMultiScopeClosureTests(unittest.TestCase):
 
     # -- 2. ADR §2.20 declares TC-13.14a.2 --
 
-    def test_adr_section_220_declares_a2(self) -> None:
-        """ADR §2.20 must declare Contract Current — TC-13.14a.2."""
+    def test_adr_section_220_declares_current(self) -> None:
+        """ADR §2.20 must declare Current — TC-13.14b."""
         self.assertIn("### 2.20 RateLimitService", self.adr_text)
-        self.assertIn("Contract Current — TC-13.14a.2", self.adr_text)
+        self.assertIn("TC-13.14b", self.adr_text)
 
     # -- 3. Interface #19 Contract Current --
 
-    def test_interface_19_contract_current(self) -> None:
-        """Interface #19 must be Contract Current — TC-13.14a.2."""
+    def test_interface_19_current(self) -> None:
+        """Interface #19 must be Current — TC-13.14b."""
         found = False
         for line in self.adr_text.splitlines():
             if "| 19 |" in line and "RateLimit" in line:
-                self.assertIn("Contract Current", line)
+                self.assertIn("Current", line)
                 found = True
         self.assertTrue(found)
 
@@ -10679,11 +10680,11 @@ class TC1314a2RateLimitMultiScopeClosureTests(unittest.TestCase):
         self.assertNotIn('"conflict"', self.contract_text)
         self.assertIn("No `CONFLICT` reason", self.contract_text)
 
-    # -- 17. rate_limit.py must NOT exist --
+    # -- 17. rate_limit.py must exist (TC-13.14b) --
 
-    def test_rate_limit_py_must_not_exist(self) -> None:
-        """rate_limit.py must not exist — TC-13.14a.2 delivers contract only."""
-        self.assertFalse(self.rate_limit_py.is_file())
+    def test_rate_limit_py_exists(self) -> None:
+        """rate_limit.py must exist — TC-13.14b delivers the production module."""
+        self.assertTrue(self.rate_limit_py.is_file())
 
     # -- 18. Exception hierarchy --
 
@@ -10859,3 +10860,162 @@ class TC1314a2RateLimitMultiScopeClosureTests(unittest.TestCase):
         """Contract must guarantee byte-for-byte identical decisions for identical inputs."""
         self.assertIn("identical", self.contract_text)
         self.assertIn("Deterministic", self.contract_text)
+
+
+class TC1314bRateLimitServiceSmokeTests(unittest.TestCase):
+    """TC-13.14b — RateLimitService production module smoke tests.
+
+    Verifies the production module exists, exports the correct API,
+    and the core evaluation semantics match the frozen contract.
+    """
+
+    def setUp(self) -> None:
+        self.repo_root = Path(__file__).resolve().parents[1]
+        self.rate_limit_py = (
+            self.repo_root / "skills" / "agentdesk" / "scripts"
+            / "rate_limit.py"
+        )
+        self.scripts_dir = str(self.repo_root / "skills" / "agentdesk" / "scripts")
+        sys.path.insert(0, self.scripts_dir)
+        import rate_limit as rl  # noqa: E402
+        self.rl = rl
+        sys.path.pop(0)
+
+    # -- 1. Production module exists --
+
+    def test_rate_limit_py_exists(self) -> None:
+        """rate_limit.py must exist."""
+        self.assertTrue(self.rate_limit_py.is_file())
+
+    # -- 2. Exactly 12 public symbols --
+
+    def test_exact_12_all_symbols(self) -> None:
+        """Production module must export exactly 12 symbols."""
+        expected = [
+            "RateLimitSignal",
+            "RateLimitScope",
+            "RateLimitSignalSource",
+            "RateLimitCheckRequest",
+            "RateLimitDecision",
+            "RateLimitAction",
+            "RateLimitReason",
+            "RateLimitService",
+            "RateLimitError",
+            "RateLimitInputError",
+            "RateLimitStateError",
+            "RateLimitSecurityError",
+        ]
+        self.assertEqual(sorted(self.rl.__all__), sorted(expected))
+
+    # -- 3. Enum member counts --
+
+    def test_scope_four_members(self) -> None:
+        self.assertEqual(len(list(self.rl.RateLimitScope)), 4)
+
+    def test_signal_source_three_members(self) -> None:
+        self.assertEqual(len(list(self.rl.RateLimitSignalSource)), 3)
+
+    def test_action_three_members(self) -> None:
+        self.assertEqual(len(list(self.rl.RateLimitAction)), 3)
+
+    def test_reason_five_members(self) -> None:
+        self.assertEqual(len(list(self.rl.RateLimitReason)), 5)
+
+    # -- 4. Dataclass frozen + slots --
+
+    def test_signal_frozen_slots(self) -> None:
+        sig = self.rl.RateLimitSignal(
+            provider="anthropic",
+            scope=self.rl.RateLimitScope.REQUEST,
+            observed_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            retry_after_seconds=None,
+            reset_at=None,
+            limit=None,
+            remaining=None,
+            source=self.rl.RateLimitSignalSource.PROVIDER_429,
+        )
+        self.assertFalse(hasattr(sig, "__dict__"))
+        with self.assertRaises(AttributeError):
+            sig.provider = "other"  # type: ignore[misc]
+
+    def test_check_request_frozen_slots(self) -> None:
+        req = self.rl.RateLimitCheckRequest(
+            provider="anthropic",
+            scope=self.rl.RateLimitScope.REQUEST,
+            now=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            units_requested=1,
+            signals=(),
+        )
+        self.assertFalse(hasattr(req, "__dict__"))
+
+    def test_decision_frozen_slots(self) -> None:
+        d = self.rl.RateLimitDecision(
+            action=self.rl.RateLimitAction.ALLOW,
+            wait_seconds=0,
+            reason=self.rl.RateLimitReason.NO_SIGNALS,
+        )
+        self.assertFalse(hasattr(d, "__dict__"))
+
+    # -- 5. Exception hierarchy --
+
+    def test_exception_hierarchy(self) -> None:
+        self.assertTrue(issubclass(self.rl.RateLimitInputError, self.rl.RateLimitError))
+        self.assertTrue(issubclass(self.rl.RateLimitStateError, self.rl.RateLimitError))
+        self.assertTrue(issubclass(self.rl.RateLimitSecurityError, self.rl.RateLimitError))
+
+    # -- 6. RateLimitService is stateless --
+
+    def test_service_no_instance_state(self) -> None:
+        svc = self.rl.RateLimitService()
+        self.assertFalse(hasattr(svc, "__dict__"))
+        self.assertEqual(self.rl.RateLimitService.__slots__, ())
+
+    # -- 7. No escalation dependency --
+
+    def test_no_escalation_dependency(self) -> None:
+        source = self.rate_limit_py.read_text(encoding="utf-8")
+        self.assertNotIn("escalation", source)
+        self.assertNotIn("evaluate_escalation", source)
+
+    # -- 8. No I/O / clock calls --
+
+    def test_no_io_or_clock(self) -> None:
+        source = self.rate_limit_py.read_text(encoding="utf-8")
+        self.assertNotIn("datetime.now", source)
+        self.assertNotIn("time.time", source)
+        self.assertNotIn("import subprocess", source)
+        self.assertNotIn("import socket", source)
+
+    # -- 9. Minimal evaluate happy path --
+
+    def test_evaluate_no_signals(self) -> None:
+        svc = self.rl.RateLimitService()
+        req = self.rl.RateLimitCheckRequest(
+            provider="anthropic",
+            scope=self.rl.RateLimitScope.REQUEST,
+            now=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            units_requested=1,
+            signals=(),
+        )
+        d = svc.evaluate(req)
+        self.assertEqual(d.action, self.rl.RateLimitAction.ALLOW)
+        self.assertEqual(d.reason, self.rl.RateLimitReason.NO_SIGNALS)
+        self.assertEqual(d.wait_seconds, 0)
+
+    # -- 10. ADR §2.22 status updated to TC-13.14b --
+
+    def test_adr_status_updated(self) -> None:
+        adr_text = (
+            self.repo_root / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("TC-13.14b", adr_text)
+
+    # -- 11. Contract status updated to TC-13.14b --
+
+    def test_contract_status_updated(self) -> None:
+        contract_text = (
+            self.repo_root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "rate-limit-contract.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("TC-13.14b", contract_text)
