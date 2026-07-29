@@ -6519,7 +6519,9 @@ TC-13.20  鈥?HTML Dashboard
   remains **Target** 鈥?TC-13.18a.
 * This section (搂2.19) is the Frozen Contract for TC-13.18a.
 * No production module is shipped under TC-13.18a.
-* TC-13.18b/c/d, TC-13.19, and TC-13.20 remain **Target**.
+* TC-13.19 is Current — TC-13.19j.
+* WorkflowOrchestrator Interface #22 and TC-13.20 remain Target.
+* Completed TC-13.18 subpaths retain their individually recorded Current statuses.
 * All prior Current interfaces remain **Current**.
 
 ---

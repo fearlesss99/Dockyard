@@ -516,7 +516,7 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18d.6** | BLOCKER_CANCELLED (expert blocked → cancelled) | TC-13.18d.2 | Current |
 | **TC-13.18d-ext** | Retry loop, escalation replay, cancellation, fault recovery | TC-13.18d.3 | Target |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
-| **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Target |
+| **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Current — TC-13.19j |
 | **TC-13.20** | HTML Dashboard | TC-13.17, TC-13.19 | Read-only UI |
 
 ---

@@ -9824,3 +9824,82 @@ class TC1319jE2EProgramClosureTests(unittest.TestCase):
                     report_text.lower(),
                     f"TC-13.19 final report must not claim: {phrase}",
                 )
+
+    # -- 11. §2.19.11 explicitly declares TC-13.19 Current --
+
+    def test_s21911_declares_tc1319_current(self) -> None:
+        """§2.19.11 must explicitly declare TC-13.19 is Current."""
+        # Locate the §2.19.11 section
+        section_start = self.adr_text.find("#### 2.19.11 Status")
+        self.assertGreater(
+            section_start, -1, "§2.19.11 not found in ADR"
+        )
+        # Slice a reasonable window after the heading
+        section = self.adr_text[section_start:section_start + 2000]
+        self.assertIn(
+            "TC-13.19 is Current",
+            section,
+            "§2.19.11 must declare TC-13.19 is Current",
+        )
+
+    # -- 12. §2.19.11 no longer lists TC-13.19 as remain Target --
+
+    def test_s21911_no_stale_tc1319_remain_target(self) -> None:
+        """§2.19.11 must not list TC-13.19 as remain Target."""
+        section_start = self.adr_text.find("#### 2.19.11 Status")
+        self.assertGreater(
+            section_start, -1, "§2.19.11 not found in ADR"
+        )
+        section = self.adr_text[section_start:section_start + 2000]
+        self.assertNotIn(
+            "TC-13.19, and TC-13.20 remain",
+            section,
+            "§2.19.11 must not contain stale 'TC-13.19 ... remain Target'",
+        )
+
+    # -- 13. Workflow contract declares TC-13.19 Current --
+
+    def test_workflow_contract_tc1319_current(self) -> None:
+        """Workflow orchestrator contract must declare TC-13.19 Current."""
+        self.assertIn(
+            "Current — TC-13.19j",
+            self.orch_contract,
+            "Workflow contract TC-13.19 row must be Current — TC-13.19j",
+        )
+
+    # -- 14. No other stale TC-13.19 remain-Target sentence in full ADR --
+
+    def test_no_other_stale_tc1319_remain_target(self) -> None:
+        """Full ADR must contain no other 'TC-13.19 ... remain Target' stale sentence."""
+        import re
+        stale = re.findall(
+            r'TC-13\.19.*remain\s+\*?\*?Target\*?\*?',
+            self.adr_text,
+        )
+        self.assertEqual(
+            len(stale), 0,
+            f"Full ADR must contain 0 stale 'TC-13.19 ... remain Target'"
+            f" sentences; found {len(stale)}: {stale}",
+        )
+
+    # -- 15. Interface #22 and TC-13.20 remain Target --
+
+    def test_interface_22_and_tc1320_remain_target(self) -> None:
+        """Interface #22 (WorkflowOrchestrator) and TC-13.20 must remain Target."""
+        # Interface #22
+        self.assertIn(
+            "Interface #22 and TC-13.20 remain Target",
+            self.adr_text,
+            "§2.19.11 must declare Interface #22 and TC-13.20 remain Target",
+        )
+        # Interface #24 / TC-13.20
+        found = False
+        for line in self.adr_text.splitlines():
+            if "| 24 |" in line and "Dashboard" in line:
+                self.assertIn(
+                    "**Target**", line,
+                    f"Interface #24 must be Target: {line!r}",
+                )
+                found = True
+                break
+        self.assertTrue(found, "Interface #24 (HTML Dashboard) must remain Target")
