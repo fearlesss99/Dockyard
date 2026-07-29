@@ -1,4 +1,4 @@
-# AgentDesk RateLimit Service — Frozen Contract (Contract Current — TC-13.14a.1)
+# AgentDesk RateLimit Service — Frozen Contract (Contract Current — TC-13.14a.2)
 
 Interface #19 frozen contract.  TC-13.14a freezes the Provider-neutral
 RateLimit types, decision semantics, and exception hierarchy.  The
@@ -7,7 +7,7 @@ TC-13.14b / TC-13.14c.
 
 ## Status
 
-**Contract Current** as of TC-13.14a.1.  This document is the authoritative
+**Contract Current** as of TC-13.14a.2.  This document is the authoritative
 frozen specification for the RateLimit public API, data model, decision
 semantics, and exception hierarchy.  The production module and provider
 detection remain Target.
@@ -42,7 +42,7 @@ detection is explicitly out of scope and must not be inferred.
 ## 2. Architecture
 
 ```text
-RateLimitCheckRequest(provider, now, units_requested, signals)
+RateLimitCheckRequest(provider, scope, now, units_requested, signals)
         ↓
 RateLimitService.evaluate()
         ↓
@@ -163,13 +163,14 @@ Requirements:
 - **Must not** store raw error text, response body, header mapping,
   stack trace, or any untyped data
 
-### 3.4 `RateLimitCheckRequest` — Exactly 4 Fields
+### 3.4 `RateLimitCheckRequest` — Exactly 5 Fields
 
 ```python
 @dataclass(frozen=True, slots=True)
 class RateLimitCheckRequest:
     """Immutable input for a single rate-limit evaluation."""
     provider: str
+    scope: RateLimitScope
     now: datetime
     units_requested: int
     signals: tuple[RateLimitSignal, ...]
@@ -179,6 +180,8 @@ Requirements:
 
 - `frozen=True`, `slots=True` — no `__dict__`, no mutable state
 - `provider` — non-empty `str`, no leading/trailing whitespace, no NUL/CR/LF
+- `scope` — must be `RateLimitScope` instance; controls which signals
+  are considered (see §3.9 Step 2)
 - `now` — must be timezone-aware UTC `datetime`; the service must
   **never** call `datetime.now()` or `time.time()` internally
 - `units_requested` — positive `int` (not `bool`), `>= 1`; the number of
@@ -221,12 +224,13 @@ Requirements:
 
 - `str, Enum` — no case-folding, no aliases, no unknown fallback
 - Exactly 5 values
-- `NO_SIGNALS` — no signals present; default to `ALLOW`
-- `WITHIN_LIMIT` — signals present, remaining >= units; `ALLOW`
-- `RETRY_AFTER` — signal indicates `retry_after_seconds > 0`; `WAIT`
-- `INSUFFICIENT` — remaining < units_requested but > 0; `WAIT`
-- `EXHAUSTED` — remaining == 0 or no remaining with active signals;
-  `FAIL_CLOSED`
+- `NO_SIGNALS` — no matching signals after filtering; default to `ALLOW`
+- `WITHIN_LIMIT` — matching signals present, remaining >= units; `ALLOW`
+- `RETRY_AFTER` — at least one effective retry-after exists; `WAIT`
+- `INSUFFICIENT` — no effective retry-after, but effective reset-at
+  exists; `WAIT`
+- `EXHAUSTED` — remaining == 0, or insufficient without wait source,
+  or all informational fields absent; `FAIL_CLOSED`
 
 ### 3.7 `RateLimitDecision` — Exactly 3 Fields
 
@@ -279,16 +283,23 @@ Requirements:
 
 ### 3.9 Evaluation Semantics
 
-Given `RateLimitCheckRequest(provider, now, units_requested, signals)`:
+Given `RateLimitCheckRequest(provider, scope, now, units_requested, signals)`:
 
 #### Step 1 — Input validation
 
 - `units_requested` must be a positive `int` `>= 1` (not `bool`, not `0`);
   otherwise `RateLimitInputError`
+- `scope` must be a `RateLimitScope` instance; otherwise `RateLimitInputError`
 
-#### Step 2 — Provider filter
+#### Step 2 — Provider and scope filter
 
 - Retain only signals whose `provider` matches `request.provider` exactly.
+- Then apply scope filtering:
+  - If `request.scope != UNKNOWN`: accept signals where
+    `signal.scope == request.scope` **or** `signal.scope == UNKNOWN`.
+    Reject signals with a different specific scope.
+  - If `request.scope == UNKNOWN`: accept all scopes for the matching
+    provider.
 - If no matching signals remain → `ALLOW(wait_seconds=0, reason=NO_SIGNALS)`
 
 #### Step 3 — Future observation rejection
@@ -296,14 +307,14 @@ Given `RateLimitCheckRequest(provider, now, units_requested, signals)`:
 - If any matching signal has `observed_at > request.now` →
   `RateLimitStateError` (future observation)
 
-#### Step 4 — Compute effective wait times per signal
+#### Step 4 — Per-signal normalization
 
-For each matching signal:
+For each matching signal, compute:
 
-**retry-after effective wait** (if `retry_after_seconds` is not `None`):
+**retry_wait** (if `retry_after_seconds` is not `None`):
 
 ```python
-remaining_retry = max(
+retry_wait = max(
     0,
     ceil(
         retry_after_seconds
@@ -312,68 +323,71 @@ remaining_retry = max(
 )
 ```
 
-`ceil` uses `math.ceil`.  `remaining_retry == 0` means the retry-after
-has expired.
-
-**reset-at effective wait** (if `reset_at` is not `None`):
+**reset_wait** (if `reset_at` is not `None`):
 
 ```python
-remaining_reset = max(
+reset_wait = max(
     0,
     ceil((reset_at - request.now).total_seconds()),
 )
 ```
 
-`remaining_reset == 0` means the reset-at has passed — the signal's
-window has expired.  An expired `reset_at` means the signal **does not
-participate** in remaining/exhausted judgments.
+**effective_wait**:
 
-#### Step 5 — Classify each signal
-
-Each matching signal is classified into one of these categories
-(ordered from most conservative to most permissive):
-
-| Category | Condition |
-|----------|-----------|
-| `WAIT` (retry-after) | `remaining_retry > 0` |
-| `WAIT` (reset-at) | `remaining_reset > 0` and `reset_at` not expired |
-| `EXHAUSTED` | `remaining == 0` and no effective wait time |
-| `INSUFFICIENT` | `0 < remaining < units_requested` |
-| `WITHIN_LIMIT` | `remaining >= units_requested` |
-| `UNKNOWN` | `remaining is None` and no `retry_after_seconds` and no unexpired `reset_at` |
-
-**Most conservative result priority** (deterministic resolution):
-
-```
-WAIT > EXHAUSTED > INSUFFICIENT > WITHIN_LIMIT > UNKNOWN
+```python
+effective_wait = max(retry_wait, reset_wait)
 ```
 
-A single restrictive signal must not be overridden by permissive signals.
-The overall result is the most conservative category among all matching
-signals.
+`ceil` uses `math.ceil`.  `effective_wait > 0` means the signal
+produces a **WAIT candidate**.
 
-#### Step 6 — Produce decision
+**Signal expiry rule**: If a signal has explicit time information
+(`retry_after_seconds` is not `None` or `reset_at` is not `None`) and
+**all** of its time information has expired (`effective_wait == 0`),
+the signal is **expired**.  Expired signals are excluded from further
+remaining/exhausted judgments.
 
-| Overall category | Action | Reason | `wait_seconds` |
-|-----------------|--------|--------|----------------|
-| `WAIT` (retry-after) | `WAIT` | `RETRY_AFTER` | max `remaining_retry` across all matching signals |
-| `WAIT` (reset-at only) | `WAIT` | `INSUFFICIENT` | max `remaining_reset` across all matching signals |
-| `EXHAUSTED` | `FAIL_CLOSED` | `EXHAUSTED` | `0` |
-| `INSUFFICIENT` with effective wait | `WAIT` | `INSUFFICIENT` | max effective wait across all matching signals |
-| `INSUFFICIENT` without effective wait | `FAIL_CLOSED` | `EXHAUSTED` | `0` |
-| `WITHIN_LIMIT` | `ALLOW` | `WITHIN_LIMIT` | `0` |
-| `UNKNOWN` | `FAIL_CLOSED` | `EXHAUSTED` | `0` |
+**Per-signal classification** (for non-expired signals):
+
+| Candidate | Condition |
+|-----------|-----------|
+| `WAIT` | `effective_wait > 0` |
+| `FAIL` | `remaining == 0`, or `remaining is None`, or `0 < remaining < units_requested` |
+| `ALLOW` | `remaining >= units_requested` |
+
+Note: `remaining is None` produces a `FAIL` candidate (no basis for an
+optimistic decision).  `0 < remaining < units_requested` produces a
+`FAIL` candidate (insufficient without a separate time source — the
+effective_wait is already accounted for in the WAIT/FAIL classification).
+
+#### Step 5 — Aggregate candidates
+
+The aggregation follows a deterministic priority:
+
+1. **Any WAIT candidate exists** → `WAIT`
+   - `wait_seconds` = max `effective_wait` across **all** candidates
+   - If any candidate has an effective retry-after (`retry_wait > 0`):
+     `reason = RETRY_AFTER`
+   - Otherwise (only reset-at provides the wait): `reason = INSUFFICIENT`
+
+2. **No WAIT, but any FAIL candidate exists** → `FAIL_CLOSED`
+   - `wait_seconds = 0`, `reason = EXHAUSTED`
+
+3. **No WAIT/FAIL, only ALLOW candidates** → `ALLOW`
+   - `wait_seconds = 0`, `reason = WITHIN_LIMIT`
+
+4. **All matching signals expired** → `ALLOW`
+   - `wait_seconds = 0`, `reason = NO_SIGNALS`
 
 **Key rules:**
 
-- `WAIT` due to `retry_after_seconds` → `reason=RETRY_AFTER`
-- `WAIT` due only to `reset_at` (no retry-after) → `reason=INSUFFICIENT`
-- `INSUFFICIENT` without any wait source → `FAIL_CLOSED` + `EXHAUSTED`
-  (no wait information available, must fail closed)
-- `UNKNOWN` signals (all informational fields absent) → `FAIL_CLOSED` +
-  `EXHAUSTED` (no basis for an optimistic decision)
-- No `CONFLICT` reason — conflicts are resolved by the most conservative
-  priority rule
+- A single WAIT candidate must not be overridden by ALLOW candidates.
+- `FAIL` includes `remaining == 0`, `remaining is None`, and
+  `0 < remaining < units_requested` — all insufficient states.
+- `INSUFFICIENT` reason is used only when the WAIT is driven by reset-at
+  alone (no effective retry-after).
+- No `CONFLICT` reason — conflicts are resolved by the deterministic
+  WAIT > FAIL > ALLOW > expired priority.
 
 ---
 
@@ -435,7 +449,7 @@ the exception class name.
 
 | Exception | Trigger |
 |-----------|---------|
-| `RateLimitInputError` | Request type invalid; `provider` not a non-empty str; `now` is not timezone-aware UTC datetime; `units_requested` is not a positive int >= 1 (including `0` or `bool`); `signals` is not a tuple of `RateLimitSignal`; signal field type violations; `remaining > limit` when both present; `reset_at < observed_at` |
+| `RateLimitInputError` | Request type invalid; `provider` not a non-empty str; `scope` not a `RateLimitScope` instance; `now` is not timezone-aware UTC datetime; `units_requested` is not a positive int >= 1 (including `0` or `bool`); `signals` is not a tuple of `RateLimitSignal`; signal field type violations; `remaining > limit` when both present; `reset_at < observed_at` |
 | `RateLimitStateError` | Signal has `observed_at > request.now` (future observation); `action`/`reason` consistency violation in decision construction |
 | `RateLimitSecurityError` | Signal contains raw provider output in forbidden fields; untyped data detected in public API boundary |
 
@@ -467,6 +481,7 @@ non-deterministic ordering are introduced during evaluation.
 |------|-------------|--------|
 | **TC-13.14a** | Provider-neutral RateLimit contract freeze | Contract Current |
 | **TC-13.14a.1** | RateLimit evaluation semantics closure | Contract Current |
+| **TC-13.14a.2** | RateLimit multi-scope and combined signal closure | Contract Current |
 | **TC-13.14b** | RateLimitService production module | Runtime Target |
 | **TC-13.14c** | Provider-specific 429 detection (evidence-dependent) | Evidence-dependent Target |
 

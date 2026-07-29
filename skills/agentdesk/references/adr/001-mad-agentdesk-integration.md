@@ -29,7 +29,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 16 | AgentDesk ControlPlaneTransitionService | **Current** | TC-13.11c | CAS-write tasks, immutable events, replayable outbox |
 | 17 | AgentDesk ApprovalGate | **Current** | TC-13.12d | TASK_APPROVAL with structured scope (dispatch/accept/integrate); runtime gate + ControlPlaneTransitionService integration + offline validator implemented |
 | 18 | AgentDesk EscalationService | **Current** | TC-13.13b | Pure WorkerKind tier progression; frozen contract 搂2.16; production module and full test suite committed |
-| 19 | AgentDesk RateLimit service | **Contract Current** — TC-13.14a.1 / Runtime Target — TC-13.14b | TC-13.14 | Provider-neutral rate-limit policy evaluation with closed semantics; provider detection (TC-13.14c) is evidence-dependent Target |
+| 19 | AgentDesk RateLimit service | **Contract Current** — TC-13.14a.2 / Runtime Target — TC-13.14b | TC-13.14 | Provider-neutral rate-limit policy with multi-scope and combined signal semantics; provider detection (TC-13.14c) is evidence-dependent Target |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
 | 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Target; TASK_SUPERSEDED: Target; retry loop, fault recovery: Target) |
@@ -6930,7 +6930,7 @@ iteration order.
 
 ---
 
-### 2.20 RateLimitService — Frozen Contract (Contract Current — TC-13.14a.1)
+### 2.20 RateLimitService — Frozen Contract (Contract Current — TC-13.14a.2)
 
 TC-13.14a freezes the **Provider-neutral RateLimit policy contract** for
 typed signal consumption and deterministic decision evaluation.  No
@@ -7021,12 +7021,13 @@ Permanently excluded fields:
 | `dict`, `Any`, `object` payload | Untyped data — security boundary |
 | `error_message` or `detail` | Raw provider output — security boundary |
 
-#### 2.20.5 RateLimitCheckRequest — Exact Four Fields
+#### 2.20.5 RateLimitCheckRequest — Exact Five Fields
 
 ```python
 @dataclass(frozen=True, slots=True)
 class RateLimitCheckRequest:
     provider: str
+    scope: RateLimitScope
     now: datetime
     units_requested: int
     signals: tuple[RateLimitSignal, ...]
@@ -7035,9 +7036,11 @@ class RateLimitCheckRequest:
 Frozen rules:
 
 * `frozen=True`, `slots=True` — no `__dict__`, no mutable state
+* `scope` — must be `RateLimitScope` instance; controls which signals
+  are considered (see §2.20.11 Step 2)
 * `now` — must be timezone-aware UTC `datetime`; the service must
   **never** call `datetime.now()` or `time.time()` internally
-* `units_requested` — non-negative `int` (not `bool`)
+* `units_requested` — positive `int` (not `bool`), `>= 1`
 * `signals` — `tuple[RateLimitSignal, ...]`; may be empty; must be
   `tuple`, not `list`, `dict`, `set`, or `Any`
 
@@ -7133,30 +7136,37 @@ Frozen rules:
 #### 2.20.11 Evaluation Semantics
 
 1. **Input validation** — `units_requested` must be a positive `int`
-   `>= 1`; otherwise `RateLimitInputError`
-2. **Provider filter** — retain only signals matching `request.provider`;
-   if none remain → `ALLOW(wait_seconds=0, reason=NO_SIGNALS)`
+   `>= 1`; `scope` must be `RateLimitScope`; otherwise `RateLimitInputError`
+2. **Provider and scope filter**:
+   - Retain only signals matching `request.provider` exactly
+   - If `request.scope != UNKNOWN`: accept signals where
+     `signal.scope == request.scope` or `signal.scope == UNKNOWN`;
+     reject signals with a different specific scope
+   - If `request.scope == UNKNOWN`: accept all scopes for the matching
+     provider
+   - If no matching signals remain → `ALLOW(wait_seconds=0, reason=NO_SIGNALS)`
 3. **Future observation rejection** — if any matching signal has
    `observed_at > request.now` → `RateLimitStateError`
-4. **Compute effective wait per signal**:
-   - `remaining_retry = max(0, ceil(retry_after_seconds - (now - observed_at).total_seconds()))`
-   - `remaining_reset = max(0, ceil((reset_at - now).total_seconds()))`
-   - `reset_at <= now` → signal's window expired; does not participate
-     in remaining/exhausted judgments
-5. **Classify each signal** (most conservative → most permissive):
-   `WAIT` (retry-after) > `WAIT` (reset-at) > `EXHAUSTED` >
-   `INSUFFICIENT` > `WITHIN_LIMIT` > `UNKNOWN`
-6. **Most conservative result priority** — a single restrictive signal
-   must not be overridden by permissive signals
-7. **Produce decision**:
-   - `WAIT` from retry-after → `reason=RETRY_AFTER`, `wait_seconds` = max remaining_retry
-   - `WAIT` from reset-at only → `reason=INSUFFICIENT`, `wait_seconds` = max remaining_reset
-   - `EXHAUSTED` → `FAIL_CLOSED(reason=EXHAUSTED, wait_seconds=0)`
-   - `INSUFFICIENT` with wait source → `WAIT(reason=INSUFFICIENT)`
-   - `INSUFFICIENT` without wait source → `FAIL_CLOSED(reason=EXHAUSTED)`
-   - `WITHIN_LIMIT` → `ALLOW(reason=WITHIN_LIMIT, wait_seconds=0)`
-   - `UNKNOWN` → `FAIL_CLOSED(reason=EXHAUSTED, wait_seconds=0)`
-   - No `CONFLICT` reason — conflicts resolved by most conservative priority
+4. **Per-signal normalization**:
+   - `retry_wait = max(0, ceil(retry_after_seconds - (now - observed_at).total_seconds()))`
+   - `reset_wait = max(0, ceil((reset_at - now).total_seconds()))`
+   - `effective_wait = max(retry_wait, reset_wait)`
+   - If a signal has explicit time information and all of it has expired
+     (`effective_wait == 0`), the signal is **expired** — excluded from
+     remaining/exhausted judgments
+5. **Per-signal classification** (for non-expired signals):
+   - `WAIT` candidate: `effective_wait > 0`
+   - `FAIL` candidate: `remaining == 0`, or `remaining is None`, or
+     `0 < remaining < units_requested`
+   - `ALLOW` candidate: `remaining >= units_requested`
+6. **Aggregate candidates** (deterministic priority):
+   - Any WAIT candidate → `WAIT`; `wait_seconds` = max `effective_wait`
+     across all candidates; reason = `RETRY_AFTER` if any effective
+     retry-after exists, otherwise `INSUFFICIENT`
+   - No WAIT, any FAIL candidate → `FAIL_CLOSED(reason=EXHAUSTED, wait_seconds=0)`
+   - No WAIT/FAIL, only ALLOW candidates → `ALLOW(reason=WITHIN_LIMIT, wait_seconds=0)`
+   - All matching signals expired → `ALLOW(reason=NO_SIGNALS, wait_seconds=0)`
+   - No `CONFLICT` reason — conflicts resolved by WAIT > FAIL > ALLOW > expired
 
 #### 2.20.12 Escalation Boundary — Explicitly Preserved
 
@@ -7260,12 +7270,13 @@ TC-13.14c (provider detection) — depends on TC-13.14b + real 429 evidence
 |------|-------------|--------|
 | **TC-13.14a** | Provider-neutral RateLimit contract freeze | Contract Current |
 | **TC-13.14a.1** | RateLimit evaluation semantics closure | Contract Current |
+| **TC-13.14a.2** | RateLimit multi-scope and combined signal closure | Contract Current |
 | **TC-13.14b** | RateLimitService production module | Runtime Target |
 | **TC-13.14c** | Provider-specific 429 detection (evidence-dependent) | Evidence-dependent Target |
 
 #### 2.20.22 Status
 
-* ADR Interface Status row #19 is **Contract Current — TC-13.14a.1 / Runtime Target — TC-13.14b**.
+* ADR Interface Status row #19 is **Contract Current — TC-13.14a.2 / Runtime Target — TC-13.14b**.
 * Provider detection (TC-13.14c) is an **evidence-dependent Target** — no real 429 output evidence exists.
 * `rate_limit.py` must **not** exist yet — TC-13.14a delivers the contract only.
 * All prior Current interfaces remain **Current**.
@@ -7339,7 +7350,8 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.13b | EscalationService production implementation | TC-13.13a |
 | TC-13.14a | RateLimit Provider-neutral contract freeze (§2.20) | TC-13.11 |
 | TC-13.14a.1 | RateLimit evaluation semantics closure | TC-13.14a |
-| TC-13.14b | RateLimitService production module | TC-13.14a.1 |
+| TC-13.14a.2 | RateLimit multi-scope and combined signal closure | TC-13.14a.1 |
+| TC-13.14b | RateLimitService production module | TC-13.14a.2 |
 | TC-13.14c | Provider-specific 429 detection (evidence-dependent) | TC-13.14b, real 429 output evidence |
 | TC-13.15 | MAD `audit` sub-command (`mad.audit-result/v1`) | TC-13.2 |
 | TC-13.16a/b | AgentDesk MadAuditGateway | TC-13.15 |
