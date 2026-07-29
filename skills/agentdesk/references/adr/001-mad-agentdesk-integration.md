@@ -6798,6 +6798,122 @@ or secrets.
 
 ---
 
+#### 2.21 AgentDesk HTML Dashboard — Frozen Contract (Target — TC-13.20)
+
+TC-13.20a freezes the contract for a fully read-only, offline,
+self-contained HTML Dashboard.  The Dashboard consumes only a
+pre-built `StateSnapshot`; it does not read canonical files, access
+the network, start subprocesses, or provide write controls.
+
+The full frozen contract is in
+``skills/agentdesk/references/public-interfaces/html-dashboard-contract.md``.
+This section records the essential design decisions.
+
+##### 2.21.1 Architecture — Pure Render
+
+```text
+StateProvider.snapshot()
+        ↓
+DashboardRenderRequest
+        ↓
+render_dashboard()
+        ↓
+DashboardArtifact(html bytes)
+        ↓
+caller displays or saves
+```
+
+##### 2.21.2 Public API — Exactly 3 Symbols
+
+```python
+__all__ = [
+    "DashboardRenderRequest",
+    "DashboardArtifact",
+    "render_dashboard",
+]
+```
+
+- ``DashboardRenderRequest`` — exactly 2 fields: ``snapshot: StateSnapshot``,
+  ``generated_at: datetime`` (timezone-aware UTC).
+- ``DashboardArtifact`` — exactly 4 fields: ``html: bytes``,
+  ``snapshot_digest: str``, ``generated_at: str``, ``task_count: int``.
+- ``render_dashboard`` — synchronous pure function, not ``async def``.
+
+##### 2.21.3 Data Scope
+
+All data originates exclusively from ``StateSnapshot`` typed fields:
+
+- **Overview**: ``project_id``, ``updated_at``, ``generated_at``, task
+  count, per-state counts, active/blocked/terminal counts, acceptance
+  count, MAD reference count.
+- **Task Board**: ``task_id``, ``state``, ``revision``, ``attempt``,
+  ``delivery_state``, ``integration_state``, current worker role,
+  ``updated_at``, ``blocked_kind``, ``superseded_by``.  Sorted
+  ``(state, task_id)``.
+- **Task Detail**: base state, dispatch summary, event timeline sorted
+  by ``occurred_at`` then ``event_id``, acceptance decisions, MAD
+  reference summary, evidence reference count.
+- **System Health**: snapshot digest, canonical source counts, blocked
+  task presence, pending outbox presence, empty-state indicator.
+
+##### 2.21.4 Explicitly Excluded
+
+Dashboard must never render: prompt text, stdout/stderr, raw model
+output, delivery report body, acceptance Markdown body, issue
+description/recommendation text, MAD archive absolute paths,
+``project_root`` absolute path, ``holder_instance_id``, lease
+ownership tokens, API keys, environment variables, credentials, raw
+event/outbox/acceptance mapping dicts, untyped arbitrary payloads, or
+Python ``repr()`` output.
+
+##### 2.21.5 Security — Self-Contained Offline HTML
+
+- Single ``.html`` file, zero external dependencies.
+- No CDN, font, image, script, or stylesheet references.
+- No ``<form>``, no write controls, no ``fetch()`` or ``WebSocket``.
+- Strict CSP: ``default-src 'none'; img-src data:; style-src
+  'unsafe-inline'; script-src 'none'; connect-src 'none'; form-action
+  'none'; base-uri 'none'; frame-ancestors 'none'``.
+- All dynamic text HTML-escaped.
+- UTF-8, LF line endings, exactly one trailing newline.
+- Byte-for-byte deterministic for identical input.
+
+##### 2.21.6 Exception Hierarchy — Exactly 4 Types
+
+``DashboardError`` → ``DashboardInputError`` (wrong type, non-UTC
+datetime), ``DashboardRenderError`` (internal precondition),
+``DashboardSecurityError`` (unsafe content — fail-closed).
+
+##### 2.21.7 Snapshot Digest
+
+Deterministic SHA-256 over ``schema_version``, ``project_id``,
+``updated_at``, ``read_hexsha``, and per-collection canonical sub-digests
+(sorted by stable key, pipe-joined fields, ``None`` as literal string).
+No Python ``hash()``, ``repr()``, ``id()``, or non-deterministic
+iteration order.
+
+##### 2.21.8 Current / Target Boundary
+
+| Scope | Status |
+|-------|--------|
+| Interface #24 — HTML Dashboard contract | **Target** — TC-13.20a (this document) |
+| ``html_dashboard.py`` production module | Target — TC-13.20b |
+| ``render_dashboard()`` implementation | Target — TC-13.20b |
+| HTML/CSS/JS page templates | Target — TC-13.20b |
+| Dashboard unit tests | Target — TC-13.20b |
+| Interface #24 status promotion to Current | Target — TC-13.20b |
+
+##### 2.21.9 Status
+
+* ADR Interface Status row #24 "AgentDesk HTML Dashboard"
+  remains **Target** — TC-13.20.
+* This section (§2.21) is the Frozen Contract for TC-13.20a.
+* No production module is shipped under TC-13.20a.
+* TC-13.20b will deliver ``html_dashboard.py`` against this contract.
+* All prior Current interfaces remain **Current**.
+
+---
+
 ---
 ## 3. Ownership Boundaries
 

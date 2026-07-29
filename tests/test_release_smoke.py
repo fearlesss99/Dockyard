@@ -9903,3 +9903,336 @@ class TC1319jE2EProgramClosureTests(unittest.TestCase):
                 found = True
                 break
         self.assertTrue(found, "Interface #24 (HTML Dashboard) must remain Target")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TC-13.20a — HTML Dashboard Contract Freeze
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TC1320aHtmlDashboardContractFreezeTests(unittest.TestCase):
+    """TC-13.20a — HTML Dashboard frozen contract verification.
+
+    Verifies the contract document, ADR §2.21, API surface, security
+    rules, and Target/Current boundaries without requiring a production
+    module.
+    """
+
+    def setUp(self) -> None:
+        self.repo_root = Path(__file__).resolve().parents[1]
+        self.adr_text = (
+            self.repo_root / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+        self.contract_path = (
+            self.repo_root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "html-dashboard-contract.md"
+        )
+        self.contract_text = self.contract_path.read_text(encoding="utf-8")
+        self.dashboard_py = (
+            self.repo_root / "skills" / "agentdesk" / "scripts"
+            / "html_dashboard.py"
+        )
+
+    # -- 1. Contract file exists --
+
+    def test_contract_file_exists(self) -> None:
+        """html-dashboard-contract.md must exist as a regular file."""
+        self.assertTrue(
+            self.contract_path.is_file(),
+            "html-dashboard-contract.md must exist as a regular file",
+        )
+
+    # -- 2. ADR §2.21 exists and is Target --
+
+    def test_adr_section_221_exists_and_target(self) -> None:
+        """ADR §2.21 AgentDesk HTML Dashboard — Frozen Contract must exist."""
+        self.assertIn(
+            "#### 2.21 AgentDesk HTML Dashboard",
+            self.adr_text,
+            "ADR: §2.21 AgentDesk HTML Dashboard Frozen Contract must exist",
+        )
+        self.assertIn(
+            "Target — TC-13.20",
+            self.adr_text,
+            "ADR §2.21 must declare Target — TC-13.20",
+        )
+
+    # -- 3. Interface #24 is Target --
+
+    def test_interface_24_is_target(self) -> None:
+        """Interface #24 (HTML Dashboard) must remain Target."""
+        found = False
+        for line in self.adr_text.splitlines():
+            if "| 24 |" in line and "Dashboard" in line:
+                self.assertIn(
+                    "**Target**", line,
+                    f"Interface #24 must be Target: {line!r}",
+                )
+                found = True
+                break
+        self.assertTrue(found, "Interface #24 row not found in ADR")
+
+    # -- 4. Exactly 3 __all__ symbols --
+
+    def test_exact_3_all_symbols(self) -> None:
+        """Contract must declare exactly 3 __all__ symbols."""
+        self.assertIn(
+            "__all__ = [", self.contract_text,
+            "Contract must declare __all__",
+        )
+        self.assertIn("DashboardRenderRequest", self.contract_text)
+        self.assertIn("DashboardArtifact", self.contract_text)
+        self.assertIn("render_dashboard", self.contract_text)
+        # Verify exactly 3 symbols and no extras
+        all_idx = self.contract_text.find("__all__")
+        self.assertGreater(all_idx, -1, "__all__ not found in contract")
+        all_block = self.contract_text[all_idx:all_idx + 500]
+        # Count the 3 expected symbols
+        for sym in (
+            "DashboardRenderRequest",
+            "DashboardArtifact",
+            "render_dashboard",
+        ):
+            self.assertIn(sym, all_block,
+                          f"__all__ must contain: {sym}")
+        # Ensure no extra public symbols beyond the 3
+        # Extract just the __all__ list portion
+        all_start = all_block.find("[")
+        all_end = all_block.find("]")
+        all_list = all_block[all_start:all_end]
+        for bad in ("render_html", "build_dashboard", "DashboardConfig",
+                     "create_dashboard", "DashboardRenderer"):
+            self.assertNotIn(bad, all_list,
+                             f"__all__ must not contain extra symbol: {bad}")
+
+    # -- 5. DashboardRenderRequest exactly 2 fields --
+
+    def test_request_exactly_2_fields(self) -> None:
+        """DashboardRenderRequest must have exactly 2 fields."""
+        self.assertIn(
+            "Exactly 2 Fields", self.contract_text,
+            "DashboardRenderRequest heading must say Exactly 2 Fields",
+        )
+        self.assertIn(
+            "snapshot: StateSnapshot", self.contract_text,
+            "Request must have snapshot: StateSnapshot",
+        )
+        self.assertIn(
+            "generated_at: datetime", self.contract_text,
+            "Request must have generated_at: datetime",
+        )
+
+    # -- 6. DashboardArtifact exactly 4 fields --
+
+    def test_artifact_exactly_4_fields(self) -> None:
+        """DashboardArtifact must have exactly 4 fields."""
+        self.assertIn(
+            "Exactly 4 Fields", self.contract_text,
+            "DashboardArtifact heading must say Exactly 4 Fields",
+        )
+        for field in (
+            "html: bytes",
+            "snapshot_digest: str",
+            "generated_at: str",
+            "task_count: int",
+        ):
+            self.assertIn(
+                field, self.contract_text,
+                f"Artifact must declare field: {field}",
+            )
+
+    # -- 7. frozen=True, slots=True required --
+
+    def test_frozen_slots_required(self) -> None:
+        """Both dataclasses must require frozen=True, slots=True."""
+        for cls_name in ("DashboardRenderRequest", "DashboardArtifact"):
+            self.assertIn(
+                f"frozen=True, slots=True",
+                self.contract_text,
+                f"{cls_name} must declare frozen=True, slots=True",
+            )
+
+    # -- 8. render_dashboard is synchronous pure function --
+
+    def test_render_dashboard_sync_pure(self) -> None:
+        """render_dashboard must be synchronous, not async."""
+        self.assertIn(
+            "def render_dashboard", self.contract_text,
+            "render_dashboard must be defined as def (sync)",
+        )
+        self.assertNotIn(
+            "async def render_dashboard", self.contract_text,
+            "render_dashboard must NOT be async def",
+        )
+        self.assertIn(
+            "Pure", self.contract_text,
+            "Contract must declare render_dashboard is pure",
+        )
+
+    # -- 9. Only accepts StateSnapshot --
+
+    def test_only_accepts_state_snapshot(self) -> None:
+        """render_dashboard must only accept StateSnapshot input."""
+        self.assertIn(
+            "snapshot: StateSnapshot", self.contract_text,
+            "DashboardRenderRequest.snapshot must be StateSnapshot",
+        )
+
+    # -- 10. Explicit UTC datetime injection --
+
+    def test_explicit_utc_datetime_injection(self) -> None:
+        """Contract must require caller-supplied UTC datetime."""
+        lower = self.contract_text.lower()
+        self.assertTrue(
+            "timezone-aware utc" in lower,
+            "Contract must require timezone-aware UTC datetime",
+        )
+        self.assertTrue(
+            "must not internally call" in lower
+            and "datetime.now()" in lower,
+            "Contract must forbid internal datetime.now() calls",
+        )
+
+    # -- 11. Zero file writes --
+
+    def test_zero_file_writes(self) -> None:
+        """Dashboard must never write files."""
+        self.assertIn(
+            "No side effects", self.contract_text,
+            "Contract must declare no file writes",
+        )
+
+    # -- 12. Zero network / model / subprocess / Git --
+
+    def test_zero_network_model_subprocess_git(self) -> None:
+        """Dashboard must never access network, models, subprocess, or Git."""
+        combined = self.contract_text.lower()
+        for kw in (
+            "no http", "no network", "offline",
+            "no subprocess", "no git",
+        ):
+            self.assertTrue(
+                kw in combined or "never" in combined,
+                f"Contract must forbid network/model/subprocess/Git: {kw}",
+            )
+
+    # -- 13. No HTTP server / framework --
+
+    def test_no_http_server_framework(self) -> None:
+        """Dashboard contract must forbid HTTP servers and web frameworks."""
+        lower = self.contract_text.lower()
+        # These are listed in the forbidden-actions table — verify they appear
+        # in a forbidding context (not as allowed features)
+        for kw in ("fastapi", "flask", "streamlit", "react", "vue",
+                    "node", "npm"):
+            self.assertIn(
+                kw, lower,
+                f"Contract must mention {kw} as forbidden",
+            )
+
+    # -- 14. HTML escaping and CSP declared --
+
+    def test_html_escaping_and_csp_declared(self) -> None:
+        """Contract must declare HTML escaping and Content Security Policy."""
+        self.assertIn(
+            "entity escaping", self.contract_text,
+            "Contract must require HTML entity escaping",
+        )
+        self.assertIn(
+            "Content-Security-Policy", self.contract_text,
+            "Contract must declare Content-Security-Policy",
+        )
+        self.assertIn(
+            "default-src 'none'", self.contract_text,
+            "CSP must include default-src 'none'",
+        )
+
+    # -- 15. Forbidden raw payload and sensitive fields --
+
+    def test_forbidden_raw_payload_and_sensitive_fields(self) -> None:
+        """Contract must forbid raw payload and sensitive field rendering."""
+        combined = self.contract_text.lower()
+        for kw in (
+            "prompt", "stdout", "stderr", "raw model",
+            "api key", "credential", "holder_instance_id",
+            "repr()",
+        ):
+            self.assertIn(
+                kw, combined,
+                f"Contract must forbid rendering: {kw}",
+            )
+
+    # -- 16. Deterministic digest declared --
+
+    def test_deterministic_digest_declared(self) -> None:
+        """Contract must declare deterministic SHA-256 snapshot digest."""
+        self.assertIn(
+            "snapshot_digest", self.contract_text,
+            "Contract must declare snapshot_digest field",
+        )
+        self.assertIn(
+            "sha256:", self.contract_text.lower(),
+            "Contract must declare sha256: digest prefix",
+        )
+        self.assertIn(
+            "deterministic", self.contract_text.lower(),
+            "Contract must declare deterministic digest",
+        )
+        for kw in ("hash()", "repr()", "id()", "memory address"):
+            self.assertIn(
+                kw.lower(), self.contract_text.lower(),
+                f"Contract must forbid non-deterministic: {kw}",
+            )
+
+    # -- 17. Current / Target boundary clear --
+
+    def test_current_target_boundary_clear(self) -> None:
+        """Contract must clearly delineate Current vs Target scope."""
+        self.assertIn(
+            "Current / Target Boundary", self.contract_text,
+            "Contract must have Current / Target Boundary section",
+        )
+        self.assertIn(
+            "TC-13.20b", self.contract_text,
+            "Contract must reference TC-13.20b as future production card",
+        )
+
+    # -- 18. html_dashboard.py does NOT exist yet --
+
+    def test_html_dashboard_py_does_not_exist(self) -> None:
+        """html_dashboard.py must NOT exist under TC-13.20a."""
+        self.assertFalse(
+            self.dashboard_py.exists(),
+            "html_dashboard.py must NOT exist — production is TC-13.20b",
+        )
+
+    # -- 19. No dashboard assets/build directory --
+
+    def test_no_dashboard_assets_build_dir(self) -> None:
+        """No dashboard assets or build directory must exist."""
+        scripts_dir = self.repo_root / "skills" / "agentdesk" / "scripts"
+        for name in ("dashboard", "dashboard_assets", "dashboard_build",
+                      "html_dashboard"):
+            candidate = scripts_dir / name
+            self.assertFalse(
+                candidate.is_dir(),
+                f"Dashboard directory must NOT exist: {candidate}",
+            )
+
+    # -- 20. TC-13.20b explicitly declared as future production --
+
+    def test_tc1320b_declared_as_future_production(self) -> None:
+        """TC-13.20b must be declared as the future production implementation card."""
+        self.assertIn(
+            "TC-13.20b", self.contract_text,
+            "Contract must reference TC-13.20b",
+        )
+        self.assertIn(
+            "production", self.contract_text.lower(),
+            "Contract must mention production implementation",
+        )
+        self.assertIn(
+            "html_dashboard.py", self.contract_text,
+            "Contract must reference html_dashboard.py module path",
+        )
