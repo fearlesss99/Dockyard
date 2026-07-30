@@ -1,4 +1,4 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation — Current — TC-13.18d.9b; Active Supersession — Current — TC-13.18d.10b; Dispatch Failure Recovery Contract — Current — TC-13.18d.11a; Canonical Transition — Current — TC-13.18d.11b; Creator-Alive Bounded Retry — Current — TC-13.18d.11c; Owner-Loss Recovery Contract — Current — TC-13.18d.12b)
+# WorkflowOrchestrator — Implementable Contract (Core Orchestration Current — TC-13.18d.13b; E2E Evidence — Current — TC-13.19j; Active Cancellation — Current — TC-13.18d.9b; Active Supersession — Current — TC-13.18d.10b; Dispatch Failure Recovery Contract — Current — TC-13.18d.11a; Canonical Transition — Current — TC-13.18d.11b; Creator-Alive Bounded Retry — Current — TC-13.18d.11c; Owner-Loss Recovery Contract — Current — TC-13.18d.12b; Owner-Loss Durable Retry — Current — TC-13.18d.12c.2; Codex — Target/deferred — TC-13.9c.2; Provider 429 — Evidence-dependent Target — TC-13.14c; Interface #24 Dashboard — Current — TC-13.20b)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
@@ -58,12 +58,14 @@ Current — TC-13.18d.12c. The durable automatic-retry contract is Contract
 Current — TC-13.18d.12c.1; its runtime is Current — TC-13.18d.12c.2.
 Owner-loss automatic retry is Current.
 Codex decoding,
-Codex rate-limit classification, and provider rate-limit wiring remain Target.
+Codex rate-limit classification, and provider rate-limit wiring remain Target
+(optional Provider extensions; do not block Interface #22 core orchestration).
 Active-dispatch cancellation
 contract is repaired and frozen as of TC-13.18d.9a.1 (execution-based
 model); production implementation is Current — TC-13.18d.9b.  See
 `reports/tc-13.19-final-delivery-report.md` and `test_release_smoke.py`
-class `TC1319jE2EProgramClosureTests`.  TC-13.20 (HTML Dashboard) is Target.
+class `TC1319jE2EProgramClosureTests`.  TC-13.20 (HTML Dashboard Interface #24)
+is Current — TC-13.20b; visual acceptance passed via TC-13.20c.2.
 
 This document is the authoritative frozen specification for the
 WorkflowOrchestrator public API, ownership boundaries, hard dependencies,
@@ -1337,8 +1339,12 @@ and `run_dispatch_cycle()` retains its signature and compatibility behavior.
 - Production implementation: **Current — TC-13.18d.10b**.
 - `TASK_CANCELLED` active-dispatch path remains
   **Current — TC-13.18d.9b**.
-- WorkflowOrchestrator Interface #22 remains **Target** until retry,
-  rate-limit, and remaining fault-recovery boundaries are complete.
+- WorkflowOrchestrator Interface #22 core orchestration is
+  **Current — TC-13.18d.13b**. Codex runtime/decoder remains
+  **Target/deferred — TC-13.9c.2**. Provider 429 detection remains
+  **Evidence-dependent Target — TC-13.14c**. RateLimit → Orchestrator
+  wiring remains **Target**, depending on real detection evidence.
+  Interface #24 (HTML Dashboard) is **Current — TC-13.20b**.
 - TC-13.19 and TC-13.20 statuses are unchanged.
 
 ---
@@ -1601,8 +1607,9 @@ The following remain unchanged:
 - active cancellation: Current — TC-13.18d.9b;
 - active supersession: Current — TC-13.18d.10b;
 - quiescent cancellation/supersession and single escalated redispatch;
-- Interface #22 overall status: Target;
-- TC-13.19 and TC-13.20 statuses.
+- Interface #22 core orchestration status: Current — TC-13.18d.13b;
+  Codex / Provider 429 deferred (see §15.7);
+- TC-13.19 status unchanged; TC-13.20 (Interface #24) is Current — TC-13.20b.
 
 Non-goals are owner-loss cleanup, retry after fencing/release uncertainty,
 unbounded retry, automatic replacement-task dispatch, provider rate-limit
@@ -1930,7 +1937,7 @@ Durable supervisor evidence remains **Current** —
 TC-13.18d.12a-pre2.1 / pre2.2 / pre2.2.1.
 Windows Job Object containment remains **Current** —
 TC-13.18d.12a-pre2.2.
-Interface #22 remains **Target**.
+Interface #22 core orchestration is **Current — TC-13.18d.13b**; Codex / Provider 429 deferred.
 Owner-loss transition-only recovery runtime is **Current** — TC-13.18d.12c.
 The automatic-retry durable contract is **Contract Current** —
 TC-13.18d.12c.1. Automatic-retry runtime is **Current** —
@@ -2110,6 +2117,6 @@ performs no retry start and no canonical state mutation.
 | TC-13.18d.12c transition-only owner-loss recovery | **Current** |
 | Owner-loss automatic retry durable contract | **Contract Current — TC-13.18d.12c.1** |
 | Owner-loss automatic retry runtime | **Current — TC-13.18d.12c.2** |
-| Interface #22 | **Target** |
+| Interface #22 | **Current — TC-13.18d.13b** (core orchestration); Codex / Provider 429 deferred |
 
 This contract's retry runtime is Current — TC-13.18d.12c.2.

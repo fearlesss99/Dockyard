@@ -32,7 +32,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 19 | AgentDesk RateLimit service | **Current** — TC-13.14b / Provider Detection Target — TC-13.14c | TC-13.14 | Provider-neutral rate-limit policy with multi-scope and combined signal semantics; provider detection (TC-13.14c) is evidence-dependent Target |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
-| 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Current — TC-13.18d.9b; TASK_SUPERSEDED quiescent path: Current — TC-13.18d.8; TASK_SUPERSEDED active dispatch path: Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b; dispatch failure recovery: Contract Current — TC-13.18d.11a / canonical transition Current — TC-13.18d.11b / creator-alive bounded retry Current — TC-13.18d.11c) |
+| 22 | AgentDesk WorkflowOrchestrator | Current — TC-13.18d.13b (core orchestration); Codex / Provider 429 deferred — see notes | Central scheduler integrating all services. Core orchestration Current: dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED (TC-13.18c.2); DELIVERY_RETURNED, TASK_REQUEUED (TC-13.18d.1); TASK_BLOCKED + escalation (TC-13.18d.2); BLOCKER_RESOLVED + single redispatch (TC-13.18d.3); BLOCKER_RESCOPED (TC-13.18d.5); BLOCKER_CANCELLED (TC-13.18d.6); TASK_CANCELLED quiescent path (TC-13.18d.7); TASK_CANCELLED active dispatch path (TC-13.18d.9b); TASK_SUPERSEDED quiescent path (TC-13.18d.8); TASK_SUPERSEDED active dispatch path: Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b; dispatch failure recovery: Contract Current — TC-13.18d.11a / canonical transition Current — TC-13.18d.11b / creator-alive bounded retry Current — TC-13.18d.11c; owner-loss transition recovery: Current — TC-13.18d.12c; owner-loss durable automatic retry: Current — TC-13.18d.12c.2. Codex runtime/decoder: Target/deferred — TC-13.9c.2. Provider 429 detection: Evidence-dependent Target — TC-13.14c. RateLimit → Orchestrator wiring: Target, depends on real detection evidence. HTML Dashboard is Interface #24 (Current — TC-13.20b). |
 | 23 | E2E / Recovery tests | **Current** — TC-13.19j | E2E validation and recovery scenarios — nine scenario E2E tests committed; quiescent cancellation/supersession, expert user-decision paths, escalation chain, integration failure, and happy-path audit/accept/integrate all covered |
 | 24 | AgentDesk HTML Dashboard | **Current** | TC-13.20b | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target 鈫?Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
@@ -6442,22 +6442,24 @@ dispatch IDs, user-generated content, or secrets.
 
 #### 2.19.8 Transition Coverage
 
-WorkflowOrchestrator must be aware of **all 15** transition types defined
-in `ControlPlaneTransitionService._TRANSITION_SPECS` (搂2.14.8):
+WorkflowOrchestrator must be aware of all **16 unique canonical event types**
+defined in `ControlPlaneTransitionService._TRANSITION_SPECS` (§2.14.8),
+spanning **18 orchestrated execution paths** (active/quiescent counted
+separately):
 
 | # | Event type | Covered by path |
 |---|-----------|----------------|
 | 1 | `TASK_SPECIFIED` | PM manual (orchestrator-aware) |
 | 2 | `TASK_DISPATCHED` | TC-13.18b dispatch path |
-| 3 | `DISPATCH_ACKNOWLEDGED` | Deferred (see 搂2.19.3) |
-| 4 | `DELIVERY_SUBMITTED` | TC-13.18c delivery path |
-| 5 | `DELIVERY_ACCEPTED` | TC-13.18c acceptance path |
-| 6 | `DELIVERY_RETURNED` | TC-13.18d.1 return path |
-| 7 | `TASK_REQUEUED` | TC-13.18d.1 requeue path |
-| 8 | `CHANGE_INTEGRATED` | TC-13.18c integration path |
+| 3 | `DISPATCH_ACKNOWLEDGED` | Current — TC-13.18b.2 (§5 of orchestrator contract) |
+| 4 | `DELIVERY_SUBMITTED` | Current — TC-13.18c.1 delivery path |
+| 5 | `DELIVERY_ACCEPTED` | Current — TC-13.18c.2 acceptance path |
+| 6 | `DELIVERY_RETURNED` | Current — TC-13.18d.1 return path |
+| 7 | `TASK_REQUEUED` | Current — TC-13.18d.1 requeue path |
+| 8 | `CHANGE_INTEGRATED` | Current — TC-13.18c.2 integration path |
 | 9 | `INTEGRATION_FAILED` | Current — TC-13.18d.4 blocked path |
 | 10 | `TASK_BLOCKED` | Current — TC-13.18d.2 blocked path |
-| 11 | `BLOCKER_RESOLVED` | TC-13.18d.2 unblock path |
+| 11 | `BLOCKER_RESOLVED` | Current — TC-13.18d.3 (escalation resume → single redispatch) |
 | 12 | `BLOCKER_RESCOPED` | Current — TC-13.18d.5 rescope path |
 | 13 | `BLOCKER_CANCELLED` | Current — TC-13.18d.6 cancel path |
 | 14 | `TASK_CANCELLED` (quiescent path) | Current — TC-13.18d.7 |
@@ -6509,7 +6511,7 @@ TC-13.20  鈥?HTML Dashboard
 | TC-13.18c | TC-13.18b, TC-13.16b | Delivery + audit + accept + integrate | **Current** |
 | TC-13.18d.1 | TC-13.18c | Return + requeue (fail remediation) | **Current** |
 | TC-13.18d.2 | TC-13.18d.1 | Blocked audit escalation (TASK_BLOCKED + EscalationDecision) | **Current** |
-| TC-13.18d.3 | TC-13.18d.2 | Escalation dispatch retry + cancel + replay | **Target** |
+| TC-13.18d.3 | TC-13.18d.2 | Escalation dispatch retry + cancel + replay | **Current** |
 | TC-13.18d.10a | TC-13.18d.9b | Active-dispatch supersession contract | **Contract Current** |
 | TC-13.18d.10b | TC-13.18d.10a | Active-dispatch supersession production | **Current** |
 | TC-13.18d.11a | TC-13.18d.10b | Dispatch failure recovery + bounded retry contract | **Contract Current** |
@@ -6642,16 +6644,17 @@ an outer `CancelledError` is re-raised only after shielded cleanup finishes.
 
 The quiescent `supersede_quiescent_task()` API remains Current and unchanged.
 `DispatchCycleRequest` and `DispatchCycleResult` remain exactly nine fields.
-Interface #22 remains Target; TC-13.19 and TC-13.20 statuses are unchanged.
+Interface #22 core orchestration is Current as of TC-13.18d.13b; TC-13.19 status is unchanged; TC-13.20 (HTML Dashboard Interface #24) is Current — TC-13.20b.
 
 #### 2.19.14 Status
 
 * ADR Interface Status row #22 "AgentDesk WorkflowOrchestrator"
-  remains **Target** — TC-13.18a.
+  is **Current — TC-13.18d.13b** (core orchestration); Codex / Provider 429 deferred.
 * This section (§2.19) is the Frozen Contract for TC-13.18a.
-* No production module is shipped under TC-13.18a.
+* The production module is shipped under TC-13.18b+ (all Current sub-paths).
 * TC-13.19 is Current — TC-13.19j.
-* WorkflowOrchestrator Interface #22 and TC-13.20 remain Target.
+* WorkflowOrchestrator Interface #22 core orchestration is Current;
+  TC-13.20 (HTML Dashboard Interface #24) is Current — TC-13.20b.
 * Completed TC-13.18 subpaths retain their individually recorded Current statuses.
 * **Active-dispatch cancellation** contract is repaired and frozen as of
   TC-13.18d.9a.1 (execution-based model); production implementation is
@@ -6661,16 +6664,20 @@ Interface #22 remains Target; TC-13.19 and TC-13.20 statuses are unchanged.
 * **Dispatch failure recovery and bounded retry** is Contract Current —
   TC-13.18d.11a; the canonical transition is Current — TC-13.18d.11b and
   creator-alive bounded retry is Current — TC-13.18d.11c.
-* Provider rate-limit wiring and owner-loss automatic retry remain Target;
-  owner-loss transition-only recovery is Current (TC-13.18d.12c).
+* **Owner-loss transition recovery** is Current — TC-13.18d.12c.
+* **Owner-loss durable automatic retry** is Current — TC-13.18d.12c.2.
+* Codex runtime/decoder: Target/deferred — TC-13.9c.2.
+* Provider 429 detection: Evidence-dependent Target — TC-13.14c.
+* RateLimit → Orchestrator wiring: Target, depends on real detection evidence.
 * All prior Current interfaces remain **Current**.
 
 * ADR Interface Status row #22 "AgentDesk WorkflowOrchestrator"
-  remains **Target** 鈥?TC-13.18a.
-* This section (搂2.19) is the Frozen Contract for TC-13.18a.
-* No production module is shipped under TC-13.18a.
+  is **Current — TC-13.18d.13b** (core orchestration); Codex / Provider 429 deferred.
+* This section (§2.19) is the Frozen Contract for TC-13.18a.
+* The production module is shipped under TC-13.18b+ (all Current sub-paths).
 * TC-13.19 is Current — TC-13.19j.
-* WorkflowOrchestrator Interface #22 and TC-13.20 remain Target.
+* WorkflowOrchestrator Interface #22 core orchestration is Current;
+  TC-13.20 (HTML Dashboard Interface #24) is Current — TC-13.20b.
 * Completed TC-13.18 subpaths retain their individually recorded Current statuses.
 * All prior Current interfaces remain **Current**.
 
@@ -7640,7 +7647,7 @@ TC-13.18d.12c follow-up: owner-loss transition-only recovery is now
 **Current**. The automatic-retry durable contract is **Contract Current —
 TC-13.18d.12c.1**; its runtime is **Current — TC-13.18d.12c.2**.
 Owner-loss automatic retry is **Current**.
-Interface #22 remains **Target**.
+Interface #22 core orchestration is **Current — TC-13.18d.13b**; Codex / Provider 429 deferred.
 
 ---
 
@@ -7671,7 +7678,7 @@ Status:
   **Contract Current — TC-13.18d.12c.1**.
 - Automatic-retry runtime: **Current — TC-13.18d.12c.2**.
 - Owner-loss automatic retry: **Current**.
-- Interface #22 remains **Target**.
+- Interface #22 core orchestration is **Current — TC-13.18d.13b**; Codex / Provider 429 deferred.
 
 ---
 

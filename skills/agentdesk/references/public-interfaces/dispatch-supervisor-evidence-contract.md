@@ -347,7 +347,7 @@ for the `SUPERVISOR_READY → Worker starts` window).
   ALIVE and UNKNOWN remain fail-closed.
 - Historical TC-13.18d.12b status: Target — TC-13.18d.12c (superseded by
   the transition-only production status above).
-- Interface #22: Target.
+- Interface #22 core orchestration: **Current — TC-13.18d.13b**; Codex / Provider 429 deferred.
 
 This card does not flip any Current status except as recorded above.
 Production implementation (TC-13.18d.12a-pre2) is generated only after
@@ -402,4 +402,4 @@ Status:
   **Contract Current — TC-13.18d.12c.1**.
 - Owner-loss automatic retry runtime: **Current — TC-13.18d.12c.2**.
 - Owner-loss automatic retry: **Current**.
-- Interface #22: **Target**.
+- Interface #22 core orchestration: **Current — TC-13.18d.13b**; Codex / Provider 429 deferred.

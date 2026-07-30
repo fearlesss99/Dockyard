@@ -8882,22 +8882,22 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
             "ADR §2.19 must reference workflow-orchestrator-contract.md",
         )
 
-    # ── 2. Interface #22 remains Target ──────────────────────────────────
+    # ── 2. Interface #22 core orchestration is Current ────────────────────
 
-    def test_interface_22_is_target(self) -> None:
-        """Interface #22 must be Target — TC-13.18."""
+    def test_interface_22_core_is_current(self) -> None:
+        """Interface #22 core orchestration must be Current — TC-13.18d.13b."""
         self.assertIn(
-            "| 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18",
+            "| 22 | AgentDesk WorkflowOrchestrator | Current — TC-13.18d.13b",
             self.adr_text,
-            "ADR: Interface #22 must be Target — TC-13.18",
+            "ADR: Interface #22 core orchestration must be Current — TC-13.18d.13b",
         )
 
-    def test_interface_22_not_current(self) -> None:
-        """Interface #22 must NOT claim Current."""
-        self.assertNotIn(
-            "| 22 | AgentDesk WorkflowOrchestrator | **Current**",
+    def test_interface_22_codex_429_deferred(self) -> None:
+        """Interface #22 must document Codex and Provider 429 as deferred."""
+        self.assertIn(
+            "Codex / Provider 429 deferred",
             self.adr_text,
-            "ADR: Interface #22 must NOT claim Current",
+            "ADR: Interface #22 must declare Codex / Provider 429 deferred",
         )
 
     # ── 3. Production module present ─────────────────────────────────────
@@ -9189,21 +9189,21 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
 
     # ── 13. ADR §2.19 status section ─────────────────────────────────────
 
-    def test_adr_219_status_declares_target(self) -> None:
-        """§2.19.11 must state Interface #22 remains Target."""
+    def test_adr_219_status_declares_current(self) -> None:
+        """§2.19.14 must state Interface #22 core orchestration is Current."""
         section = _extract_markdown_section(
-            self.adr_text, "#### 2.19.11 Status"
+            self.adr_text, "#### 2.19.14 Status"
         )
-        self.assertIsNotNone(section, "ADR §2.19.11 must exist")
+        self.assertIsNotNone(section, "ADR §2.19.14 must exist")
         self.assertIn(
-            "Target",
+            "Current",
             section,
-            "ADR §2.19.11 must state Interface #22 remains Target",
+            "ADR §2.19.14 must state Interface #22 core orchestration is Current",
         )
         self.assertIn(
-            "TC-13.18a",
+            "TC-13.18d.13b",
             section,
-            "ADR §2.19.11 must reference TC-13.18a",
+            "ADR §2.19.14 must reference TC-13.18d.13b",
         )
 
     # ── 14. TC-13.18d.7 quiescent cancellation status consistency ──────────
@@ -9246,8 +9246,8 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
                         "TASK_CANCELLED / TASK_SUPERSEDED",
                     )
 
-    def test_interface_22_is_target_not_partial(self) -> None:
-        """Interface #22 must NOT contain Partial — only Target."""
+    def test_interface_22_is_current_not_partial(self) -> None:
+        """Interface #22 must NOT contain Partial — must be Current."""
         for line in self.adr_text.splitlines():
             if line.strip().startswith("| 22 |"):
                 self.assertNotIn(
@@ -9256,9 +9256,9 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
                     "ADR: Interface #22 must NOT be Partial",
                 )
                 self.assertIn(
-                    "Target",
+                    "Current",
                     line,
-                    "ADR: Interface #22 must be Target",
+                    "ADR: Interface #22 core orchestration must be Current",
                 )
                 break
 
@@ -9703,16 +9703,16 @@ class TC1319jE2EProgramClosureTests(unittest.TestCase):
             "ADR must still list Interface #22 (WorkflowOrchestrator)",
         )
 
-    # -- 3. TC-13.20 remains Target --
+    # -- 3. TC-13.20 / Interface #24 Dashboard is Current --
 
-    def test_tc1320_remains_target(self) -> None:
-        """TC-13.20 HTML Dashboard must remain Target."""
+    def test_tc1320_dashboard_is_current(self) -> None:
+        """TC-13.20 HTML Dashboard Interface #24 must be Current."""
         found = False
         for line in self.adr_text.splitlines():
             if "| 24 |" in line and "Dashboard" in line:
                 self.assertIn(
-                    "**Target**", line,
-                    f"Interface #24 must be Target: {line!r}",
+                    "**Current**", line,
+                    f"Interface #24 must be Current: {line!r}",
                 )
                 found = True
                 break
@@ -9826,30 +9826,30 @@ class TC1319jE2EProgramClosureTests(unittest.TestCase):
                     f"TC-13.19 final report must not claim: {phrase}",
                 )
 
-    # -- 11. §2.19.11 explicitly declares TC-13.19 Current --
+    # -- 11. §2.19.14 explicitly declares TC-13.19 Current --
 
-    def test_s21911_declares_tc1319_current(self) -> None:
-        """§2.19.11 must explicitly declare TC-13.19 is Current."""
-        # Locate the §2.19.11 section
-        section_start = self.adr_text.find("#### 2.19.11 Status")
+    def test_s21914_declares_tc1319_current(self) -> None:
+        """§2.19.14 must explicitly declare TC-13.19 is Current."""
+        # Locate the §2.19.14 section
+        section_start = self.adr_text.find("#### 2.19.14 Status")
         self.assertGreater(
-            section_start, -1, "§2.19.11 not found in ADR"
+            section_start, -1, "§2.19.14 not found in ADR"
         )
         # Slice a reasonable window after the heading
         section = self.adr_text[section_start:section_start + 2000]
         self.assertIn(
             "TC-13.19 is Current",
             section,
-            "§2.19.11 must declare TC-13.19 is Current",
+            "§2.19.14 must declare TC-13.19 is Current",
         )
 
-    # -- 12. §2.19.11 no longer lists TC-13.19 as remain Target --
+    # -- 12. §2.19.14 no longer lists TC-13.19 as remain Target --
 
-    def test_s21911_no_stale_tc1319_remain_target(self) -> None:
-        """§2.19.11 must not list TC-13.19 as remain Target."""
-        section_start = self.adr_text.find("#### 2.19.11 Status")
+    def test_s21914_no_stale_tc1319_remain_target(self) -> None:
+        """§2.19.14 must not list TC-13.19 as remain Target."""
+        section_start = self.adr_text.find("#### 2.19.14 Status")
         self.assertGreater(
-            section_start, -1, "§2.19.11 not found in ADR"
+            section_start, -1, "§2.19.14 not found in ADR"
         )
         section = self.adr_text[section_start:section_start + 2000]
         self.assertNotIn(
@@ -9883,27 +9883,27 @@ class TC1319jE2EProgramClosureTests(unittest.TestCase):
             f" sentences; found {len(stale)}: {stale}",
         )
 
-    # -- 15. Interface #22 and TC-13.20 remain Target --
+    # -- 15. Interface #22 core Current; Interface #24 Dashboard Current --
 
-    def test_interface_22_and_tc1320_remain_target(self) -> None:
-        """Interface #22 (WorkflowOrchestrator) and TC-13.20 must remain Target."""
+    def test_interface_22_core_current_interface_24_current(self) -> None:
+        """Interface #22 core orchestration is Current; Interface #24 Dashboard is Current."""
         # Interface #22
         self.assertIn(
-            "Interface #22 and TC-13.20 remain Target",
+            "Interface #22 core orchestration is Current",
             self.adr_text,
-            "§2.19.11 must declare Interface #22 and TC-13.20 remain Target",
+            "ADR must declare Interface #22 core orchestration Current",
         )
         # Interface #24 / TC-13.20
         found = False
         for line in self.adr_text.splitlines():
             if "| 24 |" in line and "Dashboard" in line:
                 self.assertIn(
-                    "**Target**", line,
-                    f"Interface #24 must be Target: {line!r}",
+                    "**Current**", line,
+                    f"Interface #24 must be Current: {line!r}",
                 )
                 found = True
                 break
-        self.assertTrue(found, "Interface #24 (HTML Dashboard) must remain Target")
+        self.assertTrue(found, "Interface #24 (HTML Dashboard) must be Current")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -9959,7 +9959,7 @@ class TC1320aHtmlDashboardContractFreezeTests(unittest.TestCase):
             "ADR §2.21 must declare Current — TC-13.20b after delivery",
         )
 
-    # -- 3. Interface #24 is Target --
+    # -- 3. Interface #24 is Current --
 
     def test_interface_24_is_current(self) -> None:
         """Interface #24 (HTML Dashboard) must be Current after TC-13.20b."""
@@ -11255,14 +11255,14 @@ class TC1318d9a1ActiveDispatchCancellationContractRepairTests(unittest.TestCase)
         self.assertIn("clock: WorkflowClock", self.contract_text)
         self.assertIn("heartbeat_interval_seconds: float", self.contract_text)
 
-    # -- 15. Interface #22 remains Target --
+    # -- 15. Interface #22 core orchestration is Current --
 
-    def test_interface_22_remains_target(self) -> None:
-        """Interface #22 must remain Target overall."""
+    def test_interface_22_core_orchestration_current(self) -> None:
+        """Interface #22 core orchestration must be Current."""
         found = False
         for line in self.adr_text.splitlines():
             if "| 22 |" in line and "WorkflowOrchestrator" in line:
-                self.assertIn("Target", line)
+                self.assertIn("Current", line)
                 found = True
         self.assertTrue(found)
 
@@ -12311,10 +12311,10 @@ class TC1318d12aPre1DurableSupervisorEvidenceContractTests(unittest.TestCase):
         for term in (
             "TC-13.18d.11a/b/c: Current",
             "TC-13.18d.12a: investigation complete",
-            "Owner-loss recovery: continues Target",
+            "Owner-loss recovery: is Current",
             "must remain fail-closed until",
             "does not flip any Current status",
-            "Interface #22: Target",
+            "Interface #22 core orchestration is Current",
         ):
             self.assertIn(term, self.contract_text)
 
@@ -12418,10 +12418,10 @@ class TC1318d12aPre2RuntimeContractTests(unittest.TestCase):
             "Current — TC-13.18d.12a-pre2.2.1",
             self.contract_text,
         )
-        # Must still NOT claim owner-loss recovery runtime is done.
+        # Owner-loss recovery is Current; Interface #22 core is Current.
         self.assertIn("Owner-loss recovery:", self.contract_text)
-        self.assertIn("Target", self.contract_text)
-        self.assertIn("Interface #22: Target", self.contract_text)
+        self.assertIn("Current — TC-13.18d.12c", self.contract_text)
+        self.assertIn("Interface #22 core orchestration: **Current", self.contract_text)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -12705,21 +12705,22 @@ class TC1318d12bOwnerLossRecoveryContractTests(unittest.TestCase):
 
     def test_25_status_terms(self) -> None:
         self.assertIn("Contract Current — TC-13.18d.12b", self.contract_text)
-        self.assertIn("Target — TC-13.18d.12c", self.contract_text)
+        self.assertIn("Current — TC-13.18d.12c", self.contract_text)
+        self.assertIn("Current — TC-13.18d.12c.2", self.contract_text)
 
-    def test_26_interface_22_still_target(self) -> None:
-        self.assertIn("Interface #22 remains **Target**", self.contract_text)
+    def test_26_interface_22_core_current(self) -> None:
+        self.assertIn("Interface #22 core orchestration is **Current", self.contract_text)
 
-    def test_27_owner_loss_runtime_still_target(self) -> None:
-        self.assertIn("Owner-loss recovery runtime remains **Target**", self.contract_text)
+    def test_27_owner_loss_transition_only_current(self) -> None:
+        self.assertIn("Owner-loss transition-only recovery runtime is **Current**", self.contract_text)
 
     def test_28_dse_contract_status_updated(self) -> None:
         self.assertIn("Contract Current — TC-13.18d.12b", self.dse_contract_text)
-        self.assertIn("Target — TC-13.18d.12c", self.dse_contract_text)
+        self.assertIn("Current — TC-13.18d.12c", self.dse_contract_text)
 
     def test_29_adr_owner_loss_status(self) -> None:
         self.assertIn("Contract Current — TC-13.18d.12b", self.adr_text)
-        self.assertIn("Target — TC-13.18d.12c", self.adr_text)
+        self.assertIn("Current — TC-13.18d.12c", self.adr_text)
         self.assertIn("owner-loss recovery", self.adr_text.lower())
 
     def test_30_existing_dependencies_remain_current(self) -> None:
@@ -12773,11 +12774,11 @@ class TC1318d12cOwnerLossProductionStatusTests(unittest.TestCase):
             self.adr,
         )
 
-    def test_retry_and_interface_remain_target(self) -> None:
+    def test_retry_and_interface_current(self) -> None:
         for text in (self.workflow, self.evidence, self.adr):
             self.assertIn("TC-13.18d.12c.1", text)
-        self.assertIn("Interface #22 remains **Target**", self.workflow)
-        self.assertIn("Interface #22 remains **Target**", self.adr)
+        self.assertIn("Interface #22 core orchestration is **Current", self.workflow)
+        self.assertIn("Interface #22 core orchestration is **Current", self.adr)
 
 
 class TC1318d12c1OwnerLossRetryDurableContractTests(unittest.TestCase):
@@ -12992,7 +12993,7 @@ class TC1318d12c1OwnerLossRetryDurableContractTests(unittest.TestCase):
             body,
         )
         self.assertIn("**Current — TC-13.18d.12c.2**", body)
-        self.assertIn("Interface #22 | **Target**", body)
+        self.assertIn("Interface #22 | **Current", body)
         self.assertIn("retry runtime is Current", body)
 
     def test_14_status_is_synchronized_across_contracts_and_adr(self) -> None:
