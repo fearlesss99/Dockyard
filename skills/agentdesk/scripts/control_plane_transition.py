@@ -88,6 +88,7 @@ _EVENT_TYPES: frozenset[str] = frozenset({
     "BLOCKER_CANCELLED",
     "TASK_CANCELLED",
     "TASK_SUPERSEDED",
+    "DISPATCH_FAILED",
 })
 
 # Event type → from_state → to_state mapping
@@ -104,6 +105,7 @@ _EVENT_TYPE_TRANSITIONS: dict[str, tuple[str, str]] = {
     "BLOCKER_RESOLVED": ("blocked", "blocked"),  # to_state is caller-specified
     "BLOCKER_RESCOPED": ("blocked", "draft"),
     "BLOCKER_CANCELLED": ("blocked", "cancelled"),
+    "DISPATCH_FAILED": ("dispatched|in_progress", "ready"),
 }
 
 # Event types that require an active dispatch (worker-lifecycle).
@@ -113,6 +115,7 @@ _ACTIVE_DISPATCH_EVENT_TYPES: frozenset[str] = frozenset({
     "DELIVERY_SUBMITTED",
     "DELIVERY_ACCEPTED",
     "DELIVERY_RETURNED",
+    "DISPATCH_FAILED",
 })
 
 # Event types that produce an outbox.
@@ -138,6 +141,7 @@ _DISPATCH_CAS_REQUIRED_EVENT_TYPES: frozenset[str] = frozenset({
     "DELIVERY_SUBMITTED",
     "DELIVERY_ACCEPTED",
     "DELIVERY_RETURNED",
+    "DISPATCH_FAILED",
 })
 
 # PM-only event types — DispatchCAS is forbidden.
@@ -172,6 +176,14 @@ _GUARD_RESULTS: frozenset[str] = frozenset({
 # Equivalence methods.
 _EQUIVALENCE_METHODS: frozenset[str] = frozenset({
     "patch_id", "tree", "approved_mapping",
+})
+
+# Closed failure taxonomy for active-dispatch recovery.
+_DISPATCH_FAILURE_KINDS: frozenset[str] = frozenset({
+    "dispatch_start_failed",
+    "worker_failed",
+    "worker_output_failed",
+    "delivery_transition_failed",
 })
 
 # Blocked kinds (from validate_project.py).
@@ -1085,6 +1097,34 @@ class SupersededPayload:
         _validate_safe_str(self.superseded_by, "superseded_by")
 
 
+@dataclass(frozen=True, slots=True)
+class DispatchFailedPayload:
+    """Payload for active dispatch recovery (DISPATCH_FAILED)."""
+
+    failure_kind: str
+
+    def __post_init__(self) -> None:
+        if type(self.failure_kind) is not str or not self.failure_kind:
+            raise TypeError(
+                "failure_kind must be a non-empty exact str, "
+                f"got {_safe_type_name(self.failure_kind)}"
+            )
+        if (
+            self.failure_kind != self.failure_kind.strip()
+            or "\0" in self.failure_kind
+            or "\r" in self.failure_kind
+            or "\n" in self.failure_kind
+        ):
+            raise ValueError(
+                "failure_kind must not contain surrounding whitespace, "
+                "NUL, CR, or LF"
+            )
+        if self.failure_kind not in _DISPATCH_FAILURE_KINDS:
+            raise ValueError(
+                "failure_kind must be one of the frozen dispatch failure kinds"
+            )
+
+
 # Closed union of all payload variants.
 TransitionPayload = Union[
     SpecifyPayload,
@@ -1101,6 +1141,7 @@ TransitionPayload = Union[
     BlockerCancelledPayload,
     CancelledPayload,
     SupersededPayload,
+    DispatchFailedPayload,
 ]
 
 
@@ -1122,6 +1163,7 @@ _EVENT_TYPE_PAYLOAD_MAP: dict[str, type] = {
     "BLOCKER_CANCELLED": BlockerCancelledPayload,
     "TASK_CANCELLED": CancelledPayload,
     "TASK_SUPERSEDED": SupersededPayload,
+    "DISPATCH_FAILED": DispatchFailedPayload,
 }
 
 
@@ -1349,6 +1391,48 @@ class TransitionRequest:
                 f"event_context must be TransitionEventContext, "
                 f"got {_safe_type_name(self.event_context)}"
             )
+        if self.event_type == "DISPATCH_FAILED":
+            if type(self.event_type) is not str:
+                raise TypeError(
+                    "DISPATCH_FAILED event_type must be exact str"
+                )
+            if type(self.cas) is not TransitionCAS:
+                raise TypeError("DISPATCH_FAILED cas must be exact TransitionCAS")
+            if type(self.dispatch_cas) is not DispatchCAS:
+                raise TypeError(
+                    "DISPATCH_FAILED dispatch_cas must be exact DispatchCAS"
+                )
+            if type(self.payload) is not DispatchFailedPayload:
+                raise TypeError(
+                    "DISPATCH_FAILED payload must be exact DispatchFailedPayload"
+                )
+            if type(self.event_context) is not TransitionEventContext:
+                raise TypeError(
+                    "DISPATCH_FAILED event_context must be exact "
+                    "TransitionEventContext"
+                )
+            if self.cas.expected_state not in {"dispatched", "in_progress"}:
+                raise TransitionValidationError(
+                    "DISPATCH_FAILED expected_state must be dispatched or "
+                    "in_progress"
+                )
+            if not self.event_context.evidence_refs:
+                raise TransitionValidationError(
+                    "DISPATCH_FAILED requires at least one evidence_ref"
+                )
+            for ref in self.event_context.evidence_refs:
+                if (
+                    type(ref) is not str
+                    or not ref
+                    or ref != ref.strip()
+                    or "\0" in ref
+                    or "\r" in ref
+                    or "\n" in ref
+                ):
+                    raise TransitionValidationError(
+                        "DISPATCH_FAILED evidence_refs must contain only "
+                        "safe exact strings"
+                    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1956,6 +2040,8 @@ def _validate_state_event_schema(
     event_type = event.get("event_type")
     if event_type == "TASK_DISPATCHED":
         known_keys.add("payload_digest")
+    if event_type == "DISPATCH_FAILED":
+        known_keys.add("failure_kind")
     if event_type == "CHANGE_INTEGRATED":
         known_keys.update({
             "accepted_commit",
@@ -2024,6 +2110,27 @@ def _validate_state_event_schema(
         if not isinstance(pd, str) or _PAYLOAD_DIGEST_RE.fullmatch(pd) is None:
             raise TransitionSchemaError(
                 "state event payload_digest must match sha256:<64 hex>"
+            )
+    if event_type == "DISPATCH_FAILED":
+        failure_kind = event.get("failure_kind")
+        if (
+            type(failure_kind) is not str
+            or failure_kind not in _DISPATCH_FAILURE_KINDS
+        ):
+            raise TransitionSchemaError(
+                "state event failure_kind must be a frozen dispatch failure kind"
+            )
+        if not refs or any(
+            type(ref) is not str
+            or not ref
+            or ref != ref.strip()
+            or "\0" in ref
+            or "\r" in ref
+            or "\n" in ref
+            for ref in refs
+        ):
+            raise TransitionSchemaError(
+                "DISPATCH_FAILED state event requires safe evidence_refs"
             )
 
 
@@ -2121,7 +2228,7 @@ _TERMINAL_STATES: frozenset[str] = frozenset({
 
 _NON_TERMINAL_STATES: frozenset[str] = _STATES_FROZEN - _TERMINAL_STATES
 
-# -- transition registry -- exactly 15 entries --
+# -- transition registry -- exactly 16 entries --
 
 _TRANSITION_SPECS: dict[str, _TransitionSpec] = {
     # 1. draft -> ready
@@ -2286,6 +2393,17 @@ _TRANSITION_SPECS: dict[str, _TransitionSpec] = {
         to_state="superseded",
         needs_worker_lease=False,
         needs_dispatch_cas=False,
+        produces_outbox=False,
+        produces_acceptance=False,
+    ),
+    # 16. dispatched|in_progress -> ready (DISPATCH_FAILED)
+    "DISPATCH_FAILED": _TransitionSpec(
+        event_type="DISPATCH_FAILED",
+        payload_type=DispatchFailedPayload,
+        from_states=frozenset({"dispatched", "in_progress"}),
+        to_state="ready",
+        needs_worker_lease=False,
+        needs_dispatch_cas=True,
         produces_outbox=False,
         produces_acceptance=False,
     ),
@@ -2762,6 +2880,17 @@ def _mutate_task_for_transition(
     elif event_type == "TASK_REQUEUED":
         new_task["current_dispatch"] = None
 
+    elif event_type == "DISPATCH_FAILED":
+        if type(request.payload) is not DispatchFailedPayload:
+            raise TransitionSchemaError(
+                "DISPATCH_FAILED payload must be exact DispatchFailedPayload"
+            )
+        new_task["current_dispatch"] = None
+        new_task["report_path"] = None
+        new_task["delivery_state"] = None
+        new_task["implementation_commit"] = None
+        new_task["report_commit"] = None
+
     elif event_type == "CHANGE_INTEGRATED":
         if not isinstance(request.payload, IntegrationPayload):
             raise TransitionSchemaError(
@@ -2918,6 +3047,11 @@ def _build_event_bytes(
     extra: dict[str, object] = {}
     if spec.event_type == "TASK_DISPATCHED" and payload_digest is not None:
         extra["payload_digest"] = payload_digest
+    if (
+        spec.event_type == "DISPATCH_FAILED"
+        and type(request.payload) is DispatchFailedPayload
+    ):
+        extra["failure_kind"] = request.payload.failure_kind
     if spec.event_type == "CHANGE_INTEGRATED":
         if isinstance(request.payload, IntegrationPayload):
             payload = request.payload
@@ -4772,7 +4906,7 @@ class ControlPlaneTransitionService:
             return result
 
 
-# ── __all__ — exactly 32 frozen public symbols ────────────────────────────
+# ── __all__ — exactly 33 frozen public symbols ────────────────────────────
 
 __all__ = [
     "ControlPlaneTransitionService",
@@ -4799,6 +4933,7 @@ __all__ = [
     "BlockerCancelledPayload",
     "CancelledPayload",
     "SupersededPayload",
+    "DispatchFailedPayload",
     "ControlPlaneTransitionError",
     "TransitionValidationError",
     "TransitionCASConflictError",

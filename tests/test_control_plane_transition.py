@@ -4,7 +4,7 @@ Covers:
 * __all__ symbols
 * Dataclass field exactness
 * Frozen/slots
-* Union 14 variants
+* Union 15 variants
 * All positive/negative input boundaries
 * bool/int boundaries
 * Unicode
@@ -86,12 +86,12 @@ class TestControlPlaneTransitionBase(unittest.TestCase):
 
 
 class TestAllSymbols(TestControlPlaneTransitionBase):
-    """TC-13.11b: __all__ must contain exactly 31 symbols."""
+    """TC-13.18d.11b: __all__ must contain exactly 33 symbols."""
 
-    def test_001_all_length_is_32(self) -> None:
+    def test_001_all_length_is_33(self) -> None:
         self.assertEqual(
-            len(self.cpt.__all__), 32,
-            f"__all__ must have exactly 32 symbols, got {len(self.cpt.__all__)}",
+            len(self.cpt.__all__), 33,
+            f"__all__ must have exactly 33 symbols, got {len(self.cpt.__all__)}",
         )
 
     def test_002_all_frozen_order_matches_spec(self) -> None:
@@ -120,6 +120,7 @@ class TestAllSymbols(TestControlPlaneTransitionBase):
             "BlockerCancelledPayload",
             "CancelledPayload",
             "SupersededPayload",
+            "DispatchFailedPayload",
             "ControlPlaneTransitionError",
             "TransitionValidationError",
             "TransitionCASConflictError",
@@ -345,6 +346,12 @@ class TestDataclassFieldExactness(TestControlPlaneTransitionBase):
         self.assertEqual(names, ("superseded_by",))
         self.assertEqual(len(fields), 1)
 
+    def test_032_dispatch_failed_payload_one_field(self) -> None:
+        fields = dataclasses.fields(self.cpt.DispatchFailedPayload)
+        names = tuple(f.name for f in fields)
+        self.assertEqual(names, ("failure_kind",))
+        self.assertEqual(len(fields), 1)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 3. Frozen / slots
@@ -377,6 +384,7 @@ class TestFrozenAndSlots(TestControlPlaneTransitionBase):
         "BlockerCancelledPayload",
         "CancelledPayload",
         "SupersededPayload",
+        "DispatchFailedPayload",
         "ControlPlaneTransitionService",
     ]
 
@@ -430,22 +438,22 @@ class TestFrozenAndSlots(TestControlPlaneTransitionBase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4. Union 14 variants
+# 4. Union 15 variants
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 class TestUnionVariants(TestControlPlaneTransitionBase):
-    """TransitionPayload must be a Union of exactly 14 payload variants."""
+    """TransitionPayload must be a Union of exactly 15 payload variants."""
 
     def test_050_union_is_union(self) -> None:
         origin = get_origin(self.cpt.TransitionPayload)
         self.assertIs(origin, Union)
 
-    def test_051_union_exact_fourteen_args(self) -> None:
+    def test_051_union_exact_fifteen_args(self) -> None:
         args = get_args(self.cpt.TransitionPayload)
-        self.assertEqual(len(args), 14)
+        self.assertEqual(len(args), 15)
 
-    def test_052_union_contains_all_fourteen(self) -> None:
+    def test_052_union_contains_all_fifteen(self) -> None:
         expected = {
             self.cpt.SpecifyPayload,
             self.cpt.DispatchPayload,
@@ -461,6 +469,7 @@ class TestUnionVariants(TestControlPlaneTransitionBase):
             self.cpt.BlockerCancelledPayload,
             self.cpt.CancelledPayload,
             self.cpt.SupersededPayload,
+            self.cpt.DispatchFailedPayload,
         }
         actual = set(get_args(self.cpt.TransitionPayload))
         self.assertEqual(actual, expected)
@@ -2779,14 +2788,14 @@ class TestCASAllStates(TestControlPlaneTransitionBase):
 
 
 class TestEventTypeCoverage(TestControlPlaneTransitionBase):
-    """All 15 event types must have payload mappings."""
+    """All 16 event types must have payload mappings."""
 
     def test_390_all_event_types_in_map(self) -> None:
         for et in self.cpt._EVENT_TYPES:
             self.assertIn(et, self.cpt._EVENT_TYPE_PAYLOAD_MAP,
                           f"Event type {et} missing from payload map")
 
-    def test_391_all_fourteen_payloads_in_map(self) -> None:
+    def test_391_all_fifteen_payloads_in_map(self) -> None:
         expected = {
             self.cpt.SpecifyPayload,
             self.cpt.DispatchPayload,
@@ -2802,6 +2811,7 @@ class TestEventTypeCoverage(TestControlPlaneTransitionBase):
             self.cpt.BlockerCancelledPayload,
             self.cpt.CancelledPayload,
             self.cpt.SupersededPayload,
+            self.cpt.DispatchFailedPayload,
         }
         actual = set(self.cpt._EVENT_TYPE_PAYLOAD_MAP.values())
         self.assertEqual(expected, actual)
@@ -2812,7 +2822,8 @@ class TestEventTypeCoverage(TestControlPlaneTransitionBase):
         self.assertIn("DELIVERY_SUBMITTED", required)
         self.assertIn("DELIVERY_ACCEPTED", required)
         self.assertIn("DELIVERY_RETURNED", required)
-        self.assertEqual(len(required), 4)
+        self.assertIn("DISPATCH_FAILED", required)
+        self.assertEqual(len(required), 5)
 
     def test_393_pm_only_event_types_no_dispatch_cas(self) -> None:
         pm_only = self.cpt._PM_ONLY_EVENT_TYPES
@@ -2995,9 +3006,9 @@ class TestShaValidation(TestControlPlaneTransitionBase):
 
 
 class TestEventTypeStrings(TestControlPlaneTransitionBase):
-    """Verify frozen event type names include all 15 variants."""
+    """Verify frozen event type names include all 16 variants."""
 
-    def test_440_all_fifteen_event_types(self) -> None:
+    def test_440_all_sixteen_event_types(self) -> None:
         expected = {
             "TASK_SPECIFIED",
             "TASK_DISPATCHED",
@@ -3014,9 +3025,10 @@ class TestEventTypeStrings(TestControlPlaneTransitionBase):
             "BLOCKER_CANCELLED",
             "TASK_CANCELLED",
             "TASK_SUPERSEDED",
+            "DISPATCH_FAILED",
         }
         self.assertEqual(self.cpt._EVENT_TYPES, expected)
-        self.assertEqual(len(expected), 15)
+        self.assertEqual(len(expected), 16)
 
     def test_441_event_type_transitions_defined(self) -> None:
         """Each event type with a fixed transition should have from/to states."""
@@ -3029,6 +3041,10 @@ class TestEventTypeStrings(TestControlPlaneTransitionBase):
         self.assertEqual(transitions["CHANGE_INTEGRATED"], ("accepted", "integrated"))
         self.assertIn("INTEGRATION_FAILED", transitions)
         self.assertEqual(transitions["INTEGRATION_FAILED"], ("accepted", "blocked"))
+        self.assertEqual(
+            transitions["DISPATCH_FAILED"],
+            ("dispatched|in_progress", "ready"),
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -12904,7 +12920,851 @@ class TestGateInStateLockRealChain(TestControlPlaneTransitionBase):
                 tmpdir.cleanup()
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestDispatchFailedTransition(TestControlPlaneTransitionBase):
+    """TC-13.18d.11b canonical active-dispatch recovery transition."""
+
+    _FAILURE_KINDS = (
+        "dispatch_start_failed",
+        "worker_failed",
+        "worker_output_failed",
+        "delivery_transition_failed",
+    )
+
+    def setUp(self):
+        super().setUp()
+        self._harness = _TransitionTestHarness()
+
+    def _setup(self, state="in_progress", *, attempt=2, extra=None):
+        task_extra = {
+            "report_path": "docs/pm/reports/TC-001-r1.md",
+            "delivery_state": "submitted",
+            "implementation_commit": "b" * 40,
+            "report_commit": "c" * 40,
+            "accepted_commit": "d" * 40,
+            "acceptance_path": "docs/pm/acceptances/TC-001-r1-a1-review1.md",
+            "integrated_commit": "e" * 40,
+        }
+        if extra:
+            task_extra.update(extra)
+        return self._harness._setup_project(
+            self.cpt,
+            task_state=state,
+            task_id="TC-001",
+            revision=1,
+            attempt=attempt,
+            current_dispatch={
+                "dispatch_id": "DSP-FAILED",
+                "role_id": "worker-basic",
+                "base_commit": "a" * 40,
+                "branch": "main",
+                "model_selection": {},
+            },
+            extra_task_fields=task_extra,
+            setup_approval_grant=False,
+        )
+
+    def _request(
+        self,
+        head,
+        *,
+        state="in_progress",
+        event_id="EVT-20260730-DISPATCH-FAILED",
+        failure_kind="worker_failed",
+        evidence_refs=("docs/pm/evidence/dispatch-failure.yaml",),
+        source_message_id=None,
+        dispatch_id="DSP-FAILED",
+        attempt=2,
+    ):
+        return self.cpt.TransitionRequest(
+            cas=self.cpt.TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state=state,
+                expected_snapshot_commit=head,
+            ),
+            dispatch_cas=self.cpt.DispatchCAS(
+                expected_dispatch_id=dispatch_id,
+                expected_attempt=attempt,
+            ),
+            event_id=event_id,
+            event_type="DISPATCH_FAILED",
+            payload=self.cpt.DispatchFailedPayload(
+                failure_kind=failure_kind,
+            ),
+            event_context=self.cpt.TransitionEventContext(
+                source_message_id=source_message_id,
+                evidence_refs=evidence_refs,
+                guard_results=(),
+            ),
+        )
+
+    def test_payload_exact_shape_and_allowlist(self):
+        for failure_kind in self._FAILURE_KINDS:
+            with self.subTest(failure_kind=failure_kind):
+                payload = self.cpt.DispatchFailedPayload(failure_kind)
+                self.assertEqual(payload.failure_kind, failure_kind)
+                self.assertEqual(payload.__slots__, ("failure_kind",))
+                with self.assertRaises(dataclasses.FrozenInstanceError):
+                    payload.failure_kind = "worker_failed"
+
+        class StrSubclass(str):
+            pass
+
+        for invalid in (
+            "",
+            "unknown",
+            " worker_failed",
+            "worker_failed ",
+            "worker_failed\n",
+            "worker_failed\t",
+            StrSubclass("worker_failed"),
+            None,
+            1,
+        ):
+            with self.subTest(invalid=type(invalid).__name__):
+                with self.assertRaises((TypeError, ValueError)):
+                    self.cpt.DispatchFailedPayload(invalid)
+
+    def test_registry_and_spec_are_exact(self):
+        self.assertIn("DISPATCH_FAILED", self.cpt._EVENT_TYPES)
+        self.assertIs(
+            self.cpt._EVENT_TYPE_PAYLOAD_MAP["DISPATCH_FAILED"],
+            self.cpt.DispatchFailedPayload,
+        )
+        self.assertIn(
+            "DISPATCH_FAILED",
+            self.cpt._DISPATCH_CAS_REQUIRED_EVENT_TYPES,
+        )
+        self.assertNotIn("DISPATCH_FAILED", self.cpt._PM_ONLY_EVENT_TYPES)
+        spec = self.cpt._TRANSITION_SPECS["DISPATCH_FAILED"]
+        self.assertEqual(spec.from_states, {"dispatched", "in_progress"})
+        self.assertEqual(spec.to_state, "ready")
+        self.assertFalse(spec.needs_worker_lease)
+        self.assertTrue(spec.needs_dispatch_cas)
+        self.assertFalse(spec.produces_outbox)
+        self.assertFalse(spec.produces_acceptance)
+
+    def test_success_from_both_active_states_mutates_exact_fields(self):
+        import json
+
+        now = datetime(2026, 7, 30, 1, 2, 3, tzinfo=UTC)
+        for state in ("dispatched", "in_progress"):
+            with self.subTest(state=state):
+                tmpdir, root, head, svc, _ = self._setup(state)
+                try:
+                    tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+                    before = json.loads(tasks_path.read_text(encoding="utf-8"))
+                    before_task = before["tasks"][0]
+                    before_timestamps = dict(before_task["timestamps"])
+                    request = self._request(head, state=state)
+
+                    result = svc.apply_transition(request, None, now)
+
+                    self.assertEqual(result.from_state, state)
+                    self.assertEqual(result.to_state, "ready")
+                    after = json.loads(tasks_path.read_text(encoding="utf-8"))
+                    after_task = after["tasks"][0]
+                    self.assertEqual(after_task["state"], "ready")
+                    self.assertEqual(after_task["attempt"], 2)
+                    self.assertIsNone(after_task["current_dispatch"])
+                    for key in (
+                        "report_path",
+                        "delivery_state",
+                        "implementation_commit",
+                        "report_commit",
+                    ):
+                        self.assertIsNone(after_task[key])
+                    for key in (
+                        "revision",
+                        "task_card_path",
+                        "task_card_commit",
+                        "accepted_commit",
+                        "acceptance_path",
+                        "integrated_commit",
+                    ):
+                        self.assertEqual(after_task[key], before_task[key])
+                    self.assertEqual(
+                        set(after_task["timestamps"]),
+                        set(before_timestamps),
+                    )
+                    self.assertEqual(
+                        after_task["timestamps"]["updated_at"],
+                        "2026-07-30T01:02:03Z",
+                    )
+                    for key, value in before_timestamps.items():
+                        if key != "updated_at":
+                            self.assertEqual(after_task["timestamps"][key], value)
+
+                    event_path = (
+                        root / "docs" / "pm" / "events"
+                        / "EVT-20260730-DISPATCH-FAILED.yaml"
+                    )
+                    event_text = event_path.read_text(encoding="utf-8")
+                    self.assertIn("event_type: DISPATCH_FAILED", event_text)
+                    self.assertIn("failure_kind: worker_failed", event_text)
+                    self.assertIn("attempt: 2", event_text)
+                    self.assertIn("dispatch_id: DSP-FAILED", event_text)
+                    self.assertIn(f"from_state: {state}", event_text)
+                    self.assertIn("to_state: ready", event_text)
+                    self.assertNotIn("payload_digest", event_text)
+                    self.assertEqual(
+                        list((root / "docs" / "pm" / "outbox").glob("*.yaml")),
+                        [],
+                    )
+                    self.assertEqual(
+                        list(
+                            (root / "docs" / "pm" / "acceptances").glob("*.md")
+                        ),
+                        [],
+                    )
+                finally:
+                    tmpdir.cleanup()
+
+    def test_request_validation_is_fail_closed(self):
+        tmpdir, root, head, svc, _ = self._setup()
+        try:
+            cas = self.cpt.TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="in_progress",
+                expected_snapshot_commit=head,
+            )
+            context = self.cpt.TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=("docs/pm/evidence/failure.yaml",),
+                guard_results=(),
+            )
+            with self.assertRaises(self.cpt.TransitionValidationError):
+                self.cpt.TransitionRequest(
+                    cas=cas,
+                    dispatch_cas=None,
+                    event_id="EVT-20260730-NO-DCAS",
+                    event_type="DISPATCH_FAILED",
+                    payload=self.cpt.DispatchFailedPayload("worker_failed"),
+                    event_context=context,
+                )
+            with self.assertRaises(self.cpt.TransitionValidationError):
+                self._request(head, evidence_refs=())
+            with self.assertRaises(self.cpt.TransitionValidationError):
+                self._request(
+                    head,
+                    evidence_refs=("docs/pm/evidence/failure\0.yaml",),
+                )
+            with self.assertRaises(self.cpt.TransitionValidationError):
+                self._request(head, state="review_ready")
+
+            class StrSubclass(str):
+                pass
+
+            class DispatchCASSubclass(self.cpt.DispatchCAS):
+                pass
+
+            with self.assertRaises(TypeError):
+                self.cpt.TransitionRequest(
+                    cas=cas,
+                    dispatch_cas=self.cpt.DispatchCAS("DSP-FAILED", 2),
+                    event_id="EVT-20260730-EVENT-TYPE-SUBCLASS",
+                    event_type=StrSubclass("DISPATCH_FAILED"),
+                    payload=self.cpt.DispatchFailedPayload("worker_failed"),
+                    event_context=context,
+                )
+
+            with self.assertRaises(TypeError):
+                self.cpt.TransitionRequest(
+                    cas=cas,
+                    dispatch_cas=DispatchCASSubclass("DSP-FAILED", 2),
+                    event_id="EVT-20260730-DCAS-SUBCLASS",
+                    event_type="DISPATCH_FAILED",
+                    payload=self.cpt.DispatchFailedPayload("worker_failed"),
+                    event_context=context,
+                )
+
+            class TransitionCASSubclass(self.cpt.TransitionCAS):
+                pass
+
+            class DispatchFailedPayloadSubclass(
+                self.cpt.DispatchFailedPayload
+            ):
+                pass
+
+            class TransitionEventContextSubclass(
+                self.cpt.TransitionEventContext
+            ):
+                pass
+
+            exact_dispatch_cas = self.cpt.DispatchCAS("DSP-FAILED", 2)
+            exact_payload = self.cpt.DispatchFailedPayload("worker_failed")
+            exact_context = self.cpt.TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=("docs/pm/evidence/failure.yaml",),
+                guard_results=(),
+            )
+            cases = (
+                (
+                    TransitionCASSubclass(
+                        "TC-001",
+                        1,
+                        "in_progress",
+                        head,
+                    ),
+                    exact_dispatch_cas,
+                    exact_payload,
+                    exact_context,
+                ),
+                (
+                    cas,
+                    exact_dispatch_cas,
+                    DispatchFailedPayloadSubclass("worker_failed"),
+                    exact_context,
+                ),
+                (
+                    cas,
+                    exact_dispatch_cas,
+                    exact_payload,
+                    TransitionEventContextSubclass(
+                        None,
+                        ("docs/pm/evidence/failure.yaml",),
+                        (),
+                    ),
+                ),
+            )
+            for case_cas, case_dcas, case_payload, case_context in cases:
+                with self.subTest(subclass=type(case_cas).__name__):
+                    with self.assertRaises(TypeError):
+                        self.cpt.TransitionRequest(
+                            cas=case_cas,
+                            dispatch_cas=case_dcas,
+                            event_id="EVT-20260730-EXACT-TYPE",
+                            event_type="DISPATCH_FAILED",
+                            payload=case_payload,
+                            event_context=case_context,
+                        )
+        finally:
+            tmpdir.cleanup()
+
+    def test_failure_kind_state_event_schema_is_event_specific(self):
+        base = {
+            "schema_version": "agentdesk.state-event/v2",
+            "event_id": "EVT-20260730-SCHEMA",
+            "event_type": "DISPATCH_FAILED",
+            "task_id": "TC-001",
+            "revision": 1,
+            "attempt": 2,
+            "dispatch_id": "DSP-FAILED",
+            "from_state": "in_progress",
+            "to_state": "ready",
+            "lease_epoch": 1,
+            "actor_role_id": "PM",
+            "occurred_at": "2026-07-30T02:00:00Z",
+            "source_message_id": None,
+            "evidence_refs": ["docs/pm/evidence/failure.yaml"],
+            "guard_results": [],
+            "failure_kind": "worker_failed",
+        }
+        self.cpt._validate_state_event_schema(base)
+
+        for mutation in (
+            {"failure_kind": "unknown"},
+            {"evidence_refs": []},
+            {"evidence_refs": ["docs/pm/evidence/failure\0.yaml"]},
+        ):
+            invalid = {**base, **mutation}
+            with self.assertRaises(self.cpt.TransitionSchemaError):
+                self.cpt._validate_state_event_schema(invalid)
+
+        missing = dict(base)
+        missing.pop("failure_kind")
+        with self.assertRaises(self.cpt.TransitionSchemaError):
+            self.cpt._validate_state_event_schema(missing)
+
+        unrelated = {
+            **base,
+            "event_type": "TASK_SPECIFIED",
+            "from_state": "draft",
+        }
+        with self.assertRaises(self.cpt.TransitionSchemaError):
+            self.cpt._validate_state_event_schema(unrelated)
+
+    def test_non_none_lease_is_rejected_before_writes(self):
+        tmpdir, root, head, svc, _ = self._setup()
+        try:
+            tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+            before = tasks_path.read_bytes()
+            with self.assertRaises(self.cpt.TransitionValidationError):
+                svc.apply_transition(
+                    self._request(head),
+                    object(),
+                    datetime(2026, 7, 30, 2, 0, 0, tzinfo=UTC),
+                )
+            self.assertEqual(tasks_path.read_bytes(), before)
+            self.assertEqual(
+                list((root / "docs" / "pm" / "events").glob("*.yaml")),
+                [],
+            )
+        finally:
+            tmpdir.cleanup()
+
+    def test_stale_dispatch_or_attempt_is_zero_write_conflict(self):
+        for dispatch_id, attempt in (
+            ("DSP-STALE", 2),
+            ("DSP-FAILED", 1),
+        ):
+            with self.subTest(dispatch_id=dispatch_id, attempt=attempt):
+                tmpdir, root, head, svc, _ = self._setup()
+                try:
+                    tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+                    before = tasks_path.read_bytes()
+                    with self.assertRaises(
+                        self.cpt.TransitionCASConflictError
+                    ):
+                        svc.apply_transition(
+                            self._request(
+                                head,
+                                dispatch_id=dispatch_id,
+                                attempt=attempt,
+                            ),
+                            None,
+                            datetime(2026, 7, 30, 2, 0, 0, tzinfo=UTC),
+                        )
+                    self.assertEqual(tasks_path.read_bytes(), before)
+                    self.assertEqual(
+                        list(
+                            (root / "docs" / "pm" / "events").glob("*.yaml")
+                        ),
+                        [],
+                    )
+                finally:
+                    tmpdir.cleanup()
+
+    def test_missing_active_dispatch_and_advanced_states_are_rejected(self):
+        import json
+
+        scenarios = (
+            ("in_progress", None),
+            (
+                "review_ready",
+                {
+                    "dispatch_id": "DSP-FAILED",
+                    "role_id": "worker-basic",
+                    "base_commit": "a" * 40,
+                    "branch": "main",
+                    "model_selection": {},
+                },
+            ),
+            (
+                "cancelled",
+                {
+                    "dispatch_id": "DSP-FAILED",
+                    "role_id": "worker-basic",
+                    "base_commit": "a" * 40,
+                    "branch": "main",
+                    "model_selection": {},
+                },
+            ),
+        )
+        for canonical_state, current_dispatch in scenarios:
+            with self.subTest(canonical_state=canonical_state):
+                tmpdir, root, head, svc, _ = self._harness._setup_project(
+                    self.cpt,
+                    task_state=canonical_state,
+                    task_id="TC-001",
+                    revision=1,
+                    attempt=2,
+                    current_dispatch=current_dispatch,
+                    setup_approval_grant=False,
+                )
+                try:
+                    tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+                    before = tasks_path.read_bytes()
+                    with self.assertRaises(
+                        self.cpt.TransitionCASConflictError
+                    ):
+                        svc.apply_transition(
+                            self._request(head),
+                            None,
+                            datetime(2026, 7, 30, 2, 30, 0, tzinfo=UTC),
+                        )
+                    self.assertEqual(tasks_path.read_bytes(), before)
+                    task = json.loads(
+                        tasks_path.read_text(encoding="utf-8")
+                    )["tasks"][0]
+                    self.assertEqual(task["state"], canonical_state)
+                finally:
+                    tmpdir.cleanup()
+
+    def test_byte_exact_replay_and_mismatch_conflict(self):
+        tmpdir, root, head, svc, _ = self._setup()
+        try:
+            request = self._request(head)
+            now = datetime(2026, 7, 30, 3, 0, 0, tzinfo=UTC)
+            first = svc.apply_transition(request, None, now)
+            event_path = (
+                root / "docs" / "pm" / "events"
+                / "EVT-20260730-DISPATCH-FAILED.yaml"
+            )
+            event_bytes = event_path.read_bytes()
+
+            with patch.object(
+                self.cpt,
+                "_atomic_write_bytes",
+                wraps=self.cpt._atomic_write_bytes,
+            ) as write_spy:
+                replay = svc.apply_transition(request, None, now)
+            self.assertEqual(replay, first)
+            write_spy.assert_not_called()
+            self.assertEqual(event_path.read_bytes(), event_bytes)
+
+            mismatches = (
+                self._request(
+                    head,
+                    failure_kind="worker_output_failed",
+                ),
+                self._request(
+                    head,
+                    evidence_refs=("docs/pm/evidence/other-failure.yaml",),
+                ),
+                self._request(
+                    head,
+                    source_message_id="MSG-SOURCE-OTHER",
+                ),
+            )
+            for mismatch in mismatches:
+                with self.subTest(mismatch=mismatch.event_context):
+                    with self.assertRaises(
+                        self.cpt.TransitionDuplicateEvidenceError
+                    ):
+                        svc.apply_transition(mismatch, None, now)
+            self.assertEqual(event_path.read_bytes(), event_bytes)
+        finally:
+            tmpdir.cleanup()
+
+    def test_orphan_event_and_missing_event_are_fail_closed(self):
+        tmpdir, root, head, svc, _ = self._setup()
+        try:
+            tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+            event_path = (
+                root / "docs" / "pm" / "events"
+                / "EVT-20260730-DISPATCH-FAILED.yaml"
+            )
+            before_tasks = tasks_path.read_bytes()
+            request = self._request(head)
+            now = datetime(2026, 7, 30, 3, 30, 0, tzinfo=UTC)
+            svc.apply_transition(request, None, now)
+            after_tasks = tasks_path.read_bytes()
+
+            tasks_path.write_bytes(before_tasks)
+            with self.assertRaises(
+                self.cpt.TransitionDuplicateEvidenceError
+            ):
+                svc.apply_transition(request, None, now)
+
+            tasks_path.write_bytes(after_tasks)
+            event_path.unlink()
+            with self.assertRaises(
+                self.cpt.TransitionDuplicateEvidenceError
+            ):
+                svc.apply_transition(request, None, now)
+        finally:
+            tmpdir.cleanup()
+
+    def test_event_and_task_write_failure_contract(self):
+        import json
+
+        for failed_name in (
+            "EVT-20260730-DISPATCH-FAILED.yaml",
+            "tasks.yaml",
+        ):
+            with self.subTest(failed_name=failed_name):
+                tmpdir, root, head, svc, _ = self._setup()
+                try:
+                    tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+                    before = tasks_path.read_bytes()
+                    original = self.cpt._atomic_write_bytes
+
+                    def failing_write(path, content):
+                        if path.name == failed_name:
+                            raise self.cpt.TransitionWriteError(
+                                "simulated write failure"
+                            )
+                        return original(path, content)
+
+                    with patch.object(
+                        self.cpt,
+                        "_atomic_write_bytes",
+                        side_effect=failing_write,
+                    ):
+                        with self.assertRaises(
+                            self.cpt.TransitionWriteError
+                        ):
+                            svc.apply_transition(
+                                self._request(head),
+                                None,
+                                datetime(2026, 7, 30, 4, 0, 0, tzinfo=UTC),
+                            )
+
+                    self.assertEqual(tasks_path.read_bytes(), before)
+                    state = json.loads(tasks_path.read_text(encoding="utf-8"))
+                    self.assertEqual(state["tasks"][0]["state"], "in_progress")
+                    event_path = (
+                        root / "docs" / "pm" / "events"
+                        / "EVT-20260730-DISPATCH-FAILED.yaml"
+                    )
+                    self.assertEqual(
+                        event_path.exists(),
+                        failed_name == "tasks.yaml",
+                    )
+                finally:
+                    tmpdir.cleanup()
+
+    def test_recovery_allows_only_distinct_next_attempt(self):
+        import json
+
+        with _temporary_scripts_path():
+            from dispatcher_gateway import ModelSelectionSnapshot
+            from worker_slot_lease import WorkerKind, WorkerSlotLease
+
+        tmpdir, root, head, svc, _ = self._setup()
+        try:
+            now = datetime(2026, 7, 30, 5, 0, 0, tzinfo=UTC)
+            recovery = svc.apply_transition(
+                self._request(head),
+                None,
+                now,
+            )
+            self.assertEqual(recovery.to_state, "ready")
+
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True,
+                timeout=10,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "dispatch failed"],
+                check=True,
+                timeout=10,
+                capture_output=True,
+            )
+            recovery_head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True,
+                timeout=10,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            approvals_dir = root / "docs" / "pm" / "approvals"
+            approvals_dir.mkdir(parents=True, exist_ok=True)
+            grant = {
+                "schema_version": "agentdesk.task-approval/v1",
+                "record_type": "grant",
+                "approval_id": "APR-DISPATCH-A3",
+                "event_id": "EVT-GRANT-DISPATCH-A3",
+                "scope": "dispatch",
+                "task_id": "TC-001",
+                "revision": 1,
+                "attempt": 3,
+                "dispatch_id": "DSP-NEXT",
+                "accepted_commit": None,
+                "actor_role_id": "PM",
+                "lease_epoch": 1,
+                "granted_at": "2026-07-30T05:01:00Z",
+                "expires_at": None,
+                "reason": "next bounded retry attempt",
+                "snapshot_commit": recovery_head,
+            }
+            (approvals_dir / "EVT-GRANT-DISPATCH-A3.yaml").write_text(
+                json.dumps(grant, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-A"],
+                check=True,
+                timeout=10,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-m", "grant attempt 3"],
+                check=True,
+                timeout=10,
+                capture_output=True,
+            )
+            next_head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True,
+                timeout=10,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            runtime_dir = root / ".agentdesk" / "runtime"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            lease_store_path = runtime_dir / "worker-slot-lease.yaml"
+            canonical_worktree = str(root).replace("\\", "/")
+            lease = WorkerSlotLease(
+                lease_id="WSL-" + "f" * 32,
+                lease_epoch=1,
+                slot_id="basic_agent-1",
+                worker_kind=WorkerKind.BASIC_AGENT,
+                holder_dispatch_id="DSP-NEXT",
+                holder_instance_id="worker-inst-next",
+                canonical_worktree=canonical_worktree,
+                acquired_at="2026-07-30T05:02:00Z",
+                heartbeat_at="2026-07-30T05:02:00Z",
+                expires_at="2026-08-30T05:02:00Z",
+            )
+            lease_store_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "agentdesk.worker-slot-lease/v1",
+                        "updated_at": "2026-07-30T05:02:00Z",
+                        "slot_epochs": {
+                            "basic_agent-1": 1,
+                            "basic_agent-2": 0,
+                            "standard_agent-1": 0,
+                            "standard_agent-2": 0,
+                            "advanced_agent-1": 0,
+                            "advanced_agent-2": 0,
+                            "expert_agent-1": 0,
+                            "expert_agent-2": 0,
+                        },
+                        "leases": {
+                            "basic_agent-1": {
+                                "lease_id": lease.lease_id,
+                                "lease_epoch": lease.lease_epoch,
+                                "slot_id": lease.slot_id,
+                                "worker_kind": lease.worker_kind.value,
+                                "holder_dispatch_id": lease.holder_dispatch_id,
+                                "holder_instance_id": lease.holder_instance_id,
+                                "canonical_worktree": canonical_worktree,
+                                "acquired_at": lease.acquired_at,
+                                "heartbeat_at": lease.heartbeat_at,
+                                "expires_at": lease.expires_at,
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            model_selection = ModelSelectionSnapshot.from_mapping(
+                {
+                    "required_model_tier": "standard",
+                    "required_model_capabilities": ["read"],
+                    "model_binding_id": "bind-next",
+                    "selected_model_provider": "test",
+                    "selected_model_id": "claude-sonnet",
+                    "selected_model_tier": "standard",
+                    "selected_deliberation_tier": "balanced",
+                    "selected_context_window_tokens": 200000,
+                    "selected_model_capabilities": ["read"],
+                    "model_degradation_approval_id": None,
+                }
+            )
+            context = self.cpt.TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(),
+                guard_results=(),
+            )
+
+            stale_attempt_request = self.cpt.TransitionRequest(
+                cas=self.cpt.TransitionCAS(
+                    task_id="TC-001",
+                    expected_revision=1,
+                    expected_state="ready",
+                    expected_snapshot_commit=next_head,
+                ),
+                dispatch_cas=None,
+                event_id="EVT-20260730-STALE-ATTEMPT",
+                event_type="TASK_DISPATCHED",
+                payload=self.cpt.DispatchPayload(
+                    dispatch_id="DSP-NEXT",
+                    role_id="worker-basic",
+                    model_selection=model_selection,
+                    task_card_path="docs/pm/tasks/TC-001.md",
+                    task_card_commit="0" * 40,
+                    base_commit=next_head,
+                    branch="main",
+                    report_path="docs/pm/reports/TC-001-r1-a3.md",
+                    outbox_message_id="MSG-20260730-STALE-ATTEMPT",
+                    new_attempt=2,
+                ),
+                event_context=context,
+            )
+            with self.assertRaises(self.cpt.TransitionCASConflictError):
+                svc.apply_transition(
+                    stale_attempt_request,
+                    lease,
+                    datetime(2026, 7, 30, 5, 3, 0, tzinfo=UTC),
+                )
+
+            next_request = dataclasses.replace(
+                stale_attempt_request,
+                event_id="EVT-20260730-NEXT-ATTEMPT",
+                payload=dataclasses.replace(
+                    stale_attempt_request.payload,
+                    outbox_message_id="MSG-20260730-NEXT-ATTEMPT",
+                    new_attempt=3,
+                ),
+            )
+            result = svc.apply_transition(
+                next_request,
+                lease,
+                datetime(2026, 7, 30, 5, 4, 0, tzinfo=UTC),
+            )
+            self.assertEqual(result.to_state, "dispatched")
+
+            tasks = json.loads(
+                (
+                    root / "docs" / "pm" / "state" / "tasks.yaml"
+                ).read_text(encoding="utf-8")
+            )
+            task = tasks["tasks"][0]
+            self.assertEqual(task["attempt"], 3)
+            self.assertEqual(
+                task["current_dispatch"]["dispatch_id"],
+                "DSP-NEXT",
+            )
+            self.assertTrue(
+                (
+                    root / "docs" / "pm" / "events"
+                    / "EVT-20260730-NEXT-ATTEMPT.yaml"
+                ).exists()
+            )
+            self.assertTrue(
+                (
+                    root / "docs" / "pm" / "outbox"
+                    / "MSG-20260730-NEXT-ATTEMPT.yaml"
+                ).exists()
+            )
+
+            late_old_attempt = self._request(
+                next_head,
+                state="dispatched",
+                event_id="EVT-20260730-LATE-OLD-ATTEMPT",
+                dispatch_id="DSP-FAILED",
+                attempt=2,
+            )
+            with self.assertRaises(self.cpt.TransitionCASConflictError):
+                svc.apply_transition(
+                    late_old_attempt,
+                    None,
+                    datetime(2026, 7, 30, 5, 5, 0, tzinfo=UTC),
+                )
+            unchanged = json.loads(
+                (
+                    root / "docs" / "pm" / "state" / "tasks.yaml"
+                ).read_text(encoding="utf-8")
+            )["tasks"][0]
+            self.assertEqual(unchanged["attempt"], 3)
+            self.assertEqual(
+                unchanged["current_dispatch"]["dispatch_id"],
+                "DSP-NEXT",
+            )
+        finally:
+            tmpdir.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()

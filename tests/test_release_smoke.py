@@ -11690,7 +11690,12 @@ class TC1318d11aDispatchFailureRecoveryContractTests(unittest.TestCase):
             self.contract_text,
         )
         self.assertIn(
-            "Runtime Target — TC-13.18d.11b/11c", self.contract_text
+            "canonical transition is Current — TC-13.18d.11b",
+            self.contract_text,
+        )
+        self.assertIn(
+            "bounded retry orchestration is Runtime Target — TC-13.18d.11c",
+            self.contract_text,
         )
 
     def test_02_adr_status_and_section(self) -> None:
@@ -11926,3 +11931,20 @@ class TC1318d11aDispatchFailureRecoveryContractTests(unittest.TestCase):
         for card in ("TC-13.18d.11a", "TC-13.18d.11b", "TC-13.18d.11c"):
             self.assertIn(card, self.section)
             self.assertIn(card, self.adr_text)
+
+    def test_21_transition_current_retry_target(self) -> None:
+        self.assertIn(
+            "| **TC-13.18d.11b** | `DispatchFailedPayload` + "
+            "`DISPATCH_FAILED` transition production | **Current** |",
+            self.contract_text,
+        )
+        self.assertIn(
+            "| TC-13.18d.11b | `DispatchFailedPayload` + "
+            "`DISPATCH_FAILED` production | **Current** |",
+            self.adr_text,
+        )
+        self.assertIn(
+            "| **TC-13.18d.11c** | Creator-alive "
+            "`run_bounded_dispatch_retry` production | **Runtime Target** |",
+            self.contract_text,
+        )

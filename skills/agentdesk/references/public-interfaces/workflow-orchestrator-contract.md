@@ -1,4 +1,4 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation — Current — TC-13.18d.9b; Active Supersession — Current — TC-13.18d.10b; Dispatch Failure Recovery Contract — Current — TC-13.18d.11a)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation — Current — TC-13.18d.9b; Active Supersession — Current — TC-13.18d.10b; Dispatch Failure Recovery Contract — Current — TC-13.18d.11a; Canonical Transition — Current — TC-13.18d.11b)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
@@ -17,6 +17,9 @@ TC-13.18d.9a.1 repairs the contract (execution-based model). Production implemen
 TC-13.18d.10a freezes the active-dispatch supersession contract on the same
 creator-owned execution model. TC-13.18d.10b provides the production
 implementation.
+TC-13.18d.11a freezes dispatch failure recovery and bounded retry.
+TC-13.18d.11b provides the canonical `DISPATCH_FAILED` transition production
+implementation; bounded retry orchestration remains TC-13.18d.11c.
 
 ## Status
 
@@ -47,7 +50,8 @@ active dispatch → TASK_SUPERSEDED (lease=None) → TaskSupersessionResult)
 are implemented and callable.  The E2E evidence program (TC-13.19a–j)
 validates all Current runtime paths. Active-dispatch supersession production
 is Current — TC-13.18d.10b. Dispatch failure recovery is Contract Current —
-TC-13.18d.11a and Runtime Target — TC-13.18d.11b/11c. Codex decoding,
+TC-13.18d.11a, its canonical transition is Current — TC-13.18d.11b, and
+bounded retry orchestration is Runtime Target — TC-13.18d.11c. Codex decoding,
 Codex rate-limit classification, and provider rate-limit wiring remain Target.
 Active-dispatch cancellation
 contract is repaired and frozen as of TC-13.18d.9a.1 (execution-based
@@ -339,10 +343,9 @@ audit_policy: AuditPolicy  # typed dataclass with evidence_ref
 
 ## 9. Transition Coverage
 
-The production WorkflowOrchestrator is aware of all 15 transition types
-currently defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR).
-TC-13.18d.11a freezes `DISPATCH_FAILED` as the sixteenth type for production
-in TC-13.18d.11b:
+`ControlPlaneTransitionService` now defines all 16 canonical transition types
+(§2.14.8 of the ADR). TC-13.18d.11a freezes `DISPATCH_FAILED` as the
+sixteenth type and TC-13.18d.11b provides its production implementation:
 
 | # | Event type | Covered by task card |
 |---|-----------|---------------------|
@@ -363,7 +366,7 @@ in TC-13.18d.11b:
 | 15 | `TASK_CANCELLED` (active dispatch path) | Current — TC-13.18d.9b |
 | 16 | `TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8 |
 | 17 | `TASK_SUPERSEDED` (active dispatch path) | Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b |
-| 18 | `DISPATCH_FAILED` (`dispatched|in_progress -> ready`) | Contract Current — TC-13.18d.11a / Runtime Target — TC-13.18d.11b |
+| 18 | `DISPATCH_FAILED` (`dispatched|in_progress -> ready`) | Contract Current — TC-13.18d.11a / Current — TC-13.18d.11b |
 
 The orchestrator does **not** duplicate `_TRANSITION_SPECS`.  It constructs
 typed `TransitionRequest` objects and passes them to `apply_transition()`.
@@ -537,7 +540,7 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18d.10a** | Active-dispatch supersession contract freeze | TC-13.18d.9b | Contract Current |
 | **TC-13.18d.10b** | Active-dispatch supersession production implementation | TC-13.18d.10a | Current |
 | **TC-13.18d.11a** | Dispatch failure recovery + bounded retry contract | TC-13.18d.10b | Contract Current |
-| **TC-13.18d.11b** | Canonical `DISPATCH_FAILED` transition production | TC-13.18d.11a | Runtime Target |
+| **TC-13.18d.11b** | Canonical `DISPATCH_FAILED` transition production | TC-13.18d.11a | Current |
 | **TC-13.18d.11c** | Creator-alive bounded retry orchestration production | TC-13.18d.11b | Runtime Target |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Current — TC-13.19j |
@@ -568,7 +571,8 @@ TC-13.18d.9b still does **not** implement:
 
 - Active-dispatch supersession → Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b
 - RateLimit retry → Target
-- Dispatch failure recovery / bounded retry → Contract Current — TC-13.18d.11a / Runtime Target — TC-13.18d.11b/11c
+- Dispatch failure recovery → Contract Current — TC-13.18d.11a / canonical transition Current — TC-13.18d.11b
+- Bounded retry orchestration → Runtime Target — TC-13.18d.11c
 - Codex decoding → Target
 - Modification of `dispatcher_gateway` termination implementation
 - Modification of `WorkflowOrchestrator` existing frozen/slots three-field shape
@@ -1328,8 +1332,8 @@ and `run_dispatch_cycle()` retains its signature and compatibility behavior.
 ## 16. Dispatch Failure Recovery and Bounded Retry — Frozen Contract (Contract Current — TC-13.18d.11a)
 
 TC-13.18d.11a freezes one recovery event and one finite, creator-alive retry
-surface. Runtime implementation remains Target: the canonical transition is
-TC-13.18d.11b and the retry orchestrator is TC-13.18d.11c.
+surface. The canonical transition is Current — TC-13.18d.11b; the retry
+orchestrator remains Runtime Target — TC-13.18d.11c.
 
 This contract does not broaden `TASK_REQUEUED`. That event remains exactly
 `returned -> ready` for delivery remediation. Dispatch failure recovery uses
@@ -1577,7 +1581,7 @@ wiring, Codex enablement, and changes to DispatcherGateway termination.
 | Card | Scope | Status |
 |---|---|---|
 | **TC-13.18d.11a** | This failure recovery / bounded retry contract | **Contract Current** |
-| **TC-13.18d.11b** | `DispatchFailedPayload` + `DISPATCH_FAILED` transition production | **Runtime Target** |
+| **TC-13.18d.11b** | `DispatchFailedPayload` + `DISPATCH_FAILED` transition production | **Current** |
 | **TC-13.18d.11c** | Creator-alive `run_bounded_dispatch_retry` production | **Runtime Target** |
 
 Provider rate-limit wiring and owner-loss recovery remain Target. Interface
