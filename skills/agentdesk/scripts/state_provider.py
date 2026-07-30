@@ -93,6 +93,13 @@ _EVENT_TYPES: frozenset[str] = frozenset({
     "TASK_REQUEUED", "CHANGE_INTEGRATED", "INTEGRATION_FAILED",
     "TASK_BLOCKED", "BLOCKER_RESOLVED", "BLOCKER_RESCOPED",
     "BLOCKER_CANCELLED", "TASK_CANCELLED", "TASK_SUPERSEDED",
+    "DISPATCH_FAILED",
+})
+_DISPATCH_FAILURE_KINDS: frozenset[str] = frozenset({
+    "dispatch_start_failed",
+    "worker_failed",
+    "worker_output_failed",
+    "delivery_transition_failed",
 })
 
 _ADOPTION_LEVELS: frozenset[str] = frozenset({"lite", "standard", "automated"})
@@ -1362,6 +1369,16 @@ def _build_event_from_dict(doc: dict[str, object], filename: str, seen: set[str]
     extra_allowed: frozenset[str] = frozenset()
     if event_type == "TASK_DISPATCHED":
         extra_allowed = frozenset({"payload_digest"})
+    elif event_type == "DISPATCH_FAILED":
+        extra_allowed = frozenset({"failure_kind"})
+        failure_kind = doc.get("failure_kind")
+        if (
+            type(failure_kind) is not str
+            or failure_kind not in _DISPATCH_FAILURE_KINDS
+        ):
+            raise StateProviderSchemaError(
+                "DISPATCH_FAILED failure_kind is invalid"
+            )
     elif event_type == "CHANGE_INTEGRATED":
         extra_allowed = frozenset(_CHANGE_INTEGRATED_EXTRA_FIELDS)
 

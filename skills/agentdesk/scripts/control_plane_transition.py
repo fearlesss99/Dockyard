@@ -2839,9 +2839,11 @@ def _mutate_task_for_transition(
         new_task["attempt"] = payload.new_attempt
         new_task["current_dispatch"] = {
             "dispatch_id": payload.dispatch_id,
+            "attempt_id": f"attempt-{payload.new_attempt}",
             "role_id": payload.role_id,
             "base_commit": payload.base_commit,
             "branch": payload.branch,
+            "dispatched_at": now_str,
             "model_selection": _serialize_model_selection(payload.model_selection),
         }
         new_task["report_path"] = payload.report_path

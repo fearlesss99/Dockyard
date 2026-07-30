@@ -559,11 +559,11 @@ def _write_approval_grant(project_root: Path) -> None:
 class TestWorkflowOrchestratorAPI(unittest.TestCase):
     """Test __all__ exactness and dataclass frozen/slots properties."""
 
-    def test_all_exactly_thirty_six(self) -> None:
+    def test_all_exactly_thirty_nine(self) -> None:
         import workflow_orchestrator as wo
         self.assertEqual(
-            len(wo.__all__), 36,
-            f"__all__ must have exactly 36 entries, got {len(wo.__all__)}: {wo.__all__}"
+            len(wo.__all__), 39,
+            f"__all__ must have exactly 39 entries, got {len(wo.__all__)}: {wo.__all__}"
         )
         expected = sorted([
             "AcceptanceCycleRequest",
@@ -585,6 +585,9 @@ class TestWorkflowOrchestratorAPI(unittest.TestCase):
             "DeliveryRemediationResult",
             "DispatchCycleRequest",
             "DispatchCycleResult",
+            "DispatchRetryAttempt",
+            "BoundedDispatchRetryRequest",
+            "BoundedDispatchRetryResult",
             "EscalatedRedispatchRequest",
             "EscalatedRedispatchResult",
             "IntegrationFailureRequest",
@@ -3341,6 +3344,802 @@ class _WorkflowOrchestratorEscalatedRedispatchTestsBase:
             ])
         finally:
             import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TC-13.18d.11c — creator-alive bounded dispatch retry
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestBoundedDispatchRetry(unittest.TestCase):
+    """Focused contract tests for the finite creator-alive retry wrapper."""
+
+    @staticmethod
+    def _orchestrator() -> Any:
+        import workflow_orchestrator as wo
+
+        orchestrator = object.__new__(wo.WorkflowOrchestrator)
+        object.__setattr__(
+            orchestrator,
+            "project_root",
+            Path(__file__).resolve().parents[1],
+        )
+        object.__setattr__(orchestrator, "clock", FakeClock())
+        object.__setattr__(
+            orchestrator,
+            "heartbeat_interval_seconds",
+            10.0,
+        )
+        return orchestrator
+
+    @staticmethod
+    def _cycle_result(
+        attempt: int = 1,
+        dispatch_id: str = "DSP-RETRY-1",
+    ) -> DispatchCycleResult:
+        transition = TransitionResult(
+            task_id="TC-001",
+            event_id=f"EVT-RESULT-{attempt}",
+            from_state="in_progress",
+            to_state="review_ready",
+            occurred_at="2026-07-30T12:00:00Z",
+            outbox_message_id=None,
+        )
+        return DispatchCycleResult(
+            worker_result=_make_worker_result(
+                task_id="TC-001",
+                dispatch_id=dispatch_id,
+            ),
+            worker_output=mock.Mock(),
+            delivery_receipt=mock.Mock(),
+            dispatch_transition=transition,
+            acknowledge_transition=transition,
+            delivery_transition=transition,
+            slot_id="advanced_agent-1",
+            lease_epoch=1,
+            duration_seconds=1.0,
+        )
+
+    @staticmethod
+    def _attempt(
+        attempt: int = 1,
+        *,
+        expected_state: str = "in_progress",
+        failure_kind: str = "worker_failed",
+    ) -> Any:
+        import dataclasses
+        import workflow_orchestrator as wo
+        from control_plane_transition import (
+            DispatchCAS,
+            DispatchFailedPayload,
+        )
+
+        dispatch_id = f"DSP-RETRY-{attempt}"
+        snapshot_commit = "a" * 40
+        model_selection = _make_model_selection()
+        base = _make_dispatch_cycle_request(
+            ms=model_selection,
+            dispatch_id=dispatch_id,
+            delivery_event_id=f"EVT-RETRY-DELIVERY-{attempt}",
+            head_sha=snapshot_commit,
+        )
+        identity = dataclasses.replace(
+            base.dispatch_request.identity,
+            attempt=attempt,
+            dispatch_id=dispatch_id,
+        )
+        dispatch_request = dataclasses.replace(
+            base.dispatch_request,
+            identity=identity,
+        )
+        dispatch_payload = dataclasses.replace(
+            base.dispatch_transition_request.payload,
+            dispatch_id=dispatch_id,
+            outbox_message_id=f"MSG-RETRY-{attempt}",
+            report_path=f"reports/retry-{attempt}.md",
+            new_attempt=attempt,
+        )
+        dispatch_transition = dataclasses.replace(
+            base.dispatch_transition_request,
+            cas=TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="ready",
+                expected_snapshot_commit=snapshot_commit,
+            ),
+            event_id=f"EVT-RETRY-DISPATCH-{attempt}",
+            payload=dispatch_payload,
+        )
+        acknowledge_transition = dataclasses.replace(
+            base.acknowledge_transition_request,
+            cas=TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state="dispatched",
+                expected_snapshot_commit=snapshot_commit,
+            ),
+            dispatch_cas=DispatchCAS(
+                expected_dispatch_id=dispatch_id,
+                expected_attempt=attempt,
+            ),
+            event_id=f"EVT-RETRY-ACK-{attempt}",
+        )
+        cycle_request = dataclasses.replace(
+            base,
+            dispatch_request=dispatch_request,
+            dispatch_transition_request=dispatch_transition,
+            acknowledge_transition_request=acknowledge_transition,
+            delivery_event_id=f"EVT-RETRY-DELIVERY-{attempt}",
+        )
+        failure_request = TransitionRequest(
+            cas=TransitionCAS(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_state=expected_state,
+                expected_snapshot_commit=snapshot_commit,
+            ),
+            dispatch_cas=DispatchCAS(
+                expected_dispatch_id=dispatch_id,
+                expected_attempt=attempt,
+            ),
+            event_id=f"EVT-RETRY-FAILED-{attempt}",
+            event_type="DISPATCH_FAILED",
+            payload=DispatchFailedPayload(failure_kind),
+            event_context=TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=(
+                    f"docs/pm/evidence/retry-failure-{attempt}.yaml",
+                ),
+                guard_results=(),
+            ),
+        )
+        return wo.DispatchRetryAttempt(
+            dispatch_cycle_request=cycle_request,
+            failure_transition_request=failure_request,
+        )
+
+    @staticmethod
+    def _snapshot(
+        *,
+        state: str,
+        attempt: int,
+        dispatch_id: str | None,
+    ) -> Any:
+        current_dispatch = (
+            None
+            if dispatch_id is None
+            else mock.Mock(dispatch_id=dispatch_id)
+        )
+        return mock.Mock(
+            tasks=(
+                mock.Mock(
+                    task_id="TC-001",
+                    revision=1,
+                    state=state,
+                    attempt=attempt,
+                    current_dispatch=current_dispatch,
+                ),
+            ),
+            read_hexsha="a" * 40,
+        )
+
+    @staticmethod
+    def _failure_execution(
+        failure: BaseException,
+        *,
+        failure_kind: str = "worker_failed",
+        metadata_published: bool = True,
+        completion_done: bool = True,
+    ) -> Any:
+        import workflow_orchestrator as wo
+
+        execution = mock.Mock(spec=wo.ActiveDispatchExecution)
+        execution._winner = "completion"
+        execution._worker_task = mock.Mock()
+        execution._worker_task.done.return_value = True
+        execution._heartbeat_task = mock.Mock()
+        execution._heartbeat_task.done.return_value = True
+        execution._release_started = True
+        execution._release_completed = True
+        execution._completion = mock.Mock()
+        execution._completion.done.return_value = completion_done
+        execution._finalizer_metadata = (
+            wo._DispatchFinalizerMetadata(
+                winner="completion",
+                worker_done=True,
+                heartbeat_done=True,
+                release_completed=True,
+                failure_kind=wo._DispatchFailureKind(failure_kind),
+            )
+            if metadata_published
+            else None
+        )
+
+        async def _wait() -> Any:
+            raise failure
+
+        execution.wait = _wait
+        return execution
+
+    @staticmethod
+    def _success_execution(result: DispatchCycleResult) -> Any:
+        execution = mock.Mock()
+
+        async def _wait() -> DispatchCycleResult:
+            return result
+
+        execution.wait = _wait
+        return execution
+
+    def test_public_types_exact_shape_frozen_slots_and_bounds(self) -> None:
+        import dataclasses
+        import workflow_orchestrator as wo
+
+        self.assertEqual(
+            tuple(f.name for f in dc_fields(wo.DispatchRetryAttempt)),
+            ("dispatch_cycle_request", "failure_transition_request"),
+        )
+        self.assertEqual(
+            tuple(f.name for f in dc_fields(wo.BoundedDispatchRetryRequest)),
+            ("attempts",),
+        )
+        self.assertEqual(
+            tuple(f.name for f in dc_fields(wo.BoundedDispatchRetryResult)),
+            (
+                "task_id",
+                "attempts_started",
+                "recovery_transitions",
+                "dispatch_cycle_result",
+            ),
+        )
+        for cls in (
+            wo.DispatchRetryAttempt,
+            wo.BoundedDispatchRetryRequest,
+            wo.BoundedDispatchRetryResult,
+        ):
+            self.assertTrue(cls.__dataclass_params__.frozen)
+            self.assertTrue(hasattr(cls, "__slots__"))
+
+        attempt = self._attempt()
+        for invalid in ((), (attempt,) * 4, [attempt], (object(),)):
+            with self.subTest(invalid_type=type(invalid).__name__):
+                with self.assertRaises((TypeError, ValueError)):
+                    wo.BoundedDispatchRetryRequest(invalid)
+        for size in (1, 3):
+            request = wo.BoundedDispatchRetryRequest(
+                tuple(self._attempt(i) for i in range(1, size + 1))
+            )
+            self.assertEqual(len(request.attempts), size)
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            attempt.failure_transition_request = object()
+
+    def test_dispatched_failure_request_rejected_before_first_start(self) -> None:
+        import workflow_orchestrator as wo
+
+        attempt = self._attempt()
+        request = wo.BoundedDispatchRetryRequest((attempt,))
+        object.__setattr__(
+            attempt.failure_transition_request.cas,
+            "expected_state",
+            "dispatched",
+        )
+
+        async def _run() -> None:
+            orchestrator = self._orchestrator()
+            with mock.patch.object(
+                wo.WorkflowOrchestrator,
+                "start_dispatch_cycle",
+                autospec=True,
+            ) as start:
+                with self.assertRaises(wo.WorkflowInputError):
+                    await orchestrator.run_bounded_dispatch_retry(
+                        request,
+                        {"claude": FakeProvider()},
+                    )
+                start.assert_not_called()
+
+        asyncio.run(_run())
+
+    def test_start_pre_return_failure_propagates_without_recovery(self) -> None:
+        import workflow_orchestrator as wo
+
+        class MaliciousStartFailure(Exception):
+            def __str__(self) -> str:
+                raise AssertionError("exception text must not be inspected")
+
+            def __repr__(self) -> str:
+                raise AssertionError("exception repr must not be inspected")
+
+        failure = MaliciousStartFailure()
+        request = wo.BoundedDispatchRetryRequest(
+            (self._attempt(1), self._attempt(2))
+        )
+
+        async def _start(*args: Any, **kwargs: Any) -> Any:
+            raise failure
+
+        async def _run() -> None:
+            orchestrator = self._orchestrator()
+            with mock.patch.object(
+                wo.WorkflowOrchestrator,
+                "start_dispatch_cycle",
+                autospec=True,
+                side_effect=_start,
+            ) as start, mock.patch.object(
+                wo.ControlPlaneTransitionService,
+                "apply_transition",
+                autospec=True,
+            ) as apply:
+                try:
+                    await orchestrator.run_bounded_dispatch_retry(
+                        request,
+                        {"claude": FakeProvider()},
+                    )
+                except BaseException as caught:
+                    self.assertIs(caught, failure)
+                else:
+                    self.fail("pre-return failure must propagate")
+                self.assertEqual(start.call_count, 1)
+                apply.assert_not_called()
+
+        asyncio.run(_run())
+
+    def test_finalizer_metadata_must_be_published_before_recovery(self) -> None:
+        import workflow_orchestrator as wo
+
+        failure = RuntimeError("worker failed")
+        request = wo.BoundedDispatchRetryRequest((self._attempt(),))
+        execution = self._failure_execution(
+            failure,
+            metadata_published=False,
+            completion_done=False,
+        )
+
+        async def _start(*args: Any, **kwargs: Any) -> Any:
+            return execution
+
+        async def _run() -> None:
+            orchestrator = self._orchestrator()
+            with mock.patch.object(
+                wo.WorkflowOrchestrator,
+                "start_dispatch_cycle",
+                autospec=True,
+                side_effect=_start,
+            ), mock.patch.object(
+                wo, "StateProvider"
+            ) as provider, mock.patch.object(
+                wo.ControlPlaneTransitionService,
+                "apply_transition",
+                autospec=True,
+            ) as apply:
+                with self.assertRaises(wo.WorkflowInvariantError):
+                    await orchestrator.run_bounded_dispatch_retry(
+                        request,
+                        {"claude": FakeProvider()},
+                    )
+                provider.assert_not_called()
+                apply.assert_not_called()
+
+        asyncio.run(_run())
+
+    def test_finalizer_freezes_typed_metadata_before_completion(self) -> None:
+        import shutil
+        import workflow_orchestrator as wo
+
+        class MaliciousWorkerFailure(Exception):
+            def __str__(self) -> str:
+                raise AssertionError("finalizer must not inspect text")
+
+            def __repr__(self) -> str:
+                raise AssertionError("finalizer must not inspect repr")
+
+        failure = MaliciousWorkerFailure()
+        tmp = _setup_project()
+        try:
+            async def _worker(
+                request: Any,
+                worker_kind: Any,
+                difficulty: Any,
+                providers: Any,
+                observer: Any,
+            ) -> WorkerResult:
+                selection = request.model_selection
+                await observer.on_dispatch_started(
+                    DispatchStarted(
+                        identity=request.identity,
+                        provider=selection.selected_model_provider,
+                        model_id=selection.selected_model_id,
+                    )
+                )
+                raise failure
+
+            async def _run() -> None:
+                observed_at_publication: list[Any] = []
+                with mock.patch.object(
+                    wo,
+                    "run_worker_observed",
+                    side_effect=_worker,
+                ):
+                    orchestrator = _new_orch(tmp)
+                    execution = await orchestrator.start_dispatch_cycle(
+                        _make_dispatch_cycle_request(tmp=tmp),
+                        {"claude": FakeProvider()},
+                    )
+                    self.assertIsNone(execution._finalizer_metadata)
+                    self.assertFalse(execution._completion.done())
+                    execution._completion.add_done_callback(
+                        lambda future: observed_at_publication.append(
+                            execution._finalizer_metadata
+                        )
+                    )
+                    try:
+                        await execution.wait()
+                    except BaseException as caught:
+                        self.assertIs(caught, failure)
+                    else:
+                        self.fail("worker failure must propagate")
+                    await asyncio.sleep(0)
+
+                    metadata = execution._finalizer_metadata
+                    self.assertEqual(observed_at_publication, [metadata])
+                    self.assertIs(
+                        metadata.failure_kind,
+                        wo._DispatchFailureKind.WORKER_FAILED,
+                    )
+                    self.assertEqual(metadata.winner, "completion")
+                    self.assertTrue(metadata.worker_done)
+                    self.assertTrue(metadata.heartbeat_done)
+                    self.assertTrue(metadata.release_completed)
+                    self.assertTrue(execution._completion.done())
+
+            asyncio.run(_run())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_one_attempt_success_has_no_recovery(self) -> None:
+        import workflow_orchestrator as wo
+
+        success = self._cycle_result()
+        request = wo.BoundedDispatchRetryRequest((self._attempt(),))
+
+        async def _start(*args: Any, **kwargs: Any) -> Any:
+            return self._success_execution(success)
+
+        async def _run() -> None:
+            orchestrator = self._orchestrator()
+            with mock.patch.object(
+                wo.WorkflowOrchestrator,
+                "start_dispatch_cycle",
+                autospec=True,
+                side_effect=_start,
+            ) as start, mock.patch.object(
+                wo.ControlPlaneTransitionService,
+                "apply_transition",
+                autospec=True,
+            ) as apply:
+                result = await orchestrator.run_bounded_dispatch_retry(
+                    request,
+                    {"claude": FakeProvider()},
+                )
+                self.assertIs(result.dispatch_cycle_result, success)
+                self.assertEqual(result.attempts_started, 1)
+                self.assertEqual(result.recovery_transitions, ())
+                self.assertEqual(start.call_count, 1)
+                apply.assert_not_called()
+
+        asyncio.run(_run())
+
+    def test_all_typed_failure_kinds_are_matched_without_text(self) -> None:
+        import workflow_orchestrator as wo
+
+        class MaliciousFailure(Exception):
+            def __str__(self) -> str:
+                raise AssertionError("classification must not inspect text")
+
+            def __repr__(self) -> str:
+                raise AssertionError("classification must not inspect repr")
+
+        for kind in (
+            "worker_failed",
+            "worker_output_failed",
+            "delivery_transition_failed",
+        ):
+            with self.subTest(kind=kind):
+                failure = MaliciousFailure()
+                attempt = self._attempt(failure_kind=kind)
+                request = wo.BoundedDispatchRetryRequest((attempt,))
+                execution = self._failure_execution(
+                    failure,
+                    failure_kind=kind,
+                )
+                recovery = TransitionResult(
+                    task_id="TC-001",
+                    event_id="EVT-RETRY-FAILED-1",
+                    from_state="in_progress",
+                    to_state="ready",
+                    occurred_at="2026-07-30T12:00:01Z",
+                    outbox_message_id=None,
+                )
+
+                async def _start(*args: Any, **kwargs: Any) -> Any:
+                    return execution
+
+                async def _run() -> None:
+                    orchestrator = self._orchestrator()
+                    with mock.patch.object(
+                        wo.WorkflowOrchestrator,
+                        "start_dispatch_cycle",
+                        autospec=True,
+                        side_effect=_start,
+                    ), mock.patch.object(
+                        wo, "StateProvider"
+                    ) as provider, mock.patch.object(
+                        wo.ControlPlaneTransitionService,
+                        "apply_transition",
+                        autospec=True,
+                        return_value=recovery,
+                    ) as apply:
+                        provider.return_value.snapshot.side_effect = (
+                            self._snapshot(
+                                state="in_progress",
+                                attempt=1,
+                                dispatch_id="DSP-RETRY-1",
+                            ),
+                            self._snapshot(
+                                state="ready",
+                                attempt=1,
+                                dispatch_id=None,
+                            ),
+                        )
+                        try:
+                            await orchestrator.run_bounded_dispatch_retry(
+                                request,
+                                {"claude": FakeProvider()},
+                            )
+                        except BaseException as caught:
+                            self.assertIs(caught, failure)
+                        else:
+                            self.fail("final failure must propagate")
+                        self.assertEqual(apply.call_count, 1)
+
+                asyncio.run(_run())
+
+    def test_one_failure_then_success_uses_typed_classification(self) -> None:
+        import workflow_orchestrator as wo
+
+        failure = RuntimeError("opaque worker failure")
+        success = self._cycle_result(2, "DSP-RETRY-2")
+        executions = [
+            self._failure_execution(failure, failure_kind="worker_failed"),
+            self._success_execution(success),
+        ]
+        request = wo.BoundedDispatchRetryRequest(
+            (self._attempt(1), self._attempt(2))
+        )
+        recovery = TransitionResult(
+            task_id="TC-001",
+            event_id="EVT-RETRY-FAILED-1",
+            from_state="in_progress",
+            to_state="ready",
+            occurred_at="2026-07-30T12:00:01Z",
+            outbox_message_id=None,
+        )
+
+        async def _start(*args: Any, **kwargs: Any) -> Any:
+            return executions.pop(0)
+
+        async def _run() -> None:
+            orchestrator = self._orchestrator()
+            with mock.patch.object(
+                wo.WorkflowOrchestrator,
+                "start_dispatch_cycle",
+                autospec=True,
+                side_effect=_start,
+            ) as start, mock.patch.object(
+                wo, "StateProvider"
+            ) as provider, mock.patch.object(
+                wo.ControlPlaneTransitionService,
+                "apply_transition",
+                autospec=True,
+                return_value=recovery,
+            ) as apply:
+                provider.return_value.snapshot.return_value = self._snapshot(
+                    state="in_progress",
+                    attempt=1,
+                    dispatch_id="DSP-RETRY-1",
+                )
+                result = await orchestrator.run_bounded_dispatch_retry(
+                    request,
+                    {"claude": FakeProvider()},
+                )
+                self.assertIs(result.dispatch_cycle_result, success)
+                self.assertEqual(result.attempts_started, 2)
+                self.assertEqual(result.recovery_transitions, (recovery,))
+                self.assertEqual(start.call_count, 2)
+                self.assertEqual(apply.call_count, 1)
+
+        asyncio.run(_run())
+
+    def test_three_failures_recover_to_ready_then_rethrow_third(self) -> None:
+        import workflow_orchestrator as wo
+
+        class MaliciousFailure(Exception):
+            def __str__(self) -> str:
+                raise AssertionError("classification must not read __str__")
+
+            def __repr__(self) -> str:
+                raise AssertionError("classification must not read __repr__")
+
+        failures = [MaliciousFailure() for _ in range(3)]
+        executions = [
+            self._failure_execution(failure)
+            for failure in failures
+        ]
+        request = wo.BoundedDispatchRetryRequest(
+            tuple(self._attempt(i) for i in (1, 2, 3))
+        )
+        recoveries = [
+            TransitionResult(
+                task_id="TC-001",
+                event_id=f"EVT-RETRY-FAILED-{i}",
+                from_state="in_progress",
+                to_state="ready",
+                occurred_at=f"2026-07-30T12:00:0{i}Z",
+                outbox_message_id=None,
+            )
+            for i in (1, 2, 3)
+        ]
+        snapshots = [
+            self._snapshot(
+                state="in_progress",
+                attempt=i,
+                dispatch_id=f"DSP-RETRY-{i}",
+            )
+            for i in (1, 2, 3)
+        ]
+        snapshots.append(
+            self._snapshot(state="ready", attempt=3, dispatch_id=None)
+        )
+
+        async def _start(*args: Any, **kwargs: Any) -> Any:
+            return executions.pop(0)
+
+        async def _run() -> None:
+            orchestrator = self._orchestrator()
+            with mock.patch.object(
+                wo.WorkflowOrchestrator,
+                "start_dispatch_cycle",
+                autospec=True,
+                side_effect=_start,
+            ) as start, mock.patch.object(
+                wo, "StateProvider"
+            ) as provider, mock.patch.object(
+                wo.ControlPlaneTransitionService,
+                "apply_transition",
+                autospec=True,
+                side_effect=recoveries,
+            ) as apply:
+                provider.return_value.snapshot.side_effect = snapshots
+                try:
+                    await orchestrator.run_bounded_dispatch_retry(
+                        request,
+                        {"claude": FakeProvider()},
+                    )
+                except BaseException as caught:
+                    self.assertIs(caught, failures[2])
+                else:
+                    self.fail("the third original failure must be re-raised")
+                self.assertEqual(start.call_count, 3)
+                self.assertEqual(apply.call_count, 3)
+                self.assertEqual(
+                    provider.return_value.snapshot.call_count,
+                    4,
+                )
+                final_snapshot = snapshots[-1]
+                final_task = final_snapshot.tasks[0]
+                self.assertEqual(final_task.state, "ready")
+                self.assertIsNone(final_task.current_dispatch)
+                self.assertEqual(final_task.attempt, 3)
+
+        asyncio.run(_run())
+
+    def test_real_final_recovery_snapshot_is_ready_before_rethrow(self) -> None:
+        import shutil
+        import workflow_orchestrator as wo
+        from control_plane_transition import (
+            DispatchCAS,
+            DispatchFailedPayload,
+        )
+
+        class OriginalWorkerFailure(Exception):
+            pass
+
+        failure = OriginalWorkerFailure("opaque")
+        tmp = _setup_project()
+        try:
+            cycle = _make_dispatch_cycle_request(tmp=tmp)
+            identity = cycle.dispatch_request.identity
+            failure_request = TransitionRequest(
+                cas=TransitionCAS(
+                    task_id=identity.task_id,
+                    expected_revision=identity.revision,
+                    expected_state="in_progress",
+                    expected_snapshot_commit=(
+                        cycle.dispatch_transition_request.cas
+                        .expected_snapshot_commit
+                    ),
+                ),
+                dispatch_cas=DispatchCAS(
+                    expected_dispatch_id=identity.dispatch_id,
+                    expected_attempt=identity.attempt,
+                ),
+                event_id="EVT-REAL-RETRY-FAILED-001",
+                event_type="DISPATCH_FAILED",
+                payload=DispatchFailedPayload("worker_failed"),
+                event_context=TransitionEventContext(
+                    source_message_id=None,
+                    evidence_refs=(
+                        "docs/pm/evidence/real-retry-failure.yaml",
+                    ),
+                    guard_results=(),
+                ),
+            )
+            request = wo.BoundedDispatchRetryRequest(
+                (
+                    wo.DispatchRetryAttempt(
+                        dispatch_cycle_request=cycle,
+                        failure_transition_request=failure_request,
+                    ),
+                )
+            )
+
+            async def _worker(
+                dispatch_request: Any,
+                worker_kind: Any,
+                difficulty: Any,
+                providers: Any,
+                observer: Any,
+            ) -> WorkerResult:
+                selection = dispatch_request.model_selection
+                await observer.on_dispatch_started(
+                    DispatchStarted(
+                        identity=dispatch_request.identity,
+                        provider=selection.selected_model_provider,
+                        model_id=selection.selected_model_id,
+                    )
+                )
+                raise failure
+
+            async def _run() -> None:
+                orchestrator = _new_orch(tmp)
+                with mock.patch.object(
+                    wo,
+                    "run_worker_observed",
+                    side_effect=_worker,
+                ):
+                    try:
+                        await orchestrator.run_bounded_dispatch_retry(
+                            request,
+                            {"claude": FakeProvider()},
+                        )
+                    except BaseException as caught:
+                        self.assertIs(caught, failure)
+                    else:
+                        self.fail("final original failure must propagate")
+
+                snapshot = wo.StateProvider(tmp).snapshot()
+                task = next(
+                    item
+                    for item in snapshot.tasks
+                    if item.task_id == identity.task_id
+                )
+                self.assertEqual(task.state, "ready")
+                self.assertIsNone(task.current_dispatch)
+                self.assertEqual(task.attempt, identity.attempt)
+
+            asyncio.run(_run())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 # -- TC-13.18d.10b active-dispatch supersession -----------------------------

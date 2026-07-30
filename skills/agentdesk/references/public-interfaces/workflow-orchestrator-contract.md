@@ -1,4 +1,4 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation — Current — TC-13.18d.9b; Active Supersession — Current — TC-13.18d.10b; Dispatch Failure Recovery Contract — Current — TC-13.18d.11a; Canonical Transition — Current — TC-13.18d.11b)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation — Current — TC-13.18d.9b; Active Supersession — Current — TC-13.18d.10b; Dispatch Failure Recovery Contract — Current — TC-13.18d.11a; Canonical Transition — Current — TC-13.18d.11b; Creator-Alive Bounded Retry — Current — TC-13.18d.11c)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
@@ -19,7 +19,8 @@ creator-owned execution model. TC-13.18d.10b provides the production
 implementation.
 TC-13.18d.11a freezes dispatch failure recovery and bounded retry.
 TC-13.18d.11b provides the canonical `DISPATCH_FAILED` transition production
-implementation; bounded retry orchestration remains TC-13.18d.11c.
+implementation; TC-13.18d.11c provides creator-alive bounded retry
+orchestration.
 
 ## Status
 
@@ -51,7 +52,7 @@ are implemented and callable.  The E2E evidence program (TC-13.19a–j)
 validates all Current runtime paths. Active-dispatch supersession production
 is Current — TC-13.18d.10b. Dispatch failure recovery is Contract Current —
 TC-13.18d.11a, its canonical transition is Current — TC-13.18d.11b, and
-bounded retry orchestration is Runtime Target — TC-13.18d.11c. Codex decoding,
+bounded retry orchestration is Current — TC-13.18d.11c. Codex decoding,
 Codex rate-limit classification, and provider rate-limit wiring remain Target.
 Active-dispatch cancellation
 contract is repaired and frozen as of TC-13.18d.9a.1 (execution-based
@@ -541,7 +542,7 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18d.10b** | Active-dispatch supersession production implementation | TC-13.18d.10a | Current |
 | **TC-13.18d.11a** | Dispatch failure recovery + bounded retry contract | TC-13.18d.10b | Contract Current |
 | **TC-13.18d.11b** | Canonical `DISPATCH_FAILED` transition production | TC-13.18d.11a | Current |
-| **TC-13.18d.11c** | Creator-alive bounded retry orchestration production | TC-13.18d.11b | Runtime Target |
+| **TC-13.18d.11c** | Creator-alive bounded retry orchestration production | TC-13.18d.11b | Current |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Current — TC-13.19j |
 | **TC-13.20** | HTML Dashboard | TC-13.17, TC-13.19 | Read-only UI |
@@ -572,7 +573,7 @@ TC-13.18d.9b still does **not** implement:
 - Active-dispatch supersession → Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b
 - RateLimit retry → Target
 - Dispatch failure recovery → Contract Current — TC-13.18d.11a / canonical transition Current — TC-13.18d.11b
-- Bounded retry orchestration → Runtime Target — TC-13.18d.11c
+- Bounded retry orchestration → Current — TC-13.18d.11c
 - Codex decoding → Target
 - Modification of `dispatcher_gateway` termination implementation
 - Modification of `WorkflowOrchestrator` existing frozen/slots three-field shape
@@ -1332,8 +1333,8 @@ and `run_dispatch_cycle()` retains its signature and compatibility behavior.
 ## 16. Dispatch Failure Recovery and Bounded Retry — Frozen Contract (Contract Current — TC-13.18d.11a)
 
 TC-13.18d.11a freezes one recovery event and one finite, creator-alive retry
-surface. The canonical transition is Current — TC-13.18d.11b; the retry
-orchestrator remains Runtime Target — TC-13.18d.11c.
+surface. The canonical transition is Current — TC-13.18d.11b; the
+creator-alive retry orchestrator is Current — TC-13.18d.11c.
 
 This contract does not broaden `TASK_REQUEUED`. That event remains exactly
 `returned -> ready` for delivery remediation. Dispatch failure recovery uses
@@ -1346,7 +1347,7 @@ the new and unambiguous `DISPATCH_FAILED` event.
 | Worker fails after ACK | `in_progress` | winner is `completion`; Worker and heartbeat done; release completed | Recoverable in the same creator |
 | Output decode fails | `in_progress` | same cleanup proof; no delivery transition committed | Recoverable in the same creator |
 | `DELIVERY_SUBMITTED` fails before commit | `in_progress` | cleanup complete; fresh snapshot proves exact dispatch remains `in_progress`; no matching delivery event | Recoverable in the same creator |
-| Worker/start fails before ACK | `dispatched` | process-tree cleanup and release proof exist internally, but no public execution is returned | `DISPATCH_FAILED` supports it; orchestration remains Target beyond 11c |
+| Worker/start fails before `start_dispatch_cycle()` returns an execution | `dispatched` | no public execution/finalizer metadata exists | Ineligible; propagate unchanged with zero recovery and zero next attempt |
 | Heartbeat fencing / ownership loss | `dispatched` or `in_progress` | ownership is uncertain | Fail-closed; no automatic recovery |
 | Lease release fails | `dispatched` or `in_progress` | release is not confirmed | Fail-closed; no recovery transition |
 | Recovery or terminal CAS conflict | Canonical state wins | conflict itself proves the plan is stale | Fail-closed; no retry |
@@ -1455,8 +1456,9 @@ The whole plan is validated before the first side effect:
   outbox message id is distinct across the plan;
 - every failure request is exact type `TransitionRequest`, event type
   `DISPATCH_FAILED`, payload exact type `DispatchFailedPayload`;
-- every failure request has the exact task, expected active state, dispatch id,
-  and attempt for its paired dispatch;
+- every failure request has the exact task, exact expected state
+  `"in_progress"` (never `"dispatched"`), dispatch id, and attempt for its
+  paired dispatch;
 - after each recovery, the next `TASK_DISPATCHED` CAS expects `ready`, retains
   the previous ledger attempt, and its payload increments it by exactly one.
 
@@ -1485,12 +1487,13 @@ termination operation, completion future, or winner.
 2. start_dispatch_cycle for the current caller-supplied attempt
 3. await the same ActiveDispatchExecution.wait()
 4. on success, return BoundedDispatchRetryResult
-5. on failure, classify eligibility and preserve the original exception
+5. on failure, preserve the original exception
 6. require completion winner + Worker done + heartbeat done + release completed
-7. read a fresh canonical snapshot and verify exact state/DispatchCAS
-8. apply paired DISPATCH_FAILED with lease=None
-9. if the finite plan is exhausted, re-raise the original final exception
-10. otherwise start the next distinct, consecutive attempt
+7. require finalizer completion publication, then read its frozen private typed classification
+8. read a fresh canonical snapshot and verify exact `in_progress` state/DispatchCAS
+9. apply paired DISPATCH_FAILED with lease=None
+10. if exhausted, verify a fresh exact `ready` snapshot and re-raise the original final exception
+11. otherwise start the next distinct, consecutive attempt
 ```
 
 There is no sleep, polling, exponential backoff, jitter, rate-limit policy, or
@@ -1509,6 +1512,17 @@ transition failure are eligible. These outcomes are not eligible:
 - any CAS conflict;
 - invalid plan/input;
 - an already-terminal or advanced canonical state.
+
+The classification is a private typed enum stored in frozen finalizer
+metadata before the shared completion future is published. The wrapper reads
+it only after `wait()` proves completion publication and all Worker,
+heartbeat, and release evidence is complete. It never inspects exception
+messages, `str()`/`repr()`, stdout/stderr, provider names, or exit codes.
+
+Any exception raised before `start_dispatch_cycle()` returns
+`ActiveDispatchExecution` propagates as the same exception object. It causes
+zero `DISPATCH_FAILED` calls and zero subsequent attempts; pre-ACK
+`dispatched` recovery remains a future owner-loss/pre-ACK boundary.
 
 If cleanup/release fails, that existing failure propagates and no
 `DISPATCH_FAILED` is attempted. If recovery transition fails, its existing
@@ -1536,6 +1550,11 @@ failure is re-raised unchanged to signal budget exhaustion.
 Each failed eligible attempt has at most one successful `DISPATCH_FAILED`,
 one lease release owned by its existing finalizer, and at most one following
 `TASK_DISPATCHED`. A retry wrapper never repeats finalization.
+
+After the third recovery, a fresh canonical snapshot must be exactly
+`state == "ready"`, retain the third failed attempt, and have
+`current_dispatch is None`. No fourth dispatch is started before the same
+third exception object is re-raised.
 
 ### 16.8 Owner-Loss Decision
 
@@ -1582,7 +1601,7 @@ wiring, Codex enablement, and changes to DispatcherGateway termination.
 |---|---|---|
 | **TC-13.18d.11a** | This failure recovery / bounded retry contract | **Contract Current** |
 | **TC-13.18d.11b** | `DispatchFailedPayload` + `DISPATCH_FAILED` transition production | **Current** |
-| **TC-13.18d.11c** | Creator-alive `run_bounded_dispatch_retry` production | **Runtime Target** |
+| **TC-13.18d.11c** | Creator-alive `run_bounded_dispatch_retry` production | **Current** |
 
 Provider rate-limit wiring and owner-loss recovery remain Target. Interface
 #22 remains Target until the remaining runtime boundaries are implemented.

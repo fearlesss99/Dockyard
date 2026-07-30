@@ -11694,7 +11694,7 @@ class TC1318d11aDispatchFailureRecoveryContractTests(unittest.TestCase):
             self.contract_text,
         )
         self.assertIn(
-            "bounded retry orchestration is Runtime Target — TC-13.18d.11c",
+            "bounded retry orchestration is Current — TC-13.18d.11c",
             self.contract_text,
         )
 
@@ -11843,7 +11843,7 @@ class TC1318d11aDispatchFailureRecoveryContractTests(unittest.TestCase):
             "same task and revision",
             "strictly consecutive",
             "distinct across the plan",
-            "exact task, expected active state, dispatch id",
+            "exact task, exact expected state",
             "increments it by exactly one",
             "generates no ids",
         ):
@@ -11858,10 +11858,12 @@ class TC1318d11aDispatchFailureRecoveryContractTests(unittest.TestCase):
             "start_dispatch_cycle for the current caller-supplied attempt",
             "await the same ActiveDispatchExecution.wait()",
             "on success, return BoundedDispatchRetryResult",
-            "on failure, classify eligibility",
+            "on failure, preserve the original exception",
             "require completion winner + Worker done",
+            "require finalizer completion publication",
             "read a fresh canonical snapshot",
             "apply paired DISPATCH_FAILED with lease=None",
+            "verify a fresh exact `ready` snapshot",
             "re-raise the original final exception",
             "start the next distinct, consecutive attempt",
         )
@@ -11932,7 +11934,7 @@ class TC1318d11aDispatchFailureRecoveryContractTests(unittest.TestCase):
             self.assertIn(card, self.section)
             self.assertIn(card, self.adr_text)
 
-    def test_21_transition_current_retry_target(self) -> None:
+    def test_21_transition_and_creator_alive_retry_current(self) -> None:
         self.assertIn(
             "| **TC-13.18d.11b** | `DispatchFailedPayload` + "
             "`DISPATCH_FAILED` transition production | **Current** |",
@@ -11945,6 +11947,25 @@ class TC1318d11aDispatchFailureRecoveryContractTests(unittest.TestCase):
         )
         self.assertIn(
             "| **TC-13.18d.11c** | Creator-alive "
-            "`run_bounded_dispatch_retry` production | **Runtime Target** |",
+            "`run_bounded_dispatch_retry` production | **Current** |",
             self.contract_text,
         )
+        self.assertIn(
+            "| TC-13.18d.11c | Creator-alive bounded retry "
+            "orchestration | **Current** |",
+            self.adr_text,
+        )
+
+    def test_22_creator_alive_retry_tightened_boundaries(self) -> None:
+        for term in (
+            'exact expected state\n  `"in_progress"` (never `"dispatched"`)',
+            "private typed enum stored in frozen finalizer",
+            "completion future is published",
+            "never inspects exception\nmessages, `str()`/`repr()`",
+            "propagates as the same exception object",
+            "zero `DISPATCH_FAILED` calls and zero subsequent attempts",
+            'exactly\n`state == "ready"`',
+            "`current_dispatch is None`",
+            "No fourth dispatch is started",
+        ):
+            self.assertIn(term, self.section)

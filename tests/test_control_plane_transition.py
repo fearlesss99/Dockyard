@@ -9779,6 +9779,29 @@ class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
             result = svc2.apply_transition(req, lease, now)
 
             self.assertEqual("dispatched", result.to_state)
+            tasks_doc = _ds_json.loads(
+                (
+                    root / "docs" / "pm" / "state" / "tasks.yaml"
+                ).read_text(encoding="utf-8")
+            )
+            current_dispatch = tasks_doc["tasks"][0]["current_dispatch"]
+            self.assertEqual(
+                set(current_dispatch),
+                {
+                    "dispatch_id",
+                    "attempt_id",
+                    "role_id",
+                    "base_commit",
+                    "branch",
+                    "dispatched_at",
+                    "model_selection",
+                },
+            )
+            self.assertEqual(current_dispatch["attempt_id"], "attempt-1")
+            self.assertEqual(
+                current_dispatch["dispatched_at"],
+                "2026-07-27T01:00:00Z",
+            )
 
             # Verify event file contains approval guard.
             event_path = root / "docs" / "pm" / "events" / "EVT-20260727-GT02.yaml"

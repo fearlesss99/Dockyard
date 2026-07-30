@@ -40,6 +40,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
@@ -55,6 +56,7 @@ from control_plane_transition import (
     DeliveryReturnedPayload,
     DeliverySubmittedPayload,
     DispatchCAS,
+    DispatchFailedPayload,
     DispatchPayload,
     IntegrationPayload,
     RequeuePayload,
@@ -120,8 +122,11 @@ __all__ = [
     "DeliveryReceipt",
     "DeliveryRemediationRequest",
     "DeliveryRemediationResult",
+    "BoundedDispatchRetryRequest",
+    "BoundedDispatchRetryResult",
     "DispatchCycleRequest",
     "DispatchCycleResult",
+    "DispatchRetryAttempt",
     "EscalatedRedispatchRequest",
     "EscalatedRedispatchResult",
     "IntegrationFailureRequest",
@@ -444,6 +449,205 @@ class DispatchCycleResult:
     duration_seconds: float
 
 
+# -- Bounded dispatch retry types (TC-13.18d.11c) ---------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchRetryAttempt:
+    """Caller-supplied dispatch attempt and paired recovery request."""
+
+    dispatch_cycle_request: DispatchCycleRequest
+    failure_transition_request: TransitionRequest
+
+    def __post_init__(self) -> None:
+        if type(self.dispatch_cycle_request) is not DispatchCycleRequest:
+            raise TypeError(
+                "dispatch_cycle_request must be exact DispatchCycleRequest"
+            )
+        if type(self.failure_transition_request) is not TransitionRequest:
+            raise TypeError(
+                "failure_transition_request must be exact TransitionRequest"
+            )
+
+        cycle = self.dispatch_cycle_request
+        failure = self.failure_transition_request
+        identity = cycle.dispatch_request.identity
+        dispatch_transition = cycle.dispatch_transition_request
+
+        if type(failure.event_type) is not str or failure.event_type != (
+            "DISPATCH_FAILED"
+        ):
+            raise WorkflowInputError(
+                "failure_transition_request event_type must be "
+                "exact DISPATCH_FAILED"
+            )
+        if type(failure.payload) is not DispatchFailedPayload:
+            raise WorkflowInputError(
+                "failure_transition_request payload must be exact "
+                "DispatchFailedPayload"
+            )
+        if failure.cas.expected_state != "in_progress":
+            raise WorkflowInputError(
+                "failure_transition_request expected_state must be "
+                "exact in_progress"
+            )
+        if type(failure.dispatch_cas) is not DispatchCAS:
+            raise WorkflowInputError(
+                "failure_transition_request requires exact DispatchCAS"
+            )
+        if failure.cas.task_id != identity.task_id:
+            raise WorkflowInputError(
+                "failure request task must match dispatch attempt"
+            )
+        if failure.cas.expected_revision != identity.revision:
+            raise WorkflowInputError(
+                "failure request revision must match dispatch attempt"
+            )
+        if failure.cas.expected_snapshot_commit != (
+            dispatch_transition.cas.expected_snapshot_commit
+        ):
+            raise WorkflowInputError(
+                "failure request snapshot commit must match dispatch attempt"
+            )
+        if failure.dispatch_cas.expected_dispatch_id != identity.dispatch_id:
+            raise WorkflowInputError(
+                "failure request dispatch id must match dispatch attempt"
+            )
+        if failure.dispatch_cas.expected_attempt != identity.attempt:
+            raise WorkflowInputError(
+                "failure request attempt must match dispatch attempt"
+            )
+        if not failure.event_context.evidence_refs:
+            raise WorkflowInputError(
+                "failure request requires evidence refs"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class BoundedDispatchRetryRequest:
+    """Finite caller-supplied retry plan of one to three attempts."""
+
+    attempts: tuple[DispatchRetryAttempt, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.attempts) is not tuple:
+            raise TypeError("attempts must be an exact tuple")
+        if not 1 <= len(self.attempts) <= 3:
+            raise ValueError("attempts length must be between one and three")
+        for item in self.attempts:
+            if type(item) is not DispatchRetryAttempt:
+                raise TypeError(
+                    "attempts must contain exact DispatchRetryAttempt values"
+                )
+
+        first_identity = self.attempts[0].dispatch_cycle_request.dispatch_request.identity
+        first_task_id = first_identity.task_id
+        first_revision = first_identity.revision
+        previous_attempt: int | None = None
+        identifiers: set[str] = set()
+
+        for item in self.attempts:
+            cycle = item.dispatch_cycle_request
+            failure = item.failure_transition_request
+            DispatchRetryAttempt(cycle, failure)
+            identity = cycle.dispatch_request.identity
+            payload = cycle.dispatch_transition_request.payload
+            if type(payload) is not DispatchPayload:
+                raise WorkflowInputError(
+                    "dispatch transition payload must be exact DispatchPayload"
+                )
+            if identity.task_id != first_task_id:
+                raise WorkflowInputError(
+                    "all retry attempts must target the same task"
+                )
+            if identity.revision != first_revision:
+                raise WorkflowInputError(
+                    "all retry attempts must target the same revision"
+                )
+            if previous_attempt is not None and identity.attempt != (
+                previous_attempt + 1
+            ):
+                raise WorkflowInputError(
+                    "retry attempt numbers must be strictly consecutive"
+                )
+            if payload.new_attempt != identity.attempt:
+                raise WorkflowInputError(
+                    "dispatch payload attempt must match dispatch identity"
+                )
+            if failure.cas.expected_state != "in_progress":
+                raise WorkflowInputError(
+                    "failure request expected_state must be exact in_progress"
+                )
+
+            attempt_identifiers = (
+                identity.dispatch_id,
+                cycle.dispatch_transition_request.event_id,
+                cycle.acknowledge_transition_request.event_id,
+                cycle.delivery_event_id,
+                payload.outbox_message_id,
+                failure.event_id,
+            )
+            if len(set(attempt_identifiers)) != len(attempt_identifiers):
+                raise WorkflowInputError(
+                    "retry plan identifiers must be distinct"
+                )
+            if identifiers.intersection(attempt_identifiers):
+                raise WorkflowInputError(
+                    "retry plan identifiers must be globally distinct"
+                )
+            identifiers.update(attempt_identifiers)
+            previous_attempt = identity.attempt
+
+
+@dataclass(frozen=True, slots=True)
+class BoundedDispatchRetryResult:
+    """Successful finite dispatch retry result."""
+
+    task_id: str
+    attempts_started: int
+    recovery_transitions: tuple[TransitionResult, ...]
+    dispatch_cycle_result: DispatchCycleResult
+
+    def __post_init__(self) -> None:
+        if type(self.task_id) is not str or not self.task_id:
+            raise TypeError("task_id must be a non-empty exact str")
+        if (
+            type(self.attempts_started) is not int
+            or not 1 <= self.attempts_started <= 3
+        ):
+            raise TypeError("attempts_started must be an int from one to three")
+        if type(self.recovery_transitions) is not tuple:
+            raise TypeError("recovery_transitions must be an exact tuple")
+        for transition in self.recovery_transitions:
+            if type(transition) is not TransitionResult:
+                raise TypeError(
+                    "recovery_transitions must contain exact TransitionResult"
+                )
+        if type(self.dispatch_cycle_result) is not DispatchCycleResult:
+            raise TypeError(
+                "dispatch_cycle_result must be exact DispatchCycleResult"
+            )
+
+
+class _DispatchFailureKind(str, Enum):
+    """Private typed classification frozen by the execution finalizer."""
+
+    WORKER_FAILED = "worker_failed"
+    WORKER_OUTPUT_FAILED = "worker_output_failed"
+    DELIVERY_TRANSITION_FAILED = "delivery_transition_failed"
+
+
+@dataclass(frozen=True, slots=True)
+class _DispatchFinalizerMetadata:
+    """Private non-sensitive finalizer evidence published before completion."""
+
+    winner: str
+    worker_done: bool
+    heartbeat_done: bool
+    release_completed: bool
+    failure_kind: _DispatchFailureKind | None
+
+
 # -- ActiveDispatchCancellation types (TC-13.18d.9b) -------------------------
 
 
@@ -590,6 +794,7 @@ class ActiveDispatchExecution:
         "_winner",
         "_release_started",
         "_release_completed",
+        "_finalizer_metadata",
         "_dispatch_transition",
         "_ack_transition",
         "_start_monotonic",
@@ -627,6 +832,7 @@ class ActiveDispatchExecution:
         self._winner: str | None = None
         self._release_started = False
         self._release_completed = False
+        self._finalizer_metadata: _DispatchFinalizerMetadata | None = None
         self._dispatch_transition = dispatch_transition
         self._ack_transition = acknowledge_transition
         self._start_monotonic = start_monotonic
@@ -1505,6 +1711,151 @@ class WorkflowOrchestrator:
                 raise outer_cancel from cleanup_error
             raise
 
+    async def run_bounded_dispatch_retry(
+        self,
+        request: BoundedDispatchRetryRequest,
+        providers: Mapping[str, AgentCliProvider],
+    ) -> BoundedDispatchRetryResult:
+        """Run a finite creator-owned retry plan without inferring failures."""
+        if type(request) is not BoundedDispatchRetryRequest:
+            raise WorkflowInputError(
+                "request must be exact BoundedDispatchRetryRequest"
+            )
+        if not isinstance(providers, Mapping):
+            raise WorkflowInputError("providers must be a Mapping")
+        if len(providers) == 0:
+            raise WorkflowInputError("providers must not be empty")
+
+        # Revalidate the entire frozen outer plan.  Nested control-plane
+        # values are immutable by contract, but this also fails closed against
+        # hostile object.__setattr__ mutation before the first side effect.
+        validated = BoundedDispatchRetryRequest(request.attempts)
+        recovery_transitions: list[TransitionResult] = []
+
+        for index, attempt in enumerate(validated.attempts):
+            cycle_request = attempt.dispatch_cycle_request
+
+            # This call is deliberately outside the execution-failure handler.
+            # A pre-return exception has no ActiveDispatchExecution evidence
+            # and therefore propagates without recovery or another attempt.
+            execution = await self.start_dispatch_cycle(
+                cycle_request,
+                providers,
+            )
+
+            try:
+                cycle_result = await execution.wait()
+            except asyncio.CancelledError:
+                raise
+            except BaseException as dispatch_error:
+                metadata = execution._finalizer_metadata
+                if (
+                    not execution._completion.done()
+                    or type(metadata) is not _DispatchFinalizerMetadata
+                ):
+                    raise WorkflowInvariantError(
+                        "dispatch finalizer metadata was not published"
+                    ) from dispatch_error
+                if (
+                    metadata.winner != "completion"
+                    or not metadata.worker_done
+                    or not metadata.heartbeat_done
+                    or not metadata.release_completed
+                    or not execution._worker_task.done()
+                    or not execution._heartbeat_task.done()
+                    or not execution._release_started
+                    or not execution._release_completed
+                ):
+                    raise WorkflowInvariantError(
+                        "dispatch finalization evidence is incomplete"
+                    ) from dispatch_error
+                if type(metadata.failure_kind) is not _DispatchFailureKind:
+                    raise WorkflowInvariantError(
+                        "dispatch failure classification is unavailable"
+                    ) from dispatch_error
+
+                failure_request = attempt.failure_transition_request
+                if (
+                    failure_request.payload.failure_kind
+                    != metadata.failure_kind.value
+                ):
+                    raise WorkflowInvariantError(
+                        "failure request classification does not match "
+                        "finalizer metadata"
+                    ) from dispatch_error
+
+                snapshot = StateProvider(self.project_root).snapshot()
+                task = next(
+                    (
+                        item
+                        for item in snapshot.tasks
+                        if item.task_id
+                        == cycle_request.dispatch_request.identity.task_id
+                    ),
+                    None,
+                )
+                identity = cycle_request.dispatch_request.identity
+                if (
+                    task is None
+                    or task.revision != identity.revision
+                    or task.state != "in_progress"
+                    or task.attempt != identity.attempt
+                    or task.current_dispatch is None
+                    or task.current_dispatch.dispatch_id
+                    != identity.dispatch_id
+                ):
+                    raise WorkflowInvariantError(
+                        "canonical dispatch state does not match recovery CAS"
+                    ) from dispatch_error
+
+                try:
+                    recovery = ControlPlaneTransitionService(
+                        self.project_root
+                    ).apply_transition(
+                        failure_request,
+                        lease=None,
+                        now=self.clock.now(),
+                    )
+                except BaseException as transition_error:
+                    raise transition_error from dispatch_error
+                recovery_transitions.append(recovery)
+
+                if index == len(validated.attempts) - 1:
+                    final_snapshot = StateProvider(
+                        self.project_root
+                    ).snapshot()
+                    final_task = next(
+                        (
+                            item
+                            for item in final_snapshot.tasks
+                            if item.task_id == identity.task_id
+                        ),
+                        None,
+                    )
+                    if (
+                        final_task is None
+                        or final_task.revision != identity.revision
+                        or final_task.state != "ready"
+                        or final_task.attempt != identity.attempt
+                        or final_task.current_dispatch is not None
+                    ):
+                        raise WorkflowInvariantError(
+                            "final recovery did not publish exact ready state"
+                        ) from dispatch_error
+                    raise
+                continue
+
+            return BoundedDispatchRetryResult(
+                task_id=(
+                    cycle_request.dispatch_request.identity.task_id
+                ),
+                attempts_started=index + 1,
+                recovery_transitions=tuple(recovery_transitions),
+                dispatch_cycle_result=cycle_result,
+            )
+
+        raise WorkflowInvariantError("bounded dispatch retry plan incomplete")
+
     async def start_dispatch_cycle(
         self,
         request: DispatchCycleRequest,
@@ -1786,6 +2137,8 @@ class WorkflowOrchestrator:
             cancellation_result: ActiveDispatchCancellationResult | None = None
             supersession_result: ActiveDispatchSupersessionResult | None = None
             worker_cancel_error: DispatchCancelledError | None = None
+            failure_kind: _DispatchFailureKind | None = None
+            classified_error: BaseException | None = None
 
             if winner in ("cancellation", "supersession"):
                 execution._worker_task.cancel()
@@ -1827,57 +2180,100 @@ class WorkflowOrchestrator:
             elif winner == "completion":
                 try:
                     worker_result = execution._worker_task.result()
-                    request = execution._request
-                    worker_output = decode_worker_result(
-                        worker_result, request.provider_cli_version
-                    )
-                    delivery_receipt = require_delivery_receipt(worker_output)
-                    dispatch_tr = request.dispatch_transition_request
-                    ack_tr = request.acknowledge_transition_request
-                    delivery_tr = TransitionRequest(
-                        cas=TransitionCAS(
-                            task_id=dispatch_tr.cas.task_id,
-                            expected_revision=ack_tr.cas.expected_revision,
-                            expected_state="in_progress",
-                            expected_snapshot_commit=(
-                                dispatch_tr.cas.expected_snapshot_commit
-                            ),
-                        ),
-                        dispatch_cas=ack_tr.dispatch_cas,
-                        event_id=request.delivery_event_id,
-                        event_type="DELIVERY_SUBMITTED",
-                        payload=DeliverySubmittedPayload(
-                            implementation_commit=(
-                                delivery_receipt.implementation_commit
-                            ),
-                            report_commit=delivery_receipt.report_commit,
-                        ),
-                        event_context=request.delivery_event_context,
-                    )
-                    delivery_transition = ControlPlaneTransitionService(
-                        self.project_root
-                    ).apply_transition(
-                        delivery_tr,
-                        execution._handle.lease,
-                        self.clock.now(),
-                    )
-                    duration = _validate_monotonic_delta(
-                        execution._start_monotonic,
-                        self.clock.monotonic(),
-                    )
-                    normal_result = DispatchCycleResult(
-                        worker_result=worker_result,
-                        worker_output=worker_output,
-                        delivery_receipt=delivery_receipt,
-                        dispatch_transition=execution._dispatch_transition,
-                        acknowledge_transition=execution._ack_transition,
-                        delivery_transition=delivery_transition,
-                        slot_id=execution._handle.lease.slot_id,
-                        lease_epoch=execution._handle.lease_epoch,
-                        duration_seconds=duration,
-                    )
                 except BaseException as exc:
                     primary_error = exc
+                    classified_error = exc
+                    failure_kind = _DispatchFailureKind.WORKER_FAILED
+                else:
+                    request = execution._request
+                    try:
+                        worker_output = decode_worker_result(
+                            worker_result, request.provider_cli_version
+                        )
+                        delivery_receipt = require_delivery_receipt(
+                            worker_output
+                        )
+                    except BaseException as exc:
+                        primary_error = exc
+                        classified_error = exc
+                        failure_kind = (
+                            _DispatchFailureKind.WORKER_OUTPUT_FAILED
+                        )
+                    else:
+                        dispatch_tr = request.dispatch_transition_request
+                        ack_tr = request.acknowledge_transition_request
+                        delivery_tr = TransitionRequest(
+                            cas=TransitionCAS(
+                                task_id=dispatch_tr.cas.task_id,
+                                expected_revision=(
+                                    ack_tr.cas.expected_revision
+                                ),
+                                expected_state="in_progress",
+                                expected_snapshot_commit=(
+                                    dispatch_tr.cas
+                                    .expected_snapshot_commit
+                                ),
+                            ),
+                            dispatch_cas=ack_tr.dispatch_cas,
+                            event_id=request.delivery_event_id,
+                            event_type="DELIVERY_SUBMITTED",
+                            payload=DeliverySubmittedPayload(
+                                implementation_commit=(
+                                    delivery_receipt
+                                    .implementation_commit
+                                ),
+                                report_commit=(
+                                    delivery_receipt.report_commit
+                                ),
+                            ),
+                            event_context=request.delivery_event_context,
+                        )
+                        try:
+                            delivery_transition = (
+                                ControlPlaneTransitionService(
+                                    self.project_root
+                                ).apply_transition(
+                                    delivery_tr,
+                                    execution._handle.lease,
+                                    self.clock.now(),
+                                )
+                            )
+                        except BaseException as exc:
+                            primary_error = exc
+                            classified_error = exc
+                            failure_kind = (
+                                _DispatchFailureKind
+                                .DELIVERY_TRANSITION_FAILED
+                            )
+                        else:
+                            try:
+                                duration = _validate_monotonic_delta(
+                                    execution._start_monotonic,
+                                    self.clock.monotonic(),
+                                )
+                                normal_result = DispatchCycleResult(
+                                    worker_result=worker_result,
+                                    worker_output=worker_output,
+                                    delivery_receipt=delivery_receipt,
+                                    dispatch_transition=(
+                                        execution._dispatch_transition
+                                    ),
+                                    acknowledge_transition=(
+                                        execution._ack_transition
+                                    ),
+                                    delivery_transition=(
+                                        delivery_transition
+                                    ),
+                                    slot_id=(
+                                        execution._handle.lease.slot_id
+                                    ),
+                                    lease_epoch=(
+                                        execution._handle.lease_epoch
+                                    ),
+                                    duration_seconds=duration,
+                                )
+                            except BaseException as exc:
+                                primary_error = exc
             else:
                 primary_error = WorkflowInvariantError(
                     "active dispatch has no terminal winner"
@@ -1997,6 +2393,29 @@ class WorkflowOrchestrator:
                         )
                     except BaseException as exc:
                         primary_error = exc
+
+            if (
+                winner != "completion"
+                or primary_error is None
+                or primary_error is not classified_error
+                or not execution._release_completed
+            ):
+                failure_kind = None
+            if execution._finalizer_metadata is not None:
+                raise WorkflowInvariantError(
+                    "dispatch finalizer metadata already published"
+                )
+            if execution._completion.done():
+                raise WorkflowInvariantError(
+                    "completion published before finalizer metadata"
+                )
+            execution._finalizer_metadata = _DispatchFinalizerMetadata(
+                winner=winner or "unknown",
+                worker_done=execution._worker_task.done(),
+                heartbeat_done=execution._heartbeat_task.done(),
+                release_completed=execution._release_completed,
+                failure_kind=failure_kind,
+            )
 
             if primary_error is not None:
                 if not execution._completion.done():

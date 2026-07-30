@@ -32,7 +32,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 19 | AgentDesk RateLimit service | **Current** — TC-13.14b / Provider Detection Target — TC-13.14c | TC-13.14 | Provider-neutral rate-limit policy with multi-scope and combined signal semantics; provider detection (TC-13.14c) is evidence-dependent Target |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
-| 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Current — TC-13.18d.9b; TASK_SUPERSEDED quiescent path: Current — TC-13.18d.8; TASK_SUPERSEDED active dispatch path: Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b; dispatch failure recovery: Contract Current — TC-13.18d.11a / canonical transition Current — TC-13.18d.11b; bounded retry orchestration Runtime Target — TC-13.18d.11c) |
+| 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Current — TC-13.18d.9b; TASK_SUPERSEDED quiescent path: Current — TC-13.18d.8; TASK_SUPERSEDED active dispatch path: Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b; dispatch failure recovery: Contract Current — TC-13.18d.11a / canonical transition Current — TC-13.18d.11b / creator-alive bounded retry Current — TC-13.18d.11c) |
 | 23 | E2E / Recovery tests | **Current** — TC-13.19j | E2E validation and recovery scenarios — nine scenario E2E tests committed; quiescent cancellation/supersession, expert user-decision paths, escalation chain, integration failure, and happy-path audit/accept/integrate all covered |
 | 24 | AgentDesk HTML Dashboard | **Current** | TC-13.20b | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target 鈫?Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
@@ -6514,7 +6514,7 @@ TC-13.20  鈥?HTML Dashboard
 | TC-13.18d.10b | TC-13.18d.10a | Active-dispatch supersession production | **Current** |
 | TC-13.18d.11a | TC-13.18d.10b | Dispatch failure recovery + bounded retry contract | **Contract Current** |
 | TC-13.18d.11b | TC-13.18d.11a | Canonical `DISPATCH_FAILED` transition production | **Current** |
-| TC-13.18d.11c | TC-13.18d.11b | Creator-alive bounded retry orchestration | **Runtime Target** |
+| TC-13.18d.11c | TC-13.18d.11b | Creator-alive bounded retry orchestration | **Current** |
 | TC-13.19 | TC-13.18d.3 | E2E / recovery tests | **Target** → **Current — TC-13.19j** |
 
 ---
@@ -6660,7 +6660,7 @@ Interface #22 remains Target; TC-13.19 and TC-13.20 statuses are unchanged.
   production implementation is Current — TC-13.18d.10b.
 * **Dispatch failure recovery and bounded retry** is Contract Current —
   TC-13.18d.11a; the canonical transition is Current — TC-13.18d.11b and
-  bounded retry orchestration remains Runtime Target — TC-13.18d.11c.
+  creator-alive bounded retry is Current — TC-13.18d.11c.
 * Provider rate-limit wiring and owner-loss recovery remain Target.
 * All prior Current interfaces remain **Current**.
 
@@ -6707,13 +6707,21 @@ first side effect. No id is generated and no old dispatch request is cloned.
 
 Fixed order: validate the complete plan; start and await the existing
 creator-owned execution; on an eligible completion failure require Worker
-done, heartbeat done, release complete, and a fresh matching snapshot; apply
-the paired `DISPATCH_FAILED`; then either begin the next distinct attempt or
-re-raise the original final failure when the finite budget is exhausted.
+done, heartbeat done, release complete, and finalizer completion publication;
+read the frozen private typed failure classification, then a fresh exact
+`in_progress` matching snapshot; apply the paired `DISPATCH_FAILED`; then
+either begin the next distinct attempt or, after a fresh exact `ready`
+snapshot, re-raise the original final failure when the finite budget is
+exhausted.
 There is no second finalizer, kill, heartbeat, release, runner, completion
 future, sleep, polling, backoff, or jitter.
 
 Only creator-alive `completion` failures with confirmed cleanup are eligible.
+Every paired recovery request expects exact state `in_progress`; `dispatched`
+is rejected before the first start. Classification never reads exception
+text, stdout/stderr, provider names, or exit codes. Any exception before
+`start_dispatch_cycle()` returns an execution propagates unchanged with zero
+recovery and zero subsequent attempts.
 Cancellation, supersession, outer cancellation, heartbeat fencing, release
 failure, CAS conflict, terminal/advanced state, and stale attempts are never
 converted into retries. A recovery transition exception is primary with the
@@ -6742,7 +6750,7 @@ Production split:
 |---|---|---|
 | TC-13.18d.11a | Frozen recovery / bounded retry contract | **Contract Current** |
 | TC-13.18d.11b | `DispatchFailedPayload` + `DISPATCH_FAILED` production | **Current** |
-| TC-13.18d.11c | Creator-alive bounded retry orchestration | **Runtime Target** |
+| TC-13.18d.11c | Creator-alive bounded retry orchestration | **Current** |
 
 ---
 
