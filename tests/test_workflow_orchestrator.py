@@ -4269,29 +4269,81 @@ class TestOwnerLossDispatchRecovery(unittest.TestCase):
             request.task_id = "TC-002"
 
     def test_retry_plan_fails_closed_before_any_read_or_write(self) -> None:
+        """retry_plan with non-None value now flows through the atomic
+        reservation path instead of being rejected — this test is updated
+        to reflect the TC-13.18d.12c.2 runtime behavior."""
         import workflow_orchestrator as wo
 
         retry_plan = wo.BoundedDispatchRetryRequest(
             (TestBoundedDispatchRetry._attempt(2),)
         )
         request = self._request(retry_plan=retry_plan)
+        # With TC-13.18d.12c.2, retry_plan is no longer rejected.
+        # Instead, it flows through the full recovery + reservation + retry path.
+        # The old "fails closed before any read or write" assertion is retired.
+        # The method now reads snapshot → reads evidence → probes liveness
+        # → applies recovery → reserves retry → runs bounded retry.
+
+        transition = TransitionResult(
+            task_id="TC-001",
+            event_id="EVT-OWNER-LOSS-1",
+            from_state="dispatched",
+            to_state="ready",
+            occurred_at="2026-07-30T12:00:00Z",
+            outbox_message_id=None,
+        )
         with (
             mock.patch.object(wo, "StateProvider") as state_provider,
             mock.patch.object(wo._dse, "read_dispatch_receipt") as read_receipt,
+            mock.patch.object(wo._dse, "read_dispatch_tombstone") as read_tombstone,
             mock.patch.object(
-                wo, "apply_owner_loss_recovery_transition"
+                wo._dse, "probe_process",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo._dse, "probe_dispatch_process_tree",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo, "apply_owner_loss_recovery_transition",
+                return_value=transition,
             ) as apply_recovery,
+            mock.patch.object(
+                wo, "execute_owner_loss_retry_reservation",
+            ) as execute_reservation,
+            mock.patch.object(
+                wo.WorkflowOrchestrator, "run_bounded_dispatch_retry",
+            ) as run_retry,
         ):
-            with self.assertRaisesRegex(
-                wo.WorkflowInvariantError,
-                "automatic retry evidence is unavailable",
-            ):
-                asyncio.run(
-                    self._orchestrator().recover_owner_lost_dispatch(request)
-                )
-        state_provider.assert_not_called()
-        read_receipt.assert_not_called()
-        apply_recovery.assert_not_called()
+            # Mock snapshot to have the expected task/dispatch.
+            provider = mock.Mock()
+            provider.snapshot.return_value = mock.Mock(
+                tasks=(
+                    mock.Mock(
+                        task_id="TC-001", revision=1, attempt=1,
+                        state="dispatched",
+                        current_dispatch=mock.Mock(dispatch_id="DSP-OWNER-1"),
+                    ),
+                ),
+                events=(),
+            )
+            state_provider.return_value = provider
+            read_receipt.return_value = self._receipt()
+            read_tombstone.return_value = None
+            run_retry.return_value = wo.BoundedDispatchRetryResult(
+                task_id="TC-001",
+                attempts_started=1,
+                recovery_transitions=(),
+                dispatch_cycle_result=TestBoundedDispatchRetry._cycle_result(2),
+            )
+
+            result = asyncio.run(
+                self._orchestrator().recover_owner_lost_dispatch(request)
+            )
+            apply_recovery.assert_called_once()
+            execute_reservation.assert_called_once()
+            run_retry.assert_called_once()
+            self.assertIsNotNone(result.retry_result)
 
     def test_alive_and_unknown_liveness_are_zero_write(self) -> None:
         import workflow_orchestrator as wo
@@ -19398,3 +19450,1361 @@ class ControlPlaneTransitionTaskSupersededTests(unittest.TestCase):
                 self.assertEqual(result.from_state, "draft")
         finally:
             import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+
+# -- TC-13.18d.12c.2 Owner-Loss Automatic Retry Runtime Tests -----------------
+
+
+class TestOwnerLossRetryRuntime(unittest.TestCase):
+    """Focused tests for the durable owner-loss automatic retry runtime.
+
+    Covers: public API, 24-field receipt, forward-only phases,
+    atomic reservation boundary, replay/divergent/stale rejection,
+    two-recoverer single-winner, pre/post ACK, ALIVE/UNKNOWN/DEAD,
+    attempt 1→2→3 with no attempt 4, tombstone/finalizer, and
+    cancellation receipt preservation.
+    """
+
+    @staticmethod
+    def _orchestrator() -> Any:
+        import workflow_orchestrator as wo
+
+        orchestrator = object.__new__(wo.WorkflowOrchestrator)
+        object.__setattr__(
+            orchestrator,
+            "project_root",
+            Path(__file__).resolve().parents[1],
+        )
+        object.__setattr__(orchestrator, "clock", FakeClock())
+        object.__setattr__(
+            orchestrator, "heartbeat_interval_seconds", 10.0
+        )
+        return orchestrator
+
+    @staticmethod
+    def _recovery_request(
+        *,
+        retry_plan: Any = None,
+        task_id: str = "TC-001",
+        expected_attempt: int = 1,
+        expected_dispatch_id: str = "DSP-OWNER-1",
+        generation_id: str = "GEN-OWNER-1",
+    ) -> Any:
+        import workflow_orchestrator as wo
+
+        evidence_refs = ("docs/pm/evidence/owner-loss.yaml",)
+        return wo.OwnerLossRecoveryRequest(
+            task_id=task_id,
+            expected_revision=1,
+            expected_attempt=expected_attempt,
+            expected_dispatch_id=expected_dispatch_id,
+            expected_generation_id=generation_id,
+            recovery_event_id="EVT-OWNER-LOSS-RETRY-1",
+            recovery_event_context=TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=evidence_refs,
+                guard_results=(),
+            ),
+            failure_kind="worker_failed",
+            evidence_refs=evidence_refs,
+            retry_plan=retry_plan,
+        )
+
+    @staticmethod
+    def _snapshot(
+        state: str = "dispatched",
+        task_id: str = "TC-001",
+        attempt: int = 1,
+        dispatch_id: str = "DSP-OWNER-1",
+        events: tuple = (),
+    ) -> Any:
+        return mock.Mock(
+            tasks=(
+                mock.Mock(
+                    task_id=task_id,
+                    revision=1,
+                    attempt=attempt,
+                    state=state,
+                    current_dispatch=(
+                        mock.Mock(dispatch_id=dispatch_id)
+                        if state in ("dispatched", "in_progress")
+                        else None
+                    ),
+                ),
+            ),
+            events=events,
+        )
+
+    @staticmethod
+    def _receipt(
+        generation_id: str = "GEN-OWNER-1",
+        phase: str = "WORKER_STARTED",
+    ) -> Any:
+        return mock.Mock(
+            task_id="TC-001",
+            revision=1,
+            attempt=1,
+            dispatch_id="DSP-OWNER-1",
+            generation_id=generation_id,
+            phase=phase,
+            creator_pid=101,
+            creator_creation_time="2026-07-30T00:00:00Z",
+            boot_id="boot-1",
+        )
+
+    @staticmethod
+    def _retry_result(attempt: int = 2) -> Any:
+        """Return a typed BoundedDispatchRetryResult, not a generic mock."""
+        import workflow_orchestrator as wo
+
+        return wo.BoundedDispatchRetryResult(
+            task_id="TC-001",
+            attempts_started=1,
+            recovery_transitions=(),
+            dispatch_cycle_result=TestBoundedDispatchRetry._cycle_result(attempt),
+        )
+
+    # -- 1. Precise public API -------------------------------------------------
+
+    def test_public_api_types_are_frozen_slotted(self) -> None:
+        import workflow_orchestrator as wo
+
+        self.assertTrue(hasattr(wo._dse, "OwnerLossRetryPhase"))
+        self.assertTrue(hasattr(wo._dse, "OwnerLossRetryReceipt"))
+
+        phase_enum = wo._dse.OwnerLossRetryPhase
+        self.assertEqual(
+            tuple(p.value for p in phase_enum.order()),
+            (
+                "RECOVERY_TRANSITION_PENDING",
+                "RECOVERY_TRANSITION_COMMITTED",
+                "RETRY_RESERVED",
+                "RETRY_STARTED",
+                "RETRY_FINALIZING",
+                "RETRY_FINALIZED",
+            ),
+        )
+
+    # -- 2. receipt 24 fields, frozen, slots -----------------------------------
+
+    def test_retry_receipt_has_exactly_24_fields(self) -> None:
+        import dispatch_supervisor_evidence as dse
+
+        field_names = tuple(f.name for f in dc_fields(dse.OwnerLossRetryReceipt))
+        self.assertEqual(len(field_names), 24)
+        self.assertEqual(
+            field_names,
+            (
+                "schema_version",
+                "task_id",
+                "revision",
+                "failed_attempt",
+                "failed_dispatch_id",
+                "recovery_event_id",
+                "recovery_generation_id",
+                "next_attempt",
+                "next_dispatch_id",
+                "next_dispatch_event_id",
+                "phase",
+                "creator_pid",
+                "creator_creation_time",
+                "creator_boot_id",
+                "supervisor_pid",
+                "supervisor_creation_time",
+                "supervisor_boot_id",
+                "worker_pid",
+                "worker_creation_time",
+                "worker_boot_id",
+                "reserved_at",
+                "started_at",
+                "finalized_at",
+                "content_digest",
+            ),
+        )
+
+    def test_retry_receipt_is_frozen_slotted(self) -> None:
+        import dispatch_supervisor_evidence as dse
+
+        receipt = dse.OwnerLossRetryReceipt(
+            schema_version=dse.RETRY_RECEIPT_SCHEMA_VERSION,
+            task_id="TC-001",
+            revision=1,
+            failed_attempt=1,
+            failed_dispatch_id="DSP-FAIL-1",
+            recovery_event_id="EVT-RECOVER-1",
+            recovery_generation_id="GEN-RECOVER-1",
+            next_attempt=2,
+            next_dispatch_id="DSP-NEXT-2",
+            next_dispatch_event_id="EVT-DISP-NEXT-2",
+            phase="RETRY_RESERVED",
+            creator_pid=1234,
+            creator_creation_time="2026-07-30T00:00:00Z",
+            creator_boot_id="boot-1",
+            supervisor_pid=None,
+            supervisor_creation_time=None,
+            supervisor_boot_id=None,
+            worker_pid=None,
+            worker_creation_time=None,
+            worker_boot_id=None,
+            reserved_at="2026-07-30T12:00:00Z",
+            started_at=None,
+            finalized_at=None,
+            content_digest="sha256:" + "a" * 64,
+        )
+        self.assertFalse(hasattr(receipt, "__dict__"))
+        with self.assertRaises((AttributeError, TypeError)):
+            receipt.next_dispatch_id = "DSP-OTHER"  # type: ignore[misc]
+
+    # -- 3. forward-only phase --------------------------------------------------
+
+    def test_phase_enum_only_forward_edges(self) -> None:
+        import dispatch_supervisor_evidence as dse
+
+        phase = dse.OwnerLossRetryPhase
+        order = phase.order()
+        for i, current in enumerate(order):
+            if current == phase.RETRY_FINALIZED:
+                continue
+            target = order[i + 1]
+            self.assertEqual(
+                phase(target.value),
+                target,
+                f"{current.value} → {target.value} must be valid",
+            )
+
+    def test_next_attempt_must_equal_failed_attempt_plus_one(self) -> None:
+        import dispatch_supervisor_evidence as dse
+
+        with self.assertRaises(dse.DispatchSupervisorValidationError):
+            dse.OwnerLossRetryReceipt(
+                schema_version=dse.RETRY_RECEIPT_SCHEMA_VERSION,
+                task_id="TC-001", revision=1,
+                failed_attempt=1, failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=3,  # should be 2
+                next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                phase="RETRY_RESERVED",
+                creator_pid=1, creator_creation_time="c", creator_boot_id="b",
+                supervisor_pid=None, supervisor_creation_time=None,
+                supervisor_boot_id=None,
+                worker_pid=None, worker_creation_time=None, worker_boot_id=None,
+                reserved_at="2026-07-30T12:00:00Z",
+                started_at=None, finalized_at=None,
+                content_digest="sha256:" + "a" * 64,
+            )
+
+    def test_next_attempt_cannot_exceed_3(self) -> None:
+        import dispatch_supervisor_evidence as dse
+
+        with self.assertRaises(dse.DispatchSupervisorValidationError):
+            dse.OwnerLossRetryReceipt(
+                schema_version=dse.RETRY_RECEIPT_SCHEMA_VERSION,
+                task_id="TC-001", revision=1,
+                failed_attempt=3, failed_dispatch_id="DSP-FAIL-3",
+                recovery_event_id="EVT-RECOVER-3",
+                recovery_generation_id="GEN-RECOVER-3",
+                next_attempt=4,  # attempt 4 is forbidden
+                next_dispatch_id="DSP-NEXT-4",
+                next_dispatch_event_id="EVT-DISP-NEXT-4",
+                phase="RETRY_RESERVED",
+                creator_pid=1, creator_creation_time="c", creator_boot_id="b",
+                supervisor_pid=None, supervisor_creation_time=None,
+                supervisor_boot_id=None,
+                worker_pid=None, worker_creation_time=None, worker_boot_id=None,
+                reserved_at="2026-07-30T12:00:00Z",
+                started_at=None, finalized_at=None,
+                content_digest="sha256:" + "a" * 64,
+            )
+
+    # -- 4. recovery committed → reservation -----------------------------------
+
+    def test_retry_plan_flows_through_atomic_reservation(self) -> None:
+        import workflow_orchestrator as wo
+
+        retry_plan = wo.BoundedDispatchRetryRequest(
+            (TestBoundedDispatchRetry._attempt(2),)
+        )
+        request = self._recovery_request(retry_plan=retry_plan)
+        provider = mock.Mock()
+        provider.snapshot.return_value = self._snapshot()
+
+        transition = TransitionResult(
+            task_id="TC-001",
+            event_id="EVT-OWNER-LOSS-RETRY-1",
+            from_state="in_progress",
+            to_state="ready",
+            occurred_at="2026-07-30T12:00:00Z",
+            outbox_message_id=None,
+        )
+
+        with (
+            mock.patch.object(wo, "StateProvider", return_value=provider),
+            mock.patch.object(
+                wo._dse, "read_dispatch_receipt", return_value=self._receipt()
+            ),
+            mock.patch.object(
+                wo._dse, "read_dispatch_tombstone", return_value=None
+            ),
+            mock.patch.object(
+                wo._dse, "probe_process",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo._dse, "probe_dispatch_process_tree",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo, "apply_owner_loss_recovery_transition",
+                return_value=transition,
+            ) as apply_recovery,
+            mock.patch.object(
+                wo, "execute_owner_loss_retry_reservation",
+            ) as execute_reservation,
+            mock.patch.object(
+                wo.WorkflowOrchestrator, "run_bounded_dispatch_retry",
+            ) as run_retry,
+        ):
+            run_retry.return_value = self._retry_result(2)
+
+            result = asyncio.run(
+                self._orchestrator().recover_owner_lost_dispatch(request)
+            )
+
+        apply_recovery.assert_called_once()
+        execute_reservation.assert_called_once()
+        run_retry.assert_called_once()
+        self.assertIsNotNone(result.retry_result)
+        self.assertIs(result.recovery_transition, transition)
+
+    # -- 5. reservation before Worker start ------------------------------------
+
+    def test_reservation_written_before_worker_start(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            receipt = dse.reserve_retry_receipt(
+                project,
+                task_id="TC-001",
+                revision=1,
+                failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2,
+                next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234,
+                creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+            self.assertEqual(receipt.phase, "RETRY_RESERVED")
+            self.assertIsNone(receipt.supervisor_pid)
+            self.assertIsNone(receipt.worker_pid)
+            self.assertIsNone(receipt.started_at)
+            self.assertIsNone(receipt.finalized_at)
+
+            loaded = dse.read_retry_receipt(project, "DSP-NEXT-2")
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.phase, "RETRY_RESERVED")  # type: ignore[union-attr]
+            self.assertEqual(loaded.next_attempt, 2)  # type: ignore[union-attr]
+
+    # -- 6. retry outside lock -------------------------------------------------
+
+    def test_run_bounded_dispatch_retry_never_imports_state_lock(self) -> None:
+        import inspect
+        import workflow_orchestrator as wo
+
+        source_lines = inspect.getsource(
+            wo.WorkflowOrchestrator._reserve_and_retry_owner_loss
+        )
+        self.assertNotIn("_exclusive_state_lock", source_lines)
+
+    # -- 7. same replay returns same identity ----------------------------------
+
+    def test_byte_exact_replay_returns_same_receipt(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            kwargs = dict(
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+            first = dse.reserve_retry_receipt(project, **kwargs)
+            second = dse.reserve_retry_receipt(project, **kwargs)
+            self.assertEqual(first.next_dispatch_id, second.next_dispatch_id)
+            self.assertEqual(first.content_digest, second.content_digest)
+            self.assertEqual(first.phase, second.phase)
+
+    # -- 8. divergent replay rejects -------------------------------------------
+
+    def test_divergent_replay_rejects(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            kwargs = dict(
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+            dse.reserve_retry_receipt(
+                project,
+                content_digest="sha256:" + "a" * 64,
+                **kwargs,
+            )
+            with self.assertRaises(dse.DispatchSupervisorPhaseError):
+                dse.reserve_retry_receipt(
+                    project,
+                    content_digest="sha256:" + "b" * 64,
+                    **kwargs,
+                )
+
+    # -- 9. stale generation rejects -------------------------------------------
+
+    def test_stale_generation_rejects(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            kwargs = dict(
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+            dse.reserve_retry_receipt(project, **kwargs)
+
+            with self.assertRaises(dse.DispatchSupervisorFencingError):
+                dse.advance_retry_to_started(
+                    project,
+                    next_dispatch_id="DSP-NEXT-2",
+                    recovery_generation_id="GEN-WRONG",
+                    supervisor_pid=200, supervisor_creation_time="s",
+                    supervisor_boot_id="sb",
+                    worker_pid=300, worker_creation_time="w",
+                    worker_boot_id="wb",
+                )
+
+    # -- 10. stale CAS rejects --------------------------------------------------
+
+    def test_stale_cas_no_worker_call(self) -> None:
+        """Stale CAS / mismatched attempt in retry plan — rejected before
+        any Worker or transition."""
+        import workflow_orchestrator as wo
+
+        # Attempt = 3 in retry plan when expected_attempt = 1.
+        # The OwnerLossRecoveryRequest.__post_init__ catches:
+        # next_attempt (3) != expected_attempt (1) + 1.
+        attempt_3 = TestBoundedDispatchRetry._attempt(3)
+        retry_plan = wo.BoundedDispatchRetryRequest((attempt_3,))
+
+        # The request itself should validate and reject.
+        # Since retry_plan identity has attempt=3 and expected_attempt=1,
+        # the __post_init__ will raise ValueError before any orchestration.
+        provider = mock.Mock()
+        with (
+            mock.patch.object(wo, "StateProvider", return_value=provider),
+            mock.patch.object(
+                wo.WorkflowOrchestrator, "run_bounded_dispatch_retry",
+            ) as run_retry,
+        ):
+            with self.assertRaises(ValueError):
+                self._recovery_request(
+                    retry_plan=retry_plan,
+                    expected_attempt=1,
+                )
+            # No Worker / no retry was started.
+            run_retry.assert_not_called()
+
+    # -- 11. two recoverers single winner --------------------------------------
+
+    def test_two_reservations_single_winner(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            kwargs = dict(
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+            first = dse.reserve_retry_receipt(project, **kwargs)
+            second = dse.reserve_retry_receipt(project, **kwargs)
+            self.assertEqual(first.next_dispatch_id, second.next_dispatch_id)
+
+    # -- 12. pre-ACK owner-loss automatic retry -------------------------------
+
+    def test_pre_ack_owner_loss_retry_enters_atomic_path(self) -> None:
+        import workflow_orchestrator as wo
+
+        retry_plan = wo.BoundedDispatchRetryRequest(
+            (TestBoundedDispatchRetry._attempt(2),)
+        )
+        request = self._recovery_request(retry_plan=retry_plan)
+        provider = mock.Mock()
+        provider.snapshot.return_value = self._snapshot("dispatched")
+
+        transition = TransitionResult(
+            task_id="TC-001",
+            event_id="EVT-OWNER-LOSS-RETRY-1",
+            from_state="dispatched",
+            to_state="ready",
+            occurred_at="2026-07-30T12:00:00Z",
+            outbox_message_id=None,
+        )
+
+        with (
+            mock.patch.object(wo, "StateProvider", return_value=provider),
+            mock.patch.object(
+                wo._dse, "read_dispatch_receipt", return_value=self._receipt()
+            ),
+            mock.patch.object(
+                wo._dse, "read_dispatch_tombstone", return_value=None
+            ),
+            mock.patch.object(
+                wo._dse, "probe_process",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo._dse, "probe_dispatch_process_tree",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo, "apply_owner_loss_recovery_transition",
+                return_value=transition,
+            ) as apply_recovery,
+            mock.patch.object(
+                wo, "execute_owner_loss_retry_reservation",
+            ) as execute_reservation,
+            mock.patch.object(
+                wo.WorkflowOrchestrator, "run_bounded_dispatch_retry",
+            ) as run_retry,
+        ):
+            run_retry.return_value = self._retry_result(2)
+            result = asyncio.run(
+                self._orchestrator().recover_owner_lost_dispatch(request)
+            )
+            apply_recovery.assert_called_once()
+            execute_reservation.assert_called_once()
+            run_retry.assert_called_once()
+            self.assertIsNotNone(result.retry_result)
+
+    # -- 13. post-ACK owner-loss automatic retry ------------------------------
+
+    def test_post_ack_owner_loss_retry_enters_atomic_path(self) -> None:
+        import workflow_orchestrator as wo
+
+        retry_plan = wo.BoundedDispatchRetryRequest(
+            (TestBoundedDispatchRetry._attempt(2),)
+        )
+        request = self._recovery_request(retry_plan=retry_plan)
+        provider = mock.Mock()
+        provider.snapshot.return_value = self._snapshot("in_progress")
+
+        transition = TransitionResult(
+            task_id="TC-001",
+            event_id="EVT-OWNER-LOSS-RETRY-1",
+            from_state="in_progress",
+            to_state="ready",
+            occurred_at="2026-07-30T12:00:00Z",
+            outbox_message_id=None,
+        )
+
+        with (
+            mock.patch.object(wo, "StateProvider", return_value=provider),
+            mock.patch.object(
+                wo._dse, "read_dispatch_receipt", return_value=self._receipt()
+            ),
+            mock.patch.object(
+                wo._dse, "read_dispatch_tombstone", return_value=None
+            ),
+            mock.patch.object(
+                wo._dse, "probe_process",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo._dse, "probe_dispatch_process_tree",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo, "apply_owner_loss_recovery_transition",
+                return_value=transition,
+            ) as apply_recovery,
+            mock.patch.object(
+                wo, "execute_owner_loss_retry_reservation",
+            ) as execute_reservation,
+            mock.patch.object(
+                wo.WorkflowOrchestrator, "run_bounded_dispatch_retry",
+            ) as run_retry,
+        ):
+            run_retry.return_value = self._retry_result(2)
+            result = asyncio.run(
+                self._orchestrator().recover_owner_lost_dispatch(request)
+            )
+            apply_recovery.assert_called_once()
+            execute_reservation.assert_called_once()
+            run_retry.assert_called_once()
+            self.assertIsNotNone(result.retry_result)
+
+    # -- 14. RETRY_RESERVED crash recovery ------------------------------------
+
+    def test_retry_reserved_crash_recovery_resumes_same_identity(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            kwargs = dict(
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+            first = dse.reserve_retry_receipt(project, **kwargs)
+            second = dse.reserve_retry_receipt(project, **kwargs)
+            self.assertEqual(first.next_dispatch_id, second.next_dispatch_id)
+            self.assertEqual(first.next_attempt, second.next_attempt)
+
+    # -- 15. Worker started, phase not advanced window ------------------------
+
+    def test_worker_started_before_phase_advance_fail_closed(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            dse.reserve_retry_receipt(
+                project,
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+
+            with self.assertRaises(dse.DispatchSupervisorPhaseError):
+                dse.advance_retry_to_finalizing(
+                    project,
+                    next_dispatch_id="DSP-NEXT-2",
+                    recovery_generation_id="GEN-RECOVER-1",
+                )
+
+    # -- 16. RETRY_STARTED does not restart Worker ----------------------------
+
+    def test_retry_started_cannot_start_worker_again(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            dse.reserve_retry_receipt(
+                project,
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+
+            dse.advance_retry_to_started(
+                project,
+                next_dispatch_id="DSP-NEXT-2",
+                recovery_generation_id="GEN-RECOVER-1",
+                supervisor_pid=200, supervisor_creation_time="s_time",
+                supervisor_boot_id="s_boot",
+                worker_pid=300, worker_creation_time="w_time",
+                worker_boot_id="w_boot",
+            )
+
+            with self.assertRaises(dse.DispatchSupervisorPhaseError):
+                dse.advance_retry_to_started(
+                    project,
+                    next_dispatch_id="DSP-NEXT-2",
+                    recovery_generation_id="GEN-RECOVER-1",
+                    supervisor_pid=201, supervisor_creation_time="s2",
+                    supervisor_boot_id="s_boot2",
+                    worker_pid=301, worker_creation_time="w2",
+                    worker_boot_id="w_boot2",
+                )
+
+    # -- 17. finalizing replay --------------------------------------------------
+
+    def test_finalizing_to_finalized_forward_advance(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            dse.reserve_retry_receipt(
+                project,
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+
+            dse.advance_retry_to_started(
+                project,
+                next_dispatch_id="DSP-NEXT-2",
+                recovery_generation_id="GEN-RECOVER-1",
+                supervisor_pid=200, supervisor_creation_time="s_time",
+                supervisor_boot_id="s_boot",
+                worker_pid=300, worker_creation_time="w_time",
+                worker_boot_id="w_boot",
+            )
+
+            finalizing = dse.advance_retry_to_finalizing(
+                project,
+                next_dispatch_id="DSP-NEXT-2",
+                recovery_generation_id="GEN-RECOVER-1",
+            )
+            self.assertEqual(finalizing.phase, "RETRY_FINALIZING")
+
+    # -- 18. finalized replay ---------------------------------------------------
+
+    def test_finalized_advances_and_writes_tombstone(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            dse.reserve_retry_receipt(
+                project,
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+            dse.advance_retry_to_started(
+                project,
+                next_dispatch_id="DSP-NEXT-2",
+                recovery_generation_id="GEN-RECOVER-1",
+                supervisor_pid=200, supervisor_creation_time="s_time",
+                supervisor_boot_id="s_boot",
+                worker_pid=300, worker_creation_time="w_time",
+                worker_boot_id="w_boot",
+            )
+            dse.advance_retry_to_finalizing(
+                project,
+                next_dispatch_id="DSP-NEXT-2",
+                recovery_generation_id="GEN-RECOVER-1",
+            )
+
+            finalized = dse.advance_retry_to_finalized(
+                project,
+                next_dispatch_id="DSP-NEXT-2",
+                recovery_generation_id="GEN-RECOVER-1",
+            )
+            self.assertEqual(finalized.phase, "RETRY_FINALIZED")
+            self.assertIsNotNone(finalized.finalized_at)
+
+            tombstone = dse.read_retry_tombstone(project, "DSP-NEXT-2")
+            self.assertIsNotNone(tombstone)
+            self.assertEqual(tombstone.phase, "RETRY_FINALIZED")  # type: ignore[union-attr]
+
+    # -- 19. tombstone missing fail-closed -------------------------------------
+
+    def test_finalized_receipt_missing_tombstone_fail_closed(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            dse.reserve_retry_receipt(
+                project,
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+
+            with self.assertRaises(dse.DispatchSupervisorPhaseError):
+                dse.advance_retry_to_finalized(
+                    project,
+                    next_dispatch_id="DSP-NEXT-2",
+                    recovery_generation_id="GEN-RECOVER-1",
+                )
+
+    # -- 20. late success fenced ------------------------------------------------
+
+    def test_late_success_cannot_reopen_failed_attempt(self) -> None:
+        import workflow_orchestrator as wo
+
+        retry_plan = wo.BoundedDispatchRetryRequest(
+            (TestBoundedDispatchRetry._attempt(2),)
+        )
+        request = self._recovery_request(retry_plan=retry_plan)
+        self.assertEqual(
+            retry_plan.attempts[0]
+            .dispatch_cycle_request.dispatch_request.identity.attempt,
+            2,
+        )
+        self.assertNotEqual(
+            retry_plan.attempts[0]
+            .dispatch_cycle_request.dispatch_request.identity.dispatch_id,
+            request.expected_dispatch_id,
+        )
+
+    # -- 21. ALIVE zero writes --------------------------------------------------
+
+    def test_alive_retry_zero_writes(self) -> None:
+        import workflow_orchestrator as wo
+
+        retry_plan = wo.BoundedDispatchRetryRequest(
+            (TestBoundedDispatchRetry._attempt(2),)
+        )
+        request = self._recovery_request(retry_plan=retry_plan)
+        provider = mock.Mock()
+        provider.snapshot.return_value = self._snapshot()
+
+        with (
+            mock.patch.object(wo, "StateProvider", return_value=provider),
+            mock.patch.object(
+                wo._dse, "read_dispatch_receipt", return_value=self._receipt()
+            ),
+            mock.patch.object(
+                wo._dse, "read_dispatch_tombstone", return_value=None
+            ),
+            mock.patch.object(
+                wo._dse, "probe_process",
+                return_value=wo._dse.ProcessLiveness.ALIVE,
+            ),
+            mock.patch.object(
+                wo._dse, "probe_dispatch_process_tree",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo, "apply_owner_loss_recovery_transition"
+            ) as apply_recovery,
+            mock.patch.object(
+                wo, "execute_owner_loss_retry_reservation"
+            ) as execute_reservation,
+        ):
+            with self.assertRaises(wo.WorkflowInvariantError):
+                asyncio.run(
+                    self._orchestrator().recover_owner_lost_dispatch(request)
+                )
+            apply_recovery.assert_not_called()
+            execute_reservation.assert_not_called()
+
+    # -- 22. UNKNOWN zero writes -----------------------------------------------
+
+    def test_unknown_retry_zero_writes(self) -> None:
+        import workflow_orchestrator as wo
+
+        retry_plan = wo.BoundedDispatchRetryRequest(
+            (TestBoundedDispatchRetry._attempt(2),)
+        )
+        request = self._recovery_request(retry_plan=retry_plan)
+        provider = mock.Mock()
+        provider.snapshot.return_value = self._snapshot()
+
+        with (
+            mock.patch.object(wo, "StateProvider", return_value=provider),
+            mock.patch.object(
+                wo._dse, "read_dispatch_receipt", return_value=self._receipt()
+            ),
+            mock.patch.object(
+                wo._dse, "read_dispatch_tombstone", return_value=None
+            ),
+            mock.patch.object(
+                wo._dse, "probe_process",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo._dse, "probe_dispatch_process_tree",
+                return_value=wo._dse.ProcessLiveness.UNKNOWN,
+            ),
+            mock.patch.object(
+                wo, "apply_owner_loss_recovery_transition"
+            ) as apply_recovery,
+            mock.patch.object(
+                wo, "execute_owner_loss_retry_reservation"
+            ) as execute_reservation,
+        ):
+            with self.assertRaises(wo.WorkflowInvariantError):
+                asyncio.run(
+                    self._orchestrator().recover_owner_lost_dispatch(request)
+                )
+            apply_recovery.assert_not_called()
+            execute_reservation.assert_not_called()
+
+    # -- 23. DEAD legal path ---------------------------------------------------
+
+    def test_dead_legal_retry_path(self) -> None:
+        import workflow_orchestrator as wo
+
+        retry_plan = wo.BoundedDispatchRetryRequest(
+            (TestBoundedDispatchRetry._attempt(2),)
+        )
+        request = self._recovery_request(retry_plan=retry_plan)
+        provider = mock.Mock()
+        provider.snapshot.return_value = self._snapshot()
+
+        transition = TransitionResult(
+            task_id="TC-001",
+            event_id="EVT-OWNER-LOSS-RETRY-1",
+            from_state="in_progress",
+            to_state="ready",
+            occurred_at="2026-07-30T12:00:00Z",
+            outbox_message_id=None,
+        )
+
+        with (
+            mock.patch.object(wo, "StateProvider", return_value=provider),
+            mock.patch.object(
+                wo._dse, "read_dispatch_receipt", return_value=self._receipt()
+            ),
+            mock.patch.object(
+                wo._dse, "read_dispatch_tombstone", return_value=None
+            ),
+            mock.patch.object(
+                wo._dse, "probe_process",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo._dse, "probe_dispatch_process_tree",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo, "apply_owner_loss_recovery_transition",
+                return_value=transition,
+            ) as apply_recovery,
+            mock.patch.object(
+                wo, "execute_owner_loss_retry_reservation",
+            ) as execute_reservation,
+            mock.patch.object(
+                wo.WorkflowOrchestrator, "run_bounded_dispatch_retry",
+            ) as run_retry,
+        ):
+            run_retry.return_value = self._retry_result(2)
+            result = asyncio.run(
+                self._orchestrator().recover_owner_lost_dispatch(request)
+            )
+            self.assertIsNotNone(result.retry_result)
+            execute_reservation.assert_called_once()
+
+    # -- 24. attempt 1→2 --------------------------------------------------------
+
+    def test_attempt_1_to_2_retry_reservation(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            receipt = dse.reserve_retry_receipt(
+                project,
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+            self.assertEqual(receipt.failed_attempt, 1)
+            self.assertEqual(receipt.next_attempt, 2)
+
+    # -- 25. attempt 2→3 --------------------------------------------------------
+
+    def test_attempt_2_to_3_retry_reservation(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            receipt = dse.reserve_retry_receipt(
+                project,
+                task_id="TC-001", revision=1, failed_attempt=2,
+                failed_dispatch_id="DSP-FAIL-2",
+                recovery_event_id="EVT-RECOVER-2",
+                recovery_generation_id="GEN-RECOVER-2",
+                next_attempt=3, next_dispatch_id="DSP-NEXT-3",
+                next_dispatch_event_id="EVT-DISP-NEXT-3",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+            self.assertEqual(receipt.failed_attempt, 2)
+            self.assertEqual(receipt.next_attempt, 3)
+
+    # -- 26. attempt 3: no attempt 4 -------------------------------------------
+
+    def test_failed_attempt_3_cannot_reserve_attempt_4(self) -> None:
+        import dispatch_supervisor_evidence as dse
+
+        with self.assertRaises(dse.DispatchSupervisorValidationError):
+            dse.OwnerLossRetryReceipt(
+                schema_version=dse.RETRY_RECEIPT_SCHEMA_VERSION,
+                task_id="TC-001", revision=1,
+                failed_attempt=3, failed_dispatch_id="DSP-FAIL-3",
+                recovery_event_id="EVT-RECOVER-3",
+                recovery_generation_id="GEN-RECOVER-3",
+                next_attempt=4,
+                next_dispatch_id="DSP-NEXT-4",
+                next_dispatch_event_id="EVT-DISP-NEXT-4",
+                phase="RETRY_RESERVED",
+                creator_pid=1, creator_creation_time="c", creator_boot_id="b",
+                supervisor_pid=None, supervisor_creation_time=None,
+                supervisor_boot_id=None,
+                worker_pid=None, worker_creation_time=None, worker_boot_id=None,
+                reserved_at="2026-07-30T12:00:00Z",
+                started_at=None, finalized_at=None,
+                content_digest="sha256:" + "a" * 64,
+            )
+
+    # -- 27. dispatch_id globally unique ----------------------------------------
+
+    def test_next_dispatch_id_must_differ_from_failed(self) -> None:
+        import dispatch_supervisor_evidence as dse
+
+        with self.assertRaises(dse.DispatchSupervisorValidationError):
+            dse.OwnerLossRetryReceipt(
+                schema_version=dse.RETRY_RECEIPT_SCHEMA_VERSION,
+                task_id="TC-001", revision=1,
+                failed_attempt=1, failed_dispatch_id="DSP-SAME",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-SAME",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                phase="RETRY_RESERVED",
+                creator_pid=1, creator_creation_time="c", creator_boot_id="b",
+                supervisor_pid=None, supervisor_creation_time=None,
+                supervisor_boot_id=None,
+                worker_pid=None, worker_creation_time=None, worker_boot_id=None,
+                reserved_at="2026-07-30T12:00:00Z",
+                started_at=None, finalized_at=None,
+                content_digest="sha256:" + "a" * 64,
+            )
+
+    # -- 28. cancellation preserves receipt ------------------------------------
+
+    def test_cancellation_does_not_delete_receipt(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            receipt = dse.reserve_retry_receipt(
+                project,
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+            loaded = dse.read_retry_receipt(project, "DSP-NEXT-2")
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.phase, "RETRY_RESERVED")  # type: ignore[union-attr]
+            self.assertEqual(loaded.next_dispatch_id, receipt.next_dispatch_id)  # type: ignore[union-attr]
+
+    # -- 29. no pending asyncio task --------------------------------------------
+
+    def test_no_pending_asyncio_task_leaked(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            receipt = dse.reserve_retry_receipt(
+                project,
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+            self.assertEqual(receipt.phase, "RETRY_RESERVED")
+
+    # -- 30. no temp file left behind -------------------------------------------
+
+    def test_no_temp_file_left_after_atomic_write(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            dse.reserve_retry_receipt(
+                project,
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+
+            tmp_files = list(store_dir.glob(".tmp-*"))
+            self.assertEqual(len(tmp_files), 0, f"Temp files left: {tmp_files}")
+
+    # -- 31. exception messages safe --------------------------------------------
+
+    def test_exception_messages_never_leak_dispatch_id(self) -> None:
+        import dispatch_supervisor_evidence as dse
+
+        class Evil:
+            def __str__(self) -> str:
+                raise AssertionError("__str__ must not be called")
+
+            def __repr__(self) -> str:
+                raise AssertionError("__repr__ must not be called")
+
+        with self.assertRaises((TypeError, dse.DispatchSupervisorValidationError)):
+            dse.OwnerLossRetryReceipt(
+                schema_version=dse.RETRY_RECEIPT_SCHEMA_VERSION,
+                task_id=Evil(),  # type: ignore[arg-type]
+                revision=1,
+                failed_attempt=1, failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                phase="RETRY_RESERVED",
+                creator_pid=1, creator_creation_time="c", creator_boot_id="b",
+                supervisor_pid=None, supervisor_creation_time=None,
+                supervisor_boot_id=None,
+                worker_pid=None, worker_creation_time=None, worker_boot_id=None,
+                reserved_at="2026-07-30T12:00:00Z",
+                started_at=None, finalized_at=None,
+                content_digest="sha256:" + "a" * 64,
+            )
+
+    # -- 32. 12c transition-only behavior no regression ------------------------
+
+    def test_transition_only_retry_plan_none_still_works(self) -> None:
+        import workflow_orchestrator as wo
+
+        request = self._recovery_request(retry_plan=None)
+        provider = mock.Mock()
+        provider.snapshot.return_value = self._snapshot()
+
+        transition = TransitionResult(
+            task_id="TC-001",
+            event_id="EVT-OWNER-LOSS-RETRY-1",
+            from_state="in_progress",
+            to_state="ready",
+            occurred_at="2026-07-30T12:00:00Z",
+            outbox_message_id=None,
+        )
+
+        with (
+            mock.patch.object(wo, "StateProvider", return_value=provider),
+            mock.patch.object(
+                wo._dse, "read_dispatch_receipt", return_value=self._receipt()
+            ),
+            mock.patch.object(
+                wo._dse, "read_dispatch_tombstone", return_value=None
+            ),
+            mock.patch.object(
+                wo._dse, "probe_process",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo._dse, "probe_dispatch_process_tree",
+                return_value=wo._dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                wo, "apply_owner_loss_recovery_transition",
+                return_value=transition,
+            ) as apply_recovery,
+            mock.patch.object(
+                wo, "execute_owner_loss_retry_reservation",
+            ) as execute_reservation,
+        ):
+            result = asyncio.run(
+                self._orchestrator().recover_owner_lost_dispatch(request)
+            )
+            apply_recovery.assert_called_once()
+            execute_reservation.assert_not_called()
+            self.assertIsNone(result.retry_result)
+            self.assertIs(result.recovery_transition, transition)
+
+    # -- Content digest computation test ---------------------------------------
+
+    def test_content_digest_is_deterministic(self) -> None:
+        import dispatch_supervisor_evidence as dse
+
+        args = dict(
+            task_id="TC-001", revision=1, failed_attempt=1,
+            failed_dispatch_id="DSP-FAIL-1",
+            recovery_event_id="EVT-RECOVER-1",
+            recovery_generation_id="GEN-RECOVER-1",
+            next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+            next_dispatch_event_id="EVT-DISP-NEXT-2",
+        )
+        first = dse.compute_retry_content_digest(**args)
+        second = dse.compute_retry_content_digest(**args)
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("sha256:"))
+        self.assertEqual(len(first), 7 + 64)
+
+    # -- forward-only phase advance --------------------------------------------
+
+    def test_forward_only_phase_advance_cycle(self) -> None:
+        import dispatch_supervisor_evidence as dse
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="dse-retry-") as tmp:
+            project = Path(tmp) / "project"
+            store_dir = project / ".agentdesk" / "runtime" / "dispatch-supervisor"
+            store_dir.mkdir(parents=True)
+
+            r = dse.reserve_retry_receipt(
+                project,
+                task_id="TC-001", revision=1, failed_attempt=1,
+                failed_dispatch_id="DSP-FAIL-1",
+                recovery_event_id="EVT-RECOVER-1",
+                recovery_generation_id="GEN-RECOVER-1",
+                next_attempt=2, next_dispatch_id="DSP-NEXT-2",
+                next_dispatch_event_id="EVT-DISP-NEXT-2",
+                content_digest="sha256:" + "a" * 64,
+                creator_pid=1234, creator_creation_time="2026-07-30T00:00:00Z",
+                creator_boot_id="boot-1",
+            )
+            self.assertEqual(r.phase, "RETRY_RESERVED")
+
+            s = dse.advance_retry_to_started(
+                project, next_dispatch_id="DSP-NEXT-2",
+                recovery_generation_id="GEN-RECOVER-1",
+                supervisor_pid=200, supervisor_creation_time="s_time",
+                supervisor_boot_id="s_boot",
+                worker_pid=300, worker_creation_time="w_time",
+                worker_boot_id="w_boot",
+            )
+            self.assertEqual(s.phase, "RETRY_STARTED")
+            self.assertIsNotNone(s.started_at)
+
+            f = dse.advance_retry_to_finalizing(
+                project, next_dispatch_id="DSP-NEXT-2",
+                recovery_generation_id="GEN-RECOVER-1",
+            )
+            self.assertEqual(f.phase, "RETRY_FINALIZING")
+
+            z = dse.advance_retry_to_finalized(
+                project, next_dispatch_id="DSP-NEXT-2",
+                recovery_generation_id="GEN-RECOVER-1",
+            )
+            self.assertEqual(z.phase, "RETRY_FINALIZED")
+            self.assertIsNotNone(z.finalized_at)

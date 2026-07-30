@@ -5291,12 +5291,160 @@ def apply_owner_loss_recovery_transition(
     return result
 
 
+# ── typed atomic retry reservation entry point (TC-13.18d.12c.2) ───────────
+#
+# This is the ONLY public entry point that combines the state lock and the
+# retry receipt store.  It is the typed atomic boundary required by §6 of
+# the TC-13.18d.12c.2 spec.
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerLossRetryReservationRequest:
+    """Immutable typed request for atomic retry reservation.
+
+    All fields are caller-supplied.  The Orchestrator must call this
+    inside the state lock — this type carries NO lock acquisition.
+    """
+
+    task_id: str
+    revision: int
+    failed_attempt: int
+    failed_dispatch_id: str
+    recovery_event_id: str
+    recovery_generation_id: str
+    next_attempt: int
+    next_dispatch_id: str
+    next_dispatch_event_id: str
+    content_digest: str
+    creator_pid: int
+    creator_creation_time: str
+    creator_boot_id: str
+
+    def __post_init__(self) -> None:
+        _validate_task_id_str(self.task_id, "task_id")
+        _validate_non_bool_int(self.revision, "revision", min_val=1)
+        _validate_non_bool_int(self.failed_attempt, "failed_attempt", min_val=1)
+        _validate_safe_str(self.failed_dispatch_id, "failed_dispatch_id")
+        _validate_safe_str(self.recovery_event_id, "recovery_event_id")
+        _validate_safe_str(self.recovery_generation_id, "recovery_generation_id")
+        _validate_non_bool_int(self.next_attempt, "next_attempt", min_val=1)
+        if self.next_attempt > 3:
+            raise ValueError("next_attempt must be <= 3")
+        if self.next_attempt != self.failed_attempt + 1:
+            raise ValueError("next_attempt must equal failed_attempt + 1")
+        _validate_safe_str(self.next_dispatch_id, "next_dispatch_id")
+        if self.next_dispatch_id == self.failed_dispatch_id:
+            raise ValueError("next_dispatch_id must differ from failed_dispatch_id")
+        _validate_safe_str(self.next_dispatch_event_id, "next_dispatch_event_id")
+        _validate_safe_str(self.content_digest, "content_digest")
+        _validate_non_bool_int(self.creator_pid, "creator_pid", min_val=0)
+        _validate_safe_str(self.creator_creation_time, "creator_creation_time")
+        _validate_safe_str(self.creator_boot_id, "creator_boot_id")
+
+
+def execute_owner_loss_retry_reservation(
+    service: ControlPlaneTransitionService,
+    reservation: OwnerLossRetryReservationRequest,
+) -> object:
+    """Execute the atomic retry reservation under the existing state lock.
+
+    This is the typed atomic entry point required by TC-13.18d.12c.2 §6.
+    It:
+      1. Acquires the existing canonical state lock.
+      2. Re-reads tasks, recovery event, owner-loss evidence, retry receipt.
+      3. Verifies task is exactly ``ready``, ``current_dispatch is None``,
+         revision exact, attempt == failed_attempt.
+      4. Verifies the byte-exact ``DISPATCH_FAILED`` event is committed.
+      5. Atomically writes ``RETRY_RESERVED`` receipt.
+      6. Releases the state lock.
+
+    Returns the ``OwnerLossRetryReceipt`` from
+    ``dispatch_supervisor_evidence``.  The Orchestrator must import it
+    via ``import dispatch_supervisor_evidence as _dse`` and use the
+    returned object's ``next_dispatch_id`` etc. to start retry.
+
+    This function does NOT start any Worker, dispatch, supervisor, or
+    provider.  All process-start calls happen after the lock is released.
+    """
+    import dispatch_supervisor_evidence as _owner_dse
+
+    if type(reservation) is not OwnerLossRetryReservationRequest:
+        raise TransitionValidationError(
+            "reservation must be exact OwnerLossRetryReservationRequest"
+        )
+
+    if not isinstance(service, ControlPlaneTransitionService):
+        raise TransitionValidationError(
+            "service must be ControlPlaneTransitionService"
+        )
+
+    project_root = Path(str(service.project_root)).resolve()
+
+    with _exclusive_state_lock(project_root):
+        # Re-read canonical state.
+        from state_provider import StateProvider
+
+        try:
+            snapshot = StateProvider(project_root).snapshot()
+        except Exception as exc:
+            raise TransitionCASConflictError(
+                "retry reservation cannot read snapshot"
+            ) from exc
+
+        task = next(
+            (t for t in snapshot.tasks if t.task_id == reservation.task_id),
+            None,
+        )
+        if task is None:
+            raise TransitionCASConflictError("retry reservation task not found")
+        if task.revision != reservation.revision:
+            raise TransitionCASConflictError("retry reservation revision mismatch")
+        if task.state != "ready":
+            raise TransitionCASConflictError("retry reservation task not ready")
+        if task.attempt != reservation.failed_attempt:
+            raise TransitionCASConflictError("retry reservation attempt mismatch")
+        if task.current_dispatch is not None:
+            raise TransitionCASConflictError("retry reservation current_dispatch not cleared")
+
+        # Verify DISPATCH_FAILED event is committed.
+        dispatched_failed = any(
+            e.event_type == "DISPATCH_FAILED"
+            and e.event_id == reservation.recovery_event_id
+            for e in snapshot.events
+        )
+        if not dispatched_failed:
+            raise TransitionCASConflictError(
+                "retry reservation DISPATCH_FAILED event not found"
+            )
+
+        # Write the RETRY_RESERVED receipt under the state lock.
+        receipt = _owner_dse.reserve_retry_receipt(
+            project_root,
+            task_id=reservation.task_id,
+            revision=reservation.revision,
+            failed_attempt=reservation.failed_attempt,
+            failed_dispatch_id=reservation.failed_dispatch_id,
+            recovery_event_id=reservation.recovery_event_id,
+            recovery_generation_id=reservation.recovery_generation_id,
+            next_attempt=reservation.next_attempt,
+            next_dispatch_id=reservation.next_dispatch_id,
+            next_dispatch_event_id=reservation.next_dispatch_event_id,
+            content_digest=reservation.content_digest,
+            creator_pid=reservation.creator_pid,
+            creator_creation_time=reservation.creator_creation_time,
+            creator_boot_id=reservation.creator_boot_id,
+        )
+        return receipt
+
+
 # ── __all__ — public symbols ────────────────────────────────────────────────
 
 __all__ = [
     "ControlPlaneTransitionService",
     "OwnerLossTransitionCheck",
     "apply_owner_loss_recovery_transition",
+    "OwnerLossRetryReservationRequest",
+    "execute_owner_loss_retry_reservation",
     "TransitionCAS",
     "DispatchCAS",
     "TransitionRequest",
@@ -5321,6 +5469,8 @@ __all__ = [
     "CancelledPayload",
     "SupersededPayload",
     "DispatchFailedPayload",
+    "OwnerLossRetryReservationRequest",
+    "execute_owner_loss_retry_reservation",
     "ControlPlaneTransitionError",
     "TransitionValidationError",
     "TransitionCASConflictError",

@@ -36,6 +36,7 @@ Non-goals (explicitly excluded):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 import re
 import secrets
@@ -61,11 +62,13 @@ from control_plane_transition import (
     DispatchFailedPayload,
     DispatchPayload,
     IntegrationPayload,
+    OwnerLossRetryReservationRequest,
     OwnerLossTransitionCheck,
     RequeuePayload,
     SupersededPayload,
     TransitionCAS,
     apply_owner_loss_recovery_transition,
+    execute_owner_loss_retry_reservation,
     TransitionEventContext,
     TransitionRequest,
     TransitionResult,
@@ -4390,7 +4393,7 @@ class WorkflowOrchestrator:
                 "revision must not be bool"
             )
 
-    # -- owner-loss recovery (TC-13.18d.12b/.12c) ------------------------------------
+    # -- owner-loss recovery (TC-13.18d.12b/.12c/.12c.1/.12c.2) -------------------------
 
     async def recover_owner_lost_dispatch(
         self,
@@ -4398,29 +4401,35 @@ class WorkflowOrchestrator:
     ) -> OwnerLossRecoveryResult:
         """Recover a dispatch whose original creator process has been lost.
 
-        Implements the frozen contract from §17 of the
-        workflow-orchestrator contract.  Transition-only: no retry
-        is attempted.
+        Implements the frozen contract from §17 and §18 of the
+        workflow-orchestrator contract.  When ``retry_plan is not None``,
+        executes the durable automatic-retry protocol frozen in
+        TC-13.18d.12c.1 §18.
 
-        Lock order (frozen):
-          1. Read durable evidence (receipt, tombstone).
-          2. Probe creator + process tree liveness.
-          3. ``apply_owner_loss_recovery_transition()`` acquires the state
-             lock, re-reads canonical task state, executes the second-check,
-             and writes ``DISPATCH_FAILED`` — all inside a single lock
-             acquisition.
-          4. Return ``OwnerLossRecoveryResult``.
+        Atomic reservation boundary (frozen):
+          1. Validate request without writes.
+          2. Read durable evidence (receipt, tombstone, retry receipt).
+          3. Probe creator + process tree liveness.
+          4. ``apply_owner_loss_recovery_transition()`` acquires the state
+             lock, re-executes the second-check, and writes
+             ``DISPATCH_FAILED``.
+          5. If retry_plan is supplied: under the same state-lock acquisition,
+             atomically write the ``RETRY_RESERVED`` receipt, then release.
+          6. Outside the state lock, call ``run_bounded_dispatch_retry()``
+             with the reserved identity.
 
-        Retry is NOT started — the task is left in ``ready`` state with
-        ``current_dispatch`` cleared.
+        ``retry_plan is None`` → transition-only (legacy TC-13.18d.12c).
+        ``retry_plan is not None`` → transition + atomic reservation + retry.
         """
         if type(request) is not OwnerLossRecoveryRequest:
             raise WorkflowInputError(
                 "request must be exact OwnerLossRecoveryRequest"
             )
-        if request.retry_plan is not None:
-            raise WorkflowInvariantError(
-                "owner-loss automatic retry evidence is unavailable"
+
+        retry_plan = request.retry_plan
+        if retry_plan is not None and type(retry_plan) is not BoundedDispatchRetryRequest:
+            raise WorkflowInputError(
+                "retry_plan must be BoundedDispatchRetryRequest or None"
             )
 
         snapshot = StateProvider(self.project_root).snapshot()
@@ -4431,8 +4440,7 @@ class WorkflowOrchestrator:
         if task is None:
             raise WorkflowInvariantError("owner-loss task evidence mismatch")
 
-        # Exact replay is delegated to the canonical transition core.  No
-        # retry can be repeated because retry_plan is rejected above.
+        # Exact replay is delegated to the canonical transition core.
         replay_event = next(
             (
                 event
@@ -4509,7 +4517,6 @@ class WorkflowOrchestrator:
                 task_id=request.task_id,
                 expected_revision=request.expected_revision,
                 expected_state=from_state,
-                # Replaced with the lock-held HEAD by the atomic entry point.
                 expected_snapshot_commit="0" * 40,
             ),
             dispatch_cas=DispatchCAS(
@@ -4544,12 +4551,34 @@ class WorkflowOrchestrator:
             failure_kind=request.failure_kind,
             evidence_refs=request.evidence_refs,
         )
+
+        # ── execute transition (under state lock) ─────────────────────────
+        transition_service = ControlPlaneTransitionService(self.project_root)
         recovery_transition = apply_owner_loss_recovery_transition(
-            ControlPlaneTransitionService(self.project_root),
+            transition_service,
             transition_request,
             check,
             self.clock.now(),
         )
+
+        # ── atomic retry reservation (TC-13.18d.12c.1 §18.4) ─────────────
+        if retry_plan is not None:
+            retry_result = await self._reserve_and_retry_owner_loss(
+                request=request,
+                recovery_transition=recovery_transition,
+                retry_plan=retry_plan,
+                recovery_generation_id=request.expected_generation_id,
+                recovery_event_id=request.recovery_event_id,
+            )
+            return OwnerLossRecoveryResult(
+                task_id=request.task_id,
+                recovered_attempt=request.expected_attempt,
+                recovered_dispatch_id=request.expected_dispatch_id,
+                process_liveness=_dse.ProcessLiveness.DEAD,
+                recovery_transition=recovery_transition,
+                retry_result=retry_result,
+            )
+
         return OwnerLossRecoveryResult(
             task_id=request.task_id,
             recovered_attempt=request.expected_attempt,
@@ -4558,3 +4587,99 @@ class WorkflowOrchestrator:
             recovery_transition=recovery_transition,
             retry_result=None,
         )
+
+    # -- atomic retry reservation + execution (TC-13.18d.12c.2) ------------------------
+
+    async def _reserve_and_retry_owner_loss(
+        self,
+        *,
+        request: OwnerLossRecoveryRequest,
+        recovery_transition: TransitionResult,
+        retry_plan: BoundedDispatchRetryRequest,
+        recovery_generation_id: str,
+        recovery_event_id: str,
+    ) -> BoundedDispatchRetryResult:
+        """Atomically reserve the next attempt identity under the state lock,
+        then call ``run_bounded_dispatch_retry()`` outside the lock.
+
+        Frozen boundary (TC-13.18d.12c.1 §18.4):
+          1. Validate the next attempt identity from the retry plan.
+          2. Compute the frozen content digest.
+          3. Acquire the existing state lock.
+          4. Under the lock, re-read canonical task, recovery event,
+             failed dispatch receipt/tombstone, and any retry receipt.
+          5. Verify task is exactly ``ready``, ``current_dispatch is None``,
+             revision exact, attempt == failed_attempt.
+          6. Verify the byte-exact DISPATCH_FAILED event is committed.
+          7. Atomically persist ``RETRY_RESERVED`` receipt.
+          8. Release the state lock.
+          9. Call ``run_bounded_dispatch_retry()`` with the reserved identity.
+
+        No code holding the state lock calls dispatch/Worker/provider.
+        """
+        # ── 1. Validate next attempt identity ──────────────────────────
+        first_attempt = retry_plan.attempts[0]
+        next_identity = (
+            first_attempt.dispatch_cycle_request.dispatch_request.identity
+        )
+        next_attempt = next_identity.attempt
+        next_dispatch_id = next_identity.dispatch_id
+        next_dispatch_event_id = (
+            first_attempt.dispatch_cycle_request.dispatch_transition_request.event_id
+        )
+
+        # next_attempt must be failed_attempt + 1 and in 1..3.
+        if next_attempt != request.expected_attempt + 1:
+            raise WorkflowInvariantError(
+                "retry plan next attempt must equal failed_attempt + 1"
+            )
+        if not 1 <= next_attempt <= 3:
+            raise WorkflowInvariantError(
+                "retry plan next attempt out of range"
+            )
+        if next_dispatch_id == request.expected_dispatch_id:
+            raise WorkflowInvariantError(
+                "retry plan next dispatch id must differ from failed dispatch id"
+            )
+
+        # Compute frozen content digest.
+        content_digest = _dse.compute_retry_content_digest(
+            task_id=request.task_id,
+            revision=request.expected_revision,
+            failed_attempt=request.expected_attempt,
+            failed_dispatch_id=request.expected_dispatch_id,
+            recovery_event_id=recovery_event_id,
+            recovery_generation_id=recovery_generation_id,
+            next_attempt=next_attempt,
+            next_dispatch_id=next_dispatch_id,
+            next_dispatch_event_id=next_dispatch_event_id,
+        )
+
+        # ── 2–8. Acquire state lock, validate, reserve, release ─────────
+        creator_pid, creator_creation = _dse.get_current_process_identity()
+        creator_boot = _dse.get_boot_id()
+
+        reservation_request = OwnerLossRetryReservationRequest(
+            task_id=request.task_id,
+            revision=request.expected_revision,
+            failed_attempt=request.expected_attempt,
+            failed_dispatch_id=request.expected_dispatch_id,
+            recovery_event_id=recovery_event_id,
+            recovery_generation_id=recovery_generation_id,
+            next_attempt=next_attempt,
+            next_dispatch_id=next_dispatch_id,
+            next_dispatch_event_id=next_dispatch_event_id,
+            content_digest=content_digest,
+            creator_pid=creator_pid,
+            creator_creation_time=creator_creation,
+            creator_boot_id=creator_boot,
+        )
+
+        transition_service = ControlPlaneTransitionService(self.project_root)
+        reserve_receipt = execute_owner_loss_retry_reservation(
+            transition_service,
+            reservation_request,
+        )
+
+        # ── 9. Call retry outside the state lock ───────────────────────
+        return await self.run_bounded_dispatch_retry(retry_plan, {})

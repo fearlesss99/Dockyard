@@ -35,10 +35,13 @@ from typing import Any, Iterator
 
 __all__ = [
     "SCHEMA_VERSION",
+    "RETRY_RECEIPT_SCHEMA_VERSION",
     "DispatchReceiptPhase",
+    "OwnerLossRetryPhase",
     "ProcessLiveness",
     "DispatchProcessReceipt",
     "DispatchFinalizerTombstone",
+    "OwnerLossRetryReceipt",
     "DispatchSupervisorEvidenceError",
     "DispatchSupervisorValidationError",
     "DispatchSupervisorStoreError",
@@ -58,11 +61,19 @@ __all__ = [
     "get_current_process_identity",
     "probe_process",
     "probe_dispatch_process_tree",
+    "read_retry_receipt",
+    "read_retry_tombstone",
+    "reserve_retry_receipt",
+    "advance_retry_to_started",
+    "advance_retry_to_finalizing",
+    "advance_retry_to_finalized",
+    "compute_retry_content_digest",
 ]
 
 # ── constants ───────────────────────────────────────────────────────────────
 
 SCHEMA_VERSION = "agentdesk.dispatch-supervisor-evidence/v1"
+RETRY_RECEIPT_SCHEMA_VERSION = "agentdesk.owner-loss-retry-receipt/v1"
 
 _RUNTIME_RELATIVE = Path(".agentdesk") / "runtime" / "dispatch-supervisor"
 _LOCK_NAME = ".dispatch-supervisor.lock"
@@ -135,6 +146,8 @@ _DISPATCH_FAILURE_KINDS: frozenset[str] = frozenset({
 # must be safe single-segment filenames so they never escape the store dir.
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _TASK_ID_RE = re.compile(r"^TC-[0-9]{3,}$")
+_EVENT_ID_RE = re.compile(r"^EVT-.+")
+_PAYLOAD_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _RFC3339_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
@@ -196,6 +209,40 @@ class ProcessLiveness(str, Enum):
     ALIVE = "alive"
     DEAD = "dead"
     UNKNOWN = "unknown"
+
+
+class OwnerLossRetryPhase(str, Enum):
+    """Exact six durable owner-loss retry receipt phases, forward-only.
+
+    Frozen from TC-13.18d.12c.1 §18.2.
+    """
+
+    RECOVERY_TRANSITION_PENDING = "RECOVERY_TRANSITION_PENDING"
+    RECOVERY_TRANSITION_COMMITTED = "RECOVERY_TRANSITION_COMMITTED"
+    RETRY_RESERVED = "RETRY_RESERVED"
+    RETRY_STARTED = "RETRY_STARTED"
+    RETRY_FINALIZING = "RETRY_FINALIZING"
+    RETRY_FINALIZED = "RETRY_FINALIZED"
+
+    @classmethod
+    def order(cls) -> tuple[OwnerLossRetryPhase, ...]:
+        return (
+            cls.RECOVERY_TRANSITION_PENDING,
+            cls.RECOVERY_TRANSITION_COMMITTED,
+            cls.RETRY_RESERVED,
+            cls.RETRY_STARTED,
+            cls.RETRY_FINALIZING,
+            cls.RETRY_FINALIZED,
+        )
+
+
+_RETRY_ALLOWED_TRANSITIONS: dict[OwnerLossRetryPhase, OwnerLossRetryPhase] = {
+    OwnerLossRetryPhase.RECOVERY_TRANSITION_PENDING: OwnerLossRetryPhase.RECOVERY_TRANSITION_COMMITTED,
+    OwnerLossRetryPhase.RECOVERY_TRANSITION_COMMITTED: OwnerLossRetryPhase.RETRY_RESERVED,
+    OwnerLossRetryPhase.RETRY_RESERVED: OwnerLossRetryPhase.RETRY_STARTED,
+    OwnerLossRetryPhase.RETRY_STARTED: OwnerLossRetryPhase.RETRY_FINALIZING,
+    OwnerLossRetryPhase.RETRY_FINALIZING: OwnerLossRetryPhase.RETRY_FINALIZED,
+}
 
 
 # ── frozen data types ────────────────────────────────────────────────────────
@@ -443,6 +490,257 @@ class DispatchFinalizerTombstone:
         if _RFC3339_RE.fullmatch(self.finalized_at) is None:
             raise DispatchSupervisorValidationError(
                 "finalized_at must be RFC 3339 UTC"
+            )
+
+
+# ── OwnerLossRetryReceipt — frozen 24-field retry reservation evidence ──────
+#
+# Frozen from TC-13.18d.12c.1 §18.3.
+# Immutable, slotted, no Any/dict/Mapping/mutable collections.
+
+_RETRY_RECEIPT_FIELD_NAMES: tuple[str, ...] = (
+    "schema_version",
+    "task_id",
+    "revision",
+    "failed_attempt",
+    "failed_dispatch_id",
+    "recovery_event_id",
+    "recovery_generation_id",
+    "next_attempt",
+    "next_dispatch_id",
+    "next_dispatch_event_id",
+    "phase",
+    "creator_pid",
+    "creator_creation_time",
+    "creator_boot_id",
+    "supervisor_pid",
+    "supervisor_creation_time",
+    "supervisor_boot_id",
+    "worker_pid",
+    "worker_creation_time",
+    "worker_boot_id",
+    "reserved_at",
+    "started_at",
+    "finalized_at",
+    "content_digest",
+)
+_RETRY_RECEIPT_FIELD_SET: frozenset[str] = frozenset(_RETRY_RECEIPT_FIELD_NAMES)
+
+# Fields that must match for byte-exact replay validation.
+_RETRY_REPLAY_FIELDS: tuple[str, ...] = (
+    "task_id",
+    "revision",
+    "failed_attempt",
+    "failed_dispatch_id",
+    "recovery_event_id",
+    "recovery_generation_id",
+    "next_attempt",
+    "next_dispatch_id",
+    "next_dispatch_event_id",
+    "content_digest",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerLossRetryReceipt:
+    """Immutable 24-field durable owner-loss retry receipt.
+
+    Frozen from TC-13.18d.12c.1 §18.3.  All fields are typed; no Any,
+    dict, Mapping, or mutable collection.  ``frozen=True, slots=True``.
+
+    Identity tuple: (task_id, revision, failed_attempt, failed_dispatch_id,
+    recovery_event_id, recovery_generation_id, next_attempt, next_dispatch_id,
+    next_dispatch_event_id, content_digest).
+    """
+
+    schema_version: str
+    task_id: str
+    revision: int
+    failed_attempt: int
+    failed_dispatch_id: str
+    recovery_event_id: str
+    recovery_generation_id: str
+    next_attempt: int
+    next_dispatch_id: str
+    next_dispatch_event_id: str
+    phase: str
+    creator_pid: int
+    creator_creation_time: str
+    creator_boot_id: str
+    supervisor_pid: int | None
+    supervisor_creation_time: str | None
+    supervisor_boot_id: str | None
+    worker_pid: int | None
+    worker_creation_time: str | None
+    worker_boot_id: str | None
+    reserved_at: str
+    started_at: str | None
+    finalized_at: str | None
+    content_digest: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != RETRY_RECEIPT_SCHEMA_VERSION:
+            raise DispatchSupervisorValidationError(
+                "schema_version must be " + RETRY_RECEIPT_SCHEMA_VERSION
+            )
+        if not _TASK_ID_RE.fullmatch(self.task_id):
+            raise DispatchSupervisorValidationError("task_id must match TC-NNN")
+        if isinstance(self.revision, bool) or not isinstance(self.revision, int):
+            raise DispatchSupervisorValidationError("revision must be a non-bool int")
+        if self.revision < 1:
+            raise DispatchSupervisorValidationError("revision must be >= 1")
+        if isinstance(self.failed_attempt, bool) or not isinstance(self.failed_attempt, int):
+            raise DispatchSupervisorValidationError("failed_attempt must be a non-bool int")
+        if self.failed_attempt < 1:
+            raise DispatchSupervisorValidationError("failed_attempt must be >= 1")
+        _validate_safe_id(self.failed_dispatch_id, "failed_dispatch_id")
+        if not isinstance(self.recovery_event_id, str) or not self.recovery_event_id:
+            raise DispatchSupervisorValidationError("recovery_event_id must be non-empty str")
+        if _EVENT_ID_RE.fullmatch(self.recovery_event_id) is None:
+            raise DispatchSupervisorValidationError("recovery_event_id must match EVT-*")
+        _validate_safe_id(self.recovery_generation_id, "recovery_generation_id")
+        if isinstance(self.next_attempt, bool) or not isinstance(self.next_attempt, int):
+            raise DispatchSupervisorValidationError("next_attempt must be a non-bool int")
+        if not 1 <= self.next_attempt <= 3:
+            raise DispatchSupervisorValidationError("next_attempt must be 1..3")
+        if self.next_attempt != self.failed_attempt + 1:
+            raise DispatchSupervisorValidationError(
+                "next_attempt must equal failed_attempt + 1"
+            )
+        _validate_safe_id(self.next_dispatch_id, "next_dispatch_id")
+        if self.next_dispatch_id == self.failed_dispatch_id:
+            raise DispatchSupervisorValidationError(
+                "next_dispatch_id must differ from failed_dispatch_id"
+            )
+        if not isinstance(self.next_dispatch_event_id, str) or not self.next_dispatch_event_id:
+            raise DispatchSupervisorValidationError("next_dispatch_event_id must be non-empty str")
+        if _EVENT_ID_RE.fullmatch(self.next_dispatch_event_id) is None:
+            raise DispatchSupervisorValidationError("next_dispatch_event_id must match EVT-*")
+        try:
+            OwnerLossRetryPhase(self.phase)
+        except ValueError as exc:
+            raise DispatchSupervisorValidationError(
+                "phase must be a frozen retry phase"
+            ) from exc
+        # Creator identity — required at reservation.
+        _validate_pid_required(self.creator_pid, "creator_pid")
+        if not isinstance(self.creator_creation_time, str) or not self.creator_creation_time:
+            raise DispatchSupervisorValidationError(
+                "creator_creation_time must be a non-empty str"
+            )
+        if not isinstance(self.creator_boot_id, str) or not self.creator_boot_id:
+            raise DispatchSupervisorValidationError("creator_boot_id must be a non-empty str")
+        # Supervisor identity — all-present or all-absent.
+        _validate_identity_triple_optional(
+            self.supervisor_pid, self.supervisor_creation_time, self.supervisor_boot_id,
+            "supervisor",
+        )
+        # Worker identity — all-present or all-absent.
+        _validate_identity_triple_optional(
+            self.worker_pid, self.worker_creation_time, self.worker_boot_id,
+            "worker",
+        )
+        # reserved_at must be RFC 3339 UTC.
+        if not isinstance(self.reserved_at, str) or not self.reserved_at:
+            raise DispatchSupervisorValidationError("reserved_at must be non-empty str")
+        if _RFC3339_RE.fullmatch(self.reserved_at) is None:
+            raise DispatchSupervisorValidationError("reserved_at must be RFC 3339 UTC")
+        # started_at — None or RFC 3339 UTC.
+        if self.started_at is not None:
+            if not isinstance(self.started_at, str) or not self.started_at:
+                raise DispatchSupervisorValidationError("started_at must be non-empty str or None")
+            if _RFC3339_RE.fullmatch(self.started_at) is None:
+                raise DispatchSupervisorValidationError("started_at must be RFC 3339 UTC")
+        # finalized_at — None or RFC 3339 UTC.
+        if self.finalized_at is not None:
+            if not isinstance(self.finalized_at, str) or not self.finalized_at:
+                raise DispatchSupervisorValidationError("finalized_at must be non-empty str or None")
+            if _RFC3339_RE.fullmatch(self.finalized_at) is None:
+                raise DispatchSupervisorValidationError("finalized_at must be RFC 3339 UTC")
+        # content_digest must be sha256:hex.
+        if not isinstance(self.content_digest, str) or not self.content_digest:
+            raise DispatchSupervisorValidationError("content_digest must be non-empty str")
+        if _PAYLOAD_DIGEST_RE.fullmatch(self.content_digest) is None:
+            raise DispatchSupervisorValidationError("content_digest must match sha256:hex")
+        # Phase-field presence validation.
+        _validate_retry_phase_field_presence(self)
+
+
+def _validate_pid_required(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise DispatchSupervisorValidationError(
+            name + " must be a non-bool int"
+        )
+    if value < 0:
+        raise DispatchSupervisorValidationError(name + " must be >= 0")
+
+
+def _validate_identity_triple_optional(
+    pid: object,
+    creation_time: object,
+    boot_id: object,
+    prefix: str,
+) -> None:
+    """Validate a supervisor/Worker identity triple: all-None or all-present."""
+    if pid is None and creation_time is None and boot_id is None:
+        return
+    if pid is None or creation_time is None or boot_id is None:
+        raise DispatchSupervisorValidationError(
+            prefix + " identity fields must be all-None or all-present"
+        )
+    _validate_pid_required(pid, prefix + "_pid")
+    if not isinstance(creation_time, str) or not creation_time:
+        raise DispatchSupervisorValidationError(
+            prefix + "_creation_time must be a non-empty str"
+        )
+    if not isinstance(boot_id, str) or not boot_id:
+        raise DispatchSupervisorValidationError(
+            prefix + "_boot_id must be a non-empty str"
+        )
+
+
+def _validate_retry_phase_field_presence(receipt: OwnerLossRetryReceipt) -> None:
+    """A field for a phase not yet reached must be exactly None."""
+    phase = OwnerLossRetryPhase(receipt.phase)
+    order = OwnerLossRetryPhase.order()
+    reached = order.index(phase)
+    started_reached = reached >= order.index(OwnerLossRetryPhase.RETRY_STARTED)
+    finalized_reached = reached >= order.index(OwnerLossRetryPhase.RETRY_FINALIZED)
+
+    if not started_reached:
+        if receipt.supervisor_pid is not None:
+            raise DispatchSupervisorValidationError(
+                "supervisor_pid must be None before RETRY_STARTED"
+            )
+        if receipt.supervisor_creation_time is not None:
+            raise DispatchSupervisorValidationError(
+                "supervisor_creation_time must be None before RETRY_STARTED"
+            )
+        if receipt.supervisor_boot_id is not None:
+            raise DispatchSupervisorValidationError(
+                "supervisor_boot_id must be None before RETRY_STARTED"
+            )
+        if receipt.worker_pid is not None:
+            raise DispatchSupervisorValidationError(
+                "worker_pid must be None before RETRY_STARTED"
+            )
+        if receipt.worker_creation_time is not None:
+            raise DispatchSupervisorValidationError(
+                "worker_creation_time must be None before RETRY_STARTED"
+            )
+        if receipt.worker_boot_id is not None:
+            raise DispatchSupervisorValidationError(
+                "worker_boot_id must be None before RETRY_STARTED"
+            )
+        if receipt.started_at is not None:
+            raise DispatchSupervisorValidationError(
+                "started_at must be None before RETRY_STARTED"
+            )
+
+    if not finalized_reached:
+        if receipt.finalized_at is not None:
+            raise DispatchSupervisorValidationError(
+                "finalized_at must be None before RETRY_FINALIZED"
             )
 
 
@@ -1833,3 +2131,382 @@ def probe_process(
         # System rebooted since the receipt was written.
         return ProcessLiveness.UNKNOWN
     return ProcessLiveness.ALIVE
+
+
+# ── retry receipt store ─────────────────────────────────────────────────────
+#
+# Owner-loss retry receipt and tombstone read/write/advance functions.
+# These use the same atomic-write, lock, and symlink-rejection infrastructure
+# as the existing dispatch supervisor evidence store.
+#
+# Storage: .agentdesk/runtime/dispatch-supervisor/<next_dispatch_id>.retry-receipt.yaml
+#          .agentdesk/runtime/dispatch-supervisor/<next_dispatch_id>.retry-tombstone.yaml
+
+_RETRY_RECEIPT_SUFFIX = ".retry-receipt.yaml"
+_RETRY_TOMBSTONE_SUFFIX = ".retry-tombstone.yaml"
+
+
+def _retry_receipt_path(project_root: Path, next_dispatch_id: str) -> Path:
+    _validate_safe_id(next_dispatch_id, "next_dispatch_id")
+    return _store_dir(project_root) / (next_dispatch_id + _RETRY_RECEIPT_SUFFIX)
+
+
+def _retry_tombstone_path(project_root: Path, next_dispatch_id: str) -> Path:
+    _validate_safe_id(next_dispatch_id, "next_dispatch_id")
+    return _store_dir(project_root) / (next_dispatch_id + _RETRY_TOMBSTONE_SUFFIX)
+
+
+def _retry_receipt_to_dict(receipt: OwnerLossRetryReceipt) -> dict[str, object]:
+    return {name: getattr(receipt, name) for name in _RETRY_RECEIPT_FIELD_NAMES}
+
+
+def _retry_receipt_from_dict(data: dict[str, object]) -> OwnerLossRetryReceipt:
+    if not isinstance(data, dict):
+        raise DispatchSupervisorValidationError("retry receipt must be a dict")
+    missing = _RETRY_RECEIPT_FIELD_SET - set(data.keys())
+    extra = set(data.keys()) - _RETRY_RECEIPT_FIELD_SET
+    if missing or extra:
+        raise DispatchSupervisorValidationError(
+            "retry receipt field set mismatch (missing/extra)"
+        )
+    kwargs: dict[str, object] = dict(data)
+    return OwnerLossRetryReceipt(**kwargs)  # type: ignore[arg-type]
+
+
+# ── content digest computation ──────────────────────────────────────────────
+
+
+def compute_retry_content_digest(
+    *,
+    task_id: str,
+    revision: int,
+    failed_attempt: int,
+    failed_dispatch_id: str,
+    recovery_event_id: str,
+    recovery_generation_id: str,
+    next_attempt: int,
+    next_dispatch_id: str,
+    next_dispatch_event_id: str,
+) -> str:
+    """Compute the frozen ``content_digest`` for a retry receipt.
+
+    SHA-256 over canonical UTF-8 bytes of every identity field except
+    ``content_digest``.  Canonical serialization uses frozen field order,
+    enum values as strings, no insignificant whitespace, and no
+    platform-dependent formatting.
+
+    The digest binds the exact retry plan and identity; it is NOT derived
+    from exception text or process output.
+    """
+    canonical = json.dumps(
+        {
+            "task_id": task_id,
+            "revision": revision,
+            "failed_attempt": failed_attempt,
+            "failed_dispatch_id": failed_dispatch_id,
+            "recovery_event_id": recovery_event_id,
+            "recovery_generation_id": recovery_generation_id,
+            "next_attempt": next_attempt,
+            "next_dispatch_id": next_dispatch_id,
+            "next_dispatch_event_id": next_dispatch_event_id,
+        },
+        ensure_ascii=False,
+        indent=None,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    raw = canonical.encode("utf-8")
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+# ── read API ────────────────────────────────────────────────────────────────
+
+
+def read_retry_receipt(
+    project_root: Path,
+    next_dispatch_id: str,
+) -> OwnerLossRetryReceipt | None:
+    """Read an owner-loss retry receipt, or None if absent."""
+    _validate_project_root(project_root)
+    raw = _read_bytes_reject_symlink(
+        _retry_receipt_path(project_root, next_dispatch_id)
+    )
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise DispatchSupervisorValidationError(
+            "retry receipt is not valid JSON"
+        ) from exc
+    return _retry_receipt_from_dict(data)
+
+
+def read_retry_tombstone(
+    project_root: Path,
+    next_dispatch_id: str,
+) -> OwnerLossRetryReceipt | None:
+    """Read an owner-loss retry tombstone (FINALIZED receipt copy), or None."""
+    _validate_project_root(project_root)
+    raw = _read_bytes_reject_symlink(
+        _retry_tombstone_path(project_root, next_dispatch_id)
+    )
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise DispatchSupervisorValidationError(
+            "retry tombstone is not valid JSON"
+        ) from exc
+    return _retry_receipt_from_dict(data)
+
+
+# ── phase enforcement ───────────────────────────────────────────────────────
+
+
+def _enforce_retry_transition(
+    current: OwnerLossRetryReceipt,
+    target_phase: OwnerLossRetryPhase,
+    recovery_generation_id: str,
+) -> None:
+    if current.recovery_generation_id != recovery_generation_id:
+        raise DispatchSupervisorFencingError("retry receipt generation_id mismatch")
+    if OwnerLossRetryPhase(current.phase) == target_phase:
+        raise DispatchSupervisorPhaseError("retry phase already reached")
+    expected = _RETRY_ALLOWED_TRANSITIONS.get(OwnerLossRetryPhase(current.phase))
+    if expected is None or expected is not target_phase:
+        raise DispatchSupervisorPhaseError("illegal retry phase transition")
+
+
+def _replace_retry_receipt(
+    current: OwnerLossRetryReceipt,
+    **changes: object,
+) -> OwnerLossRetryReceipt:
+    base = _retry_receipt_to_dict(current)
+    base.update(changes)
+    return _retry_receipt_from_dict(base)
+
+
+def _write_retry_receipt_bytes(project_root: Path, receipt: OwnerLossRetryReceipt) -> None:
+    data = _retry_receipt_to_dict(receipt)
+    _atomic_write_bytes(
+        _retry_receipt_path(project_root, receipt.next_dispatch_id),
+        _serialize(data),
+    )
+
+
+# ── atomic reservation (RETRY_RESERVED) ─────────────────────────────────────
+
+
+def reserve_retry_receipt(
+    project_root: Path,
+    *,
+    task_id: str,
+    revision: int,
+    failed_attempt: int,
+    failed_dispatch_id: str,
+    recovery_event_id: str,
+    recovery_generation_id: str,
+    next_attempt: int,
+    next_dispatch_id: str,
+    next_dispatch_event_id: str,
+    content_digest: str,
+    creator_pid: int,
+    creator_creation_time: str,
+    creator_boot_id: str,
+) -> OwnerLossRetryReceipt:
+    """Atomically write a ``RETRY_RESERVED`` owner-loss retry receipt.
+
+    Must be called under the existing canonical state lock.  Only one
+    reservation may exist for a given ``(task_id, failed_attempt,
+    recovery_generation_id)`` identity.  Byte-exact replay returns the
+    existing receipt; divergent content rejects without a write.
+    """
+    _validate_project_root(project_root)
+
+    # Build the proposed receipt.
+    proposed = OwnerLossRetryReceipt(
+        schema_version=RETRY_RECEIPT_SCHEMA_VERSION,
+        task_id=task_id,
+        revision=revision,
+        failed_attempt=failed_attempt,
+        failed_dispatch_id=failed_dispatch_id,
+        recovery_event_id=recovery_event_id,
+        recovery_generation_id=recovery_generation_id,
+        next_attempt=next_attempt,
+        next_dispatch_id=next_dispatch_id,
+        next_dispatch_event_id=next_dispatch_event_id,
+        phase=OwnerLossRetryPhase.RETRY_RESERVED.value,
+        creator_pid=creator_pid,
+        creator_creation_time=creator_creation_time,
+        creator_boot_id=creator_boot_id,
+        supervisor_pid=None,
+        supervisor_creation_time=None,
+        supervisor_boot_id=None,
+        worker_pid=None,
+        worker_creation_time=None,
+        worker_boot_id=None,
+        reserved_at=_now_utc_str(),
+        started_at=None,
+        finalized_at=None,
+        content_digest=content_digest,
+    )
+
+    with _exclusive_store_lock(project_root):
+        existing = read_retry_receipt(project_root, next_dispatch_id)
+        if existing is not None:
+            # Byte-exact replay check.
+            if existing.content_digest != proposed.content_digest:
+                raise DispatchSupervisorPhaseError(
+                    "retry receipt already exists with different content"
+                )
+            if existing.recovery_generation_id != proposed.recovery_generation_id:
+                raise DispatchSupervisorFencingError(
+                    "retry receipt generation mismatch"
+                )
+            if existing.phase != proposed.phase:
+                raise DispatchSupervisorPhaseError(
+                    "retry receipt already exists with different phase"
+                )
+            return existing
+
+        _write_retry_receipt_bytes(project_root, proposed)
+        return proposed
+
+
+# ── phase advance: RETRY_RESERVED → RETRY_STARTED ───────────────────────────
+
+
+def advance_retry_to_started(
+    project_root: Path,
+    *,
+    next_dispatch_id: str,
+    recovery_generation_id: str,
+    supervisor_pid: int,
+    supervisor_creation_time: str,
+    supervisor_boot_id: str,
+    worker_pid: int,
+    worker_creation_time: str,
+    worker_boot_id: str,
+) -> OwnerLossRetryReceipt:
+    """Atomically advance from RETRY_RESERVED to RETRY_STARTED.
+
+    Requires durable supervisor and Worker evidence proving both have
+    started.  Advances under the exclusive store lock with generation
+    exact-match.
+    """
+    _validate_project_root(project_root)
+    with _exclusive_store_lock(project_root):
+        current = read_retry_receipt(project_root, next_dispatch_id)
+        if current is None:
+            raise DispatchSupervisorFencingError("retry receipt not found")
+        _enforce_retry_transition(
+            current, OwnerLossRetryPhase.RETRY_STARTED, recovery_generation_id
+        )
+        updated = _replace_retry_receipt(
+            current,
+            phase=OwnerLossRetryPhase.RETRY_STARTED.value,
+            supervisor_pid=supervisor_pid,
+            supervisor_creation_time=supervisor_creation_time,
+            supervisor_boot_id=supervisor_boot_id,
+            worker_pid=worker_pid,
+            worker_creation_time=worker_creation_time,
+            worker_boot_id=worker_boot_id,
+            started_at=_now_utc_str(),
+        )
+        _write_retry_receipt_bytes(project_root, updated)
+        return updated
+
+
+# ── phase advance: RETRY_STARTED → RETRY_FINALIZING ─────────────────────────
+
+
+def advance_retry_to_finalizing(
+    project_root: Path,
+    *,
+    next_dispatch_id: str,
+    recovery_generation_id: str,
+) -> OwnerLossRetryReceipt:
+    """Atomically advance from RETRY_STARTED to RETRY_FINALIZING.
+
+    Only the completion winner, after Worker done, heartbeat done, and
+    release completed, may advance.
+    """
+    _validate_project_root(project_root)
+    with _exclusive_store_lock(project_root):
+        current = read_retry_receipt(project_root, next_dispatch_id)
+        if current is None:
+            raise DispatchSupervisorFencingError("retry receipt not found")
+        _enforce_retry_transition(
+            current, OwnerLossRetryPhase.RETRY_FINALIZING, recovery_generation_id
+        )
+        updated = _replace_retry_receipt(
+            current,
+            phase=OwnerLossRetryPhase.RETRY_FINALIZING.value,
+        )
+        _write_retry_receipt_bytes(project_root, updated)
+        return updated
+
+
+# ── phase advance: RETRY_FINALIZING → RETRY_FINALIZED ───────────────────────
+
+
+def advance_retry_to_finalized(
+    project_root: Path,
+    *,
+    next_dispatch_id: str,
+    recovery_generation_id: str,
+) -> OwnerLossRetryReceipt:
+    """Atomically advance from RETRY_FINALIZING to RETRY_FINALIZED.
+
+    Writes the final tombstone first (a copy of the receipt at FINALIZED),
+    then advances the receipt.  Follows the existing tombstone-first crash
+    replay rules.
+    """
+    _validate_project_root(project_root)
+    with _exclusive_store_lock(project_root):
+        current = read_retry_receipt(project_root, next_dispatch_id)
+        if current is None:
+            raise DispatchSupervisorFencingError("retry receipt not found")
+        _enforce_retry_transition(
+            current, OwnerLossRetryPhase.RETRY_FINALIZED, recovery_generation_id
+        )
+        tombstone_path = _retry_tombstone_path(project_root, next_dispatch_id)
+        existing_tombstone = read_retry_tombstone(project_root, next_dispatch_id)
+
+        finalized_receipt = _replace_retry_receipt(
+            current,
+            phase=OwnerLossRetryPhase.RETRY_FINALIZED.value,
+            finalized_at=_now_utc_str(),
+        )
+
+        if existing_tombstone is not None:
+            # Byte-exact replay: same generation + same content.
+            if existing_tombstone.content_digest != finalized_receipt.content_digest:
+                raise DispatchSupervisorPhaseError(
+                    "retry tombstone already exists with different content"
+                )
+            if existing_tombstone.recovery_generation_id != recovery_generation_id:
+                raise DispatchSupervisorFencingError(
+                    "retry tombstone generation mismatch"
+                )
+            if current.phase == OwnerLossRetryPhase.RETRY_FINALIZED.value:
+                return existing_tombstone
+            # Tombstone exists but receipt not yet advanced — finish the advance.
+            _write_retry_receipt_bytes(project_root, finalized_receipt)
+            return existing_tombstone
+
+        # No tombstone yet.
+        if current.phase == OwnerLossRetryPhase.RETRY_FINALIZED.value:
+            raise DispatchSupervisorPhaseError(
+                "retry receipt FINALIZED but tombstone missing"
+            )
+
+        # Write tombstone first, then advance receipt.
+        _atomic_write_bytes(
+            tombstone_path,
+            _serialize(_retry_receipt_to_dict(finalized_receipt)),
+        )
+        _write_retry_receipt_bytes(project_root, finalized_receipt)
+        return finalized_receipt
