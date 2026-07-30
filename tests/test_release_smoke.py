@@ -11661,5 +11661,268 @@ class TC1318d10aActiveDispatchSupersessionContractTests(unittest.TestCase):
             "TC-13.19 and TC-13.20 statuses are unchanged", self.adr_text
         )
         self.assertIn(
-            "retry-loop fault recovery remain Target", self.contract_text
+            "Provider rate-limit wiring and owner-loss recovery remain Target",
+            self.contract_text,
         )
+
+
+class TC1318d11aDispatchFailureRecoveryContractTests(unittest.TestCase):
+    """TC-13.18d.11a dispatch failure recovery contract freeze."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.repo_root = Path(__file__).resolve().parents[1]
+        cls.contract_text = (
+            cls.repo_root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "workflow-orchestrator-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr_text = (
+            cls.repo_root / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+        cls.section = cls.contract_text.split(
+            "## 16. Dispatch Failure Recovery and Bounded Retry", 1
+        )[1]
+
+    def test_01_contract_status(self) -> None:
+        self.assertIn(
+            "Frozen Contract (Contract Current — TC-13.18d.11a)",
+            self.contract_text,
+        )
+        self.assertIn(
+            "Runtime Target — TC-13.18d.11b/11c", self.contract_text
+        )
+
+    def test_02_adr_status_and_section(self) -> None:
+        self.assertIn(
+            "2.19.15 Dispatch Failure Recovery and Bounded Retry",
+            self.adr_text,
+        )
+        self.assertIn(
+            "Contract Current — TC-13.18d.11a", self.adr_text
+        )
+
+    def test_03_unique_recovery_event(self) -> None:
+        self.assertIn(
+            "sole dispatch-failure recovery event", self.section
+        )
+        self.assertIn(
+            "`TASK_REQUEUED`. That event remains exactly\n"
+            "`returned -> ready`",
+            self.section,
+        )
+        self.assertIn(
+            "`DISPATCH_FAILED` becomes the sixteenth canonical event type",
+            self.section,
+        )
+
+    def test_04_payload_exact_shape(self) -> None:
+        block = self.section.split(
+            "class DispatchFailedPayload:", 1
+        )[1].split("```", 1)[0]
+        self.assertIn("failure_kind: str", block)
+        self.assertEqual(
+            [
+                line for line in block.splitlines()
+                if line.strip().endswith(": str")
+            ],
+            ["    failure_kind: str"],
+        )
+
+    def test_05_failure_kinds_and_safe_evidence(self) -> None:
+        for value in (
+            '"dispatch_start_failed"',
+            '"worker_failed"',
+            '"worker_output_failed"',
+            '"delivery_transition_failed"',
+        ):
+            self.assertIn(value, self.section)
+        self.assertIn(
+            "At least one safe evidence reference is required", self.section
+        )
+        self.assertIn("exception strings", self.section)
+
+    def test_06_transition_states_are_exact(self) -> None:
+        transition = self.section.split(
+            "### 16.2 Canonical Recovery Event", 1
+        )[1].split("### 16.3", 1)[0]
+        self.assertIn("exactly `dispatched` or `in_progress`", transition)
+        self.assertIn("exactly `ready`", transition)
+
+    def test_07_exact_cas_and_lease_none(self) -> None:
+        transition = self.section.split(
+            "### 16.2 Canonical Recovery Event", 1
+        )[1].split("### 16.3", 1)[0]
+        self.assertIn("exact task, revision, from state", transition)
+        self.assertIn("exact failed `dispatch_id` and attempt", transition)
+        self.assertIn(
+            "exactly `None`, only after confirmed cleanup and release",
+            transition,
+        )
+
+    def test_08_mutation_and_no_automatic_dispatch(self) -> None:
+        transition = self.section.split(
+            "### 16.2 Canonical Recovery Event", 1
+        )[1].split("### 16.3", 1)[0]
+        for term in (
+            "preserve the failed attempt number",
+            "clear to `None`",
+            "clear `delivery_state`",
+            "clear `report_path`",
+            "serialize exact `failure_kind`",
+            "non-empty safe `evidence_refs`",
+            "produce neither",
+            "automatic dispatch",
+        ):
+            self.assertIn(term, transition)
+
+    def test_09_idempotency_stale_and_task_requeued_boundary(self) -> None:
+        self.assertIn("Strict byte-exact idempotency", self.section)
+        self.assertIn("zero writes", self.section)
+        self.assertIn("stale dispatch/attempt", self.section)
+        self.assertIn(
+            "does not broaden `TASK_REQUEUED`", self.section
+        )
+
+    def test_10_retry_attempt_exact_shape(self) -> None:
+        block = self.section.split(
+            "class DispatchRetryAttempt:", 1
+        )[1].split("```", 1)[0]
+        self.assertIn(
+            "dispatch_cycle_request: DispatchCycleRequest", block
+        )
+        self.assertIn(
+            "failure_transition_request: TransitionRequest", block
+        )
+
+    def test_11_request_is_finite_explicit_budget(self) -> None:
+        block = self.section.split(
+            "class BoundedDispatchRetryRequest:", 1
+        )[1].split("```", 1)[0]
+        self.assertIn(
+            "attempts: tuple[DispatchRetryAttempt, ...]", block
+        )
+        self.assertIn("between one\nand three attempts", self.section)
+        self.assertIn(
+            "explicit caller\nbudget and the hard upper bound", self.section
+        )
+
+    def test_12_result_exact_shape(self) -> None:
+        block = self.section.split(
+            "class BoundedDispatchRetryResult:", 1
+        )[1].split("```", 1)[0]
+        for field in (
+            "task_id: str",
+            "attempts_started: int",
+            "recovery_transitions: tuple[TransitionResult, ...]",
+            "dispatch_cycle_result: DispatchCycleResult",
+        ):
+            self.assertIn(field, block)
+
+    def test_13_method_signature(self) -> None:
+        self.assertIn(
+            "async def run_bounded_dispatch_retry(", self.section
+        )
+        self.assertIn(
+            "request: BoundedDispatchRetryRequest", self.section
+        )
+        self.assertIn(
+            "providers: Mapping[str, AgentCliProvider]", self.section
+        )
+        self.assertIn(
+            ") -> BoundedDispatchRetryResult", self.section
+        )
+
+    def test_14_plan_identity_validation(self) -> None:
+        for term in (
+            "same task and revision",
+            "strictly consecutive",
+            "distinct across the plan",
+            "exact task, expected active state, dispatch id",
+            "increments it by exactly one",
+            "generates no ids",
+        ):
+            self.assertIn(term, self.section)
+
+    def test_15_fixed_order(self) -> None:
+        order = self.section.split(
+            "### 16.5 Fixed Order", 1
+        )[1].split("### 16.6", 1)[0]
+        steps = (
+            "Validate the complete one-to-three-attempt plan",
+            "start_dispatch_cycle for the current caller-supplied attempt",
+            "await the same ActiveDispatchExecution.wait()",
+            "on success, return BoundedDispatchRetryResult",
+            "on failure, classify eligibility",
+            "require completion winner + Worker done",
+            "read a fresh canonical snapshot",
+            "apply paired DISPATCH_FAILED with lease=None",
+            "re-raise the original final exception",
+            "start the next distinct, consecutive attempt",
+        )
+        positions = [order.index(step) for step in steps]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_16_fail_closed_eligibility(self) -> None:
+        eligibility = self.section.split(
+            "### 16.6 Eligibility and Exception Priority", 1
+        )[1].split("### 16.7", 1)[0]
+        for term in (
+            "`asyncio.CancelledError`",
+            "active cancellation or supersession",
+            "heartbeat/fencing failure",
+            "cleanup or release failure",
+            "any CAS conflict",
+            "already-terminal or advanced canonical state",
+        ):
+            self.assertIn(term, eligibility)
+
+    def test_17_exception_priority_and_exhaustion(self) -> None:
+        self.assertIn(
+            "transition exception is primary", self.section
+        )
+        self.assertIn(
+            "original dispatch failure is its\n`__cause__`", self.section
+        )
+        self.assertIn(
+            "original final\nfailure is re-raised unchanged", self.section
+        )
+
+    def test_18_exactly_once_matrix(self) -> None:
+        matrix = self.section.split(
+            "### 16.7 Race and Exactly-Once Matrix", 1
+        )[1].split("### 16.8", 1)[0]
+        for term in (
+            "All three attempts fail",
+            "Duplicate recovery request",
+            "Cancellation/supersession wins",
+            "Recovery CAS conflict",
+            "Old attempt reports late",
+            "Concurrent `execution.wait()`",
+        ):
+            self.assertIn(term, matrix)
+        self.assertIn("at most one successful `DISPATCH_FAILED`", matrix)
+
+    def test_19_owner_loss_requires_real_cleanup_authority(self) -> None:
+        owner_loss = self.section.split(
+            "### 16.8 Owner-Loss Decision", 1
+        )[1].split("### 16.9", 1)[0]
+        self.assertIn("remains **Target**", owner_loss)
+        self.assertIn(
+            "lease expiry is sufficient evidence", owner_loss
+        )
+        self.assertIn(
+            "has no\npersisted `ActiveDispatchExecution`", owner_loss
+        )
+
+    def test_20_rate_limit_codex_status_and_card_split(self) -> None:
+        self.assertIn("no matching for `429`", self.section)
+        self.assertIn("Provider detection remains Target", self.section)
+        self.assertIn(
+            "Codex runtime, Codex decoding, and Codex rate-limit "
+            "classification remain\ndeferred",
+            self.section,
+        )
+        for card in ("TC-13.18d.11a", "TC-13.18d.11b", "TC-13.18d.11c"):
+            self.assertIn(card, self.section)
+            self.assertIn(card, self.adr_text)

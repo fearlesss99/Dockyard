@@ -1,4 +1,4 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation — Current — TC-13.18d.9b; Active Supersession — Current — TC-13.18d.10b)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation — Current — TC-13.18d.9b; Active Supersession — Current — TC-13.18d.10b; Dispatch Failure Recovery Contract — Current — TC-13.18d.11a)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
@@ -46,8 +46,10 @@ and quiescent task supersession (StateProvider.snapshot() → validate no
 active dispatch → TASK_SUPERSEDED (lease=None) → TaskSupersessionResult)
 are implemented and callable.  The E2E evidence program (TC-13.19a–j)
 validates all Current runtime paths. Active-dispatch supersession production
-is Current — TC-13.18d.10b. Codex decoding, Codex rate-limit classification,
-and retry-loop fault recovery remain Target. Active-dispatch cancellation
+is Current — TC-13.18d.10b. Dispatch failure recovery is Contract Current —
+TC-13.18d.11a and Runtime Target — TC-13.18d.11b/11c. Codex decoding,
+Codex rate-limit classification, and provider rate-limit wiring remain Target.
+Active-dispatch cancellation
 contract is repaired and frozen as of TC-13.18d.9a.1 (execution-based
 model); production implementation is Current — TC-13.18d.9b.  See
 `reports/tc-13.19-final-delivery-report.md` and `test_release_smoke.py`
@@ -337,8 +339,10 @@ audit_policy: AuditPolicy  # typed dataclass with evidence_ref
 
 ## 9. Transition Coverage
 
-The WorkflowOrchestrator must be aware of **all 15** transition types
-defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
+The production WorkflowOrchestrator is aware of all 15 transition types
+currently defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR).
+TC-13.18d.11a freezes `DISPATCH_FAILED` as the sixteenth type for production
+in TC-13.18d.11b:
 
 | # | Event type | Covered by task card |
 |---|-----------|---------------------|
@@ -359,6 +363,7 @@ defined by `ControlPlaneTransitionService` (§2.14.8 of the ADR):
 | 15 | `TASK_CANCELLED` (active dispatch path) | Current — TC-13.18d.9b |
 | 16 | `TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8 |
 | 17 | `TASK_SUPERSEDED` (active dispatch path) | Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b |
+| 18 | `DISPATCH_FAILED` (`dispatched|in_progress -> ready`) | Contract Current — TC-13.18d.11a / Runtime Target — TC-13.18d.11b |
 
 The orchestrator does **not** duplicate `_TRANSITION_SPECS`.  It constructs
 typed `TransitionRequest` objects and passes them to `apply_transition()`.
@@ -525,12 +530,15 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18d.4** | INTEGRATION_FAILED recording (accepted → blocked) | TC-13.18d.3 | Current |
 | **TC-13.18d.5** | BLOCKER_RESCOPED (expert blocked → draft rescope) | TC-13.18d.2 | Current |
 | **TC-13.18d.6** | BLOCKER_CANCELLED (expert blocked → cancelled) | TC-13.18d.2 | Current |
-| **TC-13.18d-ext** | Retry loop, escalation replay, cancellation, fault recovery | TC-13.18d.3 | Target |
+| **TC-13.18d-ext** | Legacy aggregate retry/fault-recovery placeholder | TC-13.18d.3 | Superseded by TC-13.18d.11a/11b/11c split |
 | **TC-13.18d.9a** | Active-dispatch cancellation contract freeze (non-implementable) | TC-13.18d.7 | Superseded |
 | **TC-13.18d.9a.1** | Active-dispatch cancellation contract repair (execution model) | TC-13.18d.9a | Contract Current |
 | **TC-13.18d.9b** | Active-dispatch cancellation production implementation | TC-13.18d.9a.1 | Current |
 | **TC-13.18d.10a** | Active-dispatch supersession contract freeze | TC-13.18d.9b | Contract Current |
 | **TC-13.18d.10b** | Active-dispatch supersession production implementation | TC-13.18d.10a | Current |
+| **TC-13.18d.11a** | Dispatch failure recovery + bounded retry contract | TC-13.18d.10b | Contract Current |
+| **TC-13.18d.11b** | Canonical `DISPATCH_FAILED` transition production | TC-13.18d.11a | Runtime Target |
+| **TC-13.18d.11c** | Creator-alive bounded retry orchestration production | TC-13.18d.11b | Runtime Target |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Current — TC-13.19j |
 | **TC-13.20** | HTML Dashboard | TC-13.17, TC-13.19 | Read-only UI |
@@ -560,7 +568,7 @@ TC-13.18d.9b still does **not** implement:
 
 - Active-dispatch supersession → Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b
 - RateLimit retry → Target
-- Retry-loop fault recovery → Target
+- Dispatch failure recovery / bounded retry → Contract Current — TC-13.18d.11a / Runtime Target — TC-13.18d.11b/11c
 - Codex decoding → Target
 - Modification of `dispatcher_gateway` termination implementation
 - Modification of `WorkflowOrchestrator` existing frozen/slots three-field shape
@@ -1314,3 +1322,263 @@ and `run_dispatch_cycle()` retains its signature and compatibility behavior.
 - WorkflowOrchestrator Interface #22 remains **Target** until retry,
   rate-limit, and remaining fault-recovery boundaries are complete.
 - TC-13.19 and TC-13.20 statuses are unchanged.
+
+---
+
+## 16. Dispatch Failure Recovery and Bounded Retry — Frozen Contract (Contract Current — TC-13.18d.11a)
+
+TC-13.18d.11a freezes one recovery event and one finite, creator-alive retry
+surface. Runtime implementation remains Target: the canonical transition is
+TC-13.18d.11b and the retry orchestrator is TC-13.18d.11c.
+
+This contract does not broaden `TASK_REQUEUED`. That event remains exactly
+`returned -> ready` for delivery remediation. Dispatch failure recovery uses
+the new and unambiguous `DISPATCH_FAILED` event.
+
+### 16.1 Failure Classification
+
+| Failure | Canonical residual state | Required evidence | TC-13.18d.11c eligibility |
+|---|---|---|---|
+| Worker fails after ACK | `in_progress` | winner is `completion`; Worker and heartbeat done; release completed | Recoverable in the same creator |
+| Output decode fails | `in_progress` | same cleanup proof; no delivery transition committed | Recoverable in the same creator |
+| `DELIVERY_SUBMITTED` fails before commit | `in_progress` | cleanup complete; fresh snapshot proves exact dispatch remains `in_progress`; no matching delivery event | Recoverable in the same creator |
+| Worker/start fails before ACK | `dispatched` | process-tree cleanup and release proof exist internally, but no public execution is returned | `DISPATCH_FAILED` supports it; orchestration remains Target beyond 11c |
+| Heartbeat fencing / ownership loss | `dispatched` or `in_progress` | ownership is uncertain | Fail-closed; no automatic recovery |
+| Lease release fails | `dispatched` or `in_progress` | release is not confirmed | Fail-closed; no recovery transition |
+| Recovery or terminal CAS conflict | Canonical state wins | conflict itself proves the plan is stale | Fail-closed; no retry |
+| Outer caller cancellation | Existing active cancellation/outer-cancellation semantics | shared finalizer result | Never converted into retry |
+| Active cancellation or supersession wins | `cancelled` or `superseded` | shared winner and terminal transition | Terminal; never retry |
+| Creator process is lost | Unknown live-process state | no current cleanup authority exists | Owner-loss recovery remains Target |
+| Late old-attempt completion/heartbeat/transition | Any newer state/attempt | exact `DispatchCAS` mismatch | Reject as stale |
+| `review_ready`, `accepted`, `integrated`, `cancelled`, or `superseded` | State shown | canonical snapshot | Ineligible |
+
+“Lease expired” is not process-tree cleanup evidence. A failure is eligible
+only when the same creator can prove that its real Worker and heartbeat tasks
+are done and its lease release completed.
+
+### 16.2 Canonical Recovery Event — Unique Decision
+
+The sole dispatch-failure recovery event is:
+
+```python
+@dataclass(frozen=True, slots=True)
+class DispatchFailedPayload:
+    """One-field payload for dispatched|in_progress -> ready."""
+
+    failure_kind: str
+```
+
+`failure_kind` is exactly one of:
+
+- `"dispatch_start_failed"`;
+- `"worker_failed"`;
+- `"worker_output_failed"`;
+- `"delivery_transition_failed"`.
+
+Provider names, exit output, exception strings, prompts, workspace paths, and
+secrets are forbidden. At least one safe evidence reference is required in
+`TransitionEventContext.evidence_refs`.
+
+The `DISPATCH_FAILED` transition contract is:
+
+| Property | Frozen rule |
+|---|---|
+| from state | exactly `dispatched` or `in_progress` |
+| to state | exactly `ready` |
+| `TransitionCAS` | exact task, revision, from state, and snapshot commit |
+| `DispatchCAS` | required; exact failed `dispatch_id` and attempt |
+| lease argument | exactly `None`, only after confirmed cleanup and release |
+| task attempt | preserve the failed attempt number |
+| `current_dispatch` | clear to `None` |
+| delivery fields | clear `delivery_state`, `implementation_commit`, and `report_commit` |
+| report path | clear `report_path` |
+| timestamps | preserve lifecycle timestamps; common `updated_at` and immutable event `occurred_at` record recovery |
+| state event | serialize exact `failure_kind`; preserve non-empty safe `evidence_refs` |
+| outbox / acceptance | produce neither |
+| automatic dispatch | forbidden |
+
+`DISPATCH_FAILED` becomes the sixteenth canonical event type. It does not
+modify the frozen state set. The next `TASK_DISPATCHED` is a separate,
+approval-gated transition that supplies a distinct dispatch id and
+`new_attempt == failed_attempt + 1`.
+
+Strict byte-exact idempotency is inherited from
+`ControlPlaneTransitionService`: replay of the same event/request at the
+already-reached target returns the existing result with zero writes.
+Reusing an event id with different bytes, using a stale dispatch/attempt, or
+targeting a task changed by cancellation/supersession fails closed.
+
+### 16.3 Public Bounded-Retry Types
+
+```python
+@dataclass(frozen=True, slots=True)
+class DispatchRetryAttempt:
+    """Two-field caller-supplied attempt and recovery pair."""
+
+    dispatch_cycle_request: DispatchCycleRequest
+    failure_transition_request: TransitionRequest
+```
+
+```python
+@dataclass(frozen=True, slots=True)
+class BoundedDispatchRetryRequest:
+    """One-field finite plan; tuple length is the requested attempt budget."""
+
+    attempts: tuple[DispatchRetryAttempt, ...]
+```
+
+```python
+@dataclass(frozen=True, slots=True)
+class BoundedDispatchRetryResult:
+    """Four-field success result."""
+
+    task_id: str
+    attempts_started: int
+    recovery_transitions: tuple[TransitionResult, ...]
+    dispatch_cycle_result: DispatchCycleResult
+```
+
+All three types are exact, frozen, and slotted. The plan contains between one
+and three attempts inclusive. Its tuple length is both the explicit caller
+budget and the hard upper bound; there is no hidden default or unbounded
+iterator.
+
+The whole plan is validated before the first side effect:
+
+- every attempt targets the same task and revision;
+- attempt numbers are strictly consecutive;
+- every dispatch id, dispatch event id, ACK event id, delivery event id, and
+  outbox message id is distinct across the plan;
+- every failure request is exact type `TransitionRequest`, event type
+  `DISPATCH_FAILED`, payload exact type `DispatchFailedPayload`;
+- every failure request has the exact task, expected active state, dispatch id,
+  and attempt for its paired dispatch;
+- after each recovery, the next `TASK_DISPATCHED` CAS expects `ready`, retains
+  the previous ledger attempt, and its payload increments it by exactly one.
+
+The caller supplies every identifier. The orchestrator generates no ids and
+does not clone an old `DispatchCycleRequest`.
+
+### 16.4 Public Method
+
+```python
+async def run_bounded_dispatch_retry(
+    self,
+    request: BoundedDispatchRetryRequest,
+    providers: Mapping[str, AgentCliProvider],
+) -> BoundedDispatchRetryResult:
+    ...
+```
+
+The method is a finite wrapper over the existing creator-owned execution. It
+does not add a second Worker task, runner, heartbeat, lease release, process
+termination operation, completion future, or winner.
+
+### 16.5 Fixed Order
+
+```text
+1. Validate the complete one-to-three-attempt plan before side effects
+2. start_dispatch_cycle for the current caller-supplied attempt
+3. await the same ActiveDispatchExecution.wait()
+4. on success, return BoundedDispatchRetryResult
+5. on failure, classify eligibility and preserve the original exception
+6. require completion winner + Worker done + heartbeat done + release completed
+7. read a fresh canonical snapshot and verify exact state/DispatchCAS
+8. apply paired DISPATCH_FAILED with lease=None
+9. if the finite plan is exhausted, re-raise the original final exception
+10. otherwise start the next distinct, consecutive attempt
+```
+
+There is no sleep, polling, exponential backoff, jitter, rate-limit policy, or
+implicit retry. A failure recovery transition never starts a Worker.
+
+### 16.6 Eligibility and Exception Priority
+
+Only a `completion` winner with confirmed cleanup may enter recovery. Worker
+execution failure, output decode failure, and a provably uncommitted delivery
+transition failure are eligible. These outcomes are not eligible:
+
+- `asyncio.CancelledError`;
+- active cancellation or supersession;
+- heartbeat/fencing failure;
+- cleanup or release failure;
+- any CAS conflict;
+- invalid plan/input;
+- an already-terminal or advanced canonical state.
+
+If cleanup/release fails, that existing failure propagates and no
+`DISPATCH_FAILED` is attempted. If recovery transition fails, its existing
+transition exception is primary and the original dispatch failure is its
+`__cause__`. If recovery succeeds and another planned attempt exists, the
+original failure is superseded by the explicit retry. If the final attempt
+fails, recovery is still committed exactly once and the original final
+failure is re-raised unchanged to signal budget exhaustion.
+
+### 16.7 Race and Exactly-Once Matrix
+
+| Condition | Recovery writes | Next dispatches | Result |
+|---|---:|---:|---|
+| First attempt succeeds | 0 | 0 | success, `attempts_started=1` |
+| Failure, recovery, next attempt succeeds | 1 | 1 | success with one recovery result |
+| All three attempts fail | 3 | 2 | final failure re-raised after third recovery |
+| Duplicate recovery request | 0 new writes | 0 | byte-exact replay or fail-closed mismatch |
+| Cancellation/supersession wins | 0 | 0 | existing winner result/error |
+| Heartbeat or release fails | 0 | 0 | existing lease error |
+| Recovery CAS conflict | 0 successful recoveries | 0 | conflict propagates |
+| Old attempt reports late | 0 | 0 | stale DispatchCAS rejected |
+| Concurrent `execution.wait()` | one shared finalizer | at most one | same completion outcome |
+| Outer caller cancellation | 0 | 0 | cleanup completes, cancellation propagates |
+
+Each failed eligible attempt has at most one successful `DISPATCH_FAILED`,
+one lease release owned by its existing finalizer, and at most one following
+`TASK_DISPATCHED`. A retry wrapper never repeats finalization.
+
+### 16.8 Owner-Loss Decision
+
+Owner-loss/orphan recovery remains **Target**. The current repository has no
+persisted `ActiveDispatchExecution`, PID/process-tree receipt, remote cleanup
+authority, or verified callback that can prove an orphan Worker is dead.
+Neither a missing in-memory owner nor lease expiry is sufficient evidence.
+
+TC-13.18d.11c is therefore restricted to creator-alive failures after a live
+execution was returned and cleanup was confirmed. Pre-ACK `dispatched`
+recovery and restart/orphan recovery require a later contract backed by a
+real cleanup authority.
+
+### 16.9 Rate-Limit and Codex Boundary
+
+Ordinary dispatch failure recovery is separate from provider rate limiting.
+This contract adds no matching for `429`, quota, throttle, or backoff text; no
+provider-specific classification; no wait/jitter; and no call to the
+provider-neutral RateLimit service. Provider detection remains Target.
+
+Codex runtime, Codex decoding, and Codex rate-limit classification remain
+deferred pending observed evidence. Tests use mocks/fakes only.
+
+### 16.10 Compatibility and Non-Goals
+
+The following remain unchanged:
+
+- `DispatchCycleRequest` and `DispatchCycleResult`: exactly nine fields each;
+- `ActiveDispatchHandle`: exactly seven fields;
+- `ActiveDispatchExecution`: public surface only `handle` and `wait()`;
+- active cancellation: Current — TC-13.18d.9b;
+- active supersession: Current — TC-13.18d.10b;
+- quiescent cancellation/supersession and single escalated redispatch;
+- Interface #22 overall status: Target;
+- TC-13.19 and TC-13.20 statuses.
+
+Non-goals are owner-loss cleanup, retry after fencing/release uncertainty,
+unbounded retry, automatic replacement-task dispatch, provider rate-limit
+wiring, Codex enablement, and changes to DispatcherGateway termination.
+
+### 16.11 Production Split and Status
+
+| Card | Scope | Status |
+|---|---|---|
+| **TC-13.18d.11a** | This failure recovery / bounded retry contract | **Contract Current** |
+| **TC-13.18d.11b** | `DispatchFailedPayload` + `DISPATCH_FAILED` transition production | **Runtime Target** |
+| **TC-13.18d.11c** | Creator-alive `run_bounded_dispatch_retry` production | **Runtime Target** |
+
+Provider rate-limit wiring and owner-loss recovery remain Target. Interface
+#22 remains Target until the remaining runtime boundaries are implemented.

@@ -32,7 +32,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 19 | AgentDesk RateLimit service | **Current** — TC-13.14b / Provider Detection Target — TC-13.14c | TC-13.14 | Provider-neutral rate-limit policy with multi-scope and combined signal semantics; provider detection (TC-13.14c) is evidence-dependent Target |
 | 20 | AgentDesk MadAuditGateway | **Current** | TC-13.16b | Subprocess invocation of `mad audit` with worktree validation |
 | 21 | AgentDesk StateProvider (read-only) | **Current** | TC-13.17b | Read-only access to tasks, events, outbox, acceptances, mad-refs |
-| 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Current — TC-13.18d.9b; TASK_SUPERSEDED quiescent path: Current — TC-13.18d.8; TASK_SUPERSEDED active dispatch path: Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b; retry loop, fault recovery: Target) |
+| 22 | AgentDesk WorkflowOrchestrator | Target — TC-13.18 | Central scheduler integrating all services (dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED: Current as of TC-13.18c.2; DELIVERY_RETURNED, TASK_REQUEUED: Current — TC-13.18d.1; TASK_BLOCKED + escalation: Current — TC-13.18d.2; BLOCKER_RESOLVED + single redispatch: Current — TC-13.18d.3; BLOCKER_RESCOPED: Current — TC-13.18d.5; BLOCKER_CANCELLED: Current — TC-13.18d.6; TASK_CANCELLED quiescent path: Current — TC-13.18d.7; TASK_CANCELLED active dispatch path: Current — TC-13.18d.9b; TASK_SUPERSEDED quiescent path: Current — TC-13.18d.8; TASK_SUPERSEDED active dispatch path: Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b; dispatch failure recovery + bounded retry: Contract Current — TC-13.18d.11a / Runtime Target — TC-13.18d.11b/11c) |
 | 23 | E2E / Recovery tests | **Current** — TC-13.19j | E2E validation and recovery scenarios — nine scenario E2E tests committed; quiescent cancellation/supersession, expert user-decision paths, escalation chain, integration failure, and happy-path audit/accept/integrate all covered |
 | 24 | AgentDesk HTML Dashboard | **Current** | TC-13.20b | Read-only dashboard via StateProvider |
 | 25 | ADR status update (Target 鈫?Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
@@ -6464,6 +6464,7 @@ in `ControlPlaneTransitionService._TRANSITION_SPECS` (搂2.14.8):
 | 15 | `TASK_CANCELLED` (active dispatch path) | Current — TC-13.18d.9b |
 | 16 | `TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8 |
 | 17 | `TASK_SUPERSEDED` (active dispatch path) | Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b |
+| 18 | `DISPATCH_FAILED` (`dispatched|in_progress -> ready`) | Contract Current — TC-13.18d.11a / Runtime Target — TC-13.18d.11b |
 
 WorkflowOrchestrator does **not** duplicate `_TRANSITION_SPECS` 鈥?it
 constructs typed `TransitionRequest` objects and passes them to
@@ -6511,6 +6512,9 @@ TC-13.20  鈥?HTML Dashboard
 | TC-13.18d.3 | TC-13.18d.2 | Escalation dispatch retry + cancel + replay | **Target** |
 | TC-13.18d.10a | TC-13.18d.9b | Active-dispatch supersession contract | **Contract Current** |
 | TC-13.18d.10b | TC-13.18d.10a | Active-dispatch supersession production | **Current** |
+| TC-13.18d.11a | TC-13.18d.10b | Dispatch failure recovery + bounded retry contract | **Contract Current** |
+| TC-13.18d.11b | TC-13.18d.11a | Canonical `DISPATCH_FAILED` transition production | **Runtime Target** |
+| TC-13.18d.11c | TC-13.18d.11b | Creator-alive bounded retry orchestration | **Runtime Target** |
 | TC-13.19 | TC-13.18d.3 | E2E / recovery tests | **Target** → **Current — TC-13.19j** |
 
 ---
@@ -6654,6 +6658,9 @@ Interface #22 remains Target; TC-13.19 and TC-13.20 statuses are unchanged.
   TC-13.18d.9b (Current).
 * **Active-dispatch supersession** is Contract Current — TC-13.18d.10a;
   production implementation is Current — TC-13.18d.10b.
+* **Dispatch failure recovery and bounded retry** is Contract Current —
+  TC-13.18d.11a; production remains Runtime Target — TC-13.18d.11b/11c.
+* Provider rate-limit wiring and owner-loss recovery remain Target.
 * All prior Current interfaces remain **Current**.
 
 * ADR Interface Status row #22 "AgentDesk WorkflowOrchestrator"
@@ -6664,6 +6671,77 @@ Interface #22 remains Target; TC-13.19 and TC-13.20 statuses are unchanged.
 * WorkflowOrchestrator Interface #22 and TC-13.20 remain Target.
 * Completed TC-13.18 subpaths retain their individually recorded Current statuses.
 * All prior Current interfaces remain **Current**.
+
+#### 2.19.15 Dispatch Failure Recovery and Bounded Retry — Frozen Contract (Contract Current — TC-13.18d.11a)
+
+TC-13.18d.11a selects one canonical recovery event:
+`DISPATCH_FAILED`, with exact one-field frozen/slotted
+`DispatchFailedPayload(failure_kind)`. It transitions exactly
+`dispatched|in_progress -> ready`, requires the exact failed
+`TransitionCAS` and `DispatchCAS`, and is applied with `lease=None` only
+after creator-confirmed Worker/heartbeat cleanup and lease release.
+
+`TASK_REQUEUED` remains unchanged at `returned -> ready`; it is not a crash
+recovery event. `DISPATCH_FAILED` clears `current_dispatch`, report/delivery
+artifacts, preserves the failed attempt number and lifecycle timestamps,
+serializes exact `failure_kind` plus non-empty safe `evidence_refs` into the
+immutable state event, produces no outbox or acceptance, and never starts the
+next Worker. The next
+attempt is a separate approval-gated `TASK_DISPATCHED` with a new dispatch id
+and attempt incremented by exactly one.
+
+The public bounded-retry surface is frozen as:
+
+* two-field `DispatchRetryAttempt(dispatch_cycle_request,
+  failure_transition_request)`;
+* one-field `BoundedDispatchRetryRequest(attempts)`;
+* four-field `BoundedDispatchRetryResult(task_id, attempts_started,
+  recovery_transitions, dispatch_cycle_result)`;
+* `run_bounded_dispatch_retry(request, providers)`.
+
+The caller supplies a fully validated tuple of one to three attempts. Tuple
+length is the explicit budget and hard upper bound. All task, revision,
+attempt, dispatch, event, and outbox identities are validated before the
+first side effect. No id is generated and no old dispatch request is cloned.
+
+Fixed order: validate the complete plan; start and await the existing
+creator-owned execution; on an eligible completion failure require Worker
+done, heartbeat done, release complete, and a fresh matching snapshot; apply
+the paired `DISPATCH_FAILED`; then either begin the next distinct attempt or
+re-raise the original final failure when the finite budget is exhausted.
+There is no second finalizer, kill, heartbeat, release, runner, completion
+future, sleep, polling, backoff, or jitter.
+
+Only creator-alive `completion` failures with confirmed cleanup are eligible.
+Cancellation, supersession, outer cancellation, heartbeat fencing, release
+failure, CAS conflict, terminal/advanced state, and stale attempts are never
+converted into retries. A recovery transition exception is primary with the
+original dispatch failure as its cause. Exact duplicate recovery uses the
+existing byte-exact idempotency rule.
+
+Owner-loss/orphan recovery remains Target because the repository has no
+persisted live execution, PID/process-tree receipt, or cleanup authority.
+Lease expiry alone is explicitly insufficient. TC-13.18d.11c is restricted
+to creator-alive failures after a live execution was returned; pre-ACK
+recovery orchestration also remains Target beyond 11c.
+
+Provider rate-limit handling is separate: this contract introduces no
+provider detection, 429/quota text matching, wait, backoff, or jitter. Codex
+runtime, decoding, and rate-limit classification remain deferred pending
+observed evidence.
+
+The complete failure classification, CAS/mutation rules, public signatures,
+fixed order, exception priority, race matrix, exactly-once matrix, and
+production split are authoritative in
+`public-interfaces/workflow-orchestrator-contract.md` §16.
+
+Production split:
+
+| Card | Scope | Status |
+|---|---|---|
+| TC-13.18d.11a | Frozen recovery / bounded retry contract | **Contract Current** |
+| TC-13.18d.11b | `DispatchFailedPayload` + `DISPATCH_FAILED` production | **Runtime Target** |
+| TC-13.18d.11c | Creator-alive bounded retry orchestration | **Runtime Target** |
 
 ---
 
