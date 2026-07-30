@@ -6661,7 +6661,8 @@ Interface #22 remains Target; TC-13.19 and TC-13.20 statuses are unchanged.
 * **Dispatch failure recovery and bounded retry** is Contract Current —
   TC-13.18d.11a; the canonical transition is Current — TC-13.18d.11b and
   creator-alive bounded retry is Current — TC-13.18d.11c.
-* Provider rate-limit wiring and owner-loss recovery remain Target.
+* Provider rate-limit wiring and owner-loss automatic retry remain Target;
+  owner-loss transition-only recovery is Current (TC-13.18d.12c).
 * All prior Current interfaces remain **Current**.
 
 * ADR Interface Status row #22 "AgentDesk WorkflowOrchestrator"
@@ -7634,6 +7635,11 @@ frozen; production deferred to TC-13.18d.12c); owner-loss recovery
 runtime continues Target — TC-13.18d.12c; Interface #22
 Target.  This card flips no Current status beyond pre2.2/pre2.2.1
 and 12b.
+
+TC-13.18d.12c follow-up: owner-loss transition-only recovery is now
+**Current**. Automatic retry remains **Target — TC-13.18d.12c.1** because
+durable evidence cannot yet distinguish retry-not-started from retry-started.
+Interface #22 remains **Target**.
 
 ---
 

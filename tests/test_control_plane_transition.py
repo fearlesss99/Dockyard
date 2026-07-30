@@ -86,17 +86,19 @@ class TestControlPlaneTransitionBase(unittest.TestCase):
 
 
 class TestAllSymbols(TestControlPlaneTransitionBase):
-    """TC-13.18d.11b: __all__ must contain exactly 33 symbols."""
+    """TC-13.18d.12c: __all__ contains the narrow owner-loss entry."""
 
-    def test_001_all_length_is_33(self) -> None:
+    def test_001_all_length_is_35(self) -> None:
         self.assertEqual(
-            len(self.cpt.__all__), 33,
-            f"__all__ must have exactly 33 symbols, got {len(self.cpt.__all__)}",
+            len(self.cpt.__all__), 35,
+            f"__all__ must have exactly 35 symbols, got {len(self.cpt.__all__)}",
         )
 
     def test_002_all_frozen_order_matches_spec(self) -> None:
         expected = [
             "ControlPlaneTransitionService",
+            "OwnerLossTransitionCheck",
+            "apply_owner_loss_recovery_transition",
             "TransitionCAS",
             "DispatchCAS",
             "TransitionRequest",
@@ -4802,7 +4804,7 @@ class TestTransitionReadyToDispatched(TestControlPlaneTransitionBase):
         import sys as _sys
         with _temporary_scripts_path():
             from dispatcher_gateway import ModelSelectionSnapshot
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         tmpdir, root, head, svc, task = self._harness._setup_project(
             self.cpt, task_state="ready", task_id="TC-001", revision=1,
             attempt=None,
@@ -4868,7 +4870,7 @@ class TestTransitionReadyToDispatched(TestControlPlaneTransitionBase):
             _sys2.path.insert(0, _scripts2)
         try:
             from dispatcher_gateway import ModelSelectionSnapshot
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         finally:
             if _scripts2 in _sys2.path:
                 _sys2.path.remove(_scripts2)
@@ -5581,7 +5583,7 @@ class TestDeliveryReturned(TestControlPlaneTransitionBase):
         import sys as _sys
 
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         tmpdir, root, head, svc, task = self._harness._setup_project(
             self.cpt, task_state="review_ready", task_id="TC-001", revision=1,
             attempt=1,
@@ -6854,7 +6856,7 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
         """Failure at outbox write — event exists, outbox not,
         tasks.yaml unchanged, no temp residue."""
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
             from dispatcher_gateway import ModelSelectionSnapshot
 
         tmpdir = tempfile.TemporaryDirectory()
@@ -6987,7 +6989,7 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
         """Failure at acceptance write (DELIVERY_ACCEPTED path) —
         event exists, acceptance not, tasks.yaml unchanged, no temp residue."""
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
             from dispatcher_gateway import ModelSelectionSnapshot
 
         tmpdir = tempfile.TemporaryDirectory()
@@ -7244,7 +7246,7 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
         """Failure at tasks.yaml write — prior canonical evidence written,
         tasks.yaml bytes unchanged, no temp residue."""
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
             from dispatcher_gateway import ModelSelectionSnapshot
 
         tmpdir = tempfile.TemporaryDirectory()
@@ -7474,7 +7476,7 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
         """Dispatch path write order:
         event → outbox → tasks.yaml → BOARD.md → STATUS.md."""
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
             from dispatcher_gateway import ModelSelectionSnapshot
 
         tmpdir = tempfile.TemporaryDirectory()
@@ -7593,7 +7595,7 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
         """Delivery Accepted path write order:
         event → acceptance → tasks.yaml → BOARD.md → STATUS.md."""
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
             from dispatcher_gateway import ModelSelectionSnapshot
 
         tmpdir = tempfile.TemporaryDirectory()
@@ -7877,7 +7879,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         import sys as _sys
 
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         tmpdir = tempfile.TemporaryDirectory()
         try:
             root = Path(tmpdir.name)
@@ -8283,7 +8285,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         import json as _json
         import sys as _sys
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         tmpdir = tempfile.TemporaryDirectory()
         try:
             root = Path(tmpdir.name)
@@ -8333,7 +8335,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         import json as _json
         import sys as _sys
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         tmpdir = tempfile.TemporaryDirectory()
         try:
             root = Path(tmpdir.name)
@@ -8380,7 +8382,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         import json as _json
         import sys as _sys
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         tmpdir = tempfile.TemporaryDirectory()
         try:
             root = Path(tmpdir.name)
@@ -8427,7 +8429,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         import json as _json
         import sys as _sys
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         tmpdir = tempfile.TemporaryDirectory()
         try:
             root = Path(tmpdir.name)
@@ -8483,7 +8485,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
         import json as _json
         import sys as _sys
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         tmpdir = tempfile.TemporaryDirectory()
         try:
             root = Path(tmpdir.name)
@@ -9258,7 +9260,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
     def _make_acceptance_lease(self, root: Path):
         import sys as _sys
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         return WorkerSlotLease(
             lease_id="WSL-" + "a" * 32, lease_epoch=1,
             slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
@@ -9416,7 +9418,7 @@ class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
         import tempfile as _tf
         with _temporary_scripts_path():
             from dispatcher_gateway import ModelSelectionSnapshot
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         harness = _TransitionTestHarness()
         tmpdir, root, head, svc, task = harness._setup_project(
             self.cpt, task_state="ready", task_id="TC-001", revision=1,
@@ -9425,7 +9427,7 @@ class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
         )
         with _temporary_scripts_path():
             from dispatcher_gateway import ModelSelectionSnapshot
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         try:
             ms = ModelSelectionSnapshot.from_mapping({
                 "required_model_tier": "standard",
@@ -9547,7 +9549,7 @@ class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
         import sys as _sys
         with _temporary_scripts_path():
             from dispatcher_gateway import ModelSelectionSnapshot
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         harness = _TransitionTestHarness()
         tmpdir, root, head, svc, task = harness._setup_project(
             self.cpt, task_state="ready", task_id="TC-997", revision=1,
@@ -9663,7 +9665,7 @@ class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
         import sys as _sys
         with _temporary_scripts_path():
             from dispatcher_gateway import ModelSelectionSnapshot
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         harness = _TransitionTestHarness()
         tmpdir, root, head, svc, task = harness._setup_project(
             self.cpt, task_state="ready", task_id="TC-001", revision=1,
@@ -9868,7 +9870,7 @@ class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
         import sys as _sys
         with _temporary_scripts_path():
             from dispatcher_gateway import ModelSelectionSnapshot
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         harness = _TransitionTestHarness()
         tmpdir, root, head, svc, task = harness._setup_project(
             self.cpt, task_state="ready", task_id="TC-001", revision=1,
@@ -9965,7 +9967,7 @@ class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
         import sys as _sys
         with _temporary_scripts_path():
             from dispatcher_gateway import ModelSelectionSnapshot
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         harness = _TransitionTestHarness()
         tmpdir, root, head, svc, task = harness._setup_project(
             self.cpt, task_state="ready", task_id="TC-001", revision=1,
@@ -10092,7 +10094,7 @@ class TestApprovalGateIntegration(TestControlPlaneTransitionBase):
         """After revoking grant, replay succeeds but new transition is rejected."""
         with _temporary_scripts_path():
             from dispatcher_gateway import ModelSelectionSnapshot
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
             from approval_gate import write_grant, write_revoke, ApprovalScope
             from approval_gate import ApprovalSubject as _AS
 
@@ -10412,7 +10414,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
 
     def _make_lease(self, dispatch_id="DSP-GT"):
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         return WorkerSlotLease(
             lease_id="WSL-" + "0" * 32, lease_epoch=1,
             slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
@@ -10436,7 +10438,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                             for n in (1, 2)},
             "leases": {
                 "basic_agent-1": {
-                    "lease_id": "WSL-" + "0" * 32, "lease_epoch": 1,
+                    "lease_id": "WSL-" + "0" * 32, "lease_epoch": 3,
                     "slot_id": "basic_agent-1", "worker_kind": "basic_agent",
                     "holder_dispatch_id": dispatch_id,
                     "holder_instance_id": "worker-inst-1",
@@ -10696,7 +10698,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 ApprovalSubject, ApprovalScope, ApprovalCheckRequest,
                 write_grant as _wg_jc,
             )
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
 
         dispatch_id = "DSP-CHAIN"
         task_id = "TC-600"
@@ -11830,7 +11832,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
             _jda_sys.path[:] = _before_da
 
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
 
         dispatch_id = "DSP-CLEAR"
         task_id = "TC-603"  # must match ^TC-[0-9]{3,}$
@@ -12553,7 +12555,7 @@ class TestTASK_DISPATCHEDFailureAndReplay(TestControlPlaneTransitionBase):
 
     def _make_lease(self, did="DSP-FR"):
         with _temporary_scripts_path():
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         return WorkerSlotLease(
             lease_id="WSL-" + "0" * 32, lease_epoch=1,
             slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
@@ -12577,7 +12579,7 @@ class TestTASK_DISPATCHEDFailureAndReplay(TestControlPlaneTransitionBase):
                             for n in (1, 2)},
             "leases": {
                 "basic_agent-1": {
-                    "lease_id": "WSL-" + "0" * 32, "lease_epoch": 1,
+                    "lease_id": "WSL-" + "0" * 32, "lease_epoch": 3,
                     "slot_id": "basic_agent-1", "worker_kind": "basic_agent",
                     "holder_dispatch_id": did,
                     "holder_instance_id": "worker-inst-1",
@@ -12799,7 +12801,7 @@ class TestGateInStateLockRealChain(TestControlPlaneTransitionBase):
                 _sl.path.insert(0, _scripts_sl)
             import approval_gate as _ag_sl
             from dispatcher_gateway import ModelSelectionSnapshot
-            from worker_slot_lease import WorkerSlotLease, WorkerKind
+            from worker_slot_lease import WorkerSlotLease, WorkerKind, WorkerKind
         finally:
             _sl.path[:] = _before_sl
 
@@ -13787,6 +13789,1113 @@ class TestDispatchFailedTransition(TestControlPlaneTransitionBase):
             )
         finally:
             tmpdir.cleanup()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TC-13.18d.12c — Owner-loss atomic transition entry point
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TC1318d12cOwnerLossTransitionCheckTests(unittest.TestCase):
+    """OwnerLossTransitionCheck — frozen/slots, 15 fields, validation."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.cpt = _cpt_module
+        cls._dispatch_failure_kinds = frozenset({
+            "dispatch_start_failed",
+            "worker_failed",
+            "worker_output_failed",
+            "delivery_transition_failed",
+        })
+
+    def test_01_check_has_exactly_15_fields(self) -> None:
+        fields = self.cpt.OwnerLossTransitionCheck.__dataclass_fields__
+        self.assertEqual(len(fields), 15)
+
+    def test_02_check_frozen_slots(self) -> None:
+        params = self.cpt.OwnerLossTransitionCheck.__dataclass_params__
+        self.assertTrue(params.frozen)
+        self.assertTrue(params.slots)
+
+    def test_03_check_no_any_dict_or_callable(self) -> None:
+        OK = self.cpt.OwnerLossTransitionCheck
+        for name, field in OK.__dataclass_fields__.items():
+            type_str = str(field.type)
+            self.assertNotIn("Any", type_str)
+            self.assertNotIn("dict", type_str)
+            self.assertNotIn("Callable", type_str)
+
+    def test_04_check_rejects_invalid_from_state(self) -> None:
+        with self.assertRaises((ValueError, TypeError)):
+            self.cpt.OwnerLossTransitionCheck(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_attempt=1,
+                expected_dispatch_id="DSP-001",
+                expected_generation_id="GEN-001",
+                expected_from_state="wrong",
+                receipt_present=True,
+                receipt_phase="WORKER_STARTED",
+                receipt_generation_id="GEN-001",
+                tombstone_present=False,
+                tombstone_winner=None,
+                process_liveness="dead",
+                recovery_event_id="EVT-001",
+                failure_kind="worker_failed",
+                evidence_refs=("ref-1",),
+            )
+
+    def test_05_check_rejects_invalid_liveness(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.OwnerLossTransitionCheck(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_attempt=1,
+                expected_dispatch_id="DSP-001",
+                expected_generation_id="GEN-001",
+                expected_from_state="dispatched",
+                receipt_present=True,
+                receipt_phase="WORKER_STARTED",
+                receipt_generation_id="GEN-001",
+                tombstone_present=False,
+                tombstone_winner=None,
+                process_liveness="bogus",
+                recovery_event_id="EVT-001",
+                failure_kind="worker_failed",
+                evidence_refs=("ref-1",),
+            )
+
+    def test_06_check_rejects_empty_evidence_refs(self) -> None:
+        with self.assertRaises(ValueError):
+            self.cpt.OwnerLossTransitionCheck(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_attempt=1,
+                expected_dispatch_id="DSP-001",
+                expected_generation_id="GEN-001",
+                expected_from_state="dispatched",
+                receipt_present=True,
+                receipt_phase="WORKER_STARTED",
+                receipt_generation_id="GEN-001",
+                tombstone_present=False,
+                tombstone_winner=None,
+                process_liveness="dead",
+                recovery_event_id="EVT-001",
+                failure_kind="worker_failed",
+                evidence_refs=(),
+            )
+
+    def test_07_check_rejects_invalid_failure_kind(self) -> None:
+        with self.assertRaises((ValueError, TypeError)):
+            self.cpt.OwnerLossTransitionCheck(
+                task_id="TC-001",
+                expected_revision=1,
+                expected_attempt=1,
+                expected_dispatch_id="DSP-001",
+                expected_generation_id="GEN-001",
+                expected_from_state="dispatched",
+                receipt_present=True,
+                receipt_phase="WORKER_STARTED",
+                receipt_generation_id="GEN-001",
+                tombstone_present=False,
+                tombstone_winner=None,
+                process_liveness="dead",
+                recovery_event_id="EVT-001",
+                failure_kind="bogus_kind",
+                evidence_refs=("ref-1",),
+            )
+
+
+class TC1318d12cAtomicOwnerLossTransitionTests(unittest.TestCase):
+    """apply_owner_loss_recovery_transition — atomic lock, second-check,
+    dispatch identity fencing, replay, concurrency."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.cpt = _cpt_module
+
+    def setUp(self) -> None:
+        import sys
+        self.tmpdir = tempfile.TemporaryDirectory(prefix="cpt-ownerloss-")
+        self._scripts_path = str(_SKILL_SCRIPTS)
+        self._added_scripts_path = self._scripts_path not in sys.path
+        if self._added_scripts_path:
+            sys.path.insert(0, self._scripts_path)
+        import dispatch_supervisor_evidence as _owner_dse
+        from types import SimpleNamespace
+
+        self._owner_dse = _owner_dse
+        self._evidence_patchers = (
+            mock.patch.object(
+                _owner_dse,
+                "read_dispatch_receipt",
+                return_value=SimpleNamespace(
+                    task_id="TC-001",
+                    revision=1,
+                    attempt=1,
+                    dispatch_id="DSP-001",
+                    generation_id="GEN-001",
+                    phase="WORKER_STARTED",
+                    creator_pid=999999,
+                    creator_creation_time="dead",
+                    boot_id="boot",
+                ),
+            ),
+            mock.patch.object(
+                _owner_dse,
+                "read_dispatch_tombstone",
+                return_value=None,
+            ),
+            mock.patch.object(
+                _owner_dse,
+                "probe_process",
+                return_value=_owner_dse.ProcessLiveness.DEAD,
+            ),
+            mock.patch.object(
+                _owner_dse,
+                "probe_dispatch_process_tree",
+                return_value=_owner_dse.ProcessLiveness.DEAD,
+            ),
+        )
+        for patcher in self._evidence_patchers:
+            patcher.start()
+
+    def tearDown(self) -> None:
+        import sys
+        for patcher in reversed(self._evidence_patchers):
+            patcher.stop()
+        if self._added_scripts_path and self._scripts_path in sys.path:
+            sys.path.remove(self._scripts_path)
+        self.tmpdir.cleanup()
+
+    def _bootstrap_dispatched(
+        self,
+        root: Path,
+        task_id: str = "TC-001",
+        revision: int = 1,
+        attempt: int = 1,
+        dispatch_id: str = "DSP-001",
+        state: str = "dispatched",
+    ) -> object:
+        """Bootstrap a project with a task in dispatched state.
+        Returns the model_selection used.
+        """
+        import json as _bdj
+        import subprocess as _bds
+
+        # Init git repo.
+        _bds.run(
+            ["git", "-C", str(root), "init", "-q"],
+            check=True, timeout=10, capture_output=True,
+        )
+        _bds.run(
+            ["git", "-C", str(root), "config", "user.email", "test@test"],
+            check=True, timeout=10, capture_output=True,
+        )
+        _bds.run(
+            ["git", "-C", str(root), "config", "user.name", "Test"],
+            check=True, timeout=10, capture_output=True,
+        )
+
+        # Create canonical dirs.
+        for d in (
+            "docs/pm/state", "docs/pm/events", "docs/pm/outbox",
+            "docs/pm/acceptances", "docs/pm/approvals", "docs/pm/tasks",
+            ".agentdesk/runtime",
+        ):
+            (root / d.replace("/", os.sep)).mkdir(parents=True, exist_ok=True)
+
+        # Write task card.
+        tc = root / "docs" / "pm" / "tasks" / f"{task_id}.md"
+        tc.write_text(
+            "---\n"
+            "type: implementation\n"
+            "role_id: worker-basic\n"
+            "base_commit: " + "a" * 40 + "\n"
+            "owner_approval:\n"
+            "  gate: none\n"
+            "  approval_ids: []\n"
+            "---\n\n# Task Card\n",
+            encoding="utf-8",
+        )
+
+        # Write tasks state.
+        tasks_path = root / "docs" / "pm" / "state" / "tasks.yaml"
+        tasks = {
+            "schema_version": "agentdesk.tasks/v2",
+            "project_id": "TEST-PROJ",
+            "pm_control": {
+                "holder_id": "pm-holder",
+                "lease_epoch": 0,
+                "mode": "owner-loss-test",
+            },
+            "tasks": [
+                {
+                    "task_id": task_id,
+                    "revision": revision,
+                    "attempt": None,
+                    "state": "ready",
+                    "current_dispatch": None,
+                    "task_card_path": "docs/pm/tasks/TC-001.md",
+                    "task_card_commit": "0" * 40,
+                    "report_path": None,
+                    "timestamps": {
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:00:00Z",
+                    },
+                },
+            ],
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        _bds.run(["git", "-C", str(root), "add", "-A"],
+                 check=True, timeout=10, capture_output=True)
+        _bds.run(["git", "-C", str(root), "commit", "-m", "init"],
+                 check=True, timeout=10, capture_output=True)
+        head_r = _bds.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        head = head_r.stdout.strip()
+
+        # Update tasks.yaml with the correct snapshot commit.
+        tasks_path.write_text(_bdj.dumps(tasks), encoding="utf-8")
+        _bds.run(["git", "-C", str(root), "add", "-A"],
+                 check=True, timeout=10, capture_output=True)
+        _bds.run(["git", "-C", str(root), "commit", "-m", "tasks"],
+                 check=True, timeout=10, capture_output=True)
+
+        import sys as _bd_sys
+        _bd_saved = list(_bd_sys.path)
+        try:
+            _bd_scripts = str(_SKILL_SCRIPTS)
+            if _bd_scripts not in _bd_sys.path:
+                _bd_sys.path.insert(0, _bd_scripts)
+            from dispatcher_gateway import ModelSelectionSnapshot
+        finally:
+            _bd_sys.path[:] = _bd_saved
+        ms = ModelSelectionSnapshot(
+            required_model_tier="basic",
+            required_model_capabilities=(),
+            model_binding_id="binding-1",
+            selected_model_provider="fake",
+            selected_model_id="fake-model",
+            selected_model_tier="basic",
+            selected_deliberation_tier="basic",
+            selected_context_window_tokens=100000,
+            selected_model_capabilities=(),
+            model_degradation_approval_id=None,
+        )
+
+        # Write lease store for the worker slot fence.
+        import json as _slj2
+        rtdir = root / ".agentdesk" / "runtime"
+        (rtdir / "worker-slot-lease.yaml").write_text(_slj2.dumps({
+            "schema_version": "agentdesk.worker-slot-lease/v1",
+            "updated_at": "1970-01-01T00:00:00Z",
+            "slot_epochs": {f"{t}_agent-{n}": (3 if t == "basic" and n == 1 else 0)
+                            for t in ("basic", "standard", "advanced", "expert")
+                            for n in (1, 2)},
+            "leases": {
+                "basic_agent-1": {
+                    "lease_id": "WSL-" + "0" * 32, "lease_epoch": 3,
+                    "slot_id": "basic_agent-1", "worker_kind": "basic_agent",
+                    "holder_dispatch_id": dispatch_id,
+                    "holder_instance_id": "inst-1",
+                    "canonical_worktree": str(root).replace("\\", "/"),
+                    "acquired_at": "2026-07-30T00:00:00Z",
+                    "heartbeat_at": "2026-07-30T00:00:01Z",
+                    "expires_at": "2026-08-30T10:00:00Z",
+                },
+            },
+        }, ensure_ascii=False), encoding="utf-8")
+
+        # Write approval grant for TASK_DISPATCHED.
+        adir = root / "docs" / "pm" / "approvals"
+        adir.mkdir(parents=True, exist_ok=True)
+        (adir / "EVT-20260730-GT-TASK_DISPATCHED.yaml").write_text(
+            _slj2.dumps({
+                "schema_version": "agentdesk.task-approval/v1",
+                "record_type": "grant", "approval_id": "APR-GT-TASK_DISPATCHED",
+                "event_id": "EVT-20260730-GT-TASK_DISPATCHED",
+                "scope": "dispatch", "task_id": task_id, "revision": revision,
+                "attempt": attempt, "dispatch_id": dispatch_id,
+                "accepted_commit": None,
+                "actor_role_id": "PM", "lease_epoch": 1,
+                "granted_at": "2026-07-30T00:00:00Z", "expires_at": None,
+                "reason": "Test", "snapshot_commit": head,
+            }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+        )
+        _bds.run(["git", "-C", str(root), "add", "-A"],
+                 check=True, timeout=10, capture_output=True)
+        _bds.run(["git", "-C", str(root), "commit", "-m", "setup"],
+                 check=True, timeout=10, capture_output=True)
+        head2_r = _bds.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        head2 = head2_r.stdout.strip()
+
+        svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+        import sys as _wsl_sys
+        _wsl_saved = list(_wsl_sys.path)
+        try:
+            _wsl_scripts = str(_SKILL_SCRIPTS)
+            if _wsl_scripts not in _wsl_sys.path:
+                _wsl_sys.path.insert(0, _wsl_scripts)
+            from worker_slot_lease import WorkerSlotLease, WorkerKind
+        finally:
+            _wsl_sys.path[:] = _wsl_saved
+        lease = WorkerSlotLease(
+            lease_id="WSL-" + "0" * 32, lease_epoch=3,
+            slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
+            holder_dispatch_id=dispatch_id,
+            holder_instance_id="inst-1",
+            canonical_worktree=str(root).replace("\\", "/"),
+            acquired_at="2026-07-30T00:00:00Z",
+            heartbeat_at="2026-07-30T00:00:01Z",
+            expires_at="2026-08-30T10:00:00Z",
+        )
+
+        context = self.cpt.TransitionEventContext(
+            source_message_id=None,
+            evidence_refs=("ref-init",),
+            guard_results=(),
+        )
+        cas = self.cpt.TransitionCAS(
+            task_id=task_id,
+            expected_revision=revision,
+            expected_state="ready",
+            expected_snapshot_commit=head2,
+        )
+        payload = self.cpt.DispatchPayload(
+            dispatch_id=dispatch_id,
+            role_id="worker-basic",
+            model_selection=ms,
+            task_card_path="docs/pm/tasks/TC-001.md",
+            task_card_commit="0" * 40,
+            base_commit="0" * 40,
+            branch="main",
+            report_path="docs/pm/reports/TC-001-r1-a1.md",
+            outbox_message_id="MSG-20260730-DISPATCH",
+            new_attempt=attempt,
+        )
+        dispatch_req = self.cpt.TransitionRequest(
+            cas=cas, dispatch_cas=None,
+            event_id="EVT-20260730-DISPATCH",
+            event_type="TASK_DISPATCHED",
+            payload=payload, event_context=context,
+        )
+        svc.apply_transition(
+            dispatch_req, lease, datetime(2026, 7, 30, 0, 0, 1, tzinfo=UTC)
+        )
+
+        if state == "in_progress":
+            ack_context = self.cpt.TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=("ref-ack",),
+                guard_results=(),
+            )
+            ack_cas = self.cpt.TransitionCAS(
+                task_id=task_id, expected_revision=revision,
+                expected_state="dispatched", expected_snapshot_commit=head2,
+            )
+            ack_dcas = self.cpt.DispatchCAS(
+                expected_dispatch_id=dispatch_id, expected_attempt=attempt,
+            )
+            ack_req = self.cpt.TransitionRequest(
+                cas=ack_cas, dispatch_cas=ack_dcas,
+                event_id="EVT-20260730-ACK",
+                event_type="DISPATCH_ACKNOWLEDGED",
+                payload=self.cpt.AcknowledgePayload(),
+                event_context=ack_context,
+            )
+            svc.apply_transition(
+                ack_req, lease, datetime(2026, 7, 30, 0, 0, 2, tzinfo=UTC)
+            )
+
+        return ms
+
+    # ── Basic DEAD recovery works ────────────────────────────────────
+
+    def test_dead_from_dispatched_writes_dispatch_failed(self) -> None:
+        root = Path(self.tmpdir.name)
+        self._bootstrap_dispatched(root, state="dispatched")
+
+        now = datetime(2026, 7, 30, 0, 0, 0, tzinfo=UTC)
+        head_r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        head = head_r.stdout.strip()
+
+        check = self.cpt.OwnerLossTransitionCheck(
+            task_id="TC-001",
+            expected_revision=1,
+            expected_attempt=1,
+            expected_dispatch_id="DSP-001",
+            expected_generation_id="GEN-001",
+            expected_from_state="dispatched",
+            receipt_present=True,
+            receipt_phase="WORKER_STARTED",
+            receipt_generation_id="GEN-001",
+            tombstone_present=False,
+            tombstone_winner=None,
+            process_liveness="dead",
+            recovery_event_id="EVT-20260730-OL-RECOVERY",
+            failure_kind="worker_failed",
+            evidence_refs=("dse-receipt", "process-probe"),
+        )
+
+        context = self.cpt.TransitionEventContext(
+            source_message_id=None,
+            evidence_refs=("dse-receipt", "process-probe"),
+            guard_results=(),
+        )
+        cas = self.cpt.TransitionCAS(
+            task_id="TC-001",
+            expected_revision=1,
+            expected_state="dispatched",
+            expected_snapshot_commit=head,
+        )
+        dcas = self.cpt.DispatchCAS(
+            expected_dispatch_id="DSP-001",
+            expected_attempt=1,
+        )
+        payload = self.cpt.DispatchFailedPayload(failure_kind="worker_failed")
+        treq = self.cpt.TransitionRequest(
+            cas=cas, dispatch_cas=dcas,
+            event_id="EVT-20260730-OL-RECOVERY",
+            event_type="DISPATCH_FAILED",
+            payload=payload, event_context=context,
+        )
+
+        svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+        result = self.cpt.apply_owner_loss_recovery_transition(
+            svc, treq, check, now
+        )
+        self.assertEqual(result.task_id, "TC-001")
+        self.assertEqual(result.to_state, "ready")
+
+        import json as _tj
+        tasks = _tj.loads(
+            (root / "docs" / "pm" / "state" / "tasks.yaml").read_text("utf-8")
+        )
+        task = tasks["tasks"][0]
+        self.assertEqual(task["state"], "ready")
+        self.assertIsNone(task["current_dispatch"])
+        self.assertIsNone(task["report_path"])
+        self.assertIsNone(task.get("delivery_state"))
+
+        self.assertTrue(
+            (root / "docs" / "pm" / "events" / "EVT-20260730-OL-RECOVERY.yaml")
+            .exists()
+        )
+
+    def test_dead_from_in_progress_writes_dispatch_failed(self) -> None:
+        root = Path(self.tmpdir.name)
+        self._bootstrap_dispatched(root, state="in_progress")
+
+        head_r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        head = head_r.stdout.strip()
+
+        check = self.cpt.OwnerLossTransitionCheck(
+            task_id="TC-001",
+            expected_revision=1,
+            expected_attempt=1,
+            expected_dispatch_id="DSP-001",
+            expected_generation_id="GEN-001",
+            expected_from_state="in_progress",
+            receipt_present=True,
+            receipt_phase="WORKER_STARTED",
+            receipt_generation_id="GEN-001",
+            tombstone_present=False,
+            tombstone_winner=None,
+            process_liveness="dead",
+            recovery_event_id="EVT-20260730-OL-RECOVERY-INPROGRESS",
+            failure_kind="delivery_transition_failed",
+            evidence_refs=("ref-1",),
+        )
+
+        context = self.cpt.TransitionEventContext(
+            source_message_id=None, evidence_refs=("ref-1",), guard_results=(),
+        )
+        cas = self.cpt.TransitionCAS(
+            task_id="TC-001", expected_revision=1,
+            expected_state="in_progress", expected_snapshot_commit=head,
+        )
+        dcas = self.cpt.DispatchCAS(
+            expected_dispatch_id="DSP-001", expected_attempt=1,
+        )
+        payload = self.cpt.DispatchFailedPayload(
+            failure_kind="delivery_transition_failed"
+        )
+        treq = self.cpt.TransitionRequest(
+            cas=cas, dispatch_cas=dcas,
+            event_id="EVT-20260730-OL-RECOVERY-INPROGRESS",
+            event_type="DISPATCH_FAILED",
+            payload=payload, event_context=context,
+        )
+
+        svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+        result = self.cpt.apply_owner_loss_recovery_transition(
+            svc, treq, check, datetime(2026, 7, 30, 3, 0, 0, tzinfo=UTC)
+        )
+        self.assertEqual(result.to_state, "ready")
+
+        import json as _tj2
+        tasks = _tj2.loads(
+            (root / "docs" / "pm" / "state" / "tasks.yaml").read_text("utf-8")
+        )
+        self.assertEqual(tasks["tasks"][0]["state"], "ready")
+
+    # ── Replay (idempotent) ──────────────────────────────────────────
+
+    def test_replay_returns_same_result_zero_writes(self) -> None:
+        root = Path(self.tmpdir.name)
+        self._bootstrap_dispatched(root, state="dispatched")
+
+        head_r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        head = head_r.stdout.strip()
+
+        check = self.cpt.OwnerLossTransitionCheck(
+            task_id="TC-001",
+            expected_revision=1,
+            expected_attempt=1,
+            expected_dispatch_id="DSP-001",
+            expected_generation_id="GEN-001",
+            expected_from_state="dispatched",
+            receipt_present=True,
+            receipt_phase="WORKER_STARTED",
+            receipt_generation_id="GEN-001",
+            tombstone_present=False,
+            tombstone_winner=None,
+            process_liveness="dead",
+            recovery_event_id="EVT-20260730-OL-REPLAY",
+            failure_kind="worker_failed",
+            evidence_refs=("ref-1",),
+        )
+
+        context = self.cpt.TransitionEventContext(
+            source_message_id=None, evidence_refs=("ref-1",), guard_results=(),
+        )
+        cas = self.cpt.TransitionCAS(
+            task_id="TC-001", expected_revision=1,
+            expected_state="dispatched", expected_snapshot_commit=head,
+        )
+        dcas = self.cpt.DispatchCAS(
+            expected_dispatch_id="DSP-001", expected_attempt=1,
+        )
+        payload = self.cpt.DispatchFailedPayload(failure_kind="worker_failed")
+        treq = self.cpt.TransitionRequest(
+            cas=cas, dispatch_cas=dcas,
+            event_id="EVT-20260730-OL-REPLAY",
+            event_type="DISPATCH_FAILED",
+            payload=payload, event_context=context,
+        )
+
+        svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+        now = datetime(2026, 7, 30, 0, 0, 0, tzinfo=UTC)
+        r1 = self.cpt.apply_owner_loss_recovery_transition(svc, treq, check, now)
+        # Replay: task is now at 'ready', not 'dispatched'. The second
+        # call will return the idempotent result from
+        # _execute_transition_core's _check_idempotency_and_duplicates path.
+        r2 = self.cpt.apply_owner_loss_recovery_transition(svc, treq, check, now)
+        self.assertEqual(r1.task_id, r2.task_id)
+        self.assertEqual(r1.event_id, r2.event_id)
+        self.assertEqual(r1.to_state, r2.to_state)
+
+    # ── CAS conflict (stale attempt) ─────────────────────────────────
+
+    def test_cas_conflict_on_stale_attempt(self) -> None:
+        root = Path(self.tmpdir.name)
+        self._bootstrap_dispatched(root, state="dispatched")
+
+        head_r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        head = head_r.stdout.strip()
+
+        check = self.cpt.OwnerLossTransitionCheck(
+            task_id="TC-001",
+            expected_revision=1,
+            expected_attempt=999,  # wrong
+            expected_dispatch_id="DSP-001",
+            expected_generation_id="GEN-001",
+            expected_from_state="dispatched",
+            receipt_present=True,
+            receipt_phase="WORKER_STARTED",
+            receipt_generation_id="GEN-001",
+            tombstone_present=False,
+            tombstone_winner=None,
+            process_liveness="dead",
+            recovery_event_id="EVT-20260730-OL-STALE",
+            failure_kind="worker_failed",
+            evidence_refs=("ref-1",),
+        )
+
+        context = self.cpt.TransitionEventContext(
+            source_message_id=None, evidence_refs=("ref-1",), guard_results=(),
+        )
+        cas = self.cpt.TransitionCAS(
+            task_id="TC-001", expected_revision=1,
+            expected_state="dispatched", expected_snapshot_commit=head,
+        )
+        dcas = self.cpt.DispatchCAS(
+            expected_dispatch_id="DSP-001", expected_attempt=1,
+        )
+        payload = self.cpt.DispatchFailedPayload(failure_kind="worker_failed")
+        treq = self.cpt.TransitionRequest(
+            cas=cas, dispatch_cas=dcas,
+            event_id="EVT-20260730-OL-STALE",
+            event_type="DISPATCH_FAILED",
+            payload=payload, event_context=context,
+        )
+
+        svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+        with self.assertRaises(self.cpt.TransitionCASConflictError):
+            self.cpt.apply_owner_loss_recovery_transition(
+                svc, treq, check, datetime(2026, 7, 30, 0, 0, 0, tzinfo=UTC)
+            )
+
+        import json as _tj3
+        tasks = _tj3.loads(
+            (root / "docs" / "pm" / "state" / "tasks.yaml").read_text("utf-8")
+        )
+        self.assertEqual(tasks["tasks"][0]["state"], "dispatched")
+
+    # ── Dispatch identity mismatch ───────────────────────────────────
+
+    def test_cas_conflict_on_dispatch_id_mismatch(self) -> None:
+        root = Path(self.tmpdir.name)
+        self._bootstrap_dispatched(root, state="dispatched")
+
+        head_r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        head = head_r.stdout.strip()
+
+        check = self.cpt.OwnerLossTransitionCheck(
+            task_id="TC-001",
+            expected_revision=1,
+            expected_attempt=1,
+            expected_dispatch_id="DSP-WRONG",
+            expected_generation_id="GEN-001",
+            expected_from_state="dispatched",
+            receipt_present=True,
+            receipt_phase="WORKER_STARTED",
+            receipt_generation_id="GEN-001",
+            tombstone_present=False,
+            tombstone_winner=None,
+            process_liveness="dead",
+            recovery_event_id="EVT-20260730-OL-WRONGID",
+            failure_kind="worker_failed",
+            evidence_refs=("ref-1",),
+        )
+
+        context = self.cpt.TransitionEventContext(
+            source_message_id=None, evidence_refs=("ref-1",), guard_results=(),
+        )
+        cas = self.cpt.TransitionCAS(
+            task_id="TC-001", expected_revision=1,
+            expected_state="dispatched", expected_snapshot_commit=head,
+        )
+        dcas = self.cpt.DispatchCAS(
+            expected_dispatch_id="DSP-001", expected_attempt=1,
+        )
+        payload = self.cpt.DispatchFailedPayload(failure_kind="worker_failed")
+        treq = self.cpt.TransitionRequest(
+            cas=cas, dispatch_cas=dcas,
+            event_id="EVT-20260730-OL-WRONGID",
+            event_type="DISPATCH_FAILED",
+            payload=payload, event_context=context,
+        )
+
+        svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+        with self.assertRaises(self.cpt.TransitionCASConflictError):
+            self.cpt.apply_owner_loss_recovery_transition(
+                svc, treq, check, datetime(2026, 7, 30, 0, 0, 0, tzinfo=UTC)
+            )
+
+    # ── Only DISPATCH_FAILED accepted ─────────────────────────────────
+
+    def test_rejects_non_dispatch_failed_event_type(self) -> None:
+        root = Path(self.tmpdir.name)
+        self._bootstrap_dispatched(root, state="dispatched")
+
+        head_r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        head = head_r.stdout.strip()
+
+        check = self.cpt.OwnerLossTransitionCheck(
+            task_id="TC-001",
+            expected_revision=1,
+            expected_attempt=1,
+            expected_dispatch_id="DSP-001",
+            expected_generation_id="GEN-001",
+            expected_from_state="dispatched",
+            receipt_present=True,
+            receipt_phase="WORKER_STARTED",
+            receipt_generation_id="GEN-001",
+            tombstone_present=False,
+            tombstone_winner=None,
+            process_liveness="dead",
+            recovery_event_id="EVT-001",
+            failure_kind="worker_failed",
+            evidence_refs=("ref-1",),
+        )
+
+        context = self.cpt.TransitionEventContext(
+            source_message_id=None, evidence_refs=("ref-1",), guard_results=(),
+        )
+        cas = self.cpt.TransitionCAS(
+            task_id="TC-001", expected_revision=1,
+            expected_state="dispatched", expected_snapshot_commit=head,
+        )
+        treq = self.cpt.TransitionRequest(
+            cas=cas, dispatch_cas=None,
+            event_id="EVT-20260730-OL-BADEVENT",
+            event_type="TASK_CANCELLED",
+            payload=self.cpt.CancelledPayload(),
+            event_context=context,
+        )
+
+        svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+        with self.assertRaises(self.cpt.TransitionValidationError):
+            self.cpt.apply_owner_loss_recovery_transition(
+                svc, treq, check, datetime(2026, 7, 30, 0, 0, 0, tzinfo=UTC)
+            )
+
+    # ── Second-check: task state mismatch ─────────────────────────────
+
+    def test_second_check_state_mismatch_fails(self) -> None:
+        root = Path(self.tmpdir.name)
+        self._bootstrap_dispatched(root, state="in_progress")
+
+        head_r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        head = head_r.stdout.strip()
+
+        check = self.cpt.OwnerLossTransitionCheck(
+            task_id="TC-001",
+            expected_revision=1,
+            expected_attempt=1,
+            expected_dispatch_id="DSP-001",
+            expected_generation_id="GEN-001",
+            expected_from_state="dispatched",  # wrong — task is in_progress
+            receipt_present=True,
+            receipt_phase="WORKER_STARTED",
+            receipt_generation_id="GEN-001",
+            tombstone_present=False,
+            tombstone_winner=None,
+            process_liveness="dead",
+            recovery_event_id="EVT-20260730-OL-STATE-MISMATCH",
+            failure_kind="worker_failed",
+            evidence_refs=("ref-1",),
+        )
+
+        context = self.cpt.TransitionEventContext(
+            source_message_id=None, evidence_refs=("ref-1",), guard_results=(),
+        )
+        cas = self.cpt.TransitionCAS(
+            task_id="TC-001", expected_revision=1,
+            expected_state="dispatched", expected_snapshot_commit=head,
+        )
+        dcas = self.cpt.DispatchCAS(
+            expected_dispatch_id="DSP-001", expected_attempt=1,
+        )
+        payload = self.cpt.DispatchFailedPayload(failure_kind="worker_failed")
+        treq = self.cpt.TransitionRequest(
+            cas=cas, dispatch_cas=dcas,
+            event_id="EVT-20260730-OL-STATE-MISMATCH",
+            event_type="DISPATCH_FAILED",
+            payload=payload, event_context=context,
+        )
+
+        svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+        with self.assertRaises(self.cpt.TransitionCASConflictError):
+            self.cpt.apply_owner_loss_recovery_transition(
+                svc, treq, check, datetime(2026, 7, 30, 0, 0, 0, tzinfo=UTC)
+            )
+
+    # ── Concurrency: two contestants, one winner ──────────────────────
+
+    def test_concurrent_two_recoverers_one_winner(self) -> None:
+        """Two concurrent owner-loss recovery attempts: only one wins.
+
+        Uses threading.Event to synchronize both threads inside the
+        second-check path.  No sleep-based guessing.
+        """
+        import threading
+
+        root = Path(self.tmpdir.name)
+        self._bootstrap_dispatched(root, state="dispatched")
+
+        head_r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        head = head_r.stdout.strip()
+
+        evt_a = "EVT-20260730-OL-CONC-A"
+        evt_b = "EVT-20260730-OL-CONC-B"
+        ready_event = threading.Event()
+        results: list = [None, None]
+        errors: list = [None, None]
+
+        def _recover(idx: int, event_id: str) -> None:
+            try:
+                check = self.cpt.OwnerLossTransitionCheck(
+                    task_id="TC-001",
+                    expected_revision=1,
+                    expected_attempt=1,
+                    expected_dispatch_id="DSP-001",
+                    expected_generation_id="GEN-001",
+                    expected_from_state="dispatched",
+                    receipt_present=True,
+                    receipt_phase="WORKER_STARTED",
+                    receipt_generation_id="GEN-001",
+                    tombstone_present=False,
+                    tombstone_winner=None,
+                    process_liveness="dead",
+                    recovery_event_id=event_id,
+                    failure_kind="worker_failed",
+                    evidence_refs=("ref-1",),
+                )
+
+                context = self.cpt.TransitionEventContext(
+                    source_message_id=None,
+                    evidence_refs=("ref-1",),
+                    guard_results=(),
+                )
+                cas = self.cpt.TransitionCAS(
+                    task_id="TC-001",
+                    expected_revision=1,
+                    expected_state="dispatched",
+                    expected_snapshot_commit=head,
+                )
+                dcas = self.cpt.DispatchCAS(
+                    expected_dispatch_id="DSP-001",
+                    expected_attempt=1,
+                )
+                payload = self.cpt.DispatchFailedPayload(
+                    failure_kind="worker_failed"
+                )
+                treq = self.cpt.TransitionRequest(
+                    cas=cas, dispatch_cas=dcas,
+                    event_id=event_id,
+                    event_type="DISPATCH_FAILED",
+                    payload=payload,
+                    event_context=context,
+                )
+
+                svc = self.cpt.ControlPlaneTransitionService(
+                    project_root=root
+                )
+                now = datetime(2026, 7, 30, 5, 0, 0, tzinfo=UTC)
+                ready_event.wait(timeout=5.0)
+                r = self.cpt.apply_owner_loss_recovery_transition(
+                    svc, treq, check, now
+                )
+                results[idx] = r
+            except Exception as exc:
+                errors[idx] = exc
+
+        t_a = threading.Thread(target=_recover, args=(0, evt_a), daemon=True)
+        t_b = threading.Thread(target=_recover, args=(1, evt_b), daemon=True)
+
+        t_a.start()
+        t_b.start()
+        ready_event.set()
+
+        t_a.join(timeout=10.0)
+        t_b.join(timeout=10.0)
+
+        winners = [r for r in results if r is not None]
+        losers = [e for e in errors if e is not None]
+
+        self.assertEqual(
+            len(winners), 1,
+            f"Expected 1 winner, got {len(winners)}. "
+            f"Errors: {[type(e).__name__ + ': ' + str(e) for e in losers]}"
+        )
+        self.assertEqual(len(losers), 1)
+
+        loser = losers[0]
+        self.assertTrue(
+            isinstance(
+                loser,
+                (
+                    self.cpt.TransitionLockContentionError,
+                    self.cpt.TransitionCASConflictError,
+                    self.cpt.TransitionDuplicateEvidenceError,
+                ),
+            ),
+            f"Loser error must be lock/CAS/duplicate, got {type(loser).__name__}: {loser}",
+        )
+
+        winner = winners[0]
+        self.assertEqual(winner.task_id, "TC-001")
+        self.assertEqual(winner.to_state, "ready")
+
+    # ── Ordinary apply_transition still works ─────────────────────────
+
+    def test_ordinary_apply_transition_still_works_after_owner_loss(self) -> None:
+        """Prove that ordinary apply_transition() is unchanged."""
+        root = Path(self.tmpdir.name)
+        self._bootstrap_dispatched(root, state="dispatched")
+
+        head_r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        head = head_r.stdout.strip()
+
+        # First: do an owner-loss recovery.
+        check = self.cpt.OwnerLossTransitionCheck(
+            task_id="TC-001",
+            expected_revision=1,
+            expected_attempt=1,
+            expected_dispatch_id="DSP-001",
+            expected_generation_id="GEN-001",
+            expected_from_state="dispatched",
+            receipt_present=True,
+            receipt_phase="WORKER_STARTED",
+            receipt_generation_id="GEN-001",
+            tombstone_present=False,
+            tombstone_winner=None,
+            process_liveness="dead",
+            recovery_event_id="EVT-20260730-OL-REGRESSION",
+            failure_kind="worker_failed",
+            evidence_refs=("ref-1",),
+        )
+        context = self.cpt.TransitionEventContext(
+            source_message_id=None, evidence_refs=("ref-1",), guard_results=(),
+        )
+        cas = self.cpt.TransitionCAS(
+            task_id="TC-001", expected_revision=1,
+            expected_state="dispatched", expected_snapshot_commit=head,
+        )
+        dcas = self.cpt.DispatchCAS(
+            expected_dispatch_id="DSP-001", expected_attempt=1,
+        )
+        payload = self.cpt.DispatchFailedPayload(failure_kind="worker_failed")
+        treq = self.cpt.TransitionRequest(
+            cas=cas, dispatch_cas=dcas,
+            event_id="EVT-20260730-OL-REGRESSION",
+            event_type="DISPATCH_FAILED",
+            payload=payload, event_context=context,
+        )
+        svc = self.cpt.ControlPlaneTransitionService(project_root=root)
+        self.cpt.apply_owner_loss_recovery_transition(
+            svc, treq, check, datetime(2026, 7, 30, 5, 0, 0, tzinfo=UTC)
+        )
+
+        # Task is now ready.  Use ordinary apply_transition to dispatch again.
+        from dispatcher_gateway import ModelSelectionSnapshot
+        from worker_slot_lease import WorkerSlotLease, WorkerKind
+
+        ms2 = ModelSelectionSnapshot(
+            required_model_tier="basic",
+            required_model_capabilities=(),
+            model_binding_id="binding-2",
+            selected_model_provider="fake",
+            selected_model_id="fake-model-2",
+            selected_model_tier="basic",
+            selected_deliberation_tier="basic",
+            selected_context_window_tokens=100000,
+            selected_model_capabilities=(),
+            model_degradation_approval_id=None,
+        )
+
+        new_snap_r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, timeout=10, capture_output=True, text=True,
+        )
+        new_head = new_snap_r.stdout.strip()
+
+        lease = WorkerSlotLease(
+            lease_id="WSL-" + "0" * 32, lease_epoch=3,
+            slot_id="basic_agent-1", worker_kind=WorkerKind.BASIC_AGENT,
+            holder_dispatch_id="DSP-002",
+            holder_instance_id="inst-2",
+            canonical_worktree=str(root).replace("\\", "/"),
+            acquired_at="2026-07-30T06:00:00Z",
+            heartbeat_at="2026-07-30T06:00:01Z",
+            expires_at="2026-08-30T10:00:00Z",
+        )
+        lease_store_path = (
+            root / ".agentdesk" / "runtime" / "worker-slot-lease.yaml"
+        )
+        import json as _owner_json
+        lease_store = _owner_json.loads(
+            lease_store_path.read_text(encoding="utf-8")
+        )
+        lease_store["leases"]["basic_agent-1"].update(
+            {
+                "holder_dispatch_id": "DSP-002",
+                "holder_instance_id": "inst-2",
+                "acquired_at": "2026-07-30T06:00:00Z",
+                "heartbeat_at": "2026-07-30T06:00:01Z",
+            }
+        )
+        lease_store_path.write_text(
+            _owner_json.dumps(lease_store),
+            encoding="utf-8",
+        )
+        new_cas = self.cpt.TransitionCAS(
+            task_id="TC-001", expected_revision=1,
+            expected_state="ready", expected_snapshot_commit=new_head,
+        )
+        new_payload = self.cpt.DispatchPayload(
+            dispatch_id="DSP-002",
+            role_id="worker-basic",
+            model_selection=ms2,
+            task_card_path="docs/pm/tasks/TC-001.md",
+            task_card_commit="0" * 40,
+            base_commit="0" * 40,
+            branch="main",
+            report_path="docs/pm/reports/TC-001-r1-a2.md",
+            outbox_message_id="MSG-20260730-DISPATCH2",
+            new_attempt=2,
+        )
+        new_treq = self.cpt.TransitionRequest(
+            cas=new_cas, dispatch_cas=None,
+            event_id="EVT-20260730-DISPATCH2",
+            event_type="TASK_DISPATCHED",
+            payload=new_payload, event_context=context,
+        )
+        from approval_gate import ApprovalGate
+        with mock.patch.object(
+            ApprovalGate,
+            "require",
+            return_value=mock.Mock(
+                approval_id="APR-OWNER-LOSS-REGRESSION",
+                event_id="EVT-OWNER-LOSS-APPROVAL",
+            ),
+        ):
+            svc.apply_transition(
+                new_treq, lease, datetime(2026, 7, 30, 6, 1, 0, tzinfo=UTC)
+            )
+
+        import json as _tj4
+        tasks = _tj4.loads(
+            (root / "docs" / "pm" / "state" / "tasks.yaml").read_text("utf-8")
+        )
+        self.assertEqual(tasks["tasks"][0]["state"], "dispatched")
+        self.assertEqual(tasks["tasks"][0]["attempt"], 2)
 
 
 if __name__ == "__main__":

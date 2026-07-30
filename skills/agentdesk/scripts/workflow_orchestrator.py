@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -60,9 +61,11 @@ from control_plane_transition import (
     DispatchFailedPayload,
     DispatchPayload,
     IntegrationPayload,
+    OwnerLossTransitionCheck,
     RequeuePayload,
     SupersededPayload,
     TransitionCAS,
+    apply_owner_loss_recovery_transition,
     TransitionEventContext,
     TransitionRequest,
     TransitionResult,
@@ -133,6 +136,8 @@ __all__ = [
     "EscalatedRedispatchResult",
     "IntegrationFailureRequest",
     "IntegrationFailureResult",
+    "OwnerLossRecoveryRequest",
+    "OwnerLossRecoveryResult",
     "TaskCancellationRequest",
     "TaskCancellationResult",
     "TaskSupersessionRequest",
@@ -994,6 +999,135 @@ class IntegrationFailureResult:
     task_id: str
     audit_result: MadAuditGatewayResult
     failure_transition: TransitionResult
+
+
+# -- OwnerLossRecovery types (TC-13.18d.12b/.12c) ------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerLossRecoveryRequest:
+    """Immutable input for owner-loss dispatch recovery — exactly 10 fields.
+
+    All identifiers are caller-supplied.  ``retry_plan`` is either ``None``
+    or an exact ``BoundedDispatchRetryRequest`` (transition-only when None).
+    """
+
+    task_id: str
+    expected_revision: int
+    expected_attempt: int
+    expected_dispatch_id: str
+    expected_generation_id: str
+    recovery_event_id: str
+    recovery_event_context: TransitionEventContext
+    failure_kind: str
+    evidence_refs: tuple[str, ...]
+    retry_plan: BoundedDispatchRetryRequest | None
+
+    def __post_init__(self) -> None:
+        def _safe_exact(value: object, field: str) -> str:
+            if type(value) is not str or not value:
+                raise TypeError(f"{field} must be a non-empty exact str")
+            if value != value.strip() or any(c in value for c in "\0\r\n"):
+                raise ValueError(f"{field} must be a safe exact str")
+            return value
+
+        task_id = _safe_exact(self.task_id, "task_id")
+        if re.fullmatch(r"TC-[0-9]{3,}", task_id) is None:
+            raise ValueError("task_id must match the canonical format")
+        if (
+            type(self.expected_revision) is not int
+            or isinstance(self.expected_revision, bool)
+            or self.expected_revision < 1
+        ):
+            raise TypeError("expected_revision must be a non-bool int >= 1")
+        if (
+            type(self.expected_attempt) is not int
+            or isinstance(self.expected_attempt, bool)
+            or self.expected_attempt < 1
+        ):
+            raise TypeError("expected_attempt must be a non-bool int >= 1")
+        _safe_exact(self.expected_dispatch_id, "expected_dispatch_id")
+        _safe_exact(self.expected_generation_id, "expected_generation_id")
+        event_id = _safe_exact(self.recovery_event_id, "recovery_event_id")
+        if not event_id.startswith("EVT-"):
+            raise ValueError("recovery_event_id must match the canonical format")
+        if type(self.recovery_event_context) is not TransitionEventContext:
+            raise TypeError(
+                "recovery_event_context must be exact TransitionEventContext"
+            )
+        failure_kind = _safe_exact(self.failure_kind, "failure_kind")
+        DispatchFailedPayload(failure_kind)
+        if type(self.evidence_refs) is not tuple:
+            raise TypeError("evidence_refs must be an exact tuple")
+        if len(self.evidence_refs) == 0:
+            raise ValueError("evidence_refs must not be empty")
+        for i, ref in enumerate(self.evidence_refs):
+            _safe_exact(ref, f"evidence_refs[{i}]")
+        if len(set(self.evidence_refs)) != len(self.evidence_refs):
+            raise ValueError("evidence_refs must be unique")
+        if self.recovery_event_context.evidence_refs != self.evidence_refs:
+            raise ValueError(
+                "recovery_event_context evidence_refs must match evidence_refs"
+            )
+        if self.retry_plan is not None:
+            if type(self.retry_plan) is not BoundedDispatchRetryRequest:
+                raise TypeError(
+                    "retry_plan must be BoundedDispatchRetryRequest or None"
+                )
+            first = self.retry_plan.attempts[0].dispatch_cycle_request
+            identity = first.dispatch_request.identity
+            if (
+                identity.task_id != self.task_id
+                or identity.revision != self.expected_revision
+                or identity.attempt != self.expected_attempt + 1
+                or identity.dispatch_id == self.expected_dispatch_id
+            ):
+                raise ValueError(
+                    "retry_plan identity must be the next distinct attempt"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerLossRecoveryResult:
+    """Immutable result of owner-loss dispatch recovery — exactly 6 fields.
+
+    ``process_liveness`` is the three-state enum from
+    ``dispatch_supervisor_evidence.ProcessLiveness``.
+    ``retry_result`` is ``None`` when no retry was attempted.
+    """
+
+    task_id: str
+    recovered_attempt: int
+    recovered_dispatch_id: str
+    process_liveness: _dse.ProcessLiveness
+    recovery_transition: TransitionResult
+    retry_result: BoundedDispatchRetryResult | None
+
+    def __post_init__(self) -> None:
+        if type(self.task_id) is not str or not self.task_id:
+            raise TypeError("task_id must be a non-empty exact str")
+        if (
+            type(self.recovered_attempt) is not int
+            or isinstance(self.recovered_attempt, bool)
+            or self.recovered_attempt < 1
+        ):
+            raise TypeError("recovered_attempt must be a non-bool int >= 1")
+        if (
+            type(self.recovered_dispatch_id) is not str
+            or not self.recovered_dispatch_id
+        ):
+            raise TypeError("recovered_dispatch_id must be a non-empty exact str")
+        if type(self.process_liveness) is not _dse.ProcessLiveness:
+            raise TypeError("process_liveness must be exact ProcessLiveness")
+        if type(self.recovery_transition) is not TransitionResult:
+            raise TypeError(
+                "recovery_transition must be exact TransitionResult"
+            )
+        if self.retry_result is not None:
+            if type(self.retry_result) is not BoundedDispatchRetryResult:
+                raise TypeError(
+                    "retry_result must be BoundedDispatchRetryResult or None"
+                )
 
 
 # -- BlockedRescope types (TC-13.18d.5) ----------------------------------------
@@ -4255,3 +4389,172 @@ class WorkflowOrchestrator:
             raise WorkflowInputError(
                 "revision must not be bool"
             )
+
+    # -- owner-loss recovery (TC-13.18d.12b/.12c) ------------------------------------
+
+    async def recover_owner_lost_dispatch(
+        self,
+        request: OwnerLossRecoveryRequest,
+    ) -> OwnerLossRecoveryResult:
+        """Recover a dispatch whose original creator process has been lost.
+
+        Implements the frozen contract from §17 of the
+        workflow-orchestrator contract.  Transition-only: no retry
+        is attempted.
+
+        Lock order (frozen):
+          1. Read durable evidence (receipt, tombstone).
+          2. Probe creator + process tree liveness.
+          3. ``apply_owner_loss_recovery_transition()`` acquires the state
+             lock, re-reads canonical task state, executes the second-check,
+             and writes ``DISPATCH_FAILED`` — all inside a single lock
+             acquisition.
+          4. Return ``OwnerLossRecoveryResult``.
+
+        Retry is NOT started — the task is left in ``ready`` state with
+        ``current_dispatch`` cleared.
+        """
+        if type(request) is not OwnerLossRecoveryRequest:
+            raise WorkflowInputError(
+                "request must be exact OwnerLossRecoveryRequest"
+            )
+        if request.retry_plan is not None:
+            raise WorkflowInvariantError(
+                "owner-loss automatic retry evidence is unavailable"
+            )
+
+        snapshot = StateProvider(self.project_root).snapshot()
+        task = next(
+            (item for item in snapshot.tasks if item.task_id == request.task_id),
+            None,
+        )
+        if task is None:
+            raise WorkflowInvariantError("owner-loss task evidence mismatch")
+
+        # Exact replay is delegated to the canonical transition core.  No
+        # retry can be repeated because retry_plan is rejected above.
+        replay_event = next(
+            (
+                event
+                for event in snapshot.events
+                if event.event_id == request.recovery_event_id
+            ),
+            None,
+        )
+        if replay_event is not None:
+            from_state = replay_event.from_state
+        else:
+            from_state = task.state
+
+        if from_state not in ("dispatched", "in_progress"):
+            raise WorkflowInvariantError("owner-loss canonical state mismatch")
+        if (
+            replay_event is None
+            and (
+                task.revision != request.expected_revision
+                or task.attempt != request.expected_attempt
+                or task.current_dispatch is None
+                or task.current_dispatch.dispatch_id
+                != request.expected_dispatch_id
+            )
+        ):
+            raise WorkflowInvariantError("owner-loss dispatch evidence mismatch")
+
+        receipt = _dse.read_dispatch_receipt(
+            self.project_root, request.expected_dispatch_id
+        )
+        tombstone = _dse.read_dispatch_tombstone(
+            self.project_root, request.expected_dispatch_id
+        )
+        if replay_event is None:
+            if (
+                receipt is None
+                or receipt.task_id != request.task_id
+                or receipt.revision != request.expected_revision
+                or receipt.attempt != request.expected_attempt
+                or receipt.dispatch_id != request.expected_dispatch_id
+                or receipt.generation_id != request.expected_generation_id
+                or receipt.phase not in ("SUPERVISOR_READY", "WORKER_STARTED")
+                or tombstone is not None
+            ):
+                raise WorkflowInvariantError(
+                    "owner-loss durable evidence mismatch"
+                )
+            creator_liveness = _dse.probe_process(
+                receipt.creator_pid,
+                receipt.creator_creation_time,
+                receipt.boot_id,
+            )
+            tree_liveness = _dse.probe_dispatch_process_tree(receipt)
+            if creator_liveness is _dse.ProcessLiveness.ALIVE:
+                raise WorkflowInvariantError(
+                    "owner-loss creator is still alive"
+                )
+            if tree_liveness is _dse.ProcessLiveness.ALIVE:
+                raise WorkflowInvariantError(
+                    "owner-loss process tree is still alive"
+                )
+            if (
+                creator_liveness is not _dse.ProcessLiveness.DEAD
+                or tree_liveness is not _dse.ProcessLiveness.DEAD
+            ):
+                raise WorkflowInvariantError(
+                    "owner-loss liveness is unknown"
+                )
+        else:
+            tree_liveness = _dse.ProcessLiveness.DEAD
+
+        transition_request = TransitionRequest(
+            cas=TransitionCAS(
+                task_id=request.task_id,
+                expected_revision=request.expected_revision,
+                expected_state=from_state,
+                # Replaced with the lock-held HEAD by the atomic entry point.
+                expected_snapshot_commit="0" * 40,
+            ),
+            dispatch_cas=DispatchCAS(
+                expected_dispatch_id=request.expected_dispatch_id,
+                expected_attempt=request.expected_attempt,
+            ),
+            event_id=request.recovery_event_id,
+            event_type="DISPATCH_FAILED",
+            payload=DispatchFailedPayload(request.failure_kind),
+            event_context=request.recovery_event_context,
+        )
+        check = OwnerLossTransitionCheck(
+            task_id=request.task_id,
+            expected_revision=request.expected_revision,
+            expected_attempt=request.expected_attempt,
+            expected_dispatch_id=request.expected_dispatch_id,
+            expected_generation_id=request.expected_generation_id,
+            expected_from_state=from_state,
+            receipt_present=receipt is not None,
+            receipt_phase=receipt.phase if receipt is not None else from_state,
+            receipt_generation_id=(
+                receipt.generation_id
+                if receipt is not None
+                else request.expected_generation_id
+            ),
+            tombstone_present=tombstone is not None,
+            tombstone_winner=(
+                tombstone.winner if tombstone is not None else None
+            ),
+            process_liveness=tree_liveness.value,
+            recovery_event_id=request.recovery_event_id,
+            failure_kind=request.failure_kind,
+            evidence_refs=request.evidence_refs,
+        )
+        recovery_transition = apply_owner_loss_recovery_transition(
+            ControlPlaneTransitionService(self.project_root),
+            transition_request,
+            check,
+            self.clock.now(),
+        )
+        return OwnerLossRecoveryResult(
+            task_id=request.task_id,
+            recovered_attempt=request.expected_attempt,
+            recovered_dispatch_id=request.expected_dispatch_id,
+            process_liveness=_dse.ProcessLiveness.DEAD,
+            recovery_transition=recovery_transition,
+            retry_result=None,
+        )

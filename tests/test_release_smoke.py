@@ -12738,3 +12738,43 @@ class TC1318d12bOwnerLossRecoveryContractTests(unittest.TestCase):
             "TC-13.18d.11a/b/c: Current",
         ):
             self.assertIn(term, self.dse_contract_text.replace("\n", " "))
+
+
+class TC1318d12cOwnerLossProductionStatusTests(unittest.TestCase):
+    """Status assertions for transition-only owner-loss production."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        cls.workflow = (
+            root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "workflow-orchestrator-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.evidence = (
+            root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "dispatch-supervisor-evidence-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr = (
+            root / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+
+    def test_transition_only_recovery_is_current(self) -> None:
+        self.assertIn(
+            "Owner-loss transition-only recovery runtime is **Current**",
+            self.workflow,
+        )
+        self.assertIn(
+            "transition-only\n  production Current",
+            self.evidence,
+        )
+        self.assertIn(
+            "owner-loss transition-only recovery is now\n**Current**",
+            self.adr,
+        )
+
+    def test_retry_and_interface_remain_target(self) -> None:
+        for text in (self.workflow, self.evidence, self.adr):
+            self.assertIn("TC-13.18d.12c.1", text)
+        self.assertIn("Interface #22 remains **Target**", self.workflow)
+        self.assertIn("Interface #22 remains **Target**", self.adr)

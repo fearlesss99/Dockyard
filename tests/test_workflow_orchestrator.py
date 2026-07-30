@@ -559,11 +559,11 @@ def _write_approval_grant(project_root: Path) -> None:
 class TestWorkflowOrchestratorAPI(unittest.TestCase):
     """Test __all__ exactness and dataclass frozen/slots properties."""
 
-    def test_all_exactly_thirty_nine(self) -> None:
+    def test_all_exactly_forty_one(self) -> None:
         import workflow_orchestrator as wo
         self.assertEqual(
-            len(wo.__all__), 39,
-            f"__all__ must have exactly 39 entries, got {len(wo.__all__)}: {wo.__all__}"
+            len(wo.__all__), 41,
+            f"__all__ must have exactly 41 entries, got {len(wo.__all__)}: {wo.__all__}"
         )
         expected = sorted([
             "AcceptanceCycleRequest",
@@ -592,6 +592,8 @@ class TestWorkflowOrchestratorAPI(unittest.TestCase):
             "EscalatedRedispatchResult",
             "IntegrationFailureRequest",
             "IntegrationFailureResult",
+            "OwnerLossRecoveryRequest",
+            "OwnerLossRecoveryResult",
             "TaskCancellationRequest",
             "TaskCancellationResult",
             "TaskSupersessionRequest",
@@ -4159,6 +4161,267 @@ class TestBoundedDispatchRetry(unittest.TestCase):
             asyncio.run(_run())
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+# -- TC-13.18d.12c owner-loss dispatch recovery ----------------------------
+
+
+class TestOwnerLossDispatchRecovery(unittest.TestCase):
+    """Focused orchestration tests for fail-closed owner-loss recovery."""
+
+    @staticmethod
+    def _orchestrator() -> Any:
+        import workflow_orchestrator as wo
+
+        orchestrator = object.__new__(wo.WorkflowOrchestrator)
+        object.__setattr__(
+            orchestrator,
+            "project_root",
+            Path(__file__).resolve().parents[1],
+        )
+        object.__setattr__(orchestrator, "clock", FakeClock())
+        object.__setattr__(orchestrator, "heartbeat_interval_seconds", 10.0)
+        return orchestrator
+
+    @staticmethod
+    def _request(*, retry_plan: Any = None) -> Any:
+        import workflow_orchestrator as wo
+
+        evidence_refs = ("docs/pm/evidence/owner-loss.yaml",)
+        return wo.OwnerLossRecoveryRequest(
+            task_id="TC-001",
+            expected_revision=1,
+            expected_attempt=1,
+            expected_dispatch_id="DSP-OWNER-1",
+            expected_generation_id="GEN-OWNER-1",
+            recovery_event_id="EVT-OWNER-LOSS-1",
+            recovery_event_context=TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=evidence_refs,
+                guard_results=(),
+            ),
+            failure_kind="worker_failed",
+            evidence_refs=evidence_refs,
+            retry_plan=retry_plan,
+        )
+
+    @staticmethod
+    def _snapshot(state: str = "dispatched") -> Any:
+        return mock.Mock(
+            tasks=(
+                mock.Mock(
+                    task_id="TC-001",
+                    revision=1,
+                    attempt=1,
+                    state=state,
+                    current_dispatch=mock.Mock(dispatch_id="DSP-OWNER-1"),
+                ),
+            ),
+            events=(),
+        )
+
+    @staticmethod
+    def _receipt() -> Any:
+        return mock.Mock(
+            task_id="TC-001",
+            revision=1,
+            attempt=1,
+            dispatch_id="DSP-OWNER-1",
+            generation_id="GEN-OWNER-1",
+            phase="WORKER_STARTED",
+            creator_pid=101,
+            creator_creation_time="2026-07-30T00:00:00Z",
+            boot_id="boot-1",
+        )
+
+    def test_public_types_are_exact_frozen_slotted_contracts(self) -> None:
+        import workflow_orchestrator as wo
+
+        self.assertEqual(
+            tuple(field.name for field in dc_fields(wo.OwnerLossRecoveryRequest)),
+            (
+                "task_id",
+                "expected_revision",
+                "expected_attempt",
+                "expected_dispatch_id",
+                "expected_generation_id",
+                "recovery_event_id",
+                "recovery_event_context",
+                "failure_kind",
+                "evidence_refs",
+                "retry_plan",
+            ),
+        )
+        self.assertEqual(
+            tuple(field.name for field in dc_fields(wo.OwnerLossRecoveryResult)),
+            (
+                "task_id",
+                "recovered_attempt",
+                "recovered_dispatch_id",
+                "process_liveness",
+                "recovery_transition",
+                "retry_result",
+            ),
+        )
+        request = self._request()
+        self.assertFalse(hasattr(request, "__dict__"))
+        with self.assertRaises((AttributeError, TypeError)):
+            request.task_id = "TC-002"
+
+    def test_retry_plan_fails_closed_before_any_read_or_write(self) -> None:
+        import workflow_orchestrator as wo
+
+        retry_plan = wo.BoundedDispatchRetryRequest(
+            (TestBoundedDispatchRetry._attempt(2),)
+        )
+        request = self._request(retry_plan=retry_plan)
+        with (
+            mock.patch.object(wo, "StateProvider") as state_provider,
+            mock.patch.object(wo._dse, "read_dispatch_receipt") as read_receipt,
+            mock.patch.object(
+                wo, "apply_owner_loss_recovery_transition"
+            ) as apply_recovery,
+        ):
+            with self.assertRaisesRegex(
+                wo.WorkflowInvariantError,
+                "automatic retry evidence is unavailable",
+            ):
+                asyncio.run(
+                    self._orchestrator().recover_owner_lost_dispatch(request)
+                )
+        state_provider.assert_not_called()
+        read_receipt.assert_not_called()
+        apply_recovery.assert_not_called()
+
+    def test_alive_and_unknown_liveness_are_zero_write(self) -> None:
+        import workflow_orchestrator as wo
+
+        cases = (
+            (wo._dse.ProcessLiveness.ALIVE, wo._dse.ProcessLiveness.DEAD),
+            (wo._dse.ProcessLiveness.DEAD, wo._dse.ProcessLiveness.UNKNOWN),
+        )
+        for creator_liveness, tree_liveness in cases:
+            with self.subTest(
+                creator=creator_liveness,
+                tree=tree_liveness,
+            ):
+                provider = mock.Mock()
+                provider.snapshot.return_value = self._snapshot()
+                with (
+                    mock.patch.object(wo, "StateProvider", return_value=provider),
+                    mock.patch.object(
+                        wo._dse,
+                        "read_dispatch_receipt",
+                        return_value=self._receipt(),
+                    ),
+                    mock.patch.object(
+                        wo._dse,
+                        "read_dispatch_tombstone",
+                        return_value=None,
+                    ),
+                    mock.patch.object(
+                        wo._dse,
+                        "probe_process",
+                        return_value=creator_liveness,
+                    ),
+                    mock.patch.object(
+                        wo._dse,
+                        "probe_dispatch_process_tree",
+                        return_value=tree_liveness,
+                    ),
+                    mock.patch.object(
+                        wo, "apply_owner_loss_recovery_transition"
+                    ) as apply_recovery,
+                ):
+                    with self.assertRaises(wo.WorkflowInvariantError):
+                        asyncio.run(
+                            self._orchestrator().recover_owner_lost_dispatch(
+                                self._request()
+                            )
+                        )
+                apply_recovery.assert_not_called()
+
+    def test_dead_dispatches_use_atomic_entry_for_both_source_states(self) -> None:
+        import workflow_orchestrator as wo
+
+        for source_state in ("dispatched", "in_progress"):
+            with self.subTest(source_state=source_state):
+                provider = mock.Mock()
+                provider.snapshot.return_value = self._snapshot(source_state)
+                transition = TransitionResult(
+                    task_id="TC-001",
+                    event_id="EVT-OWNER-LOSS-1",
+                    from_state=source_state,
+                    to_state="ready",
+                    occurred_at="2026-07-30T12:00:00Z",
+                    outbox_message_id=None,
+                )
+                with (
+                    mock.patch.object(wo, "StateProvider", return_value=provider),
+                    mock.patch.object(
+                        wo._dse,
+                        "read_dispatch_receipt",
+                        return_value=self._receipt(),
+                    ),
+                    mock.patch.object(
+                        wo._dse,
+                        "read_dispatch_tombstone",
+                        return_value=None,
+                    ),
+                    mock.patch.object(
+                        wo._dse,
+                        "probe_process",
+                        return_value=wo._dse.ProcessLiveness.DEAD,
+                    ),
+                    mock.patch.object(
+                        wo._dse,
+                        "probe_dispatch_process_tree",
+                        return_value=wo._dse.ProcessLiveness.DEAD,
+                    ),
+                    mock.patch.object(
+                        wo,
+                        "apply_owner_loss_recovery_transition",
+                        return_value=transition,
+                    ) as apply_recovery,
+                ):
+                    result = asyncio.run(
+                        self._orchestrator().recover_owner_lost_dispatch(
+                            self._request()
+                        )
+                    )
+                apply_recovery.assert_called_once()
+                self.assertIs(result.process_liveness, wo._dse.ProcessLiveness.DEAD)
+                self.assertIs(result.recovery_transition, transition)
+                self.assertIsNone(result.retry_result)
+
+    def test_validation_never_calls_malicious_string_methods(self) -> None:
+        import workflow_orchestrator as wo
+
+        class Evil:
+            def __str__(self) -> str:
+                raise AssertionError("__str__ must not be called")
+
+            def __repr__(self) -> str:
+                raise AssertionError("__repr__ must not be called")
+
+        values = dict(
+            task_id=Evil(),
+            expected_revision=1,
+            expected_attempt=1,
+            expected_dispatch_id="DSP-OWNER-1",
+            expected_generation_id="GEN-OWNER-1",
+            recovery_event_id="EVT-OWNER-LOSS-1",
+            recovery_event_context=TransitionEventContext(
+                source_message_id=None,
+                evidence_refs=("docs/pm/evidence/owner-loss.yaml",),
+                guard_results=(),
+            ),
+            failure_kind="worker_failed",
+            evidence_refs=("docs/pm/evidence/owner-loss.yaml",),
+            retry_plan=None,
+        )
+        with self.assertRaises(TypeError):
+            wo.OwnerLossRecoveryRequest(**values)
 
 
 # -- TC-13.18d.10b active-dispatch supersession -----------------------------

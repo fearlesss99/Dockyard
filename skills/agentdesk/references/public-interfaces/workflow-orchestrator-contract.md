@@ -53,7 +53,8 @@ validates all Current runtime paths. Active-dispatch supersession production
 is Current — TC-13.18d.10b. Dispatch failure recovery is Contract Current —
 TC-13.18d.11a, its canonical transition is Current — TC-13.18d.11b, and
 bounded retry orchestration is Current — TC-13.18d.11c. Owner-loss recovery
-is Contract Current — TC-13.18d.12b; production is Target — TC-13.18d.12c.
+is Contract Current — TC-13.18d.12b; transition-only production is
+Current — TC-13.18d.12c, while automatic retry remains Target — TC-13.18d.12c.1.
 Codex decoding,
 Codex rate-limit classification, and provider rate-limit wiring remain Target.
 Active-dispatch cancellation
@@ -550,7 +551,8 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18d.12a-pre2.2** | Windows Job Object process-tree containment | TC-13.18d.12a-pre2.1 | Current |
 | **TC-13.18d.12a-pre2.2.1** | Public API boundary closure (raw handles removed) | TC-13.18d.12a-pre2.2 | Current |
 | **TC-13.18d.12b** | Owner-loss dispatch recovery contract freeze | TC-13.18d.12a-pre2.2.1 | Contract Current |
-| **TC-13.18d.12c** | Owner-loss recovery production implementation | TC-13.18d.12b | Target |
+| **TC-13.18d.12c** | Owner-loss transition-only recovery production implementation | TC-13.18d.12b | Current |
+| **TC-13.18d.12c.1** | Owner-loss automatic retry after durable retry-start evidence | TC-13.18d.12c | Target |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Current — TC-13.19j |
 | **TC-13.20** | HTML Dashboard | TC-13.17, TC-13.19 | Read-only UI |
@@ -1917,11 +1919,18 @@ Only fixed field names and fixed error categories are permitted.
 | Card | Scope | Status |
 |---|---|---|
 | **TC-13.18d.12b** | This owner-loss recovery contract freeze | **Contract Current** |
-| **TC-13.18d.12c** | Owner-loss recovery production implementation | **Target** |
+| **TC-13.18d.12c** | Owner-loss transition-only recovery production implementation | **Current** |
+| **TC-13.18d.12c.1** | Owner-loss automatic retry after durable retry-start evidence | **Target** |
 
 Durable supervisor evidence remains **Current** —
 TC-13.18d.12a-pre2.1 / pre2.2 / pre2.2.1.
 Windows Job Object containment remains **Current** —
 TC-13.18d.12a-pre2.2.
 Interface #22 remains **Target**.
-Owner-loss recovery runtime remains **Target** — TC-13.18d.12c.
+Owner-loss transition-only recovery runtime is **Current** — TC-13.18d.12c.
+Automatic retry remains **Target** — TC-13.18d.12c.1 because the durable
+evidence cannot yet distinguish retry-not-started from retry-started.
+
+Historical TC-13.18d.12b freeze statement (superseded by the production
+status above): Owner-loss recovery runtime remains **Target** —
+TC-13.18d.12c.

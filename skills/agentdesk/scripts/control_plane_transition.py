@@ -4908,10 +4908,395 @@ class ControlPlaneTransitionService:
             return result
 
 
-# ── __all__ — exactly 33 frozen public symbols ────────────────────────────
+# ── Owner-loss recovery atomic entry point ──────────────────────────────────
+#
+# Owner-loss recovery must perform a second-check and DISPATCH_FAILED
+# transition inside a single state-lock acquisition — not across two
+# separate lock/unlock windows.  The existing apply_transition() path
+# acquires the state lock internally; calling it from the Orchestrator
+# while the Orchestrator also holds the lock would double-acquire a
+# non-reentrant lock.  And two separate acquire windows leave a TOCTOU
+# gap between the second-check evidence probe and the state write.
+#
+# apply_owner_loss_recovery_transition() solves both:
+#
+#   1. Acquire the existing state lock.
+#   2. Read current canonical task state (lock-held snapshot).
+#   3. Execute the exact frozen OwnerLossTransitionCheck inside the lock.
+#   4. If the check passes, call _execute_transition_core() for
+#      DISPATCH_FAILED without releasing the lock.
+#   5. Release the state lock.
+#
+# The Orchestrator must NEVER call _exclusive_state_lock() or
+# _execute_transition_core() directly.  This method is the sole
+# owner-loss code path that combines second-check + transition inside
+# the same lock acquisition.
+#
+# The check data class is frozen/slots; it carries only frozen identity
+# fields — no functions, Any, dict, bare paths, or Job handles.
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerLossTransitionCheck:
+    """Frozen immutability check that must hold inside the state lock
+    before a DISPATCH_FAILED owner-loss transition is allowed to write.
+
+    All fields are derived from the frozen contract (§17.3 / §17.5 of
+    the workflow-orchestrator contract).  This type carries NO functions,
+    callables, Any, dict, bare paths, or Job handles.
+    """
+
+    task_id: str
+    expected_revision: int
+    expected_attempt: int
+    expected_dispatch_id: str
+    expected_generation_id: str
+    expected_from_state: str
+    receipt_present: bool
+    receipt_phase: str
+    receipt_generation_id: str
+    tombstone_present: bool
+    tombstone_winner: str | None
+    process_liveness: str
+    recovery_event_id: str
+    failure_kind: str
+    evidence_refs: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _validate_task_id_str(self.task_id, "task_id")
+        _validate_non_bool_int(self.expected_revision, "expected_revision", min_val=1)
+        _validate_non_bool_int(self.expected_attempt, "expected_attempt", min_val=1)
+        _validate_safe_str(self.expected_dispatch_id, "expected_dispatch_id")
+        _validate_safe_str(self.expected_generation_id, "expected_generation_id")
+        if self.expected_from_state not in ("dispatched", "in_progress"):
+            raise ValueError(
+                "expected_from_state must be dispatched or in_progress"
+            )
+        if not isinstance(self.receipt_present, bool):
+            raise TypeError("receipt_present must be bool")
+        _validate_safe_str(self.receipt_phase, "receipt_phase")
+        _validate_safe_str(self.receipt_generation_id, "receipt_generation_id")
+        if not isinstance(self.tombstone_present, bool):
+            raise TypeError("tombstone_present must be bool")
+        if self.tombstone_winner is not None:
+            if not isinstance(self.tombstone_winner, str) or not self.tombstone_winner:
+                raise TypeError("tombstone_winner must be non-empty str or None")
+        if self.process_liveness not in ("alive", "dead", "unknown"):
+            raise ValueError("process_liveness must be ALIVE, DEAD, or UNKNOWN")
+        if not isinstance(self.recovery_event_id, str) or not self.recovery_event_id:
+            raise TypeError("recovery_event_id must be non-empty str")
+        if self.failure_kind not in _DISPATCH_FAILURE_KINDS:
+            raise ValueError("failure_kind must be a frozen dispatch failure kind")
+        if not isinstance(self.evidence_refs, tuple):
+            raise TypeError("evidence_refs must be a tuple")
+        if len(self.evidence_refs) == 0:
+            raise ValueError("evidence_refs must not be empty")
+        for i, ref in enumerate(self.evidence_refs):
+            if type(ref) is not str or not ref:
+                raise TypeError(f"evidence_refs[{i}] must be a non-empty exact str")
+            if ref != ref.strip() or "\0" in ref or "\r" in ref or "\n" in ref:
+                raise ValueError(
+                    f"evidence_refs[{i}] must be a safe exact string"
+                )
+
+
+def _validate_owner_loss_check_against_ledger(
+    check: OwnerLossTransitionCheck,
+    task: dict[str, object],
+    now: datetime,
+) -> None:
+    """Execute the frozen owner-loss second-check against the lock-held
+    canonical task *task*.
+
+    Raises TransitionCASConflictError if any check fails.  This function
+    runs inside the state lock — it must NOT write, release, or acquire
+    any other lock, and must NOT call any external service.
+    """
+    # 1. Task state must be dispatched or in_progress.
+    actual_state = task.get("state")
+    if actual_state != check.expected_from_state:
+        raise TransitionCASConflictError(
+            "owner-loss second-check: task state is not the expected "
+            "from-state"
+        )
+
+    # 2. Revision must match.
+    actual_revision = task.get("revision")
+    if not isinstance(actual_revision, int) or isinstance(actual_revision, bool):
+        raise TransitionCASConflictError(
+            "owner-loss second-check: task revision is invalid"
+        )
+    if actual_revision != check.expected_revision:
+        raise TransitionCASConflictError(
+            "owner-loss second-check: revision mismatch"
+        )
+
+    # 3. Attempt must match.
+    actual_attempt = task.get("attempt")
+    if not isinstance(actual_attempt, int) or isinstance(actual_attempt, bool):
+        raise TransitionCASConflictError(
+            "owner-loss second-check: task attempt is invalid"
+        )
+    if actual_attempt != check.expected_attempt:
+        raise TransitionCASConflictError(
+            "owner-loss second-check: attempt mismatch"
+        )
+
+    # 4. current_dispatch must exist and dispatch_id must match.
+    cd = task.get("current_dispatch")
+    if not isinstance(cd, dict):
+        raise TransitionCASConflictError(
+            "owner-loss second-check: current_dispatch is not a mapping"
+        )
+    cd_did = cd.get("dispatch_id")
+    if cd_did != check.expected_dispatch_id:
+        raise TransitionCASConflictError(
+            "owner-loss second-check: current_dispatch dispatch_id mismatch"
+        )
+
+    # 5. The task must not already be in a terminal state (cancelled,
+    #    superseded, integrated).
+    if actual_state in ("cancelled", "superseded", "integrated"):
+        raise TransitionCASConflictError(
+            "owner-loss second-check: task is in a terminal state"
+        )
+
+
+def apply_owner_loss_recovery_transition(
+    service: ControlPlaneTransitionService,
+    transition_request: TransitionRequest,
+    check: OwnerLossTransitionCheck,
+    now: datetime,
+) -> TransitionResult:
+    """Execute owner-loss recovery inside a single state-lock acquisition.
+
+    Lock order (frozen):
+      1. Acquire existing control-plane state lock.
+      2. Read canonical task state.
+      3. Execute OwnerLossTransitionCheck second-check.
+      4. Call _execute_transition_core for DISPATCH_FAILED.
+      5. Release state lock.
+
+    Preconditions (enforced by this function):
+      - *transition_request* event_type must be exactly DISPATCH_FAILED.
+      - *lease* is always None for DISPATCH_FAILED (owner-loss path).
+      - *check* must be frozen/slots OwnerLossTransitionCheck.
+      - *now* must be timezone-aware UTC.
+
+    The Orchestrator must NOT call _exclusive_state_lock() or
+    _execute_transition_core() directly.
+    """
+    # Validate inputs.
+    _validate_now(now)
+    if type(transition_request) is not TransitionRequest:
+        raise TransitionValidationError(
+            "transition_request must be exact TransitionRequest"
+        )
+    if type(check) is not OwnerLossTransitionCheck:
+        raise TransitionValidationError(
+            "check must be exact OwnerLossTransitionCheck"
+        )
+    if transition_request.event_type != "DISPATCH_FAILED":
+        raise TransitionValidationError(
+            "owner-loss recovery only accepts DISPATCH_FAILED"
+        )
+
+    if transition_request.cas.task_id != check.task_id:
+        raise TransitionValidationError("owner-loss task binding mismatch")
+    if transition_request.cas.expected_revision != check.expected_revision:
+        raise TransitionValidationError("owner-loss revision binding mismatch")
+    if transition_request.cas.expected_state != check.expected_from_state:
+        raise TransitionValidationError("owner-loss state binding mismatch")
+    if transition_request.event_id != check.recovery_event_id:
+        raise TransitionValidationError("owner-loss event binding mismatch")
+    if transition_request.payload.failure_kind != check.failure_kind:
+        raise TransitionValidationError("owner-loss failure binding mismatch")
+    if transition_request.event_context.evidence_refs != check.evidence_refs:
+        raise TransitionValidationError("owner-loss evidence binding mismatch")
+
+    # Look up the transition spec — must be DISPATCH_FAILED.
+    spec = _TRANSITION_SPECS.get("DISPATCH_FAILED")
+    if spec is None:
+        raise TransitionValidationError(
+            "DISPATCH_FAILED transition spec not found"
+        )
+
+    # Perform extra type-level validation on the request.
+    if type(transition_request.payload) is not DispatchFailedPayload:
+        raise TransitionValidationError(
+            "DISPATCH_FAILED payload must be exact DispatchFailedPayload"
+        )
+    if transition_request.dispatch_cas is None:
+        raise TransitionValidationError(
+            "DISPATCH_FAILED requires DispatchCAS"
+        )
+    if type(transition_request.dispatch_cas) is not DispatchCAS:
+        raise TransitionValidationError(
+            "DISPATCH_FAILED dispatch_cas must be exact DispatchCAS"
+        )
+
+    project_root = service.project_root
+
+    # ── Single state-lock acquisition ────────────────────────────────────
+    result: TransitionResult | None = None
+    with _exclusive_state_lock(project_root):
+        state = _read_tasks_yaml(project_root)
+        task, _task_index = _find_task(state, check.task_id)
+        head_commit = _resolve_head_commit(project_root)
+        effective_request = _dc.replace(
+            transition_request,
+            cas=_dc.replace(
+                transition_request.cas,
+                expected_snapshot_commit=head_commit,
+            ),
+        )
+
+        # A ready task can only pass through the transition core's existing
+        # byte-exact replay path.  Missing/divergent evidence remains a
+        # conflict and cannot write.
+        if task.get("state") == "ready" and task.get("current_dispatch") is None:
+            result = _execute_transition_core(
+                project_root,
+                effective_request,
+                spec,
+                now,
+                lease_epoch=0,
+                pm_holder_id="",
+            )
+        else:
+            _validate_owner_loss_check_against_ledger(check, task, now)
+
+            # Evidence is re-read and re-probed while the same state lock is
+            # continuously held.  No evidence-store lock is acquired here.
+            import dispatch_supervisor_evidence as _owner_dse
+
+            if (
+                task.get("revision") != check.expected_revision
+                or task.get("attempt") != check.expected_attempt
+                or task.get("state") != check.expected_from_state
+                or not isinstance(task.get("current_dispatch"), dict)
+                or task["current_dispatch"].get("dispatch_id")
+                != check.expected_dispatch_id
+            ):
+                raise TransitionCASConflictError(
+                    "owner-loss canonical second-check failed"
+                )
+
+            receipt = _owner_dse.read_dispatch_receipt(
+                project_root, check.expected_dispatch_id
+            )
+            tombstone = _owner_dse.read_dispatch_tombstone(
+                project_root, check.expected_dispatch_id
+            )
+            if (
+                receipt is None
+                or receipt.task_id != check.task_id
+                or receipt.revision != check.expected_revision
+                or receipt.attempt != check.expected_attempt
+                or receipt.dispatch_id != check.expected_dispatch_id
+                or receipt.generation_id != check.expected_generation_id
+                or receipt.phase not in ("SUPERVISOR_READY", "WORKER_STARTED")
+                or tombstone is not None
+            ):
+                raise TransitionCASConflictError(
+                    "owner-loss durable evidence second-check failed"
+                )
+            creator = _owner_dse.probe_process(
+                receipt.creator_pid,
+                receipt.creator_creation_time,
+                receipt.boot_id,
+            )
+            tree = _owner_dse.probe_dispatch_process_tree(receipt)
+            if (
+                creator is not _owner_dse.ProcessLiveness.DEAD
+                or tree is not _owner_dse.ProcessLiveness.DEAD
+            ):
+                raise TransitionCASConflictError(
+                    "owner-loss liveness second-check failed"
+                )
+
+            event_docs: list[dict[str, object]] = []
+            events_dir = (
+                project_root / _CANONICAL_DIRS["events"]
+            )
+            for event_path in events_dir.glob("*.yaml"):
+                try:
+                    event_docs.append(
+                        _parse_custom_yaml_mapping(
+                            event_path.read_text(encoding="utf-8")
+                        )
+                    )
+                except (OSError, ValueError) as exc:
+                    raise TransitionSchemaError(
+                        "owner-loss event evidence is invalid"
+                    ) from exc
+            relevant = tuple(
+                event
+                for event in event_docs
+                if event.get("task_id") == check.task_id
+                and event.get("revision") == check.expected_revision
+                and event.get("attempt") == check.expected_attempt
+                and event.get("dispatch_id") == check.expected_dispatch_id
+            )
+            dispatched = any(
+                event.get("event_type") == "TASK_DISPATCHED"
+                for event in relevant
+            )
+            acknowledged = any(
+                event.get("event_type") == "DISPATCH_ACKNOWLEDGED"
+                for event in relevant
+            )
+            conflicting = any(
+                event.get("event_type")
+                in (
+                    "DELIVERY_SUBMITTED",
+                    "DELIVERY_ACCEPTED",
+                    "CHANGE_INTEGRATED",
+                    "DISPATCH_FAILED",
+                )
+                for event in relevant
+            )
+            event_id_used = any(
+                event.get("event_id") == check.recovery_event_id
+                for event in event_docs
+            )
+            if (
+                not dispatched
+                or acknowledged != (check.expected_from_state == "in_progress")
+                or conflicting
+                or event_id_used
+                or task.get("delivery_state") not in (None, "none", "working")
+                or task.get("implementation_commit") is not None
+                or task.get("report_commit") is not None
+                or task.get("accepted_commit") is not None
+                or task.get("integrated_commit") is not None
+            ):
+                raise TransitionCASConflictError(
+                    "owner-loss lifecycle second-check failed"
+                )
+
+            result = _execute_transition_core(
+                project_root,
+                effective_request,
+                spec,
+                now,
+                lease_epoch=0,
+                pm_holder_id="",
+            )
+
+    if result is None:
+        raise TransitionSchemaError(
+            "owner-loss recovery transition produced no result"
+        )
+    return result
+
+
+# ── __all__ — public symbols ────────────────────────────────────────────────
 
 __all__ = [
     "ControlPlaneTransitionService",
+    "OwnerLossTransitionCheck",
+    "apply_owner_loss_recovery_transition",
     "TransitionCAS",
     "DispatchCAS",
     "TransitionRequest",

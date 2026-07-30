@@ -340,10 +340,12 @@ for the `SUPERVISOR_READY → Worker starts` window).
   removed from public `__all__`; private `_DispatchJobOwner` owns handle
   lifecycle; only `probe_dispatch_process_tree` is the public
   process-tree probe entry point).
-- Owner-loss recovery: Contract Current — TC-13.18d.12b; production
-  remains Target — TC-13.18d.12c; must remain fail-closed until
-  the above Current capabilities land and the §8 criteria are
-  enforceable from durable evidence alone.
+- Owner-loss recovery: Contract Current — TC-13.18d.12b; transition-only
+  production Current — TC-13.18d.12c. Automatic retry remains Target —
+  TC-13.18d.12c.1 until durable evidence can distinguish retry-not-started
+  from retry-started. ALIVE and UNKNOWN remain fail-closed.
+- Historical TC-13.18d.12b status: Target — TC-13.18d.12c (superseded by
+  the transition-only production status above).
 - Interface #22: Target.
 
 This card does not flip any Current status except as recorded above.
