@@ -7604,9 +7604,17 @@ existing `StateSnapshot` public shape is unchanged; a future
 `DispatchRecoveryEvidenceProvider` is the dedicated read-only boundary
 for runtime process evidence.
 
+Crash-window errata (TC-13.18d.12a-pre2 §8): the `Crash after RESERVED,
+before supervisor starts` and `Crash after SUPERVISOR_READY, before Worker
+starts` windows are `UNKNOWN / fail-closed` — never `still alive` — except
+the latter relaxes to permit recovery only when the exact supervisor
+identity independently probes `ALIVE`.  Phase presence alone never yields
+`still alive`.
+
 Status: TC-13.18d.11a/b/c Current; TC-13.18d.12a investigation
-complete; durable supervisor evidence Contract Current (this card) with
-runtime production implementation Target — TC-13.18d.12a-pre2;
+complete; durable supervisor evidence Contract Current with runtime
+production implementation Current — TC-13.18d.12a-pre2 (real supervisor
+chain, durable receipt/tombstone store, three-state liveness probing);
 owner-loss recovery continues Target and must remain fail-closed until
 the §8 criteria are enforceable from durable evidence alone; Interface
 #22 Target.  This card flips no Current status.

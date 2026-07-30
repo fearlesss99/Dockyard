@@ -12277,10 +12277,23 @@ class TC1318d12aPre1DurableSupervisorEvidenceContractTests(unittest.TestCase):
             self.assertIn(window, section)
         for conclusion in (
             "safe recovery",
-            "still alive",
             "UNKNOWN / fail-closed",
         ):
             self.assertIn(conclusion, section)
+        # §8 errata (TC-13.18d.12a-pre2): the two former "still alive"
+        # windows are now fail-closed (one with a supervisor-ALIVE escape).
+        self.assertIn(
+            "Crash after `RESERVED`, before supervisor starts"
+            " | UNKNOWN / fail-closed |",
+            section,
+        )
+        self.assertIn(
+            "Crash after `SUPERVISOR_READY`, before Worker starts"
+            " | UNKNOWN / fail-closed unless exact supervisor identity "
+            "probes ALIVE |",
+            section,
+        )
+        self.assertNotIn("still alive", section)
 
     # -- §12 sequencing ---------------------------------------------------
 
@@ -12294,3 +12307,90 @@ class TC1318d12aPre1DurableSupervisorEvidenceContractTests(unittest.TestCase):
             "Interface #22: Target",
         ):
             self.assertIn(term, self.contract_text)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TC-13.18d.12a-pre2 — Durable Dispatch Supervisor Evidence Runtime Freeze
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TC1318d12aPre2RuntimeContractTests(unittest.TestCase):
+    """TC-13.18d.12a-pre2 runtime contract freeze.
+
+    Pins the implemented runtime's public surface, frozen field counts,
+    phase order, liveness enum, the typed supervisor API, and the §8
+    crash-window errata.  Does not exercise recovery (still disabled).
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.repo_root = Path(__file__).resolve().parents[1]
+        cls.scripts = cls.repo_root / "skills" / "agentdesk" / "scripts"
+        if str(cls.scripts) not in sys.path:
+            sys.path.insert(0, str(cls.scripts))
+        import dispatch_supervisor_evidence as dse  # noqa: E402
+        import dispatch_supervisor_runner as dsr  # noqa: E402
+        cls.dse = dse
+        cls.dsr = dsr
+        cls.contract_text = (
+            cls.repo_root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "dispatch-supervisor-evidence-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr_text = (
+            cls.repo_root / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+
+    def test_01_runtime_public_symbols(self) -> None:
+        for name in (
+            "DispatchReceiptPhase", "ProcessLiveness",
+            "DispatchProcessReceipt", "DispatchFinalizerTombstone",
+            "reserve_receipt", "advance_to_supervisor_ready",
+            "advance_to_worker_started", "advance_to_finalizing",
+            "write_finalizer_tombstone", "read_dispatch_receipt",
+            "read_dispatch_tombstone", "probe_process", "get_boot_id",
+        ):
+            self.assertTrue(hasattr(self.dse, name), name)
+
+    def test_02_phase_order(self) -> None:
+        self.assertEqual(
+            [p.value for p in self.dse.DispatchReceiptPhase.order()],
+            ["RESERVED", "SUPERVISOR_READY", "WORKER_STARTED",
+             "FINALIZING", "FINALIZED"],
+        )
+
+    def test_03_liveness_values(self) -> None:
+        self.assertEqual(self.dse.ProcessLiveness.ALIVE.value, "alive")
+        self.assertEqual(self.dse.ProcessLiveness.DEAD.value, "dead")
+        self.assertEqual(self.dse.ProcessLiveness.UNKNOWN.value, "unknown")
+
+    def test_04_receipt_field_counts(self) -> None:
+        from dataclasses import fields
+        self.assertEqual(len(fields(self.dse.DispatchProcessReceipt)), 19)
+        self.assertEqual(len(fields(self.dse.DispatchFinalizerTombstone)), 12)
+
+    def test_05_supervisor_typed_api(self) -> None:
+        self.assertTrue(hasattr(self.dsr, "run_supervised_dispatch"))
+        self.assertTrue(hasattr(self.dsr, "run_dispatch_from_invocation"))
+
+    def test_06_contract_errata_rows(self) -> None:
+        self.assertIn(
+            "UNKNOWN / fail-closed unless exact supervisor identity "
+            "probes ALIVE",
+            self.contract_text,
+        )
+        self.assertNotIn("still alive", self.contract_text)
+
+    def test_07_adr_errata(self) -> None:
+        self.assertIn("Crash-window errata", self.adr_text)
+        self.assertIn("never `still alive`", self.adr_text)
+
+    def test_08_runtime_status_current(self) -> None:
+        self.assertIn(
+            "production implementation Current — TC-13.18d.12a-pre2",
+            self.contract_text,
+        )
+        self.assertIn(
+            "runtime\nproduction implementation Current — TC-13.18d.12a-pre2",
+            self.adr_text,
+        )

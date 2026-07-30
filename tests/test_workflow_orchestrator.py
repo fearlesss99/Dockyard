@@ -2036,7 +2036,26 @@ class TestWorkflowOrchestratorSourceBoundary(unittest.TestCase):
         self.assertNotIn("escalation", self.code_src)
 
     def test_no_retry(self) -> None:
-        self.assertNotIn("retry", self.code_src.lower())
+        """The Orchestrator must not contain hidden, unbounded, or
+        exception-text-driven retry.  The explicit, finite
+        ``run_bounded_dispatch_retry()`` entrypoint (one-to-three attempts,
+        caller-supplied plan) is explicitly allowed.
+        """
+        import workflow_orchestrator as wo
+        src = _source_text(wo).lower()
+        # The explicit, bounded retry entrypoint is permitted and present.
+        self.assertIn("run_bounded_dispatch_retry", src)
+        # No unbounded retry counters, backoff, or exception-text-driven
+        # retry loops may hide in the Orchestrator.
+        for forbidden in (
+            "retry_count",
+            "max_retries",
+            "max_retry",
+            "backoff",
+            "retry on",
+            "retry based on",
+        ):
+            self.assertNotIn(forbidden, src)
 
     # -- code hygiene ---------------------------------------------------------
 

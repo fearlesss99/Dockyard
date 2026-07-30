@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -74,6 +75,7 @@ from dispatcher_gateway import (
     DispatchStarted,
     DispatchStartedObserver,
 )
+import dispatch_supervisor_evidence as _dse
 from escalation_service import (
     EscalationAction,
     EscalationDecision,
@@ -799,6 +801,7 @@ class ActiveDispatchExecution:
         "_ack_transition",
         "_start_monotonic",
         "_ready",
+        "_generation_id",
     )
 
     def __init__(
@@ -837,6 +840,7 @@ class ActiveDispatchExecution:
         self._ack_transition = acknowledge_transition
         self._start_monotonic = start_monotonic
         self._ready = False
+        self._generation_id = ""
 
     @property
     def handle(self) -> ActiveDispatchHandle:
@@ -1379,6 +1383,7 @@ class _AckObserver:
         dispatch_request: DispatchRequest,
         selected_model_provider: str,
         selected_model_id: str,
+        generation_id: str = "",
     ) -> None:
         self._project_root = project_root
         self._ack_tr = ack_transition_request
@@ -1387,12 +1392,17 @@ class _AckObserver:
         self._dispatch_request = dispatch_request
         self._selected_model_provider = selected_model_provider
         self._selected_model_id = selected_model_id
+        self.generation_id = generation_id
         self._ack_result: TransitionResult | None = None
         self._acknowledged = asyncio.Event()
 
     @property
     def ack_result(self) -> TransitionResult | None:
         return self._ack_result
+
+    @property
+    def project_root(self) -> Path:
+        return self._project_root
 
     @property
     def acknowledged(self) -> asyncio.Event:
@@ -1932,6 +1942,7 @@ class WorkflowOrchestrator:
         hb_task: asyncio.Task[None] | None = None
 
         snapshot_sn = dr.model_selection
+        generation_id = "GEN-" + secrets.token_hex(16)
         ack_observer = _AckObserver(
             project_root=self.project_root,
             ack_transition_request=request.acknowledge_transition_request,
@@ -1940,6 +1951,24 @@ class WorkflowOrchestrator:
             dispatch_request=dr,
             selected_model_provider=snapshot_sn.selected_model_provider,
             selected_model_id=snapshot_sn.selected_model_id,
+            generation_id=generation_id,
+        )
+
+        creator_pid, creator_creation = _dse.get_current_process_identity()
+        if not creator_creation:
+            raise WorkflowInvariantError("creator creation time unavailable")
+        _dse.reserve_receipt(
+            self.project_root,
+            task_id=dr.identity.task_id,
+            revision=dr.identity.revision,
+            attempt=dr.identity.attempt,
+            dispatch_id=dr.identity.dispatch_id,
+            lease_epoch=lease.lease_epoch,
+            holder_instance_id=request.holder_instance_id,
+            generation_id=generation_id,
+            creator_pid=creator_pid,
+            creator_creation_time=creator_creation,
+            boot_id=_dse.get_boot_id(),
         )
 
         try:
@@ -2024,6 +2053,7 @@ class WorkflowOrchestrator:
                 acknowledge_transition=ack_transition_result,
                 start_monotonic=start_mono,
             )
+            execution._generation_id = generation_id
             execution._runner_task = asyncio.ensure_future(
                 self._run_active_dispatch(execution)
             )
@@ -2416,6 +2446,39 @@ class WorkflowOrchestrator:
                 release_completed=execution._release_completed,
                 failure_kind=failure_kind,
             )
+
+            # Durable FINALIZED tombstone — exactly-once, byte-exact replay on
+            # duplicate.  Written only after Worker ended, heartbeat ended,
+            # and release completed.  A tombstone write failure does not mask
+            # the primary completion/error path; the durable receipt remains
+            # at FINALIZING and tombstone absence is fail-closed (not death).
+            if (
+                execution._finalizer_metadata.release_completed
+                and execution._finalizer_metadata.worker_done
+                and execution._finalizer_metadata.heartbeat_done
+                and execution._generation_id
+            ):
+                try:
+                    _dse.write_finalizer_tombstone(
+                        self.project_root,
+                        task_id=execution._handle.task_id,
+                        revision=execution._handle.revision,
+                        attempt=execution._handle.attempt,
+                        dispatch_id=execution._handle.dispatch_id,
+                        generation_id=execution._generation_id,
+                        winner=execution._finalizer_metadata.winner,
+                        worker_done=True,
+                        heartbeat_done=True,
+                        release_completed=True,
+                        failure_kind=(
+                            execution._finalizer_metadata.failure_kind.value
+                            if execution._finalizer_metadata.failure_kind
+                            is not None
+                            else None
+                        ),
+                    )
+                except _dse.DispatchSupervisorEvidenceError:
+                    pass
 
             if primary_error is not None:
                 if not execution._completion.done():
@@ -3356,7 +3419,7 @@ class WorkflowOrchestrator:
         6. return TaskCancellationResult
 
         Must NOT cancel a running Worker.  Active dispatch cooperative
-        cancellation, subprocess termination, and heartbeat cleanup are
+        cancellation, Worker termination, and heartbeat cleanup are
         deferred to separate task cards.
 
         Does NOT run MAD audit, EscalationService, WorkerAdapter, or any

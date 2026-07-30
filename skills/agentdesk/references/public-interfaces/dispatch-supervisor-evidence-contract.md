@@ -282,14 +282,16 @@ mixed into the existing business read-only view.
 ## 11. Crash-Window Matrix
 
 For each window the contract must yield exactly one conclusion:
-`safe recovery`, `still alive`, or `UNKNOWN / fail-closed`.
+`safe recovery` or `UNKNOWN / fail-closed` (the `unless exact supervisor
+identity probes ALIVE` escape is the only permitted relaxation, and only
+for the `SUPERVISOR_READY → Worker starts` window).
 
 | Window | Conclusion |
 |--------|------------|
 | Crash before `RESERVED` is written | safe recovery |
-| Crash after `RESERVED`, before supervisor starts | still alive |
+| Crash after `RESERVED`, before supervisor starts | UNKNOWN / fail-closed |
 | Crash after supervisor starts, before `SUPERVISOR_READY` is written | UNKNOWN / fail-closed |
-| Crash after `SUPERVISOR_READY`, before Worker starts | still alive |
+| Crash after `SUPERVISOR_READY`, before Worker starts | UNKNOWN / fail-closed unless exact supervisor identity probes ALIVE |
 | Crash after Worker starts, before `WORKER_STARTED` is written | UNKNOWN / fail-closed |
 | Crash after `WORKER_STARTED`, before ACK | UNKNOWN / fail-closed |
 | Crash after ACK | UNKNOWN / fail-closed |
@@ -304,8 +306,10 @@ For each window the contract must yield exactly one conclusion:
 - TC-13.18d.11a/b/c: Current.
 - TC-13.18d.12a: investigation complete — owner-loss recovery is not
   currently implementable fail-closed.
-- Durable dispatch supervisor evidence: Contract Current (this card);
-  Runtime production implementation is Target — TC-13.18d.12a-pre2.
+- Durable dispatch supervisor evidence: Contract Current; runtime
+  production implementation Current — TC-13.18d.12a-pre2 (real supervisor
+  chain, durable receipt/tombstone store, and three-state liveness probing
+  all implemented and covered by targeted tests).
 - Owner-loss recovery: continues Target; must remain fail-closed until
   TC-13.18d.12a-pre2 lands and the §8 criteria are enforceable from
   durable evidence alone.

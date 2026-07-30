@@ -29,6 +29,7 @@ from dispatcher_gateway import (
     run_dispatch,
     run_dispatch_observed,
 )
+from dispatch_supervisor_runner import run_supervised_dispatch
 
 __all__ = ["WorkerResult", "run_worker", "run_worker_observed"]
 
@@ -180,8 +181,21 @@ async def run_worker_observed(
         task_difficulty,
     )
 
-    # ── 6. Dispatch via Gateway (observed path) ──────────────────────
-    dispatch_result = await run_dispatch_observed(request, providers, observer)
+    # ── 6. Dispatch via Gateway, or via the durable supervisor subprocess
+    #       when the caller (Orchestrator) supplies a generation_id on the
+    #       observer.  The supervised path closes the "Worker started
+    #       without a durable receipt" crash window: the supervisor owns the
+    #       provider Worker and writes SUPERVISOR_READY / WORKER_STARTED
+    #       receipts before ACK may be applied.  All process launch, pipe
+    #       communication, and output forwarding live in the supervisor
+    #       runner module behind this typed API.
+    if (
+        getattr(observer, "generation_id", "")
+        and getattr(observer, "project_root", None) is not None
+    ):
+        dispatch_result = await run_supervised_dispatch(request, providers, observer)
+    else:
+        dispatch_result = await run_dispatch_observed(request, providers, observer)
 
     # ── 7. Return frozen result ──────────────────────────────────────
     return WorkerResult(

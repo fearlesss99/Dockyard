@@ -52,7 +52,7 @@ import sys
 import time as _time_module
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol, runtime_checkable
+from typing import Awaitable, Callable, Mapping, Protocol, runtime_checkable
 
 __all__ = [
     "AgentCliInvocation",
@@ -75,6 +75,9 @@ __all__ = [
     "ProviderNotSupportedError",
     "run_dispatch",
     "run_dispatch_observed",
+    "run_dispatch_from_invocation",
+    "resolve_invocation",
+    "WorkerStartedCallback",
 ]
 
 # ── constants ─────────────────────────────────────────────────────────────
@@ -1145,3 +1148,182 @@ async def run_dispatch_observed(
         stdout_sha256=stdout_sha256,
         stderr_sha256=stderr_sha256,
     )
+
+
+# ── supervisor-path entry point (TC-13.18d.12a-pre2) ──────────────────────────
+#
+# Used by the durable dispatch supervisor subprocess.  Unlike the observer
+# path, the caller supplies a pre-resolved ``AgentCliInvocation`` (so the
+# invocation can be sealed and shipped across the process boundary without
+# shipping provider objects, prompt, or credentials as argv), and receives
+# the live ``asyncio.subprocess.Process`` via ``on_worker_started`` so the
+# supervisor can record worker PID / creation time / process group and durably
+# write ``WORKER_STARTED`` *before* ``communicate()`` sends stdin.
+
+WorkerStartedCallback = Callable[
+    ["asyncio.subprocess.Process", DispatchStarted], Awaitable[None]
+]
+
+
+async def run_dispatch_from_invocation(
+    identity: DispatchIdentity,
+    workspace: Path,
+    timeout_seconds: int,
+    invocation: AgentCliInvocation,
+    provider: str,
+    model_id: str,
+    on_worker_started: WorkerStartedCallback | None = None,
+) -> DispatchResult:
+    """Execute a single agent CLI subprocess from a pre-resolved invocation.
+
+    Same launch/communicate/terminate/SHA/non-zero-exit semantics as
+    ``run_dispatch()``, but:
+
+    * the invocation is caller-supplied (no provider adapter step);
+    * ``on_worker_started(process, started)`` is awaited after
+      ``create_subprocess_exec`` succeeds and before ``communicate()`` sends
+      stdin, giving the supervisor the live process handle to record worker
+      identity and write the durable ``WORKER_STARTED`` receipt.
+
+    Raises the same precise exceptions as ``run_dispatch()``.
+    """
+    _validate_identity(identity)
+    _validate_workspace(workspace)
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, int)
+        or timeout_seconds < 1
+    ):
+        raise DispatchInputError(
+            "timeout_seconds must be a non-bool int >= 1"
+        )
+    _validate_invocation(invocation)
+
+    resolved_executable = _resolve_executable(invocation.executable)
+    env = _build_env(invocation.env_overrides)
+    started_mono = _time_module.monotonic()
+    ws = str(workspace)
+
+    try:
+        if sys.platform == "win32":
+            process = await asyncio.create_subprocess_exec(
+                resolved_executable,
+                *invocation.argv,
+                stdin=asyncio.subprocess.PIPE if invocation.stdin is not None
+                else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                cwd=ws,
+            )
+        else:
+            process = await asyncio.create_subprocess_exec(
+                resolved_executable,
+                *invocation.argv,
+                stdin=asyncio.subprocess.PIPE if invocation.stdin is not None
+                else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                cwd=ws,
+                start_new_session=True,
+            )
+    except OSError as exc:
+        raise DispatchLaunchError("failed to launch dispatch subprocess") from exc
+
+    dispatch_started = DispatchStarted(
+        identity=identity, provider=provider, model_id=model_id
+    )
+
+    if on_worker_started is not None:
+        elapsed = _time_module.monotonic() - started_mono
+        remaining = timeout_seconds - elapsed
+        if remaining <= 0:
+            await _terminate_process(process)
+            raise DispatchTimeoutError(timeout_seconds)
+        try:
+            await asyncio.wait_for(
+                asyncio.ensure_future(
+                    on_worker_started(process, dispatch_started)
+                ),
+                timeout=remaining,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            await _terminate_process(process)
+            raise DispatchTimeoutError(timeout_seconds) from None
+        except asyncio.CancelledError:
+            await _terminate_process(process)
+            raise
+
+    elapsed = _time_module.monotonic() - started_mono
+    remaining = timeout_seconds - elapsed
+    if remaining <= 0:
+        await _terminate_process(process)
+        raise DispatchTimeoutError(timeout_seconds)
+
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            process.communicate(input=invocation.stdin),
+            timeout=remaining,
+        )
+    except (TimeoutError, asyncio.TimeoutError):
+        await _terminate_process(process)
+        raise DispatchTimeoutError(timeout_seconds) from None
+    except asyncio.CancelledError:
+        await _terminate_process(process)
+        raise DispatchCancelledError() from None
+
+    duration = _time_module.monotonic() - started_mono
+    out = stdout_bytes if stdout_bytes is not None else b""
+    err = stderr_bytes if stderr_bytes is not None else b""
+    exit_code = process.returncode if process.returncode is not None else -1
+    stdout_sha256 = _sha256(out)
+    stderr_sha256 = _sha256(err)
+
+    if exit_code != 0:
+        raise DispatchNonZeroExitError(
+            exit_code=exit_code,
+            stdout_sha256=stdout_sha256,
+            stderr_sha256=stderr_sha256,
+            stderr_bytes=err,
+        )
+
+    return DispatchResult(
+        identity=identity,
+        provider=provider,
+        model_id=model_id,
+        duration_seconds=duration,
+        stdout=out,
+        stderr=err,
+        stdout_sha256=stdout_sha256,
+        stderr_sha256=stderr_sha256,
+    )
+
+
+# ── invocation resolution helper (TC-13.18d.12a-pre2) ───────────────────────
+
+
+def resolve_invocation(
+    request: DispatchRequest,
+    providers: Mapping[str, AgentCliProvider],
+) -> tuple[AgentCliInvocation, str, str]:
+    """Resolve and validate a provider invocation without launching.
+
+    Returns ``(invocation, provider, model_id)``.  Used by the Orchestrator
+    to seal a pre-resolved invocation for the durable supervisor subprocess,
+    so provider objects, prompt, and credentials never cross the process
+    boundary as supervisor argv.
+    """
+    _validate_request(request)
+    snapshot = request.model_selection
+    _validate_snapshot(snapshot)
+    selected_provider = snapshot.selected_model_provider
+    adapter = _validate_providers(providers, selected_provider)
+    try:
+        invocation = adapter.build_invocation(request)
+    except Exception as exc:
+        raise DispatchInvocationError(
+            f"adapter.build_invocation raised {type(exc).__name__}"
+        ) from exc
+    _validate_invocation(invocation)
+    return invocation, selected_provider, snapshot.selected_model_id
