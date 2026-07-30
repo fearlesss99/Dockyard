@@ -2246,25 +2246,79 @@ class WorkflowOrchestrator:
             # Advance the durable retry receipt only when a real Worker has
             # been started for the reserved next attempt.  This occurs after
             # ACK, outside the state lock, and before the runner begins.
+            #
+            # Reads the attempt 2 durable DispatchProcessReceipt to extract
+            # the real supervisor and Worker process identity — never uses
+            # the Orchestrator's own PID as a substitute.
             if lifecycle_to_inject is not None:
-                worker_pid_val, worker_creation = (
-                    _dse.get_current_process_identity()
-                )
-                _dse.advance_retry_to_started(
+                ds_receipt = _dse.read_dispatch_receipt(
                     self.project_root,
-                    next_dispatch_id=(
-                        lifecycle_to_inject.next_dispatch_id
-                    ),
-                    recovery_generation_id=(
-                        lifecycle_to_inject.recovery_generation_id
-                    ),
-                    supervisor_pid=worker_pid_val,
-                    supervisor_creation_time=worker_creation,
-                    supervisor_boot_id=_dse.get_boot_id(),
-                    worker_pid=worker_pid_val,
-                    worker_creation_time=worker_creation,
-                    worker_boot_id=_dse.get_boot_id(),
+                    lifecycle_to_inject.next_dispatch_id,
                 )
+                if ds_receipt is None:
+                    raise WorkflowInvariantError(
+                        "owner-loss retry: dispatch receipt not found "
+                        "for attempt 2"
+                    )
+                if (
+                    ds_receipt.task_id != dr.identity.task_id
+                    or ds_receipt.revision != dr.identity.revision
+                    or ds_receipt.attempt != dr.identity.attempt
+                    or ds_receipt.dispatch_id != dr.identity.dispatch_id
+                ):
+                    raise WorkflowInvariantError(
+                        "owner-loss retry: dispatch receipt identity "
+                        "does not match attempt 2"
+                    )
+                if (
+                    ds_receipt.generation_id
+                    != lifecycle_to_inject.recovery_generation_id
+                ):
+                    raise WorkflowInvariantError(
+                        "owner-loss retry: dispatch receipt generation "
+                        "does not match recovery generation"
+                    )
+                receipt_phase = _dse.DispatchReceiptPhase(ds_receipt.phase)
+                if receipt_phase is not _dse.DispatchReceiptPhase.WORKER_STARTED:
+                    raise WorkflowInvariantError(
+                        "owner-loss retry: dispatch receipt phase must "
+                        "be WORKER_STARTED"
+                    )
+                if (
+                    ds_receipt.supervisor_pid is None
+                    or ds_receipt.supervisor_creation_time is None
+                    or ds_receipt.worker_pid is None
+                    or ds_receipt.worker_creation_time is None
+                ):
+                    raise WorkflowInvariantError(
+                        "owner-loss retry: dispatch receipt supervisor "
+                        "or Worker identity is incomplete"
+                    )
+                try:
+                    _dse.advance_retry_to_started(
+                        self.project_root,
+                        next_dispatch_id=(
+                            lifecycle_to_inject.next_dispatch_id
+                        ),
+                        recovery_generation_id=(
+                            lifecycle_to_inject.recovery_generation_id
+                        ),
+                        supervisor_pid=ds_receipt.supervisor_pid,
+                        supervisor_creation_time=(
+                            ds_receipt.supervisor_creation_time
+                        ),
+                        supervisor_boot_id=ds_receipt.boot_id,
+                        worker_pid=ds_receipt.worker_pid,
+                        worker_creation_time=(
+                            ds_receipt.worker_creation_time
+                        ),
+                        worker_boot_id=ds_receipt.boot_id,
+                    )
+                except _dse.DispatchSupervisorEvidenceError:
+                    raise WorkflowInvariantError(
+                        "owner-loss retry: RETRY_STARTED phase "
+                        "advance failed"
+                    )
 
             execution._runner_task = asyncio.ensure_future(
                 self._run_active_dispatch(execution)
