@@ -341,9 +341,9 @@ for the `SUPERVISOR_READY → Worker starts` window).
   lifecycle; only `probe_dispatch_process_tree` is the public
   process-tree probe entry point).
 - Owner-loss recovery: Contract Current — TC-13.18d.12b; transition-only
-  production Current — TC-13.18d.12c. Automatic retry remains Target —
-  TC-13.18d.12c.1 until durable evidence can distinguish retry-not-started
-  from retry-started. ALIVE and UNKNOWN remain fail-closed.
+  production Current — TC-13.18d.12c. The automatic-retry durable contract
+  is Contract Current — TC-13.18d.12c.1; runtime remains Target —
+  TC-13.18d.12c.2. ALIVE and UNKNOWN remain fail-closed.
 - Historical TC-13.18d.12b status: Target — TC-13.18d.12c (superseded by
   the transition-only production status above).
 - Interface #22: Target.
@@ -351,3 +351,53 @@ for the `SUPERVISOR_READY → Worker starts` window).
 This card does not flip any Current status except as recorded above.
 Production implementation (TC-13.18d.12a-pre2) is generated only after
 this contract passes.
+
+## 13. Owner-Loss Retry Reservation Evidence (Contract Current — TC-13.18d.12c.1)
+
+The automatic-retry durable protocol is frozen in workflow contract §18.
+Its evidence store is a separate exact-schema record under
+`.agentdesk/runtime/`; it is not added to `tasks.yaml` or `StateSnapshot`.
+
+The exact evidence type is the frozen, slotted, 24-field
+`OwnerLossRetryReceipt`. Its identity tuple is:
+
+```text
+(task_id, revision, failed_attempt, failed_dispatch_id,
+ recovery_event_id, recovery_generation_id, next_attempt,
+ next_dispatch_id, next_dispatch_event_id, content_digest)
+```
+
+The exact forward-only phases are:
+
+```text
+RECOVERY_TRANSITION_PENDING
+RECOVERY_TRANSITION_COMMITTED
+RETRY_RESERVED
+RETRY_STARTED
+RETRY_FINALIZING
+RETRY_FINALIZED
+```
+
+Storage rules are frozen:
+
+- atomic replace, exact schema, fixed path, safe path ancestry;
+- same generation and same canonical bytes produce byte-exact replay;
+- same generation with divergent bytes rejects;
+- a different generation cannot overwrite the winning failed-dispatch
+  reservation;
+- only `RETRY_RESERVED` authorizes the first start of the exact reserved
+  supervisor/Worker identity;
+- phase writes are forward-only and cannot allocate identity;
+- malformed/partial evidence, PID reuse, boot-id change, or permission
+  failure is `UNKNOWN` and fail-closed;
+- receipt/tombstone disagreement is fail-closed;
+- reservation occurs under the existing state lock, while all process start,
+  provider, Worker, and retry execution calls occur after releasing it.
+
+Status:
+
+- TC-13.18d.12c transition-only recovery: **Current**.
+- Owner-loss automatic retry durable contract:
+  **Contract Current — TC-13.18d.12c.1**.
+- Owner-loss automatic retry runtime: **Target — TC-13.18d.12c.2**.
+- Interface #22: **Target**.

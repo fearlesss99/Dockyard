@@ -7637,9 +7637,39 @@ Target.  This card flips no Current status beyond pre2.2/pre2.2.1
 and 12b.
 
 TC-13.18d.12c follow-up: owner-loss transition-only recovery is now
-**Current**. Automatic retry remains **Target — TC-13.18d.12c.1** because
-durable evidence cannot yet distinguish retry-not-started from retry-started.
+**Current**. The automatic-retry durable contract is **Contract Current —
+TC-13.18d.12c.1**; its runtime remains **Target — TC-13.18d.12c.2**.
 Interface #22 remains **Target**.
+
+---
+
+### 2.23 Owner-Loss Automatic Retry Durable Contract (Contract Current — TC-13.18d.12c.1)
+
+Decision: an owner-loss retry requires a separate durable, exact-schema
+reservation before any supervisor or Worker starts. Canonical `ready` state
+and in-memory flags are not retry authority.
+
+The contract owns a frozen 24-field `OwnerLossRetryReceipt` and six
+forward-only phases from `RECOVERY_TRANSITION_PENDING` through
+`RETRY_FINALIZED`. Under the existing state lock, the future implementation
+may only re-read and validate canonical recovery identity, perform
+byte-exact replay, and atomically write the unique `RETRY_RESERVED`
+identity. It must release that lock before starting a supervisor, Worker,
+provider, `run_dispatch_cycle()`, or bounded retry.
+
+Same-generation identical content is byte-exact replay. Divergent content,
+stale CAS/generation, competing generations, partial evidence, PID reuse,
+boot-id changes, permission failures, or receipt/tombstone disagreement
+reject or fail-closed as frozen in workflow contract §18. No fourth attempt
+may be reserved after the existing 1..3 ceiling.
+
+Status:
+
+- TC-13.18d.12c transition-only owner-loss recovery: **Current**.
+- Durable automatic-retry contract:
+  **Contract Current — TC-13.18d.12c.1**.
+- Automatic-retry runtime: **Target — TC-13.18d.12c.2**.
+- Interface #22 remains **Target**.
 
 ---
 

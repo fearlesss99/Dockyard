@@ -12778,3 +12778,247 @@ class TC1318d12cOwnerLossProductionStatusTests(unittest.TestCase):
             self.assertIn("TC-13.18d.12c.1", text)
         self.assertIn("Interface #22 remains **Target**", self.workflow)
         self.assertIn("Interface #22 remains **Target**", self.adr)
+
+
+class TC1318d12c1OwnerLossRetryDurableContractTests(unittest.TestCase):
+    """TC-13.18d.12c.1 durable automatic-retry contract freeze."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        cls.workflow = (
+            root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "workflow-orchestrator-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.evidence = (
+            root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "dispatch-supervisor-evidence-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr = (
+            root / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+        cls.section = cls.workflow.split(
+            "## 18. Owner-Loss Automatic Retry Durable State Machine", 1
+        )[1]
+
+    def test_01_exact_forward_only_phases(self) -> None:
+        body = self.section.split("### 18.2", 1)[1].split("### 18.3", 1)[0]
+        phases = (
+            "RECOVERY_TRANSITION_PENDING",
+            "RECOVERY_TRANSITION_COMMITTED",
+            "RETRY_RESERVED",
+            "RETRY_STARTED",
+            "RETRY_FINALIZING",
+            "RETRY_FINALIZED",
+        )
+        enum_body = body.split("class OwnerLossRetryPhase", 1)[1].split(
+            "```", 1
+        )[0]
+        self.assertEqual(
+            tuple(
+                match.group(1)
+                for match in re.finditer(r"^    ([A-Z_]+) = ", enum_body, re.M)
+            ),
+            phases,
+        )
+        self.assertEqual(body.count(" -> "), 5)
+        self.assertIn("never move backward, skip an edge", body)
+
+    def test_02_receipt_has_exactly_24_typed_fields(self) -> None:
+        body = self.section.split("### 18.3", 1)[1].split("### 18.4", 1)[0]
+        code = body.split("class OwnerLossRetryReceipt:", 1)[1].split(
+            "```", 1
+        )[0]
+        fields = tuple(
+            match.group(1)
+            for match in re.finditer(r"^    ([a-z_]+): ", code, re.M)
+        )
+        self.assertEqual(
+            fields,
+            (
+                "schema_version",
+                "task_id",
+                "revision",
+                "failed_attempt",
+                "failed_dispatch_id",
+                "recovery_event_id",
+                "recovery_generation_id",
+                "next_attempt",
+                "next_dispatch_id",
+                "next_dispatch_event_id",
+                "phase",
+                "creator_pid",
+                "creator_creation_time",
+                "creator_boot_id",
+                "supervisor_pid",
+                "supervisor_creation_time",
+                "supervisor_boot_id",
+                "worker_pid",
+                "worker_creation_time",
+                "worker_boot_id",
+                "reserved_at",
+                "started_at",
+                "finalized_at",
+                "content_digest",
+            ),
+        )
+        self.assertIn("@dataclass(frozen=True, slots=True)", body)
+        for forbidden in ("Any", "dict", "Mapping", "list[", "set["):
+            self.assertNotIn(forbidden, code)
+
+    def test_03_canonical_recovery_identity_binding(self) -> None:
+        body = self.section.split("### 18.4", 1)[1].split("### 18.5", 1)[0]
+        for term in (
+            "byte-exact `DISPATCH_FAILED` event",
+            "state exactly `ready`",
+            "`current_dispatch is None`",
+            "failed attempt/dispatch",
+            "recovery generation",
+            "next attempt/dispatch/event",
+            "content digest",
+        ):
+            self.assertIn(term, body)
+
+    def test_04_reservation_precedes_worker_start(self) -> None:
+        body = self.section.split("### 18.4", 1)[1].split("### 18.5", 1)[0]
+        self.assertLess(
+            body.index("Atomically persist the single `RETRY_RESERVED`"),
+            body.index("Start the supervisor/Worker outside"),
+        )
+        self.assertIn(
+            "Only a valid durable `RETRY_RESERVED` receipt authorizes",
+            body,
+        )
+
+    def test_05_state_lock_only_validates_replays_and_reserves(self) -> None:
+        body = self.section.split("### 18.4", 1)[1].split("### 18.5", 1)[0]
+        self.assertIn("Acquire the existing state lock", body)
+        self.assertIn(
+            "only validation, exact replay, and the\natomic reservation write",
+            body,
+        )
+        for forbidden_call in (
+            "`run_dispatch_cycle()`",
+            "`run_bounded_dispatch_retry()`",
+            "a provider",
+            "a supervisor",
+            "a Worker",
+        ):
+            self.assertIn(forbidden_call, body)
+
+    def test_06_retry_execution_is_outside_lock(self) -> None:
+        body = self.section.split("### 18.4", 1)[1].split("### 18.5", 1)[0]
+        self.assertLess(body.index("Release the state lock"), body.index(
+            "Start the supervisor/Worker outside"
+        ))
+
+    def test_07_crash_window_matrix_is_complete(self) -> None:
+        body = self.section.split("### 18.5", 1)[1].split("### 18.6", 1)[0]
+        windows = (
+            "Before `DISPATCH_FAILED` commits",
+            "After `DISPATCH_FAILED`, before reservation",
+            "Reservation atomic write is interrupted or malformed",
+            "Valid `RETRY_RESERVED`, before supervisor/Worker start",
+            "Supervisor starts before durable receipt advances",
+            "Worker starts before `RETRY_STARTED` is durable",
+            "Retry is ACKed, then owner crashes",
+            "Crash before retry finalizer publishes",
+            "Crash after `RETRY_FINALIZED` is durable",
+            "Tombstone write and phase advance",
+            "PID reuse, boot-id change, or permission failure",
+            "Two recoverers propose the same generation and bytes",
+            "Two generations contend for one failed dispatch",
+            "Stale recovery generation replays",
+        )
+        for window in windows:
+            self.assertIn(window, body)
+        rows = tuple(
+            line for line in body.splitlines()
+            if line.startswith("| ") and not line.startswith("|---")
+        )
+        self.assertEqual(len(rows), 15)  # header plus fourteen decisions
+        for row in rows[1:]:
+            self.assertRegex(
+                row,
+                r"`(?:resume|byte-exact replay|reject|fail-closed)`",
+            )
+
+    def test_08_byte_exact_and_divergent_replay(self) -> None:
+        body = self.section.split("### 18.6", 1)[1].split("### 18.7", 1)[0]
+        self.assertIn("identical canonical bytes", body)
+        self.assertIn("same\n  `OwnerLossRetryReceipt` bytes", body)
+        self.assertIn(
+            "Same generation with different phase, identity, plan, or digest rejects",
+            body,
+        )
+
+    def test_09_concurrent_generations_have_one_winner(self) -> None:
+        body = self.section.split("### 18.6", 1)[1].split("### 18.7", 1)[0]
+        self.assertIn("exactly one\n  reservation winner", body)
+        self.assertIn("the loser rejects", body)
+
+    def test_10_stale_cas_is_zero_write_zero_worker(self) -> None:
+        body = self.section.split("### 18.6", 1)[1].split("### 18.7", 1)[0]
+        self.assertIn("Stale canonical CAS", body)
+        self.assertIn("zero writes", body)
+        self.assertIn("starts zero Workers", body)
+
+    def test_11_attempt_four_is_forbidden(self) -> None:
+        body = self.section.split("### 18.6", 1)[1].split("### 18.7", 1)[0]
+        self.assertIn("Attempt three exhaustion", body)
+        self.assertIn("no fourth dispatch", body)
+        receipt = self.section.split("### 18.3", 1)[1].split("### 18.4", 1)[0]
+        self.assertIn("existing range 1..3", receipt)
+
+    def test_12_liveness_rules_are_not_relaxed(self) -> None:
+        body = self.section.split("### 18.1", 1)[1].split("### 18.2", 1)[0]
+        self.assertIn("`ALIVE` still means no recovery write or retry", body)
+        self.assertIn("`UNKNOWN` remains\n  fail-closed", body)
+        self.assertIn("Only exact `DEAD`", body)
+        self.assertIn(
+            "lease expiry, or a single PID observation is never retry evidence",
+            body.replace("\n  ", " "),
+        )
+
+    def test_13_status_split_is_exact(self) -> None:
+        body = self.section.split("### 18.7", 1)[1]
+        self.assertIn(
+            "TC-13.18d.12c transition-only owner-loss recovery | **Current**",
+            body,
+        )
+        self.assertIn(
+            "**Contract Current — TC-13.18d.12c.1**",
+            body,
+        )
+        self.assertIn("**Target — TC-13.18d.12c.2**", body)
+        self.assertIn("Interface #22 | **Target**", body)
+        self.assertIn("adds no production retry implementation", body)
+
+    def test_14_status_is_synchronized_across_contracts_and_adr(self) -> None:
+        for text in (self.workflow, self.evidence, self.adr):
+            self.assertIn("Contract Current — TC-13.18d.12c.1", text)
+            self.assertIn("Target — TC-13.18d.12c.2", text)
+            self.assertIn("Interface #22", text)
+
+    def test_15_evidence_contract_freezes_storage_and_identity(self) -> None:
+        body = self.evidence.split(
+            "## 13. Owner-Loss Retry Reservation Evidence", 1
+        )[1]
+        self.assertIn(".agentdesk/runtime/", body)
+        self.assertIn("atomic replace", body)
+        self.assertIn("same generation and same canonical bytes", body)
+        self.assertIn("different generation cannot overwrite", body)
+        self.assertIn("reservation occurs under the existing state lock", body)
+
+    def test_16_contract_explicitly_rejects_weak_retry_authority(self) -> None:
+        body = self.section.split("### 18.1", 1)[1].split("### 18.2", 1)[0]
+        for term in (
+            "task being `ready` is never sufficient",
+            "in-memory boolean",
+            "exception text",
+            "stdout/stderr",
+            "lease expiry",
+            "single PID observation",
+        ):
+            self.assertIn(term, body)

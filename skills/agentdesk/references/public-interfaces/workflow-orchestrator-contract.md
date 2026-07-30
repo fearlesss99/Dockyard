@@ -54,7 +54,8 @@ is Current — TC-13.18d.10b. Dispatch failure recovery is Contract Current —
 TC-13.18d.11a, its canonical transition is Current — TC-13.18d.11b, and
 bounded retry orchestration is Current — TC-13.18d.11c. Owner-loss recovery
 is Contract Current — TC-13.18d.12b; transition-only production is
-Current — TC-13.18d.12c, while automatic retry remains Target — TC-13.18d.12c.1.
+Current — TC-13.18d.12c. The durable automatic-retry contract is Contract
+Current — TC-13.18d.12c.1; its runtime is Target — TC-13.18d.12c.2.
 Codex decoding,
 Codex rate-limit classification, and provider rate-limit wiring remain Target.
 Active-dispatch cancellation
@@ -552,7 +553,8 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18d.12a-pre2.2.1** | Public API boundary closure (raw handles removed) | TC-13.18d.12a-pre2.2 | Current |
 | **TC-13.18d.12b** | Owner-loss dispatch recovery contract freeze | TC-13.18d.12a-pre2.2.1 | Contract Current |
 | **TC-13.18d.12c** | Owner-loss transition-only recovery production implementation | TC-13.18d.12b | Current |
-| **TC-13.18d.12c.1** | Owner-loss automatic retry after durable retry-start evidence | TC-13.18d.12c | Target |
+| **TC-13.18d.12c.1** | Owner-loss automatic retry durable contract freeze | TC-13.18d.12c | Contract Current |
+| **TC-13.18d.12c.2** | Owner-loss automatic retry production implementation | TC-13.18d.12c.1 | Target |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Current — TC-13.19j |
 | **TC-13.20** | HTML Dashboard | TC-13.17, TC-13.19 | Read-only UI |
@@ -1920,7 +1922,8 @@ Only fixed field names and fixed error categories are permitted.
 |---|---|---|
 | **TC-13.18d.12b** | This owner-loss recovery contract freeze | **Contract Current** |
 | **TC-13.18d.12c** | Owner-loss transition-only recovery production implementation | **Current** |
-| **TC-13.18d.12c.1** | Owner-loss automatic retry after durable retry-start evidence | **Target** |
+| **TC-13.18d.12c.1** | Owner-loss automatic retry durable contract freeze | **Contract Current** |
+| **TC-13.18d.12c.2** | Owner-loss automatic retry production implementation | **Target** |
 
 Durable supervisor evidence remains **Current** —
 TC-13.18d.12a-pre2.1 / pre2.2 / pre2.2.1.
@@ -1928,9 +1931,183 @@ Windows Job Object containment remains **Current** —
 TC-13.18d.12a-pre2.2.
 Interface #22 remains **Target**.
 Owner-loss transition-only recovery runtime is **Current** — TC-13.18d.12c.
-Automatic retry remains **Target** — TC-13.18d.12c.1 because the durable
-evidence cannot yet distinguish retry-not-started from retry-started.
+The automatic-retry durable contract is **Contract Current** —
+TC-13.18d.12c.1. Automatic-retry runtime remains **Target** —
+TC-13.18d.12c.2.
 
 Historical TC-13.18d.12b freeze statement (superseded by the production
 status above): Owner-loss recovery runtime remains **Target** —
 TC-13.18d.12c.
+
+---
+
+## 18. Owner-Loss Automatic Retry Durable State Machine — Frozen Contract (Contract Current — TC-13.18d.12c.1)
+
+TC-13.18d.12c.1 freezes the durable protocol required before a recovered
+dispatch may automatically start its next attempt. It changes no production
+module and starts no Worker. Runtime implementation is deferred to
+TC-13.18d.12c.2.
+
+### 18.1 Hard Safety Boundary
+
+- A canonical task being `ready` is never sufficient authority to retry.
+- An in-memory boolean, exception text, stdout/stderr, provider name, exit
+  code, lease expiry, or a single PID observation is never retry evidence.
+- The next attempt and dispatch identities must be durably reserved before
+  any supervisor or Worker is started.
+- Reservation is bound to the canonical `DISPATCH_FAILED` event, failed
+  attempt, failed dispatch, recovery generation, task revision, and exact
+  retry plan content digest.
+- Retry execution and `run_dispatch_cycle()` occur outside the state lock.
+- `ALIVE` still means no recovery write or retry. `UNKNOWN` remains
+  fail-closed. Only exact `DEAD` plus every TC-13.18d.12c predicate permits
+  the recovery transition and later reservation.
+
+### 18.2 Exact Forward-Only Phases
+
+```python
+class OwnerLossRetryPhase(str, Enum):
+    RECOVERY_TRANSITION_PENDING = "RECOVERY_TRANSITION_PENDING"
+    RECOVERY_TRANSITION_COMMITTED = "RECOVERY_TRANSITION_COMMITTED"
+    RETRY_RESERVED = "RETRY_RESERVED"
+    RETRY_STARTED = "RETRY_STARTED"
+    RETRY_FINALIZING = "RETRY_FINALIZING"
+    RETRY_FINALIZED = "RETRY_FINALIZED"
+```
+
+The only legal phase edges are:
+
+```text
+RECOVERY_TRANSITION_PENDING -> RECOVERY_TRANSITION_COMMITTED
+RECOVERY_TRANSITION_COMMITTED -> RETRY_RESERVED
+RETRY_RESERVED -> RETRY_STARTED
+RETRY_STARTED -> RETRY_FINALIZING
+RETRY_FINALIZING -> RETRY_FINALIZED
+```
+
+Phases never move backward, skip an edge, or change generation. A write with
+the same generation and phase is legal only as byte-exact replay. A phase
+or generation overwrite is rejected.
+
+### 18.3 `OwnerLossRetryReceipt` — Exactly 24 Fields
+
+```python
+@dataclass(frozen=True, slots=True)
+class OwnerLossRetryReceipt:
+    schema_version: str
+    task_id: str
+    revision: int
+    failed_attempt: int
+    failed_dispatch_id: str
+    recovery_event_id: str
+    recovery_generation_id: str
+    next_attempt: int
+    next_dispatch_id: str
+    next_dispatch_event_id: str
+    phase: OwnerLossRetryPhase
+    creator_pid: int
+    creator_creation_time: str
+    creator_boot_id: str
+    supervisor_pid: int | None
+    supervisor_creation_time: str | None
+    supervisor_boot_id: str | None
+    worker_pid: int | None
+    worker_creation_time: str | None
+    worker_boot_id: str | None
+    reserved_at: str
+    started_at: str | None
+    finalized_at: str | None
+    content_digest: str
+```
+
+The type is exactly frozen and slotted. Public fields contain no `Any`,
+`dict`, `Mapping`, mutable collection, or untyped metadata. The three
+creator fields are required at reservation. Each optional supervisor or
+Worker identity is all-present or all-absent. `next_attempt` is exactly
+`failed_attempt + 1`; it must be in the existing range 1..3, so a failed
+third attempt can never reserve or start attempt four.
+
+`content_digest` is lowercase SHA-256 over canonical UTF-8 bytes of every
+field except `content_digest`. Canonical serialization has frozen field
+order, enum values as strings, no insignificant whitespace, and no
+platform-dependent formatting. It binds the exact retry plan and identity;
+it is not derived from exception text or process output.
+
+### 18.4 Canonical Identity and Atomic Reservation
+
+The following ordered boundary is frozen:
+
+1. Validate the exact request and proposed receipt without writes.
+2. Acquire the existing state lock.
+3. Under that lock, re-read the canonical task, recovery event, failed
+   dispatch receipt/tombstone, and any owner-loss retry receipt.
+4. Require the byte-exact `DISPATCH_FAILED` event to be committed, task
+   state exactly `ready`, `current_dispatch is None`, task revision exact,
+   and task attempt still equal to `failed_attempt`.
+5. Bind `task_id`, revision, failed attempt/dispatch, recovery event,
+   recovery generation, next attempt/dispatch/event, and content digest.
+6. Atomically persist the single `RETRY_RESERVED` receipt, or return the
+   same bytes for an exact replay. Divergence rejects without a write.
+7. Release the state lock.
+8. Only a valid durable `RETRY_RESERVED` receipt authorizes starting its
+   exact next dispatch identity.
+9. Start the supervisor/Worker outside the state lock, then advance through
+   `RETRY_STARTED`, `RETRY_FINALIZING`, and `RETRY_FINALIZED` using
+   forward-only atomic evidence writes.
+
+No code holding the state lock may call `run_dispatch_cycle()`,
+`run_bounded_dispatch_retry()`, a provider, a supervisor, or a Worker.
+Within the lock, the path performs only validation, exact replay, and the
+atomic reservation write.
+
+### 18.5 Crash-Window Decision Matrix
+
+Each window has exactly one required disposition:
+
+| Crash or race window | Required disposition |
+|---|---|
+| Before `DISPATCH_FAILED` commits | `resume` transition-only recovery; never reserve retry early |
+| After `DISPATCH_FAILED`, before reservation | `resume` at locked reservation with the same recovery generation |
+| Reservation atomic write is interrupted or malformed | `fail-closed` |
+| Valid `RETRY_RESERVED`, before supervisor/Worker start | `resume` the exact reserved identity; never allocate another ID |
+| Supervisor starts before durable receipt advances | `fail-closed` |
+| Worker starts before `RETRY_STARTED` is durable | `fail-closed` |
+| Retry is ACKed, then owner crashes | `resume` only the same `RETRY_STARTED` execution/finalization; never redispatch |
+| Crash before retry finalizer publishes | `fail-closed` unless exact existing execution evidence can resume finalization |
+| Crash after `RETRY_FINALIZED` is durable | `byte-exact replay` |
+| Tombstone write and phase advance are separated by a crash | `fail-closed` until both durable records agree |
+| PID reuse, boot-id change, or permission failure | `fail-closed` (`UNKNOWN` is never `DEAD`) |
+| Two recoverers propose the same generation and bytes | `byte-exact replay`; one reservation write |
+| Two generations contend for one failed dispatch | `reject`; one generation wins |
+| Stale recovery generation replays | `reject` |
+
+`resume` never means allocate a new identity. It means continue the exact
+durably reserved identity at the permitted phase. A fail-closed disposition
+performs no retry start and no canonical state mutation.
+
+### 18.6 Idempotency, Concurrency, and Replay
+
+- Same recovery generation plus identical canonical bytes returns the same
+  `OwnerLossRetryReceipt` bytes and never creates another dispatch ID.
+- Same generation with different phase, identity, plan, or digest rejects.
+- Different generations competing for one failed dispatch have exactly one
+  reservation winner; the loser rejects.
+- Stale canonical CAS or stale recovery generation performs zero writes and
+  starts zero Workers.
+- A late success/tombstone/ACK from the failed attempt cannot reopen it or
+  bind to the reserved retry.
+- A retry may start only from exact durable `RETRY_RESERVED`; later phases
+  never start another Worker.
+- Attempt three exhaustion is a no-op for retry creation: no reservation,
+  no fourth dispatch, no Worker.
+
+### 18.7 Status
+
+| Capability | Status |
+|---|---|
+| TC-13.18d.12c transition-only owner-loss recovery | **Current** |
+| Owner-loss automatic retry durable contract | **Contract Current — TC-13.18d.12c.1** |
+| Owner-loss automatic retry runtime | **Target — TC-13.18d.12c.2** |
+| Interface #22 | **Target** |
+
+This contract adds no production retry implementation.
