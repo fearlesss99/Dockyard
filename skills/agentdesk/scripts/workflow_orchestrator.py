@@ -2270,13 +2270,26 @@ class WorkflowOrchestrator:
                         "owner-loss retry: dispatch receipt identity "
                         "does not match attempt 2"
                     )
+                # Dispatch receipt generation must be attempt 2's own
+                # generation (stored in the execution), not the recovery
+                # generation used to fence the retry receipt.  The two
+                # generations must differ: a retry always starts a net-new
+                # dispatch.
                 if (
                     ds_receipt.generation_id
-                    != lifecycle_to_inject.recovery_generation_id
+                    != execution._generation_id
                 ):
                     raise WorkflowInvariantError(
                         "owner-loss retry: dispatch receipt generation "
-                        "does not match recovery generation"
+                        "does not match attempt 2 execution generation"
+                    )
+                if (
+                    ds_receipt.generation_id
+                    == lifecycle_to_inject.recovery_generation_id
+                ):
+                    raise WorkflowInvariantError(
+                        "owner-loss retry: dispatch receipt generation "
+                        "must not equal recovery generation"
                     )
                 receipt_phase = _dse.DispatchReceiptPhase(ds_receipt.phase)
                 if receipt_phase is not _dse.DispatchReceiptPhase.WORKER_STARTED:
