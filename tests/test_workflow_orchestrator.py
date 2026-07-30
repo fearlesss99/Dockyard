@@ -4338,7 +4338,9 @@ class TestOwnerLossDispatchRecovery(unittest.TestCase):
             )
 
             result = asyncio.run(
-                self._orchestrator().recover_owner_lost_dispatch(request)
+                self._orchestrator().recover_owner_lost_dispatch(
+                    request, providers={"claude": provider},
+                )
             )
             apply_recovery.assert_called_once()
             execute_reservation.assert_called_once()
@@ -19729,6 +19731,7 @@ class TestOwnerLossRetryRuntime(unittest.TestCase):
         request = self._recovery_request(retry_plan=retry_plan)
         provider = mock.Mock()
         provider.snapshot.return_value = self._snapshot()
+        providers_map = {"claude": provider}
 
         transition = TransitionResult(
             task_id="TC-001",
@@ -19769,7 +19772,9 @@ class TestOwnerLossRetryRuntime(unittest.TestCase):
             run_retry.return_value = self._retry_result(2)
 
             result = asyncio.run(
-                self._orchestrator().recover_owner_lost_dispatch(request)
+                self._orchestrator().recover_owner_lost_dispatch(
+                    request, providers=providers_map,
+                )
             )
 
         apply_recovery.assert_called_once()
@@ -20030,7 +20035,9 @@ class TestOwnerLossRetryRuntime(unittest.TestCase):
         ):
             run_retry.return_value = self._retry_result(2)
             result = asyncio.run(
-                self._orchestrator().recover_owner_lost_dispatch(request)
+                self._orchestrator().recover_owner_lost_dispatch(
+                    request, providers={"claude": provider},
+                )
             )
             apply_recovery.assert_called_once()
             execute_reservation.assert_called_once()
@@ -20087,7 +20094,9 @@ class TestOwnerLossRetryRuntime(unittest.TestCase):
         ):
             run_retry.return_value = self._retry_result(2)
             result = asyncio.run(
-                self._orchestrator().recover_owner_lost_dispatch(request)
+                self._orchestrator().recover_owner_lost_dispatch(
+                    request, providers={"claude": provider},
+                )
             )
             apply_recovery.assert_called_once()
             execute_reservation.assert_called_once()
@@ -20376,7 +20385,9 @@ class TestOwnerLossRetryRuntime(unittest.TestCase):
         ):
             with self.assertRaises(wo.WorkflowInvariantError):
                 asyncio.run(
-                    self._orchestrator().recover_owner_lost_dispatch(request)
+                    self._orchestrator().recover_owner_lost_dispatch(
+                        request, providers={"claude": provider},
+                    )
                 )
             apply_recovery.assert_not_called()
             execute_reservation.assert_not_called()
@@ -20418,7 +20429,9 @@ class TestOwnerLossRetryRuntime(unittest.TestCase):
         ):
             with self.assertRaises(wo.WorkflowInvariantError):
                 asyncio.run(
-                    self._orchestrator().recover_owner_lost_dispatch(request)
+                    self._orchestrator().recover_owner_lost_dispatch(
+                        request, providers={"claude": provider},
+                    )
                 )
             apply_recovery.assert_not_called()
             execute_reservation.assert_not_called()
@@ -20473,7 +20486,9 @@ class TestOwnerLossRetryRuntime(unittest.TestCase):
         ):
             run_retry.return_value = self._retry_result(2)
             result = asyncio.run(
-                self._orchestrator().recover_owner_lost_dispatch(request)
+                self._orchestrator().recover_owner_lost_dispatch(
+                    request, providers={"claude": provider},
+                )
             )
             self.assertIsNotNone(result.retry_result)
             execute_reservation.assert_called_once()
@@ -20734,7 +20749,9 @@ class TestOwnerLossRetryRuntime(unittest.TestCase):
             ) as execute_reservation,
         ):
             result = asyncio.run(
-                self._orchestrator().recover_owner_lost_dispatch(request)
+                self._orchestrator().recover_owner_lost_dispatch(
+                    request, providers={"claude": provider},
+                )
             )
             apply_recovery.assert_called_once()
             execute_reservation.assert_not_called()

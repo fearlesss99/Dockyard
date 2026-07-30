@@ -4398,6 +4398,7 @@ class WorkflowOrchestrator:
     async def recover_owner_lost_dispatch(
         self,
         request: OwnerLossRecoveryRequest,
+        providers: Mapping[str, AgentCliProvider] | None = None,
     ) -> OwnerLossRecoveryResult:
         """Recover a dispatch whose original creator process has been lost.
 
@@ -4416,10 +4417,14 @@ class WorkflowOrchestrator:
           5. If retry_plan is supplied: under the same state-lock acquisition,
              atomically write the ``RETRY_RESERVED`` receipt, then release.
           6. Outside the state lock, call ``run_bounded_dispatch_retry()``
-             with the reserved identity.
+             with the reserved identity and the supplied *providers* mapping.
 
         ``retry_plan is None`` → transition-only (legacy TC-13.18d.12c).
         ``retry_plan is not None`` → transition + atomic reservation + retry.
+        When ``retry_plan is not None``, *providers* must be a non-empty
+        Mapping — enforced before any transition, reservation, or Worker
+        start.  *providers* may be omitted (or ``None``) only when
+        ``retry_plan is None``.
         """
         if type(request) is not OwnerLossRecoveryRequest:
             raise WorkflowInputError(
@@ -4431,6 +4436,22 @@ class WorkflowOrchestrator:
             raise WorkflowInputError(
                 "retry_plan must be BoundedDispatchRetryRequest or None"
             )
+
+        # ── provider validation (before any transition or reservation) ──
+        if retry_plan is not None:
+            if providers is None or not isinstance(providers, Mapping):
+                raise WorkflowInputError(
+                    "providers must be a non-empty Mapping when retry_plan is supplied"
+                )
+            if len(providers) == 0:
+                raise WorkflowInputError(
+                    "providers must not be empty when retry_plan is supplied"
+                )
+        else:
+            # transition-only: providers is ignored; default to empty
+            # to satisfy the helper signature without changing
+            # caller-visible behaviour.
+            providers = {}
 
         snapshot = StateProvider(self.project_root).snapshot()
         task = next(
@@ -4569,6 +4590,7 @@ class WorkflowOrchestrator:
                 retry_plan=retry_plan,
                 recovery_generation_id=request.expected_generation_id,
                 recovery_event_id=request.recovery_event_id,
+                providers=providers,
             )
             return OwnerLossRecoveryResult(
                 task_id=request.task_id,
@@ -4598,6 +4620,7 @@ class WorkflowOrchestrator:
         retry_plan: BoundedDispatchRetryRequest,
         recovery_generation_id: str,
         recovery_event_id: str,
+        providers: Mapping[str, AgentCliProvider],
     ) -> BoundedDispatchRetryResult:
         """Atomically reserve the next attempt identity under the state lock,
         then call ``run_bounded_dispatch_retry()`` outside the lock.
@@ -4682,4 +4705,4 @@ class WorkflowOrchestrator:
         )
 
         # ── 9. Call retry outside the state lock ───────────────────────
-        return await self.run_bounded_dispatch_retry(retry_plan, {})
+        return await self.run_bounded_dispatch_retry(retry_plan, providers)
