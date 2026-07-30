@@ -107,6 +107,21 @@ _TOMBSTONE_FIELD_NAMES: tuple[str, ...] = (
 )
 _TOMBSTONE_FIELD_SET: frozenset[str] = frozenset(_TOMBSTONE_FIELD_NAMES)
 
+# Fields that must match between caller, receipt, and an existing tombstone
+# during finalization (generation_id is checked separately because its
+# mismatch is a fencing error).
+_TOMBSTONE_REPLAY_FIELDS: tuple[str, ...] = (
+    "task_id",
+    "revision",
+    "attempt",
+    "dispatch_id",
+    "winner",
+    "worker_done",
+    "heartbeat_done",
+    "release_completed",
+    "failure_kind",
+)
+
 _DISPATCH_FAILURE_KINDS: frozenset[str] = frozenset({
     "dispatch_start_failed",
     "worker_failed",
@@ -870,11 +885,21 @@ def write_finalizer_tombstone(
     release_completed: bool,
     failure_kind: str | None,
 ) -> DispatchFinalizerTombstone:
-    """Write the FINALIZED tombstone; exactly-once, byte-exact replay on duplicate.
+    """Write the FINALIZED tombstone and advance the receipt to FINALIZED.
 
-    Requires ``worker_done``, ``heartbeat_done``, and ``release_completed`` all
-    True.  A duplicate with identical content is an idempotent replay (no
-    overwrite).  A different generation or different field values is rejected.
+    Requires a durable receipt in the ``FINALIZING`` phase with matching
+    ``generation_id``, ``task_id``, ``revision``, ``attempt``, and
+    ``dispatch_id``.  The tombstone is written first; the receipt is then
+    advanced from ``FINALIZING`` to ``FINALIZED`` under the same store
+    lock.  If both writes already succeeded, byte-exact replay returns
+    the existing tombstone.  If the tombstone write succeeded but the
+    process crashed before the receipt advance, replay finishes the
+    advance and returns the existing tombstone.
+
+    Requires ``worker_done``, ``heartbeat_done``, and ``release_completed``
+    all be ``True``.  Cross-generation writes and content-divergent
+    writes are rejected; a receipt already ``FINALIZED`` but missing its
+    tombstone is fail-closed.
     """
     _validate_project_root(project_root)
     if not (worker_done and heartbeat_done and release_completed):
@@ -898,20 +923,71 @@ def write_finalizer_tombstone(
     path = _tombstone_path(project_root, dispatch_id)
     with _exclusive_store_lock(project_root):
         existing = read_dispatch_tombstone(project_root, dispatch_id)
+        receipt = read_dispatch_receipt(project_root, dispatch_id)
+
+        if receipt is None:
+            raise DispatchSupervisorPhaseError("receipt not found")
+
+        # Caller and receipt must agree on generation and identity.
+        if receipt.generation_id != generation_id:
+            raise DispatchSupervisorFencingError(
+                "receipt generation mismatch — refusing finalization"
+            )
+        for field in ("task_id", "revision", "attempt", "dispatch_id"):
+            if getattr(receipt, field) != locals()[field]:
+                raise DispatchSupervisorPhaseError(
+                    "receipt identity mismatch — refusing finalization"
+                )
+
         if existing is not None:
             if existing.generation_id != generation_id:
                 raise DispatchSupervisorFencingError(
                     "tombstone generation mismatch — refusing overwrite"
                 )
-            # Byte-exact replay: same generation + same verdict fields.
-            for field in ("winner", "worker_done", "heartbeat_done",
-                          "release_completed", "failure_kind"):
+            # Byte-exact replay: same generation + same content fields.
+            for field in _TOMBSTONE_REPLAY_FIELDS:
                 if getattr(existing, field) != getattr(tombstone, field):
                     raise DispatchSupervisorPhaseError(
                         "tombstone already exists with different content"
                     )
-            return existing
+            if receipt.phase == DispatchReceiptPhase.FINALIZED.value:
+                return existing
+            if receipt.phase == DispatchReceiptPhase.FINALIZING.value:
+                _write_receipt(
+                    project_root,
+                    _replace_receipt(
+                        receipt,
+                        phase=DispatchReceiptPhase.FINALIZED.value,
+                        written_at=_now_utc_str(),
+                    ),
+                )
+                return existing
+            raise DispatchSupervisorPhaseError(
+                "tombstone exists but receipt is not FINALIZING or FINALIZED"
+            )
+
+        # No tombstone yet.
+        if receipt.phase == DispatchReceiptPhase.FINALIZED.value:
+            raise DispatchSupervisorPhaseError(
+                "receipt FINALIZED but tombstone missing"
+            )
+        if receipt.phase != DispatchReceiptPhase.FINALIZING.value:
+            raise DispatchSupervisorPhaseError(
+                "receipt must be in FINALIZING phase"
+            )
+
+        # Write tombstone first, then advance receipt.  A crash between the
+        # two leaves the receipt at FINALIZING and the tombstone present;
+        # the replay path above finishes the advance.
         _atomic_write_bytes(path, _serialize(_tombstone_to_dict(tombstone)))
+        _write_receipt(
+            project_root,
+            _replace_receipt(
+                receipt,
+                phase=DispatchReceiptPhase.FINALIZED.value,
+                written_at=_now_utc_str(),
+            ),
+        )
         return tombstone
 
 

@@ -174,5 +174,34 @@ class SupervisorRunnerIntegrationTests(unittest.TestCase):
         self.assertEqual(receipt.phase, "FINALIZING")  # type: ignore[union-attr]
 
 
+    def test_success_full_lifecycle_produces_finalized_receipt(self) -> None:
+        did = "DSP-int-finalized-0001"
+        gen = "GEN-int-finalized-0001"
+        dse.reserve_receipt(
+            self.project, task_id="TC-001", revision=1, attempt=1,
+            dispatch_id=did, lease_epoch=1, holder_instance_id="inst",
+            generation_id=gen, creator_pid=os.getpid(),
+            creator_creation_time=dse.get_process_creation_time(os.getpid()) or "",
+            boot_id=dse.get_boot_id(),
+        )
+        proc = self._run(_payload(self.project, dispatch_id=did, generation_id=gen,
+                                  argv=("-c", "pass")))
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        # Close the durable finalization state machine.
+        tombstone = dse.write_finalizer_tombstone(
+            self.project,
+            task_id="TC-001", revision=1, attempt=1, dispatch_id=did,
+            generation_id=gen, winner="completion", worker_done=True,
+            heartbeat_done=True, release_completed=True, failure_kind=None,
+        )
+        self.assertIsInstance(tombstone, dse.DispatchFinalizerTombstone)
+        receipt = dse.read_dispatch_receipt(self.project, did)
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt.phase, "FINALIZED")  # type: ignore[union-attr]
+        loaded_tombstone = dse.read_dispatch_tombstone(self.project, did)
+        self.assertIsNotNone(loaded_tombstone)
+        self.assertEqual(loaded_tombstone, tombstone)  # type: ignore[union-attr]
+
+
 if __name__ == "__main__":
     unittest.main()

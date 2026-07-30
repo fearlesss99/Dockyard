@@ -177,10 +177,11 @@ Rules:
 ## 6. DispatchFinalizerTombstone — Frozen Fields
 
 `DispatchFinalizerTombstone` is a separate durable record, frozen with
-at least the following fields:
+exactly the following 12 fields:
 
 ```python
 class DispatchFinalizerTombstone:  # frozen contract reference, not production
+    schema_version: str
     task_id: str
     revision: int
     attempt: int
@@ -194,9 +195,24 @@ class DispatchFinalizerTombstone:  # frozen contract reference, not production
     finalized_at: str
 ```
 
-Rule: a `FINALIZED` tombstone may only be written after the Worker has
-ended, the heartbeat has ended, and the release has completed.  The
-absence of a tombstone does **not** prove death.
+Rules:
+
+- A `FINALIZED` tombstone may only be written when the durable receipt
+  is in the `FINALIZING` phase with matching `generation_id`,
+  `task_id`, `revision`, `attempt`, and `dispatch_id`.
+- The tombstone must be written atomically; immediately afterward the
+  receipt is advanced from `FINALIZING` to `FINALIZED` under the same
+  store lock.
+- The tombstone write must precede the receipt advance.  If the process
+  crashes after the tombstone is written but before the receipt is
+  advanced, a subsequent byte-exact replay must finish the receipt
+  advance and must not treat the replay as a divergence or a
+  cross-generation overwrite.
+- A receipt already `FINALIZED` but missing its tombstone is
+  fail-closed: no tombstone may be silently manufactured.
+- A `FINALIZED` tombstone may only be written after the Worker has
+  ended, the heartbeat has ended, and the release has completed.
+- The absence of a tombstone does **not** prove death.
 
 ## 7. Process Liveness Probe — Frozen Interface
 

@@ -12141,6 +12141,7 @@ class TC1318d12aPre1DurableSupervisorEvidenceContractTests(unittest.TestCase):
             "class DispatchFinalizerTombstone:", 1
         )[1].split("```", 1)[0]
         for field in (
+            "schema_version: str",
             "task_id: str",
             "revision: int",
             "attempt: int",
@@ -12160,6 +12161,15 @@ class TC1318d12aPre1DurableSupervisorEvidenceContractTests(unittest.TestCase):
             "## 6. DispatchFinalizerTombstone", 1
         )[1].split("## 7.", 1)[0]
         for term in (
+            "exactly the following 12 fields",
+            "schema_version: str",
+            "is in the `FINALIZING` phase",
+            "matching `generation_id`",
+            "tombstone write must precede",
+            "receipt is advanced from `FINALIZING` to `FINALIZED`",
+            "byte-exact replay",
+            "receipt already `FINALIZED` but missing its tombstone is",
+            "fail-closed",
             "may only be written after the Worker has",
             "the release has completed",
             "absence of a tombstone does",
@@ -12368,6 +12378,12 @@ class TC1318d12aPre2RuntimeContractTests(unittest.TestCase):
         from dataclasses import fields
         self.assertEqual(len(fields(self.dse.DispatchProcessReceipt)), 19)
         self.assertEqual(len(fields(self.dse.DispatchFinalizerTombstone)), 12)
+        self.assertTrue(
+            self.dse.DispatchFinalizerTombstone.__dataclass_params__.frozen
+        )
+        self.assertTrue(
+            self.dse.DispatchFinalizerTombstone.__dataclass_params__.slots
+        )
 
     def test_05_supervisor_typed_api(self) -> None:
         self.assertTrue(hasattr(self.dsr, "run_supervised_dispatch"))

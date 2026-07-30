@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPTS = _REPO_ROOT / "skills" / "agentdesk" / "scripts"
@@ -273,32 +274,196 @@ class FinalizerTombstoneTests(unittest.TestCase):
 
     def _tombstone_kwargs(self, **overrides):
         base = dict(
-            task_id="TC-001", revision=1, attempt=1,
-            dispatch_id="DSP-t-0001", generation_id="GEN-t-0001",
-            winner="completion", worker_done=True, heartbeat_done=True,
-            release_completed=True, failure_kind=None,
+            task_id="TC-001",
+            revision=1,
+            attempt=1,
+            dispatch_id="DSP-t-0001",
+            generation_id="GEN-t-0001",
+            winner="completion",
+            worker_done=True,
+            heartbeat_done=True,
+            release_completed=True,
+            failure_kind=None,
         )
         base.update(overrides)
         return base
 
+    def _reserve_to_finalizing(self, **overrides):
+        kwargs = self._tombstone_kwargs()
+        kwargs.update(overrides)
+        dse.reserve_receipt(
+            self.project,
+            task_id=kwargs["task_id"],
+            revision=kwargs["revision"],
+            attempt=kwargs["attempt"],
+            dispatch_id=kwargs["dispatch_id"],
+            lease_epoch=1,
+            holder_instance_id="inst-1",
+            generation_id=kwargs["generation_id"],
+            creator_pid=os.getpid(),
+            creator_creation_time=dse.get_process_creation_time(os.getpid()) or "",
+            boot_id=dse.get_boot_id(),
+        )
+        dse.advance_to_supervisor_ready(
+            self.project,
+            dispatch_id=kwargs["dispatch_id"],
+            generation_id=kwargs["generation_id"],
+            supervisor_pid=os.getpid() + 1,
+            supervisor_creation_time="s-ct",
+        )
+        dse.advance_to_worker_started(
+            self.project,
+            dispatch_id=kwargs["dispatch_id"],
+            generation_id=kwargs["generation_id"],
+            worker_pid=os.getpid() + 2,
+            worker_creation_time="w-ct",
+            worker_process_group=9999,
+        )
+        dse.advance_to_finalizing(
+            self.project,
+            dispatch_id=kwargs["dispatch_id"],
+            generation_id=kwargs["generation_id"],
+        )
+
     def test_precondition_must_hold(self) -> None:
+        self._reserve_to_finalizing()
         with self.assertRaises(dse.DispatchSupervisorPhaseError):
-            dse.write_finalizer_tombstone(self.project, **self._tombstone_kwargs(worker_done=False))
+            dse.write_finalizer_tombstone(
+                self.project, **self._tombstone_kwargs(worker_done=False)
+            )
+
+    def test_finalizing_to_finalized_success(self) -> None:
+        self._reserve_to_finalizing()
+        tombstone = dse.write_finalizer_tombstone(
+            self.project, **self._tombstone_kwargs()
+        )
+        self.assertIsInstance(tombstone, dse.DispatchFinalizerTombstone)
+        receipt = dse.read_dispatch_receipt(self.project, "DSP-t-0001")
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt.phase, "FINALIZED")  # type: ignore[union-attr]
+
+    def test_receipt_and_tombstone_both_persist(self) -> None:
+        self._reserve_to_finalizing()
+        dse.write_finalizer_tombstone(self.project, **self._tombstone_kwargs())
+        receipt = dse.read_dispatch_receipt(self.project, "DSP-t-0001")
+        tombstone = dse.read_dispatch_tombstone(self.project, "DSP-t-0001")
+        self.assertIsNotNone(receipt)
+        self.assertIsNotNone(tombstone)
+        self.assertEqual(receipt.phase, "FINALIZED")  # type: ignore[union-attr]
+        self.assertEqual(
+            tombstone.generation_id,  # type: ignore[union-attr]
+            "GEN-t-0001",
+        )
+
+    def test_receipt_final_phase_exactly_finalized(self) -> None:
+        self._reserve_to_finalizing()
+        dse.write_finalizer_tombstone(self.project, **self._tombstone_kwargs())
+        receipt = dse.read_dispatch_receipt(self.project, "DSP-t-0001")
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt.phase, "FINALIZED")  # type: ignore[union-attr]
+        self.assertNotEqual(receipt.phase, "FINALIZING")  # type: ignore[union-attr]
 
     def test_exactly_once_replay(self) -> None:
-        first = dse.write_finalizer_tombstone(self.project, **self._tombstone_kwargs())
-        second = dse.write_finalizer_tombstone(self.project, **self._tombstone_kwargs())
+        self._reserve_to_finalizing()
+        first = dse.write_finalizer_tombstone(
+            self.project, **self._tombstone_kwargs()
+        )
+        second = dse.write_finalizer_tombstone(
+            self.project, **self._tombstone_kwargs()
+        )
         self.assertEqual(first, second)
         self.assertEqual(first.finalized_at, second.finalized_at)
 
-    def test_cross_generation_rejected(self) -> None:
+    def test_crash_recovery_tombstone_written_receipt_finalizing(self) -> None:
+        self._reserve_to_finalizing()
+        # Successful write advances receipt to FINALIZED.
         dse.write_finalizer_tombstone(self.project, **self._tombstone_kwargs())
+        receipt_before = dse.read_dispatch_receipt(self.project, "DSP-t-0001")
+        self.assertEqual(receipt_before.phase, "FINALIZED")
+        # Simulate crash: receipt reverts to FINALIZING while tombstone remains.
+        dse._write_receipt(
+            self.project,
+            dse._replace_receipt(
+                receipt_before,
+                phase=dse.DispatchReceiptPhase.FINALIZING.value,
+                written_at=dse._now_utc_str(),
+            ),
+        )
+        receipt_before = dse.read_dispatch_receipt(self.project, "DSP-t-0001")
+        self.assertEqual(receipt_before.phase, "FINALIZING")
+        # Replay must finish the advance and return the existing tombstone.
+        replayed = dse.write_finalizer_tombstone(
+            self.project, **self._tombstone_kwargs()
+        )
+        self.assertEqual(replayed.generation_id, "GEN-t-0001")
+        receipt_after = dse.read_dispatch_receipt(self.project, "DSP-t-0001")
+        self.assertEqual(receipt_after.phase, "FINALIZED")
+
+    def test_receipt_finalized_tombstone_missing_fail_closed(self) -> None:
+        self._reserve_to_finalizing()
+        # Advance receipt to FINALIZED without writing a tombstone.
+        receipt = dse.read_dispatch_receipt(self.project, "DSP-t-0001")
+        dse._write_receipt(
+            self.project,
+            dse._replace_receipt(
+                receipt,
+                phase=dse.DispatchReceiptPhase.FINALIZED.value,
+                written_at=dse._now_utc_str(),
+            ),
+        )
+        with self.assertRaises(dse.DispatchSupervisorPhaseError):
+            dse.write_finalizer_tombstone(self.project, **self._tombstone_kwargs())
+
+    def test_receipt_missing_rejected(self) -> None:
+        with self.assertRaises(dse.DispatchSupervisorPhaseError):
+            dse.write_finalizer_tombstone(self.project, **self._tombstone_kwargs())
+
+    def test_receipt_wrong_phase_rejected(self) -> None:
+        # Leave receipt at RESERVED rather than advancing to FINALIZING.
+        dse.reserve_receipt(
+            self.project,
+            task_id="TC-001",
+            revision=1,
+            attempt=1,
+            dispatch_id="DSP-t-0001",
+            lease_epoch=1,
+            holder_instance_id="inst-1",
+            generation_id="GEN-t-0001",
+            creator_pid=os.getpid(),
+            creator_creation_time=dse.get_process_creation_time(os.getpid()) or "",
+            boot_id=dse.get_boot_id(),
+        )
+        with self.assertRaises(dse.DispatchSupervisorPhaseError):
+            dse.write_finalizer_tombstone(self.project, **self._tombstone_kwargs())
+
+    def test_generation_mismatch_rejected(self) -> None:
+        self._reserve_to_finalizing(generation_id="GEN-t-0001")
         with self.assertRaises(dse.DispatchSupervisorFencingError):
             dse.write_finalizer_tombstone(
                 self.project, **self._tombstone_kwargs(generation_id="GEN-WRONG")
             )
 
+    def test_task_revision_attempt_dispatch_mismatch_rejected(self) -> None:
+        self._reserve_to_finalizing()
+        with self.assertRaises(dse.DispatchSupervisorPhaseError):
+            dse.write_finalizer_tombstone(
+                self.project, **self._tombstone_kwargs(task_id="TC-999")
+            )
+        with self.assertRaises(dse.DispatchSupervisorPhaseError):
+            dse.write_finalizer_tombstone(
+                self.project, **self._tombstone_kwargs(revision=99)
+            )
+        with self.assertRaises(dse.DispatchSupervisorPhaseError):
+            dse.write_finalizer_tombstone(
+                self.project, **self._tombstone_kwargs(attempt=99)
+            )
+        with self.assertRaises(dse.DispatchSupervisorPhaseError):
+            dse.write_finalizer_tombstone(
+                self.project, **self._tombstone_kwargs(dispatch_id="DSP-WRONG")
+            )
+
     def test_divergent_content_rejected(self) -> None:
+        self._reserve_to_finalizing()
         dse.write_finalizer_tombstone(self.project, **self._tombstone_kwargs())
         with self.assertRaises(dse.DispatchSupervisorPhaseError):
             dse.write_finalizer_tombstone(
@@ -306,10 +471,45 @@ class FinalizerTombstoneTests(unittest.TestCase):
             )
 
     def test_invalid_failure_kind_rejected(self) -> None:
+        self._reserve_to_finalizing()
         with self.assertRaises(dse.DispatchSupervisorValidationError):
             dse.write_finalizer_tombstone(
                 self.project, **self._tombstone_kwargs(failure_kind="bogus")
             )
+
+    def test_tombstone_write_failure_receipt_stays_finalizing(self) -> None:
+        self._reserve_to_finalizing()
+        with patch.object(dse, "_atomic_write_bytes", side_effect=dse.DispatchSupervisorStoreError("boom")):
+            with self.assertRaises(dse.DispatchSupervisorStoreError):
+                dse.write_finalizer_tombstone(self.project, **self._tombstone_kwargs())
+        receipt = dse.read_dispatch_receipt(self.project, "DSP-t-0001")
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt.phase, "FINALIZING")  # type: ignore[union-attr]
+        self.assertIsNone(dse.read_dispatch_tombstone(self.project, "DSP-t-0001"))
+
+    def test_tombstone_has_exactly_12_fields_frozen_slots(self) -> None:
+        self.assertEqual(len(dse.DispatchFinalizerTombstone.__dataclass_fields__), 12)
+        params = dse.DispatchFinalizerTombstone.__dataclass_params__
+        self.assertTrue(params.frozen)
+        self.assertTrue(params.slots)
+        fields = set(dse.DispatchFinalizerTombstone.__dataclass_fields__.keys())
+        self.assertEqual(
+            fields,
+            {
+                "schema_version",
+                "task_id",
+                "revision",
+                "attempt",
+                "dispatch_id",
+                "generation_id",
+                "winner",
+                "worker_done",
+                "heartbeat_done",
+                "release_completed",
+                "failure_kind",
+                "finalized_at",
+            },
+        )
 
 
 class NoLeakageTests(unittest.TestCase):

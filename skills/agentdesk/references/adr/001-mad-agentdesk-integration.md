@@ -7561,9 +7561,15 @@ Frozen `DispatchProcessReceipt` fields include `generation_id`,
 secret, and must never enter Git-tracked canonical files or exception
 messages.
 
-Frozen `DispatchFinalizerTombstone` is a separate record; a `FINALIZED`
-tombstone may be written only after Worker ended, heartbeat ended, and
-release completed.  Tombstone absence does not prove death.
+Frozen `DispatchFinalizerTombstone` is a separate 12-field record; a
+`FINALIZED` tombstone may be written only when the durable receipt is
+in the `FINALIZING` phase with matching `generation_id`, `task_id`,
+`revision`, `attempt`, and `dispatch_id`.  The tombstone is written
+first, then the receipt is advanced to `FINALIZED` under the same
+store lock.  A crash after the tombstone but before the receipt advance
+is recovered by byte-exact replay finishing the advance.  A receipt
+already `FINALIZED` but missing its tombstone is fail-closed.  Tombstone
+absence does not prove death.
 
 Frozen liveness interface:
 
