@@ -13023,3 +13023,183 @@ class TC1318d12c1OwnerLossRetryDurableContractTests(unittest.TestCase):
             "single PID observation",
         ):
             self.assertIn(term, body)
+
+
+class TC1321e1ProviderDoctorSmokeTests(unittest.TestCase):
+    """TC-13.21e.1 — Provider Doctor production module smoke tests.
+
+    Verifies the production module exists, exports the correct API, and
+    core diagnostic semantics match the frozen contract.
+    """
+
+    def setUp(self) -> None:
+        self.repo_root = Path(__file__).resolve().parents[1]
+        self.doctor_py = (
+            self.repo_root / "skills" / "agentdesk" / "scripts"
+            / "doctor.py"
+        )
+        self.scripts_dir = str(
+            self.repo_root / "skills" / "agentdesk" / "scripts"
+        )
+        sys.path.insert(0, self.scripts_dir)
+        import doctor as dr  # noqa: E402
+        self.dr = dr
+        sys.path.pop(0)
+
+    # -- 1. Production module exists --
+
+    def test_doctor_py_exists(self) -> None:
+        """doctor.py must exist."""
+        self.assertTrue(self.doctor_py.is_file())
+
+    # -- 2. Exactly 8 public symbols --
+
+    def test_exact_8_all_symbols(self) -> None:
+        expected = [
+            "DoctorCheckStatus",
+            "DoctorCheck",
+            "DoctorRequest",
+            "DoctorReport",
+            "DoctorError",
+            "DoctorInputError",
+            "run_doctor",
+            "main",
+        ]
+        self.assertEqual(sorted(self.dr.__all__), sorted(expected))
+
+    # -- 3. Enum member counts --
+
+    def test_doctor_check_status_three_members(self) -> None:
+        self.assertEqual(len(list(self.dr.DoctorCheckStatus)), 3)
+
+    def test_enum_values(self) -> None:
+        self.assertEqual(self.dr.DoctorCheckStatus.PASS.value, "pass")
+        self.assertEqual(self.dr.DoctorCheckStatus.WARN.value, "warn")
+        self.assertEqual(self.dr.DoctorCheckStatus.FAIL.value, "fail")
+
+    # -- 4. Dataclass field counts, frozen, slots --
+
+    def test_doctor_check_four_fields(self) -> None:
+        self.assertEqual(
+            len(self.dr.DoctorCheck.__dataclass_fields__), 4
+        )
+
+    def test_doctor_check_frozen_slots(self) -> None:
+        dc = self.dr.DoctorCheck(
+            "D001", self.dr.DoctorCheckStatus.PASS, "ok", None
+        )
+        self.assertFalse(hasattr(dc, "__dict__"))
+
+    def test_doctor_request_two_fields(self) -> None:
+        self.assertEqual(
+            len(self.dr.DoctorRequest.__dataclass_fields__), 2
+        )
+
+    def test_doctor_request_frozen_slots(self) -> None:
+        req = self.dr.DoctorRequest(
+            project_root=Path("/tmp"), mad_home=None
+        )
+        self.assertFalse(hasattr(req, "__dict__"))
+
+    def test_doctor_report_two_fields(self) -> None:
+        self.assertEqual(
+            len(self.dr.DoctorReport.__dataclass_fields__), 2
+        )
+
+    def test_doctor_report_frozen_slots(self) -> None:
+        report = self.dr.DoctorReport(ready=True, checks=())
+        self.assertFalse(hasattr(report, "__dict__"))
+
+    # -- 5. Exception hierarchy --
+
+    def test_exception_hierarchy(self) -> None:
+        self.assertTrue(
+            issubclass(self.dr.DoctorInputError, self.dr.DoctorError)
+        )
+        self.assertTrue(
+            issubclass(self.dr.DoctorError, Exception)
+        )
+
+    # -- 6. run_doctor rejects invalid input --
+
+    def test_run_doctor_rejects_relative_path(self) -> None:
+        with self.assertRaises(self.dr.DoctorInputError):
+            self.dr.run_doctor(
+                self.dr.DoctorRequest(
+                    project_root=Path("relative"), mad_home=None
+                )
+            )
+
+    def test_run_doctor_rejects_non_doctor_request(self) -> None:
+        with self.assertRaises(self.dr.DoctorInputError):
+            self.dr.run_doctor({})  # type: ignore[arg-type]
+
+    # -- 7. Check count is 12 --
+
+    def test_run_doctor_produces_12_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".agentdesk" / "runtime").mkdir(parents=True)
+            (project / "docs" / "pm").mkdir(parents=True)
+            (project / ".gitignore").write_text(
+                ".agentdesk/runtime/\n", encoding="utf-8"
+            )
+            report = self.dr.run_doctor(
+                self.dr.DoctorRequest(
+                    project_root=project, mad_home=None
+                )
+            )
+        self.assertEqual(len(report.checks), 12)
+
+    # -- 8. Gateway template exists and is valid --
+
+    def test_gateway_template_exists(self) -> None:
+        template_gw = (
+            self.repo_root
+            / "skills" / "agentdesk" / "assets" / "project-template"
+            / ".agentdesk" / "runtime" / "gateway.yaml"
+        )
+        self.assertTrue(template_gw.is_file())
+
+    def test_gateway_template_eight_keys(self) -> None:
+        template_gw = (
+            self.repo_root
+            / "skills" / "agentdesk" / "assets" / "project-template"
+            / ".agentdesk" / "runtime" / "gateway.yaml"
+        )
+        data = json.loads(template_gw.read_text(encoding="utf-8"))
+        self.assertEqual(len(data), 8)
+        self.assertEqual(
+            data["schema_version"], "agentdesk.gateway-config/v1"
+        )
+
+    # -- 9. Contract document exists --
+
+    def test_contract_document_exists(self) -> None:
+        contract = (
+            self.repo_root
+            / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "provider-doctor-contract.md"
+        )
+        self.assertTrue(contract.is_file())
+
+    # -- 10. ADR mentions Provider Doctor interface --
+
+    def test_adr_mentions_interface_34(self) -> None:
+        adr_text = (
+            self.repo_root
+            / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Provider Doctor", adr_text)
+        self.assertIn("TC-13.21e.1", adr_text)
+
+    # -- 11. Doctor is read-only (structural verification) --
+
+    def test_doctor_does_not_import_subprocess(self) -> None:
+        source = self.doctor_py.read_text(encoding="utf-8")
+        self.assertNotIn("import subprocess", source)
+
+    def test_doctor_does_not_import_socket(self) -> None:
+        source = self.doctor_py.read_text(encoding="utf-8")
+        self.assertNotIn("import socket", source)

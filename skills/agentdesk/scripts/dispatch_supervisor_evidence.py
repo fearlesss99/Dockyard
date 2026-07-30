@@ -1626,8 +1626,10 @@ def _open_dispatch_job(job_name: str, *, desire_access: int | None = None) -> in
     access = desire_access if desire_access is not None else _JOB_OBJECT_QUERY
     handle = _kernel32.OpenJobObjectW(access, False, job_name)
     if not handle:
+        error_code = ctypes.get_last_error()
         raise OSError(
-            "OpenJobObjectW failed: " + _get_last_error_message()
+            error_code,
+            "OpenJobObjectW failed: " + _get_last_error_message(),
         )
     return handle
 
@@ -1881,7 +1883,12 @@ class _DispatchJobOwner:
         job_name = _derive_job_name(generation_id)
         try:
             h = _open_dispatch_job(job_name)
-        except OSError:
+        except OSError as exc:
+            error_code = getattr(exc, "winerror", None)
+            if error_code is None:
+                error_code = getattr(exc, "errno", None)
+            if error_code == 2:
+                return -1
             return None
         try:
             return _query_job_active_process_count(h)
@@ -2048,6 +2055,22 @@ def _probe_dispatch_job_windows(receipt: DispatchProcessReceipt) -> ProcessLiven
     # count is None — Job query failed (Job doesn't exist, permissions
     # denied, or API error).  We cannot distinguish between these cases.
     # Without a confirmed Job query, we must NOT return DEAD.
+    if count == -1:
+        # SUPERVISOR_READY proves this named Job was created with
+        # KILL_ON_JOB_CLOSE. ERROR_FILE_NOT_FOUND proves its last handle is
+        # gone. Exact supervisor and Worker identities must independently be
+        # DEAD; PID reuse and every other evidence gap remain UNKNOWN.
+        if supervisor_liveness != ProcessLiveness.DEAD:
+            return ProcessLiveness.UNKNOWN
+        if receipt.worker_pid is not None:
+            worker_liveness = probe_process(
+                receipt.worker_pid,
+                receipt.worker_creation_time,
+                receipt.boot_id,
+            )
+            if worker_liveness != ProcessLiveness.DEAD:
+                return ProcessLiveness.UNKNOWN
+        return ProcessLiveness.DEAD
     return ProcessLiveness.UNKNOWN
 
 

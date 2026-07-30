@@ -44,6 +44,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 31 | AgentDesk Codex CLI Provider | **Current** | TC-13.8.4 | Frozen contract 搂2.12 established by TC-13.8.3; production module implemented by TC-13.8.4 |
 | 32 | AgentDesk WorkerAdapter Core 鈥?Frozen Contract | **Current** | TC-13.9b | 搂2.13; run_worker(request, worker_kind, task_difficulty, providers) 鈫?WorkerResult; budget informational only; output remains opaque bytes; no retry/slot/lease/state writes |
 | 33 | AgentDesk WorkerOutput Decoder — Claude 2.1.214 | **Current** | TC-13.9c.1 | §2.20; version-locked, fail-closed; decode_worker_result(WorkerResult, version) → WorkerOutput; require_delivery_receipt(WorkerOutput) → DeliveryReceipt; claude + claudecode only; codex unsupported |
+| 34 | AgentDesk Provider Doctor and gateway.yaml template | **Current** — TC-13.21e.1 | TC-13.21e.1 | Read-only pre-start diagnostics (D001-D012, `scripts/doctor.py`) plus safe `agentdesk.gateway-config/v1` project template; zero writes/subprocess/network/model calls, no API-key handling; real provider execution remains Target, Codex decoder remains Target/deferred (TC-13.9c.2), provider rate-limit detection remains Target (TC-13.14c) |
 
 ---
 

@@ -1,0 +1,10 @@
+{
+  "schema_version": "agentdesk.gateway-config/v1",
+  "mad_executable": "<configure-mad-executable>",
+  "mad_home": "<configure-mad-home-absolute-path>",
+  "timeout_seconds": 1800,
+  "planning_agent_ids": ["<configure-planning-agent-id>"],
+  "planning_report_agent_id": "<configure-planning-report-agent-id>",
+  "audit_agent_ids": ["<configure-audit-agent-id>"],
+  "audit_report_agent_id": "<configure-audit-report-agent-id>"
+}
