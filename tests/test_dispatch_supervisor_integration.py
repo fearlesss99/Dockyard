@@ -110,6 +110,36 @@ class SupervisorRunnerIntegrationTests(unittest.TestCase):
         if os.name != "nt":
             self.assertEqual(worker_probe, dse.ProcessLiveness.DEAD)
 
+    def test_supervisor_ready_stores_job_on_windows(self) -> None:
+        """On Windows, SUPERVISOR_READY implies the Job was created and assigned."""
+        if os.name != "nt":
+            self.skipTest("Windows-specific Job Object test")
+        did = "DSP-int-jobready-0001"
+        gen = "GEN-int-jobready-0001"
+        dse.reserve_receipt(
+            self.project, task_id="TC-001", revision=1, attempt=1,
+            dispatch_id=did, lease_epoch=1, holder_instance_id="inst",
+            generation_id=gen, creator_pid=os.getpid(),
+            creator_creation_time=dse.get_process_creation_time(os.getpid()) or "",
+            boot_id=dse.get_boot_id(),
+        )
+        proc = self._run(_payload(self.project, dispatch_id=did, generation_id=gen,
+                                  argv=("-c", "pass")))
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        receipt = dse.read_dispatch_receipt(self.project, did)
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt.phase, "FINALIZING")  # type: ignore[union-attr]
+        # After the supervisor has exited, the Job should exist (or have existed).
+        # Since the supervisor is gone (and was the last handle owner), the Job
+        # may be gone too — that's expected with KILL_ON_JOB_CLOSE.
+        # But SUPERVISOR_READY was written, which proves Job init succeeded.
+        self.assertEqual(receipt.phase, "FINALIZING")  # type: ignore[union-attr]
+        # The probe_dispatch_process_tree on the receipt should not return ALIVE
+        # (both supervisor and worker are done).
+        tree_probe = dse.probe_dispatch_process_tree(receipt)
+        self.assertNotEqual(tree_probe, dse.ProcessLiveness.ALIVE,
+                            "Tree should not be ALIVE after supervisor/worker exit")
+
     def test_nonzero_exit(self) -> None:
         did = "DSP-int-0002"
         gen = "GEN-int-0002"

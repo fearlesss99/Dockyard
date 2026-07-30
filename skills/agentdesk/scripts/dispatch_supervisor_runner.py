@@ -1,21 +1,29 @@
-"""Durable Dispatch Supervisor Runner — TC-13.18d.12a-pre2.
+"""Durable Dispatch Supervisor Runner — TC-13.18d.12a-pre2.2.
 
 Private subprocess entrypoint spawned by ``WorkflowOrchestrator`` for every
 dispatch.  Owns the provider Worker subprocess so that the Worker is a child
 of the supervisor (not the Orchestrator), letting the supervisor outlive a
 creator crash.
 
+On Windows, each dispatch generation is additionally contained in a named
+Windows Job Object with ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``.  The Job is
+created, configured, and the supervisor assigned to it *before* the durable
+``SUPERVISOR_READY`` receipt is written, so the receipt itself proves Job
+initialisation succeeded.  Worker and its descendants inherit the Job
+automatically through parent-child process association.
+
 Lifecycle (durable evidence under
 ``.agentdesk/runtime/dispatch-supervisor/<dispatch_id>.receipt.yaml``):
 
 1. read sealed invocation payload from stdin (no prompt/argv/env on argv);
-2. record own PID / creation time / boot id → write ``SUPERVISOR_READY``;
-3. spawn the provider Worker via ``run_dispatch_from_invocation``;
-4. in ``on_worker_started`` record worker PID / creation / process group and
+2. [Windows] create named Job, configure KILL_ON_JOB_CLOSE, assign self;
+3. record own PID / creation time / boot id → write ``SUPERVISOR_READY``;
+4. spawn the provider Worker via ``run_dispatch_from_invocation``;
+5. in ``on_worker_started`` record worker PID / creation / process group and
    atomically write ``WORKER_STARTED`` *before* ``communicate()`` sends stdin;
-5. emit a JSONL control line ``{"event":"worker_started",...}`` so the
+6. emit a JSONL control line ``{"event":"worker_started",...}`` so the
    Orchestrator may apply ``DISPATCH_ACKNOWLEDGED``;
-6. on Worker exit, write ``FINALIZING`` and emit a JSONL result frame.
+7. on Worker exit, write ``FINALIZING`` and emit a JSONL result frame.
 
 Nothing the Worker produces (prompt, argv, env, stdout, stderr) is ever
 persisted, logged, or placed in an exception message.  Only JSONL control
@@ -150,6 +158,23 @@ async def _amain() -> int:
         _emit_fatal("bad_payload")
         return 2
 
+    # ── Windows Job Object setup (TC-13.18d.12a-pre2.2) ──────────────
+    job_handle: int = 0
+    job_initialized: bool = False
+    if os.name == "nt":
+        try:
+            job_handle = dse.create_dispatch_job(generation_id)
+        except Exception:
+            _emit_fatal("supervisor_ready_failed")
+            return 2
+        try:
+            dse._assign_process_to_job(job_handle, os.getpid())
+        except Exception:
+            dse.close_dispatch_job_handle(job_handle)
+            _emit_fatal("supervisor_ready_failed")
+            return 2
+        job_initialized = True
+
     # ── SUPERVISOR_READY ───────────────────────────────────────────────
     try:
         sup_pid = os.getpid()
@@ -163,6 +188,8 @@ async def _amain() -> int:
         )
     except Exception:
         _emit_fatal("supervisor_ready_failed")
+        if job_handle:
+            dse.close_dispatch_job_handle(job_handle)
         return 2
 
     _emit({"event": "ready"})

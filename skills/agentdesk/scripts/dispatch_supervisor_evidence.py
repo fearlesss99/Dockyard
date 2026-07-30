@@ -19,6 +19,7 @@ Non-goals:
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import re
@@ -56,6 +57,12 @@ __all__ = [
     "get_process_creation_time",
     "get_current_process_identity",
     "probe_process",
+    "probe_dispatch_process_tree",
+    "create_dispatch_job",
+    "derive_job_name",
+    "close_dispatch_job_handle",
+    "query_job_active_process_count",
+    "is_process_in_dispatch_job",
 ]
 
 # ── constants ───────────────────────────────────────────────────────────────
@@ -1143,6 +1150,550 @@ def _probe_pid_state(pid: int) -> str:
         return "present"
     except Exception:
         return "inaccessible"
+
+
+# ── Windows Job Object private API (TC-13.18d.12a-pre2.2) ──────────────────
+#
+# All handles, structures, constants, and Windows error conversion live inside
+# this private boundary.  Handles are never exposed to public API, dataclass,
+# receipt, JSONL, or exception messages.  Non-Windows platforms use the
+# existing POSIX process-tree logic and never import/execute Windows APIs.
+
+_JOB_NAME_PREFIX = "Local\\AgentDesk-Dispatch-"
+
+
+def _derive_job_name(generation_id: str) -> str:
+    """Return a deterministic named Job Object identifier from *generation_id*.
+
+    SHA-256 of the generation_id is used to produce a non-reversible,
+    collision-resistant handle name.  The raw generation_id is never
+    embedded in the name or any error message.
+    """
+    _validate_safe_id(generation_id, "generation_id")
+    digest = hashlib.sha256(generation_id.encode("utf-8")).hexdigest()
+    return _JOB_NAME_PREFIX + digest
+
+
+def derive_job_name(generation_id: str) -> str:
+    """Public determinstic Job name derivation — pure, no Windows API."""
+    return _derive_job_name(generation_id)
+
+
+# ── Windows API ctypes wrapper (win32 only) ────────────────────────────────
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    _kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+    # Windows constants
+    _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    _JOB_OBJECT_LIMIT_VALID_FLAGS = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+    _JobObjectBasicLimitInformation = 2
+    _JobObjectExtendedLimitInformation = 9
+    _JobObjectBasicProcessIdList = 3
+
+    # ctypes structures
+    class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_uint64),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_uint64),
+            ("WriteOperationCount", ctypes.c_uint64),
+            ("OtherOperationCount", ctypes.c_uint64),
+            ("ReadTransferCount", ctypes.c_uint64),
+            ("WriteTransferCount", ctypes.c_uint64),
+            ("OtherTransferCount", ctypes.c_uint64),
+        ]
+
+    class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", _IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    class _JOBOBJECT_BASIC_PROCESS_ID_LIST(ctypes.Structure):
+        _fields_ = [
+            ("NumberOfAssignedProcesses", wintypes.DWORD),
+            ("NumberOfProcessIdsInList", wintypes.DWORD),
+            ("ProcessIdList", wintypes.ULONG * 1),  # variable-length
+        ]
+
+    # Kernel32 function prototypes
+    _kernel32.CreateJobObjectW.argtypes = (
+        ctypes.c_void_p,  # lpJobAttributes (NULL = default security)
+        wintypes.LPCWSTR,  # lpName
+    )
+    _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+
+    _kernel32.OpenJobObjectW.argtypes = (
+        wintypes.DWORD,     # dwDesiredAccess
+        wintypes.BOOL,      # bInheritHandle
+        wintypes.LPCWSTR,   # lpName
+    )
+    _kernel32.OpenJobObjectW.restype = wintypes.HANDLE
+
+    _kernel32.AssignProcessToJobObject.argtypes = (
+        wintypes.HANDLE,  # hJob
+        wintypes.HANDLE,  # hProcess
+    )
+    _kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+
+    _kernel32.SetInformationJobObject.argtypes = (
+        wintypes.HANDLE,   # hJob
+        ctypes.c_int,      # JobObjectInfoClass
+        ctypes.c_void_p,   # lpJobObjectInfo
+        wintypes.DWORD,    # cbJobObjectInfoLength
+    )
+    _kernel32.SetInformationJobObject.restype = wintypes.BOOL
+
+    _kernel32.QueryInformationJobObject.argtypes = (
+        wintypes.HANDLE,   # hJob
+        ctypes.c_int,      # JobObjectInfoClass
+        ctypes.c_void_p,   # lpJobObjectInfo
+        wintypes.DWORD,    # cbJobObjectInfoLength
+        wintypes.LPDWORD,  # lpReturnLength
+    )
+    _kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+
+    _kernel32.IsProcessInJob.argtypes = (
+        wintypes.HANDLE,   # hProcess
+        wintypes.HANDLE,   # hJob (NULL to test if in any job)
+        wintypes.LPBOOL,   # pbResult
+    )
+    _kernel32.IsProcessInJob.restype = wintypes.BOOL
+
+    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+
+    # Windows constants and functions remain private to this boundary.
+
+    _JOB_OBJECT_QUERY = 0x0004
+    _JOB_OBJECT_ASSIGN_PROCESS = 0x0001 | _JOB_OBJECT_QUERY
+    _JOB_OBJECT_SET_ATTRIBUTES = 0x0002 | _JOB_OBJECT_QUERY
+
+    _MAXIMUM_ALLOWED = 0x02000000
+
+    _ERROR_ACCESS_DENIED = 5
+    _ERROR_FILE_NOT_FOUND = 2
+    _ERROR_INVALID_HANDLE = 6
+    _ERROR_NOT_ENOUGH_MEMORY = 8
+    _ERROR_INVALID_PARAMETER = 87
+
+    def _get_last_error_message() -> str:
+        """Return a safe Win32 error code — never path, pid, or handle."""
+        err = ctypes.get_last_error()
+        return "win32-error-" + str(err)
+
+
+def _create_dispatch_job(job_name: str) -> int:
+    """Create or open a named Windows Job Object.  Returns a raw handle.
+
+    The handle must be closed by the caller via ``_close_handle()`` or
+    ``close_dispatch_job_handle()``.  Raises ``OSError`` on failure.
+    """
+    if os.name != "nt":
+        raise OSError("Job Objects are only available on Windows")
+    handle = _kernel32.CreateJobObjectW(None, job_name)
+    if not handle:
+        raise OSError(
+            "CreateJobObjectW failed: " + _get_last_error_message()
+        )
+    return handle
+
+
+def _open_dispatch_job(job_name: str, *, desire_access: int | None = None) -> int:
+    """Open an existing named Windows Job Object for query.  Returns a raw handle.
+
+    The handle must be closed by the caller.
+    Raises ``OSError`` on failure (including when the job doesn't exist).
+    """
+    if os.name != "nt":
+        raise OSError("Job Objects are only available on Windows")
+    access = desire_access if desire_access is not None else _JOB_OBJECT_QUERY
+    handle = _kernel32.OpenJobObjectW(access, False, job_name)
+    if not handle:
+        raise OSError(
+            "OpenJobObjectW failed: " + _get_last_error_message()
+        )
+    return handle
+
+
+def _set_kill_on_job_close(handle: int) -> None:
+    """Configure ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`` on *handle*.
+
+    Only ``KILL_ON_JOB_CLOSE`` is set; no CPU/memory/time/UI/active-process
+    limits are applied.  Raises ``OSError`` on failure.
+    """
+    if os.name != "nt":
+        raise OSError("Job Objects are only available on Windows")
+    info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    ok = _kernel32.SetInformationJobObject(
+        handle,
+        _JobObjectExtendedLimitInformation,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+    )
+    if not ok:
+        raise OSError(
+            "SetInformationJobObject(KILL_ON_JOB_CLOSE) failed: "
+            + _get_last_error_message()
+        )
+    _verify_kill_on_job_close(handle)
+
+
+def _verify_kill_on_job_close(handle: int) -> None:
+    """Verify that ``KILL_ON_JOB_CLOSE`` is actually set on *handle*.
+
+    Raises ``OSError`` if the flag cannot be confirmed.
+    """
+    info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    ret_len = wintypes.DWORD(0)
+    ok = _kernel32.QueryInformationJobObject(
+        handle,
+        _JobObjectExtendedLimitInformation,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+        ctypes.byref(ret_len),
+    )
+    if not ok:
+        raise OSError(
+            "QueryInformationJobObject(verify) failed: "
+            + _get_last_error_message()
+        )
+    if not (info.BasicLimitInformation.LimitFlags & _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE):
+        raise OSError(
+            "KILL_ON_JOB_CLOSE was not confirmed after SetInformationJobObject"
+        )
+
+
+def _assign_process_to_job(handle: int, pid: int) -> None:
+    """Assign the process identified by *pid* to *handle*'s Job.
+
+    Opens the target process with ``PROCESS_SET_QUOTA`` | ``PROCESS_TERMINATE``
+    access, assigns it to the Job, then closes the process handle.
+
+    Raises ``OSError`` if any step fails.
+    """
+    if os.name != "nt":
+        raise OSError("Job Objects are only available on Windows")
+
+    PROCESS_SET_QUOTA = 0x0100
+    PROCESS_TERMINATE = 0x0001
+    access = PROCESS_SET_QUOTA | PROCESS_TERMINATE
+
+    proc_handle = _kernel32.OpenProcess(access, False, pid)
+    if not proc_handle:
+        raise OSError(
+            "OpenProcess(assign) failed: " + _get_last_error_message()
+        )
+    try:
+        ok = _kernel32.AssignProcessToJobObject(handle, proc_handle)
+        if not ok:
+            raise OSError(
+                "AssignProcessToJobObject failed: "
+                + _get_last_error_message()
+            )
+    finally:
+        _kernel32.CloseHandle(proc_handle)
+
+
+def _is_process_in_any_job(pid: int) -> bool | None:
+    """Return True if *pid* is already in a Job, False if not, None on error."""
+    if os.name != "nt":
+        return None
+    PROCESS_QUERY_LIMITED_INFO = 0x1000
+    proc_handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFO, False, pid)
+    if not proc_handle:
+        return None
+    try:
+        result = wintypes.BOOL(False)
+        ok = _kernel32.IsProcessInJob(proc_handle, None, ctypes.byref(result))
+        if not ok:
+            return None
+        return bool(result.value)
+    finally:
+        _kernel32.CloseHandle(proc_handle)
+
+
+def _is_process_in_specific_job(pid: int, job_handle: int) -> bool | None:
+    """Return True if *pid* is in the Job named by *job_handle*.
+
+    Returns None on any Windows API failure.
+    """
+    if os.name != "nt":
+        return None
+    PROCESS_QUERY_LIMITED_INFO = 0x1000
+    proc_handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFO, False, pid)
+    if not proc_handle:
+        return None
+    try:
+        result = wintypes.BOOL(False)
+        ok = _kernel32.IsProcessInJob(proc_handle, job_handle, ctypes.byref(result))
+        if not ok:
+            return None
+        return bool(result.value)
+    finally:
+        _kernel32.CloseHandle(proc_handle)
+
+
+def _query_job_active_process_count(handle: int) -> int | None:
+    """Return the number of active processes in the Job, or None on failure."""
+    if os.name != "nt":
+        return None
+    # Use BasicProcessIdList with a generous initial buffer.
+    # The structure starts with space for 1 process; we overallocate.
+    class _ProcessIdListBuffer(ctypes.Structure):
+        _fields_ = [
+            ("NumberOfAssignedProcesses", wintypes.DWORD),
+            ("NumberOfProcessIdsInList", wintypes.DWORD),
+            ("ProcessIdList", wintypes.ULONG * 4096),
+        ]
+
+    buf = _ProcessIdListBuffer()
+    ret_len = wintypes.DWORD(0)
+    ok = _kernel32.QueryInformationJobObject(
+        handle,
+        _JobObjectBasicProcessIdList,
+        ctypes.byref(buf),
+        ctypes.sizeof(buf),
+        ctypes.byref(ret_len),
+    )
+    if not ok:
+        return None
+    return int(buf.NumberOfAssignedProcesses)
+
+
+def _close_handle(handle: int) -> None:
+    """Close a Windows handle.  No-op on non-Windows or invalid handle."""
+    if os.name != "nt":
+        return
+    if handle == 0 or handle is None:
+        return
+    _kernel32.CloseHandle(handle)
+
+
+# ── public Windows Job Object API ──────────────────────────────────────────
+
+
+def create_dispatch_job(generation_id: str) -> int:
+    """Create, configure, and return a dispatch Job Object handle.
+
+    The returned handle is a raw Windows ``HANDLE`` (Python ``int``).
+    The caller owns the handle and must close it via
+    ``close_dispatch_job_handle()``.
+
+    On non-Windows platforms this raises ``OSError`` — callers must guard
+    with ``os.name == "nt"`` checks.
+
+    Steps:
+    1. Derives the deterministic Job name from *generation_id*.
+    2. Creates (or opens) the named Job Object.
+    3. Configures ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``.
+    4. Returns the live handle.
+
+    Raises ``OSError`` if any step fails.
+    """
+    job_name = _derive_job_name(generation_id)
+    handle = _create_dispatch_job(job_name)
+    try:
+        _set_kill_on_job_close(handle)
+    except Exception:
+        _close_handle(handle)
+        raise
+    return handle
+
+
+def close_dispatch_job_handle(handle: int) -> None:
+    """Close a dispatch Job Object handle obtained from ``create_dispatch_job``.
+
+    Idempotent — safe to call on 0, None, or already-closed handles.
+    On non-Windows this is a no-op.
+    """
+    _close_handle(handle)
+
+
+def query_job_active_process_count(generation_id: str) -> int | None:
+    """Return the number of active processes in the named dispatch Job.
+
+    Opens the Job by name, queries the count, then closes the handle.
+    Returns ``None`` on any failure (permissions, Job not found, API error).
+    """
+    if os.name != "nt":
+        return None
+    job_name = _derive_job_name(generation_id)
+    try:
+        handle = _open_dispatch_job(job_name)
+    except OSError:
+        return None
+    try:
+        return _query_job_active_process_count(handle)
+    finally:
+        _close_handle(handle)
+
+
+def is_process_in_dispatch_job(generation_id: str, pid: int) -> bool | None:
+    """Return True if *pid* is in the dispatch Job for *generation_id*.
+
+    Opens the Job by name, queries membership, then closes the handle.
+    Returns ``None`` on any failure (permissions, Job not found, API error).
+    """
+    if os.name != "nt":
+        return None
+    job_name = _derive_job_name(generation_id)
+    try:
+        handle = _open_dispatch_job(job_name)
+    except OSError:
+        return None
+    try:
+        return _is_process_in_specific_job(pid, handle)
+    finally:
+        _close_handle(handle)
+
+
+# ── three-state process-tree probe (Windows Job Object path) ───────────────
+
+
+def probe_dispatch_process_tree(
+    receipt: DispatchProcessReceipt,
+) -> ProcessLiveness:
+    """Three-state liveness probe for a complete dispatch process tree.
+
+    Windows path (``os.name == "nt"``):
+        Uses the named Job Object derived from ``receipt.generation_id``
+        together with exact supervisor identity to produce a strict
+        ``ALIVE / DEAD / UNKNOWN`` result.
+
+    POSIX path (``os.name != "nt"``):
+        Delegates to ``probe_process()`` with tree-aware logic using
+        the recorded process group.  This path is unchanged.
+
+    The probe never downgrades ``UNKNOWN`` to ``DEAD``.  Any evidence gap,
+    permission failure, or API error returns ``UNKNOWN``.
+    """
+    # Precondition: receipt must be validated and in a phase >= SUPERVISOR_READY.
+    try:
+        phase = DispatchReceiptPhase(receipt.phase)
+    except ValueError:
+        return ProcessLiveness.UNKNOWN
+
+    order = DispatchReceiptPhase.order()
+    if phase.value < DispatchReceiptPhase.SUPERVISOR_READY.value:
+        # No durable evidence that the Job was ever initialized.
+        return ProcessLiveness.UNKNOWN
+
+    # 1. Exact supervisor identity probe.
+    supervisor_liveness = probe_process(
+        receipt.supervisor_pid,
+        receipt.supervisor_creation_time,
+        receipt.boot_id,
+    )
+    if supervisor_liveness == ProcessLiveness.ALIVE:
+        return ProcessLiveness.ALIVE
+
+    # 2. Job Object probe (Windows only).
+    if os.name == "nt":
+        return _probe_dispatch_job_windows(receipt)
+
+    # 3. POSIX: delegate to existing process-group tree logic.
+    if receipt.worker_pid is not None:
+        worker_liveness = probe_process(
+            receipt.worker_pid,
+            receipt.worker_creation_time,
+            receipt.boot_id,
+            recorded_process_group=receipt.worker_process_group,
+            require_tree=True,
+        )
+        if worker_liveness == ProcessLiveness.ALIVE:
+            return ProcessLiveness.ALIVE
+        # On POSIX, if the supervisor is DEAD and the Worker tree is confirmed
+        # DEAD, we can return DEAD.  Otherwise UNKNOWN.
+        if supervisor_liveness == ProcessLiveness.DEAD and worker_liveness == ProcessLiveness.DEAD:
+            return ProcessLiveness.DEAD
+        return ProcessLiveness.UNKNOWN
+
+    # Worker not yet started — can only rely on supervisor state.
+    if supervisor_liveness == ProcessLiveness.DEAD:
+        return ProcessLiveness.DEAD
+    return ProcessLiveness.UNKNOWN
+
+
+def _probe_dispatch_job_windows(receipt: DispatchProcessReceipt) -> ProcessLiveness:
+    """Windows Job Object based process-tree liveness probe.
+
+    Returns:
+      - ``ALIVE``: active process count > 0 in the named Job, OR the
+        exact supervisor identity is confirmed ALIVE.
+      - ``DEAD``: the named Job *was successfully queried and is empty*
+        (count == 0) AND supervisor is DEAD AND Worker (if durable) is
+        also not ALIVE.  An absent Job is NOT enough for DEAD — a query
+        failure could be caused by permissions.
+      - ``UNKNOWN``: any evidence gap, permission error, API failure,
+        job-not-found, or inconsistent evidence.
+    """
+    # Probe supervisor exact-identity first.
+    supervisor_liveness = probe_process(
+        receipt.supervisor_pid,
+        receipt.supervisor_creation_time,
+        receipt.boot_id,
+    )
+    if supervisor_liveness == ProcessLiveness.ALIVE:
+        return ProcessLiveness.ALIVE
+
+    # Probe the named Job.
+    try:
+        count = query_job_active_process_count(receipt.generation_id)
+    except Exception:
+        return ProcessLiveness.UNKNOWN
+
+    if count is not None and count > 0:
+        # Job exists and contains active processes.
+        return ProcessLiveness.ALIVE
+
+    if count is not None and count == 0:
+        # Job exists but is empty.
+        # If supervisor is confirmed DEAD and the Job is empty, we have
+        # consistent evidence.  But we also need to check Worker identity.
+        if supervisor_liveness != ProcessLiveness.DEAD:
+            return ProcessLiveness.UNKNOWN
+
+        if receipt.worker_pid is not None:
+            worker_liveness = probe_process(
+                receipt.worker_pid,
+                receipt.worker_creation_time,
+                receipt.boot_id,
+            )
+            if worker_liveness == ProcessLiveness.ALIVE:
+                # Worker is alive but not in the Job — evidence inconsistency.
+                return ProcessLiveness.UNKNOWN
+            if worker_liveness == ProcessLiveness.UNKNOWN:
+                return ProcessLiveness.UNKNOWN
+
+        # Supervisor DEAD, Job empty, Worker not-alive → DEAD.
+        return ProcessLiveness.DEAD
+
+    # count is None — Job query failed (Job doesn't exist, permissions
+    # denied, or API error).  We cannot distinguish between these cases.
+    # Without a confirmed Job query, we must NOT return DEAD.
+    return ProcessLiveness.UNKNOWN
 
 
 def _worker_tree_dead(recorded_pgid: int | None) -> bool:
