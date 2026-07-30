@@ -340,7 +340,8 @@ for the `SUPERVISOR_READY → Worker starts` window).
   removed from public `__all__`; private `_DispatchJobOwner` owns handle
   lifecycle; only `probe_dispatch_process_tree` is the public
   process-tree probe entry point).
-- Owner-loss recovery: continues Target; must remain fail-closed until
+- Owner-loss recovery: Contract Current — TC-13.18d.12b; production
+  remains Target — TC-13.18d.12c; must remain fail-closed until
   the above Current capabilities land and the §8 criteria are
   enforceable from durable evidence alone.
 - Interface #22: Target.

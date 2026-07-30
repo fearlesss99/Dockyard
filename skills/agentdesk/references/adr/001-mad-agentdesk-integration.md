@@ -7628,8 +7628,12 @@ before SUPERVISOR_READY); Windows process-tree liveness evidence
 from durable evidence and Job Object); public API boundary closure
 `Current — TC-13.18d.12a-pre2.2.1` (raw handle helpers removed from
 __all__; private _DispatchJobOwner owns handle lifecycle); owner-loss
-recovery continues Target and must remain fail-closed; Interface #22
-Target.  This card flips no Current status beyond pre2.2/pre2.2.1.
+recovery contract `Contract Current — TC-13.18d.12b` (types, safety
+criteria, recovery order, idempotency, tombstone-racing, authority
+frozen; production deferred to TC-13.18d.12c); owner-loss recovery
+runtime continues Target — TC-13.18d.12c; Interface #22
+Target.  This card flips no Current status beyond pre2.2/pre2.2.1
+and 12b.
 
 ---
 

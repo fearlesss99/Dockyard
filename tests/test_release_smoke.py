@@ -12418,6 +12418,323 @@ class TC1318d12aPre2RuntimeContractTests(unittest.TestCase):
             "Current — TC-13.18d.12a-pre2.2.1",
             self.contract_text,
         )
-        # Must still NOT claim owner-loss recovery is done.
-        self.assertIn("Owner-loss recovery: continues Target", self.contract_text)
+        # Must still NOT claim owner-loss recovery runtime is done.
+        self.assertIn("Owner-loss recovery:", self.contract_text)
+        self.assertIn("Target", self.contract_text)
         self.assertIn("Interface #22: Target", self.contract_text)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TC-13.18d.12b — Owner-Loss Recovery Contract Freeze
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TC1318d12bOwnerLossRecoveryContractTests(unittest.TestCase):
+    """TC-13.18d.12b — Owner-loss recovery contract freeze.
+
+    Pins every frozen element from the task card: types, field counts,
+    the 20-AND criteria, three-state handling, pre-ACK/post-ACK
+    paths, tombstone matrix, recovery order, authority, retry
+    boundary, idempotency/concurrency rules, safety messages,
+    and status terms.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.repo_root = Path(__file__).resolve().parents[1]
+        cls.contract_text = (
+            cls.repo_root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "workflow-orchestrator-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.dse_contract_text = (
+            cls.repo_root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "dispatch-supervisor-evidence-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr_text = (
+            cls.repo_root / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+
+    # ── §17.2 frozen types ──────────────────────────────────────────
+
+    def test_01_contract_section_exists(self) -> None:
+        self.assertIn("## 17. Owner-Loss Dispatch Recovery", self.contract_text)
+
+    def test_02_request_exactly_10_fields(self) -> None:
+        self.assertIn("Exactly 10 Fields", self.contract_text)
+        # Verify all ten field names appear.
+        fields = [
+            "task_id",
+            "expected_revision",
+            "expected_attempt",
+            "expected_dispatch_id",
+            "expected_generation_id",
+            "recovery_event_id",
+            "recovery_event_context",
+            "failure_kind",
+            "evidence_refs",
+            "retry_plan",
+        ]
+        for f in fields:
+            self.assertIn(f, self.contract_text.split("### 17.2.1")[1].split("###")[0],
+                          f"Field '{f}' must appear in §17.2.1")
+
+    def test_03_result_exactly_6_fields(self) -> None:
+        self.assertIn("Exactly 6 Fields", self.contract_text)
+        fields = [
+            "task_id",
+            "recovered_attempt",
+            "recovered_dispatch_id",
+            "process_liveness",
+            "recovery_transition",
+            "retry_result",
+        ]
+        for f in fields:
+            self.assertIn(f, self.contract_text.split("### 17.2.2")[1].split("###")[0],
+                          f"Field '{f}' must appear in §17.2.2")
+
+    def test_04_request_frozen_slots_no_dict(self) -> None:
+        body = self.contract_text.split("### 17.2.1")[1].split("### 17.2.2")[0]
+        self.assertIn("frozen=True", body)
+        self.assertIn("slots=True", body)
+        self.assertIn("no `__dict__`", body.lower())
+        self.assertIn("no `Any`", body)
+        self.assertIn("`dict`", body)
+
+    def test_05_result_frozen_slots_no_dict(self) -> None:
+        body = self.contract_text.split("### 17.2.2")[1].split("### 17.2.3")[0]
+        self.assertIn("frozen=True", body)
+        self.assertIn("slots=True", body)
+        self.assertIn("no `Any`", body)
+        self.assertIn("`dict`", body)
+
+    def test_06_no_mapping_or_any_public_fields(self) -> None:
+        # Across the whole §17.2, Mapping and Any must not appear as
+        # permissible field types in the API types.
+        api_section = self.contract_text.split("### 17.2")[1].split("### 17.3")[0]
+        self.assertNotIn("Mapping", api_section)
+        # Ensure the only mentions of Any are negations.
+        for line in api_section.split("\n"):
+            if "Any" in line:
+                self.assertIn("no", line.lower())
+
+    def test_07_no_parallel_exception_hierarchy(self) -> None:
+        body = self.contract_text.split("### 17.2.3")[1].split("### 17.3")[0]
+        self.assertIn("No parallel exception hierarchy", body)
+
+    def test_08_no_circular_import_escape(self) -> None:
+        # §17.2.3 must forbid Any/dict/string type escapes for circular imports.
+        body = self.contract_text.split("### 17.2.3")[1].split("### 17.3")[0]
+        self.assertIn("forbidden", body.lower())
+
+    # ── §17.3 recovery preconditions — all-AND ───────────────────────
+
+    def test_09_all_20_preconditions_referenced(self) -> None:
+        body = self.contract_text.split("### 17.3")[1].split("### 17.4")[0]
+        self.assertIn("All 20", body)
+        self.assertIn("zero writes", body.lower())
+        self.assertIn("fail-closed", body.lower())
+        # Key terms from the 20 conditions (use lower-case matching against
+        # the lower'd body because markdown backticks vary).
+        lower = body.lower()
+        for term in (
+            "stateprovider.snapshot()",
+            "consistent snapshot",
+            "task exists exactly",
+            "expected_revision",
+            "expected_attempt",
+            "dispatched",
+            "in_progress",
+            "current_dispatch",
+            "expected_dispatch_id",
+            "durable receipt exists",
+            "generation_id",
+            "receipt phase",
+            "tombstone is absent",
+            "creator exact identity",
+            "probe_dispatch_process_tree",
+            "supervisor cannot be",
+            "named job",
+            "returns `unknown`",
+            "recovery_event_id",
+            "failure_kind",
+            "evidence_refs",
+            "no other successful recovery event",
+        ):
+            self.assertIn(term, lower,
+                          f"Precondition term missing: {term}")
+
+    # ── §17.4 three-state handling ──────────────────────────────────
+
+    def test_10_alive_zero_write_zero_transition_zero_retry(self) -> None:
+        body = self.contract_text.split("### 17.4")[1].split("### 17.5")[0]
+        alive_body = body.split("#### `ALIVE`")[1].split("#### `UNKNOWN`")[0]
+        self.assertIn("DISPATCH_FAILED", alive_body)
+        self.assertIn("current_dispatch", alive_body)
+        self.assertIn("not** kill", alive_body)
+
+    def test_11_unknown_fail_closed_zero_all(self) -> None:
+        body = self.contract_text.split("### 17.4")[1].split("### 17.5")[0]
+        unknown_body = body.split("#### `UNKNOWN`")[1].split("#### `DEAD`")[0]
+        self.assertIn("fail-closed", unknown_body.lower())
+        self.assertIn("Zero transitions", unknown_body)
+        self.assertIn("Zero retries", unknown_body)
+        self.assertIn("Zero Workers", unknown_body)
+        self.assertIn("never downgraded", unknown_body.lower())
+
+    def test_12_dead_requires_all_20(self) -> None:
+        body = self.contract_text.split("### 17.4")[1].split("### 17.5")[0]
+        dead_body = body.split("#### `DEAD`")[1].split("### 17.5")[0]
+        self.assertIn("20 preconditions", dead_body)
+
+    # ── §17.5 recovery order ────────────────────────────────────────
+
+    def test_13_recovery_order_second_check(self) -> None:
+        body = self.contract_text.split("### 17.5")[1].split("### 17.6")[0]
+        self.assertIn("Repeat StateProvider.snapshot()", body)
+        self.assertIn("TOCTOU", body)
+        self.assertIn("DISPATCH_FAILED with lease=None", body)
+
+    # ── §17.6 recovery authority ────────────────────────────────────
+
+    def test_14_authority_lease_none_no_second_lock(self) -> None:
+        body = self.contract_text.split("### 17.6")[1].split("### 17.7")[0]
+        self.assertIn("lease=None", body)
+        self.assertIn("WorkerSlotLease", body)
+        self.assertIn("No second global lock", body)
+        self.assertIn("Deleting the old lease file", body)
+
+    def test_15_authority_blocking_item_for_12c(self) -> None:
+        body = self.contract_text.split("### 17.6")[1].split("### 17.7")[0]
+        self.assertIn("Blocking item for TC-13.18d.12c", body)
+        self.assertIn("atomic boundary", body.lower())
+
+    # ── §17.7 pre-ACK / post-ACK ────────────────────────────────────
+
+    def test_16_pre_ack_path(self) -> None:
+        body = self.contract_text.split("### 17.7")[1].split("### 17.8")[0]
+        pre_ack = body.split("#### Pre-ACK")[1].split("#### Post-ACK")[0]
+        self.assertIn("TASK_DISPATCHED", pre_ack)
+        self.assertIn("ACK event does **not** exist", pre_ack)
+        self.assertIn("DEAD", pre_ack)
+
+    def test_17_post_ack_path(self) -> None:
+        body = self.contract_text.split("### 17.7")[1].split("### 17.8")[0]
+        post_ack = body.split("#### Post-ACK")[1].split("### 17.8")[0]
+        self.assertIn("ACK event exists", post_ack)
+        self.assertIn("consistent", post_ack.lower())
+        # The "no new recovery event type" clause is in the text after both
+        # Pre-ACK and Post-ACK.
+        self.assertIn("No new\nrecovery event type", body)
+        self.assertIn("same canonical", body)
+
+    # ── §17.8 tombstone matrix ──────────────────────────────────────
+
+    def test_18_tombstone_matrix_rows(self) -> None:
+        body = self.contract_text.split("### 17.8")[1].split("### 17.9")[0]
+        for row in (
+            "Receipt active, tombstone absent, tree `ALIVE`",
+            "Receipt active, tombstone absent, tree `UNKNOWN`",
+            "Receipt active, tombstone absent, tree `DEAD`",
+            "Receipt `FINALIZING`, tombstone absent",
+            "Receipt `FINALIZED`, legal tombstone present",
+            "Receipt `FINALIZED`, tombstone missing",
+            "Evidence corruption",
+            "Idempotent replay",
+            "Duplicate/fencing error",
+        ):
+            self.assertIn(row, body, f"Tombstone matrix row missing: {row}")
+
+    # ── §17.9 retry boundary ────────────────────────────────────────
+
+    def test_19_retry_boundary_reuses_not_reimplements(self) -> None:
+        body = self.contract_text.split("### 17.9")[1].split("### 17.10")[0]
+        self.assertIn("does **not** re-implement retry", body)
+        self.assertIn("run_bounded_dispatch_retry()", body)
+        self.assertIn("fresh attempt = old attempt + 1", body.lower())
+
+    def test_20_retry_plan_none_transition_only(self) -> None:
+        body = self.contract_text.split("### 17.9")[1].split("### 17.10")[0]
+        self.assertIn("Only `DISPATCH_FAILED` is applied", body)
+        self.assertIn("No Worker is started", body)
+
+    def test_21_transition_success_retry_fail_no_rollback(self) -> None:
+        body = self.contract_text.split("### 17.9")[1].split("### 17.10")[0]
+        self.assertIn("**not** rolled back", body)
+        self.assertIn("replay", body.lower())
+
+    # ── §17.10 idempotency and concurrency ──────────────────────────
+
+    def test_22_idempotency_rules(self) -> None:
+        body = self.contract_text.split("### 17.10")[1].split("### 17.11")[0]
+        # Rules use numbered items. Check for key semantic markers in raw text.
+        for rule in (
+            "second\n   recovery event",
+            "at most one recovery winner",
+            "two recoverers race",
+            "loser must be rejected",
+            "late ACK, delivery, or heartbeat",
+            "old generation",
+            "must not start a second identical",
+        ):
+            self.assertIn(rule, body,
+                          f"Idempotency rule missing: {rule}")
+
+    def test_23_concurrency_single_winner(self) -> None:
+        body = self.contract_text.split("### 17.10")[1].split("### 17.11")[0]
+        self.assertIn("lock/CAS/fencing", body)
+
+    # ── §17.11 safety messages ──────────────────────────────────────
+
+    def test_24_safety_message_exclusions(self) -> None:
+        body = self.contract_text.split("### 17.11")[1].split("### 17.12")[0]
+        for forbidden in (
+            "dispatch_id",
+            "generation_id",
+            "PID",
+            "Job name",
+            "Workspace path",
+            "stdout/stderr",
+            "API key",
+            "repr()",
+        ):
+            self.assertIn(forbidden, body,
+                          f"Safety exclusion missing: {forbidden}")
+
+    # ── §17.12 status ───────────────────────────────────────────────
+
+    def test_25_status_terms(self) -> None:
+        self.assertIn("Contract Current — TC-13.18d.12b", self.contract_text)
+        self.assertIn("Target — TC-13.18d.12c", self.contract_text)
+
+    def test_26_interface_22_still_target(self) -> None:
+        self.assertIn("Interface #22 remains **Target**", self.contract_text)
+
+    def test_27_owner_loss_runtime_still_target(self) -> None:
+        self.assertIn("Owner-loss recovery runtime remains **Target**", self.contract_text)
+
+    def test_28_dse_contract_status_updated(self) -> None:
+        self.assertIn("Contract Current — TC-13.18d.12b", self.dse_contract_text)
+        self.assertIn("Target — TC-13.18d.12c", self.dse_contract_text)
+
+    def test_29_adr_owner_loss_status(self) -> None:
+        self.assertIn("Contract Current — TC-13.18d.12b", self.adr_text)
+        self.assertIn("Target — TC-13.18d.12c", self.adr_text)
+        self.assertIn("owner-loss recovery", self.adr_text.lower())
+
+    def test_30_existing_dependencies_remain_current(self) -> None:
+        """Verify pre2.1, pre2.2, pre2.2.1 remain Current in the contract."""
+        for term in (
+            "Current — TC-13.18d.12a-pre2.1",
+            "Current — TC-13.18d.12a-pre2.2",
+            "Current — TC-13.18d.12a-pre2.2.1",
+        ):
+            self.assertIn(term, self.dse_contract_text,
+                          f"DSE contract must still claim {term}")
+
+    def test_31_existing_dispatch_failed_current_still(self) -> None:
+        """TC-13.18d.11a/b/c must still be Current."""
+        for term in (
+            "TC-13.18d.11a/b/c: Current",
+        ):
+            self.assertIn(term, self.dse_contract_text.replace("\n", " "))

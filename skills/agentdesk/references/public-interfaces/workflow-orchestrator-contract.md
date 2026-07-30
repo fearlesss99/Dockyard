@@ -1,4 +1,4 @@
-# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation — Current — TC-13.18d.9b; Active Supersession — Current — TC-13.18d.10b; Dispatch Failure Recovery Contract — Current — TC-13.18d.11a; Canonical Transition — Current — TC-13.18d.11b; Creator-Alive Bounded Retry — Current — TC-13.18d.11c)
+# WorkflowOrchestrator — Implementable Contract (Current — TC-13.18d.8; E2E Evidence — Current — TC-13.19j; Active Cancellation — Current — TC-13.18d.9b; Active Supersession — Current — TC-13.18d.10b; Dispatch Failure Recovery Contract — Current — TC-13.18d.11a; Canonical Transition — Current — TC-13.18d.11b; Creator-Alive Bounded Retry — Current — TC-13.18d.11c; Owner-Loss Recovery Contract — Current — TC-13.18d.12b)
 
 Interface #22 frozen contract.  TC-13.18b implements the production
 WorkflowOrchestrator module.  TC-13.18c.1 extends it with
@@ -52,7 +52,9 @@ are implemented and callable.  The E2E evidence program (TC-13.19a–j)
 validates all Current runtime paths. Active-dispatch supersession production
 is Current — TC-13.18d.10b. Dispatch failure recovery is Contract Current —
 TC-13.18d.11a, its canonical transition is Current — TC-13.18d.11b, and
-bounded retry orchestration is Current — TC-13.18d.11c. Codex decoding,
+bounded retry orchestration is Current — TC-13.18d.11c. Owner-loss recovery
+is Contract Current — TC-13.18d.12b; production is Target — TC-13.18d.12c.
+Codex decoding,
 Codex rate-limit classification, and provider rate-limit wiring remain Target.
 Active-dispatch cancellation
 contract is repaired and frozen as of TC-13.18d.9a.1 (execution-based
@@ -543,6 +545,12 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18d.11a** | Dispatch failure recovery + bounded retry contract | TC-13.18d.10b | Contract Current |
 | **TC-13.18d.11b** | Canonical `DISPATCH_FAILED` transition production | TC-13.18d.11a | Current |
 | **TC-13.18d.11c** | Creator-alive bounded retry orchestration production | TC-13.18d.11b | Current |
+| **TC-13.18d.12a-pre1** | Durable dispatch supervisor evidence contract freeze | TC-13.18d.11c | Contract Current |
+| **TC-13.18d.12a-pre2.1** | Real supervisor chain, durable receipt/tombstone store, three-state liveness probing | TC-13.18d.12a-pre1 | Current |
+| **TC-13.18d.12a-pre2.2** | Windows Job Object process-tree containment | TC-13.18d.12a-pre2.1 | Current |
+| **TC-13.18d.12a-pre2.2.1** | Public API boundary closure (raw handles removed) | TC-13.18d.12a-pre2.2 | Current |
+| **TC-13.18d.12b** | Owner-loss dispatch recovery contract freeze | TC-13.18d.12a-pre2.2.1 | Contract Current |
+| **TC-13.18d.12c** | Owner-loss recovery production implementation | TC-13.18d.12b | Target |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Current — TC-13.19j |
 | **TC-13.20** | HTML Dashboard | TC-13.17, TC-13.19 | Read-only UI |
@@ -1603,5 +1611,317 @@ wiring, Codex enablement, and changes to DispatcherGateway termination.
 | **TC-13.18d.11b** | `DispatchFailedPayload` + `DISPATCH_FAILED` transition production | **Current** |
 | **TC-13.18d.11c** | Creator-alive `run_bounded_dispatch_retry` production | **Current** |
 
-Provider rate-limit wiring and owner-loss recovery remain Target. Interface
+Provider rate-limit wiring remains Target. Interface
 #22 remains Target until the remaining runtime boundaries are implemented.
+
+---
+
+## 17. Owner-Loss Dispatch Recovery — Frozen Contract (Contract Current — TC-13.18d.12b)
+
+TC-13.18d.12b freezes the contract for owner-loss dispatch recovery: a new
+Orchestrator instance recovering a legacy active dispatch after the original
+creator process has been lost. The production implementation is deferred to
+TC-13.18d.12c.
+
+This contract does **not** implement production recovery logic. It freezes
+the types, safety criteria, recovery order, idempotency semantics, and
+tombstone-racing rules. All criteria are derived from durable evidence
+provided by the TC-13.18d.12a-pre2.x chain.
+
+### 17.1 Purpose and Hard Gate
+
+Owner-loss recovery is the path where the in-memory creator that held the
+`ActiveDispatchExecution` is gone — crashed, killed, or restarted — and a
+**different** Orchestrator instance must decide whether the legacy dispatch
+can be safely declared failed and retried, or must be left alone.
+
+The single hard gate is:
+
+> Recovery may only proceed when durable evidence **independently proves**
+> the old dispatch process tree is dead.
+
+Lease expiry, heartbeat interruption, creator PID disappearance, supervisor
+parent PID disappearance, Worker single-PID disappearance, receipt file age,
+timeout, exception text, stdout/stderr, and provider exit code are **not**
+sufficient — individually or in combination — to prove death.
+
+### 17.2 Precise Public API — Frozen Types
+
+#### 17.2.1 `OwnerLossRecoveryRequest` — Exactly 10 Fields
+
+```python
+@dataclass(frozen=True, slots=True)
+class OwnerLossRecoveryRequest:
+    task_id: str
+    expected_revision: int
+    expected_attempt: int
+    expected_dispatch_id: str
+    expected_generation_id: str
+    recovery_event_id: str
+    recovery_event_context: EventContext
+    failure_kind: str
+    evidence_refs: tuple[str, ...]
+    retry_plan: BoundedDispatchRetryRequest | None
+```
+
+Frozen rules:
+
+- `frozen=True`, `slots=True` — no `__dict__`, no mutable state.
+- All ten fields are typed; no `Any`, `dict`, `Mapping`, `Optional`, or
+  string type escapes.
+- `retry_plan` is either `None` or an exact `BoundedDispatchRetryRequest`
+  (the existing frozen type from §16.3).
+- `failure_kind` must be a member of the `DISPATCH_FAILED` frozen allowlist.
+- `evidence_refs` must be non-empty, safe, and immutable.
+
+#### 17.2.2 `OwnerLossRecoveryResult` — Exactly 6 Fields
+
+```python
+@dataclass(frozen=True, slots=True)
+class OwnerLossRecoveryResult:
+    task_id: str
+    recovered_attempt: int
+    recovered_dispatch_id: str
+    process_liveness: ProcessLiveness
+    recovery_transition: TransitionResult
+    retry_result: BoundedDispatchRetryResult | None
+```
+
+Frozen rules:
+
+- `frozen=True`, `slots=True`.
+- All six fields are typed; no `Any`, `dict`, `Mapping`, or string escapes.
+- `process_liveness` is the frozen `ProcessLiveness` enum from
+  `dispatch_supervisor_evidence`.
+- `retry_result` is `None` when `retry_plan is None`; it is populated only
+  when `DISPATCH_FAILED` succeeded and `retry_plan` was supplied.
+
+#### 17.2.3 Public Method
+
+```python
+async def recover_owner_lost_dispatch(
+    self,
+    request: OwnerLossRecoveryRequest,
+) -> OwnerLossRecoveryResult:
+    ...
+```
+
+No parallel exception hierarchy is created. All exceptions are existing
+types from `WorkflowOrchestrator` (§10.2) and the underlying services
+(`WorkerSlotLeaseError`, `TransitionCASConflictError`,
+`DispatchSupervisorEvidenceError`, etc.).
+
+If existing type dependencies would cause a circular import, the contract
+requires the production implementation to resolve module ownership
+explicitly. Using `Any`, `dict`, or string types to evade the dependency
+graph is forbidden.
+
+### 17.3 Recovery Preconditions — All 20 Must Hold
+
+All conditions must be simultaneously true. If any single condition fails,
+the path must fail-closed with zero writes, zero transitions, zero retries,
+and zero new Workers:
+
+1. `StateProvider.snapshot()` succeeds and returns a consistent snapshot.
+2. Task exists exactly in the snapshot.
+3. Task revision equals `expected_revision` exactly.
+4. Task attempt equals `expected_attempt` exactly.
+5. Task state is exactly `dispatched` or `in_progress`.
+6. Task `current_dispatch` exists.
+7. `dispatch_id` equals `expected_dispatch_id` exactly.
+8. Durable receipt exists (via `read_dispatch_receipt`).
+9. Receipt `task_id`/`revision`/`attempt`/`dispatch_id`/`generation_id`
+   matches the request and the ledger snapshot exactly.
+10. Receipt phase is an active phase that permits recovery
+    (`SUPERVISOR_READY`, `WORKER_STARTED`, or `FINALIZING`).
+11. Tombstone is absent, or if present must reach a frozen consensus with
+    the receipt and ledger (see §17.8).
+12. Creator exact identity probes `DEAD`.
+13. `probe_dispatch_process_tree(receipt)` returns exactly `DEAD`.
+14. Supervisor cannot be `ALIVE`.
+15. Named Job Object active process count is not greater than zero
+    (Windows; on POSIX, the process-group tree must be proven empty).
+16. No Windows/API/permission evidence returns `UNKNOWN`.
+17. `recovery_event_id` is globally unique.
+18. `failure_kind` is a member of the `DISPATCH_FAILED` frozen allowlist.
+19. `evidence_refs` is non-empty, safe, and immutable.
+20. No other successful recovery event exists for this same dispatch.
+
+### 17.4 Three-State Handling
+
+#### `ALIVE`
+
+- Do **not** write `DISPATCH_FAILED`.
+- Do **not** clear `current_dispatch`.
+- Do **not** start retry.
+- Return or raise a clear "still running" result.
+- Do **not** kill the old supervisor or Worker.
+
+#### `UNKNOWN`
+
+- Must fail-closed.
+- Zero transitions.
+- Zero retries.
+- Zero Workers.
+- `UNKNOWN` is never downgraded to `DEAD`.
+- No timeout-based re-guessing is permitted.
+
+#### `DEAD`
+
+Only when **all** 20 preconditions in §17.3 hold may the recovery
+transition proceed.
+
+### 17.5 Exact Recovery Order — Frozen
+
+```text
+1.  Validate request (types, field presence, allowlists)
+2.  StateProvider.snapshot() — obtain consistent read
+3.  Bind task + current_dispatch from snapshot
+4.  Read durable receipt + tombstone
+5.  Validate exact identities (receipt vs request vs ledger)
+6.  Probe creator exact identity (PID + creation time + boot_id)
+7.  probe_dispatch_process_tree(receipt)
+8.  Acquire single recovery authority / fence
+9.  Repeat StateProvider.snapshot() + evidence checks (TOCTOU close)
+10. Apply DISPATCH_FAILED with lease=None
+11. Optionally invoke existing bounded retry
+12. Return OwnerLossRecoveryResult
+```
+
+Step 9 (second check) closes the TOCTOU window between first probe and the
+state write. Recovery must **not** write state after the first probe
+without re-validating snapshot, task identity, receipt/tombstone state, and
+process tree liveness.
+
+### 17.6 Recovery Authority
+
+The frozen authority rules are:
+
+- The PM/Orchestrator holds the existing state-transition lock.
+- The old `WorkerSlotLease` is **not** reused.
+- `DISPATCH_FAILED` is applied with `lease=None`.
+- The authority depends on `ControlPlaneTransition`'s CAS and dispatch
+  identity fencing.
+- No second global lock is created.
+- Deleting the old lease file to claim ownership is forbidden.
+
+**Blocking item for TC-13.18d.12c**: If the existing lock does not provide
+an atomic boundary across "second check → transition", the production
+implementation must raise this as a blocking issue. The contract must not
+paper over the gap.
+
+### 17.7 Pre-ACK and Post-ACK Paths
+
+#### Pre-ACK
+
+Task state is typically `dispatched`. Before allowing recovery, the
+implementation must prove:
+
+- `TASK_DISPATCHED` event exists in the ledger.
+- ACK event does **not** exist.
+- Receipt has reached a phase that permits recovery
+  (`SUPERVISOR_READY` or later).
+- Process tree is `DEAD`.
+- No late-arriving Worker start or ACK that has not yet been persisted
+  could create an identity collision.
+
+#### Post-ACK
+
+Task state is typically `in_progress`. Before allowing recovery, the
+implementation must prove:
+
+- ACK event exists.
+- Receipt, ledger, and ACK dispatch identity are consistent.
+- Process tree is `DEAD`.
+- No successful delivery or finalizer tombstone conflicts with recovery.
+
+Both paths use the same canonical `DISPATCH_FAILED` transition. No new
+recovery event type is created for pre-ACK vs post-ACK.
+
+### 17.8 Tombstone and Completion Races — Frozen Matrix
+
+| Durable state | Conclusion |
+|---|---|
+| Receipt active, tombstone absent, tree `ALIVE` | Do not recover |
+| Receipt active, tombstone absent, tree `UNKNOWN` | Fail-closed |
+| Receipt active, tombstone absent, tree `DEAD` | Continue remaining checks |
+| Receipt `FINALIZING`, tombstone absent | Fail-closed; resolve finalization first |
+| Receipt `FINALIZED`, legal tombstone present | Do not recover |
+| Receipt `FINALIZED`, tombstone missing | Evidence corruption; fail-closed |
+| Tombstone success but ledger not yet updated | Do not treat as owner-loss retry |
+| Delivery submitted or accepted/integrated | Do not recover dispatch |
+| Recovery event already exists and byte-exact | Idempotent replay |
+| Recovery event content diverges | Duplicate/fencing error |
+
+### 17.9 Retry Boundary
+
+Owner-loss recovery does **not** re-implement retry.
+
+When `retry_plan is None`:
+
+- Only `DISPATCH_FAILED` is applied.
+- Task returns to `ready`.
+- No Worker is started.
+
+When `retry_plan` is present:
+
+- `DISPATCH_FAILED` must succeed first.
+- Then the existing `run_bounded_dispatch_retry()` is called.
+- Fresh attempt = old attempt + 1.
+- Fresh `dispatch_id` and `generation_id` must differ from the old ones.
+- At most 1..3 attempts (the existing bounded retry ceiling).
+- No hidden retry is added.
+- No exception-text classification is performed.
+- Recovery replay does not start retry again.
+
+**Frozen result semantics when transition succeeds but retry fails:**
+The `DISPATCH_FAILED` transition is **not** rolled back. The task is left
+in `ready` state. The retry failure propagates to the caller. Replay
+recognises the successful transition and does not retry again.
+
+### 17.10 Idempotency and Concurrency — Frozen Rules
+
+1. Replaying the same owner-loss request must not generate a second
+   recovery event.
+2. The same dead dispatch can have at most one recovery winner.
+3. When two recoverers race, the loser must be rejected by lock/CAS/fencing.
+4. A late ACK, delivery, or heartbeat from the old Worker cannot alter the
+   new attempt.
+5. After the new attempt starts, the old generation's receipt/evidence
+   cannot bind to the new dispatch.
+6. When recovery transition succeeded but the caller crashed, a subsequent
+   call must recognise the existing success and must not repeat recovery.
+7. When retry has already started, replay must not start a second identical
+   attempt.
+
+### 17.11 Safety — Error Messages
+
+Exception messages must not contain:
+
+- Task payload.
+- `dispatch_id`.
+- `generation_id`.
+- PID.
+- Job name.
+- Workspace path.
+- Receipt or tombstone content.
+- stdout/stderr.
+- API key or token.
+- User-generated text.
+- `repr()` of a malicious object.
+
+Only fixed field names and fixed error categories are permitted.
+
+### 17.12 Production Split and Status
+
+| Card | Scope | Status |
+|---|---|---|
+| **TC-13.18d.12b** | This owner-loss recovery contract freeze | **Contract Current** |
+| **TC-13.18d.12c** | Owner-loss recovery production implementation | **Target** |
+
+Durable supervisor evidence remains **Current** —
+TC-13.18d.12a-pre2.1 / pre2.2 / pre2.2.1.
+Windows Job Object containment remains **Current** —
+TC-13.18d.12a-pre2.2.
+Interface #22 remains **Target**.
+Owner-loss recovery runtime remains **Target** — TC-13.18d.12c.
