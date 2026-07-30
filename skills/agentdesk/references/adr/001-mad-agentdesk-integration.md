@@ -7510,6 +7510,107 @@ TC-13.14c (provider detection) — depends on TC-13.14b + real 429 evidence
 * TC-13.14b promotes Interface #19 to Current.
 * WorkflowOrchestrator rate-limit wiring remains **not started**.
 
+### 2.22 Durable Dispatch Supervisor Evidence — Frozen Contract (Contract Current — TC-13.18d.12a-pre1)
+
+Frozen contract: `skills/agentdesk/references/public-interfaces/dispatch-supervisor-evidence-contract.md`.
+
+Consequence of the TC-13.18d.12a read-only investigation, whose decisive
+conclusion is: owner-loss recovery is not currently implementable
+fail-closed.  No creator identity, Worker PID, process-group identity,
+incarnation token, or durable process receipt is persisted anywhere in
+the current system; `DispatchStarted` is explicitly a no-PID receipt;
+the only existing `DISPATCH_FAILED` caller (`run_bounded_dispatch_retry`)
+requires same-process in-memory `_finalizer_metadata` and is
+unreachable after owner loss.
+
+This card freezes a durable evidence protocol and contract-freeze tests
+only.  It does **not** implement a supervisor, a process liveness
+probe, an owner-loss recovery path, or any production runtime module.
+
+Core principle: a future implementation must introduce a per-dispatch
+supervisor lifecycle that persists its own identity **before** the
+provider Worker is allowed to start, closing the "Worker started
+without receipt" crash window:
+
+```text
+Orchestrator
+  → start supervisor
+  → supervisor durable-ready receipt
+  → supervisor starts provider Worker
+  → supervisor durable worker-start receipt
+  → ACK may be written
+```
+
+Frozen durable state machine — exact phases, forward-only:
+
+```text
+RESERVED → SUPERVISOR_READY → WORKER_STARTED → FINALIZING → FINALIZED
+```
+
+Jumps, backward transitions, and cross-generation overwrites are
+forbidden.  Receipt-to-transition coupling: `TASK_DISPATCHED` requires
+at least `RESERVED`; the Worker may start only after `SUPERVISOR_READY`;
+`DISPATCH_ACKNOWLEDGED` may be written only after `WORKER_STARTED`.
+
+Frozen `DispatchProcessReceipt` fields include `generation_id`,
+`boot_id`, `creator_pid`/`creator_creation_time`,
+`supervisor_pid`/`supervisor_creation_time`,
+`worker_pid`/`worker_creation_time`/`worker_process_group`, and
+`written_at`; fields for phases not yet reached must be exactly `None`.
+`generation_id` is an identity value, not an API key or authorization
+secret, and must never enter Git-tracked canonical files or exception
+messages.
+
+Frozen `DispatchFinalizerTombstone` is a separate record; a `FINALIZED`
+tombstone may be written only after Worker ended, heartbeat ended, and
+release completed.  Tombstone absence does not prove death.
+
+Frozen liveness interface:
+
+```python
+class ProcessLiveness(str, Enum):
+    ALIVE = "alive"
+    DEAD = "dead"
+    UNKNOWN = "unknown"
+```
+
+Probes must separately test `creator`, `supervisor`, and `Worker` on
+PID + creation time/incarnation + `boot_id`.  PID missing → `DEAD`;
+all signals match → `ALIVE`; PID reused, `boot_id` differs, or
+permission denied → `UNKNOWN`; any parse/permission/platform error →
+`UNKNOWN`.  `UNKNOWN` must never be downgraded to `DEAD`.
+
+Owner-loss safety criteria (all must hold to authorize `DISPATCH_FAILED`
+and the next attempt): receipt schema matches `DispatchCAS` exactly;
+`generation_id` matches exactly; `creator`/`supervisor`/`Worker` all
+`DEAD`; no clean `FINALIZED` tombstone or tombstone indicates
+non-completion; lease fenced but expiry alone is not sufficient;
+canonical state still `dispatched` or `in_progress`; `current_dispatch`
+matches exactly; no delivery/acceptance/integration advanced evidence.
+Any `ALIVE` or `UNKNOWN` forbids `DISPATCH_FAILED` and the next
+attempt.
+
+Process-tree boundary: POSIX process-group/session and Windows
+process-tree/Job Object identity must be recorded and probed
+separately; the whole tree must be proven dead or the result is
+`UNKNOWN`; probing only the parent Worker PID and assuming descendants
+are dead is forbidden.
+
+Storage boundary: receipts/tombstones live under `.agentdesk/runtime/`
+with atomic replace, documented lock order, symlink/reparse
+fail-closed, fixed paths, exact schema, temp cleanup, and error
+messages that leak no PID/path/`generation_id`/arguments.  The
+existing `StateSnapshot` public shape is unchanged; a future
+`DispatchRecoveryEvidenceProvider` is the dedicated read-only boundary
+for runtime process evidence.
+
+Status: TC-13.18d.11a/b/c Current; TC-13.18d.12a investigation
+complete; durable supervisor evidence Contract Current (this card) with
+runtime production implementation Target — TC-13.18d.12a-pre2;
+owner-loss recovery continues Target and must remain fail-closed until
+the §8 criteria are enforceable from durable evidence alone; Interface
+#22 Target.  This card flips no Current status.
+
 ---
 
 ## 3. Ownership Boundaries

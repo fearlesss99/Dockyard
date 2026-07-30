@@ -11969,3 +11969,328 @@ class TC1318d11aDispatchFailureRecoveryContractTests(unittest.TestCase):
             "No fourth dispatch is started",
         ):
             self.assertIn(term, self.section)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TC-13.18d.12a-pre1 — Durable Dispatch Supervisor Evidence Contract Freeze
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TC1318d12aPre1DurableSupervisorEvidenceContractTests(unittest.TestCase):
+    """TC-13.18d.12a-pre1 durable dispatch supervisor evidence contract freeze.
+
+    This is a *contract freeze* test.  It asserts that the frozen contract
+    document and the ADR section encode the durable supervisor-evidence
+    protocol exactly.  It does not exercise any supervisor, probe, or
+    recovery runtime (none exists yet).  Per the card's verification rules,
+    only this class and ``git diff --check`` may be run.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.repo_root = Path(__file__).resolve().parents[1]
+        cls.contract_text = (
+            cls.repo_root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "dispatch-supervisor-evidence-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr_text = (
+            cls.repo_root / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+
+    # -- §0 / §12 status and investigation conclusion --------------------
+
+    def test_01_contract_status_and_investigation_conclusion(self) -> None:
+        self.assertIn(
+            "Frozen Contract (Contract Current — TC-13.18d.12a-pre1)",
+            self.contract_text,
+        )
+        self.assertIn(
+            "Owner-loss recovery is not currently implementable fail-closed.",
+            self.contract_text,
+        )
+        self.assertIn("TC-13.18d.12a-pre2", self.contract_text)
+
+    def test_02_adr_status_and_section(self) -> None:
+        self.assertIn(
+            "2.22 Durable Dispatch Supervisor Evidence",
+            self.adr_text,
+        )
+        self.assertIn(
+            "Contract Current — TC-13.18d.12a-pre1", self.adr_text
+        )
+        self.assertIn("TC-13.18d.12a-pre2", self.adr_text)
+        self.assertIn("per-dispatch", self.adr_text)
+
+    # -- §1 non-goals ----------------------------------------------------
+
+    def test_03_contract_only_no_runtime(self) -> None:
+        for term in (
+            "No supervisor process is implemented by this card",
+            "No process liveness probe is implemented by this card",
+            "No `DISPATCH_FAILED` is written from canonical state alone by "
+            "this",
+            "Lease expiry alone is",
+            "Runtime\nimplementation is deferred to TC-13.18d.12a-pre2",
+        ):
+            self.assertIn(term, self.contract_text)
+
+    # -- §2 supervisor lifecycle ordering --------------------------------
+
+    def test_04_supervisor_lifecycle_ordering(self) -> None:
+        for term in (
+            "supervisor durable-ready receipt",
+            "supervisor durable worker-start receipt",
+            "ACK may be written",
+            "before the Worker",
+            "crash window",
+        ):
+            self.assertIn(term, self.contract_text)
+
+    # -- §3 durable state machine ----------------------------------------
+
+    def test_05_state_machine_phases(self) -> None:
+        section = self.contract_text.split(
+            "## 3. Durable State Machine", 1
+        )[1].split("## 4.", 1)[0]
+        for phase in (
+            "RESERVED",
+            "SUPERVISOR_READY",
+            "WORKER_STARTED",
+            "FINALIZING",
+            "FINALIZED",
+        ):
+            self.assertIn(phase, section)
+
+    def test_06_state_machine_forbidden_transitions(self) -> None:
+        section = self.contract_text.split(
+            "### 3.3 Forbidden Transitions", 1
+        )[1].split("## 4.", 1)[0]
+        for term in (
+            "Skipping a phase is forbidden",
+            "Backward transitions are forbidden",
+            "may never be overwritten by a write",
+            "may never regress",
+        ):
+            self.assertIn(term, section)
+
+    # -- §4 receipt-to-transition coupling -------------------------------
+
+    def test_07_receipt_transition_coupling(self) -> None:
+        section = self.contract_text.split(
+            "## 4. Receipt-to-Transition Coupling", 1
+        )[1].split("## 5.", 1)[0]
+        for term in (
+            "at least a `RESERVED` receipt",
+            "ACK can never exist without a durable",
+            "supervisor-ready receipt",
+        ):
+            self.assertIn(term, section)
+
+    # -- §5 DispatchProcessReceipt fields --------------------------------
+
+    def test_08_receipt_exact_fields(self) -> None:
+        block = self.contract_text.split(
+            "class DispatchProcessReceipt:", 1
+        )[1].split("```", 1)[0]
+        for field in (
+            "schema_version: str",
+            "task_id: str",
+            "revision: int",
+            "attempt: int",
+            "dispatch_id: str",
+            "lease_epoch: int",
+            "holder_instance_id: str",
+            "generation_id: str",
+            "platform: str",
+            "boot_id: str",
+            "phase: str",
+            "creator_pid: int | None",
+            "creator_creation_time: str | None",
+            "supervisor_pid: int | None",
+            "supervisor_creation_time: str | None",
+            "worker_pid: int | None",
+            "worker_creation_time: str | None",
+            "worker_process_group: int | None",
+            "written_at: str",
+        ):
+            self.assertIn(field, block)
+
+    def test_09_receipt_none_and_generation_rules(self) -> None:
+        section = self.contract_text.split(
+            "## 5. DispatchProcessReceipt", 1
+        )[1].split("## 6.", 1)[0]
+        for term in (
+            "must be exactly",
+            "`None`",
+            "forged or placeholder value",
+            "an API key or",
+            "authorization secret",
+            "written into a Git-tracked",
+            "canonical file",
+            "must never appear in an exception message",
+            "detect PID reuse across a",
+            "system restart",
+        ):
+            self.assertIn(term, section)
+
+    # -- §6 DispatchFinalizerTombstone ----------------------------------
+
+    def test_10_tombstone_exact_fields(self) -> None:
+        block = self.contract_text.split(
+            "class DispatchFinalizerTombstone:", 1
+        )[1].split("```", 1)[0]
+        for field in (
+            "task_id: str",
+            "revision: int",
+            "attempt: int",
+            "dispatch_id: str",
+            "generation_id: str",
+            "winner: str",
+            "worker_done: bool",
+            "heartbeat_done: bool",
+            "release_completed: bool",
+            "failure_kind: str | None",
+            "finalized_at: str",
+        ):
+            self.assertIn(field, block)
+
+    def test_11_tombstone_finalized_precondition(self) -> None:
+        section = self.contract_text.split(
+            "## 6. DispatchFinalizerTombstone", 1
+        )[1].split("## 7.", 1)[0]
+        for term in (
+            "may only be written after the Worker has",
+            "the release has completed",
+            "absence of a tombstone does",
+            "prove death",
+        ):
+            self.assertIn(term, section)
+
+    # -- §7 liveness probe ------------------------------------------------
+
+    def test_12_liveness_enum_values(self) -> None:
+        block = self.contract_text.split(
+            "class ProcessLiveness", 1
+        )[1].split("```", 1)[0]
+        for value in (
+            'ALIVE = "alive"',
+            'DEAD = "dead"',
+            'UNKNOWN = "unknown"',
+        ):
+            self.assertIn(value, block)
+
+    def test_13_liveness_probe_rules(self) -> None:
+        section = self.contract_text.split(
+            "## 7. Process Liveness Probe", 1
+        )[1].split("## 8.", 1)[0]
+        for term in (
+            "separately test three subjects",
+            "PID does not exist, the subject is `DEAD`",
+            "PID has been reused",
+            "`boot_id` differs",
+            "permission to inspect the process",
+            "Any parse, permission, or platform error resolves to `UNKNOWN`",
+            "must never be downgraded to `DEAD`",
+        ):
+            self.assertIn(term, section)
+
+    # -- §8 owner-loss safety criteria -----------------------------------
+
+    def test_14_owner_loss_criteria(self) -> None:
+        section = self.contract_text.split(
+            "## 8. Owner-Loss Safety Criteria", 1
+        )[1].split("## 9.", 1)[0]
+        for term in (
+            "receipt schema matches `DispatchCAS` exactly",
+            "The `generation_id` matches exactly",
+            "`creator` is `DEAD`",
+            "`supervisor` is `DEAD`",
+            "`Worker` is `DEAD`",
+            "No clean `FINALIZED` tombstone exists",
+            "finalization did not complete",
+            "lease has been fenced, but lease expiry alone is",
+            "sufficient",
+            "canonical state is still `dispatched` or `in_progress`",
+            "`current_dispatch` matches exactly",
+            "No delivery, acceptance, or integration advanced evidence "
+            "exists",
+            "Any `ALIVE` or `UNKNOWN` result for any subject forbids",
+            "lease expiry alone is **not**",
+        ):
+            self.assertIn(term, section)
+
+    # -- §9 process-tree boundary ----------------------------------------
+
+    def test_15_process_tree_boundary(self) -> None:
+        section = self.contract_text.split(
+            "## 9. Process-Tree Boundary", 1
+        )[1].split("## 10.", 1)[0]
+        for term in (
+            "process group / session identity is recorded",
+            "process-tree / Job Object identity is recorded",
+            "When the whole process tree cannot be proven dead",
+            "probe only the parent Worker PID and then",
+            "assume all descendants are dead",
+        ):
+            self.assertIn(term, section)
+
+    # -- §10 storage boundary --------------------------------------------
+
+    def test_16_storage_boundary(self) -> None:
+        section = self.contract_text.split(
+            "## 10. Storage Boundary", 1
+        )[1].split("## 11.", 1)[0]
+        for term in (
+            "under `.agentdesk/runtime/`",
+            "Atomic replace is required.",
+            "state lock or a dedicated, documented lock order",
+            "Symlinks and Windows reparse points are fail-closed.",
+            "Temporary files are cleaned up.",
+            "must not leak PID, path",
+            "does not change the existing `StateSnapshot`",
+            "DispatchRecoveryEvidenceProvider",
+        ):
+            self.assertIn(term, section)
+
+    # -- §11 crash-window matrix -----------------------------------------
+
+    def test_17_crash_window_matrix(self) -> None:
+        section = self.contract_text.split(
+            "## 11. Crash-Window Matrix", 1
+        )[1].split("## 12.", 1)[0]
+        for window in (
+            "Crash before `RESERVED` is written",
+            "Crash after `RESERVED`, before supervisor starts",
+            "Crash after supervisor starts, before `SUPERVISOR_READY` is "
+            "written",
+            "Crash after `SUPERVISOR_READY`, before Worker starts",
+            "Crash after Worker starts, before `WORKER_STARTED` is written",
+            "Crash after `WORKER_STARTED`, before ACK",
+            "Crash after ACK",
+            "Crash during finalizer phases",
+            "Receipt partial write",
+            "System restart",
+            "PID reuse",
+            "Insufficient permissions",
+        ):
+            self.assertIn(window, section)
+        for conclusion in (
+            "safe recovery",
+            "still alive",
+            "UNKNOWN / fail-closed",
+        ):
+            self.assertIn(conclusion, section)
+
+    # -- §12 sequencing ---------------------------------------------------
+
+    def test_18_sequencing_and_status(self) -> None:
+        for term in (
+            "TC-13.18d.11a/b/c: Current",
+            "TC-13.18d.12a: investigation complete",
+            "Owner-loss recovery: continues Target",
+            "must remain fail-closed until",
+            "does not flip any Current status",
+            "Interface #22: Target",
+        ):
+            self.assertIn(term, self.contract_text)
