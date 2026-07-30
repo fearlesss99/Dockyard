@@ -12991,14 +12991,14 @@ class TC1318d12c1OwnerLossRetryDurableContractTests(unittest.TestCase):
             "**Contract Current — TC-13.18d.12c.1**",
             body,
         )
-        self.assertIn("**Target — TC-13.18d.12c.2**", body)
+        self.assertIn("**Current — TC-13.18d.12c.2**", body)
         self.assertIn("Interface #22 | **Target**", body)
-        self.assertIn("adds no production retry implementation", body)
+        self.assertIn("retry runtime is Current", body)
 
     def test_14_status_is_synchronized_across_contracts_and_adr(self) -> None:
         for text in (self.workflow, self.evidence, self.adr):
             self.assertIn("Contract Current — TC-13.18d.12c.1", text)
-            self.assertIn("Target — TC-13.18d.12c.2", text)
+            self.assertIn("Current — TC-13.18d.12c.2", text)
             self.assertIn("Interface #22", text)
 
     def test_15_evidence_contract_freezes_storage_and_identity(self) -> None:

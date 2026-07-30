@@ -7638,7 +7638,8 @@ and 12b.
 
 TC-13.18d.12c follow-up: owner-loss transition-only recovery is now
 **Current**. The automatic-retry durable contract is **Contract Current —
-TC-13.18d.12c.1**; its runtime remains **Target — TC-13.18d.12c.2**.
+TC-13.18d.12c.1**; its runtime is **Current — TC-13.18d.12c.2**.
+Owner-loss automatic retry is **Current**.
 Interface #22 remains **Target**.
 
 ---
@@ -7668,7 +7669,8 @@ Status:
 - TC-13.18d.12c transition-only owner-loss recovery: **Current**.
 - Durable automatic-retry contract:
   **Contract Current — TC-13.18d.12c.1**.
-- Automatic-retry runtime: **Target — TC-13.18d.12c.2**.
+- Automatic-retry runtime: **Current — TC-13.18d.12c.2**.
+- Owner-loss automatic retry: **Current**.
 - Interface #22 remains **Target**.
 
 ---

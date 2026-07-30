@@ -342,8 +342,9 @@ for the `SUPERVISOR_READY → Worker starts` window).
   process-tree probe entry point).
 - Owner-loss recovery: Contract Current — TC-13.18d.12b; transition-only
   production Current — TC-13.18d.12c. The automatic-retry durable contract
-  is Contract Current — TC-13.18d.12c.1; runtime remains Target —
-  TC-13.18d.12c.2. ALIVE and UNKNOWN remain fail-closed.
+  is Contract Current — TC-13.18d.12c.1; runtime is Current —
+  TC-13.18d.12c.2. Owner-loss automatic retry is Current.
+  ALIVE and UNKNOWN remain fail-closed.
 - Historical TC-13.18d.12b status: Target — TC-13.18d.12c (superseded by
   the transition-only production status above).
 - Interface #22: Target.
@@ -399,5 +400,6 @@ Status:
 - TC-13.18d.12c transition-only recovery: **Current**.
 - Owner-loss automatic retry durable contract:
   **Contract Current — TC-13.18d.12c.1**.
-- Owner-loss automatic retry runtime: **Target — TC-13.18d.12c.2**.
+- Owner-loss automatic retry runtime: **Current — TC-13.18d.12c.2**.
+- Owner-loss automatic retry: **Current**.
 - Interface #22: **Target**.

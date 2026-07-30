@@ -55,7 +55,8 @@ TC-13.18d.11a, its canonical transition is Current — TC-13.18d.11b, and
 bounded retry orchestration is Current — TC-13.18d.11c. Owner-loss recovery
 is Contract Current — TC-13.18d.12b; transition-only production is
 Current — TC-13.18d.12c. The durable automatic-retry contract is Contract
-Current — TC-13.18d.12c.1; its runtime is Target — TC-13.18d.12c.2.
+Current — TC-13.18d.12c.1; its runtime is Current — TC-13.18d.12c.2.
+Owner-loss automatic retry is Current.
 Codex decoding,
 Codex rate-limit classification, and provider rate-limit wiring remain Target.
 Active-dispatch cancellation
@@ -554,7 +555,7 @@ class WorkflowInvariantError(WorkflowOrchestratorError):
 | **TC-13.18d.12b** | Owner-loss dispatch recovery contract freeze | TC-13.18d.12a-pre2.2.1 | Contract Current |
 | **TC-13.18d.12c** | Owner-loss transition-only recovery production implementation | TC-13.18d.12b | Current |
 | **TC-13.18d.12c.1** | Owner-loss automatic retry durable contract freeze | TC-13.18d.12c | Contract Current |
-| **TC-13.18d.12c.2** | Owner-loss automatic retry production implementation | TC-13.18d.12c.1 | Target |
+| **TC-13.18d.12c.2** | Owner-loss automatic retry production implementation | TC-13.18d.12c.1 | Current |
 | **TC-13.9c.2** | Codex decoder | TC-13.9c.1 | Target |
 | **TC-13.19** | Real E2E closed-loop tests | TC-13.18d.3 | Current — TC-13.19j |
 | **TC-13.20** | HTML Dashboard | TC-13.17, TC-13.19 | Read-only UI |
@@ -1923,7 +1924,7 @@ Only fixed field names and fixed error categories are permitted.
 | **TC-13.18d.12b** | This owner-loss recovery contract freeze | **Contract Current** |
 | **TC-13.18d.12c** | Owner-loss transition-only recovery production implementation | **Current** |
 | **TC-13.18d.12c.1** | Owner-loss automatic retry durable contract freeze | **Contract Current** |
-| **TC-13.18d.12c.2** | Owner-loss automatic retry production implementation | **Target** |
+| **TC-13.18d.12c.2** | Owner-loss automatic retry production implementation | **Current** |
 
 Durable supervisor evidence remains **Current** —
 TC-13.18d.12a-pre2.1 / pre2.2 / pre2.2.1.
@@ -1932,8 +1933,9 @@ TC-13.18d.12a-pre2.2.
 Interface #22 remains **Target**.
 Owner-loss transition-only recovery runtime is **Current** — TC-13.18d.12c.
 The automatic-retry durable contract is **Contract Current** —
-TC-13.18d.12c.1. Automatic-retry runtime remains **Target** —
+TC-13.18d.12c.1. Automatic-retry runtime is **Current** —
 TC-13.18d.12c.2.
+Owner-loss automatic retry is **Current**.
 
 Historical TC-13.18d.12b freeze statement (superseded by the production
 status above): Owner-loss recovery runtime remains **Target** —
@@ -2107,7 +2109,7 @@ performs no retry start and no canonical state mutation.
 |---|---|
 | TC-13.18d.12c transition-only owner-loss recovery | **Current** |
 | Owner-loss automatic retry durable contract | **Contract Current — TC-13.18d.12c.1** |
-| Owner-loss automatic retry runtime | **Target — TC-13.18d.12c.2** |
+| Owner-loss automatic retry runtime | **Current — TC-13.18d.12c.2** |
 | Interface #22 | **Target** |
 
-This contract adds no production retry implementation.
+This contract's retry runtime is Current — TC-13.18d.12c.2.
