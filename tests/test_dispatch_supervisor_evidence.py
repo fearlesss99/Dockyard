@@ -555,17 +555,17 @@ class JobNameStructureTests(unittest.TestCase):
     """Job name derivation, determinism, and no-leak rules."""
 
     def test_name_is_deterministic(self) -> None:
-        n1 = dse.derive_job_name("GEN-a")
-        n2 = dse.derive_job_name("GEN-a")
+        n1 = dse._derive_job_name("GEN-a")
+        n2 = dse._derive_job_name("GEN-a")
         self.assertEqual(n1, n2)
 
     def test_different_generation_different_name(self) -> None:
-        n1 = dse.derive_job_name("GEN-a")
-        n2 = dse.derive_job_name("GEN-b")
+        n1 = dse._derive_job_name("GEN-a")
+        n2 = dse._derive_job_name("GEN-b")
         self.assertNotEqual(n1, n2)
 
     def test_name_uses_full_sha256(self) -> None:
-        name = dse.derive_job_name("GEN-x")
+        name = dse._derive_job_name("GEN-x")
         # Name is: prefix + 64 hex chars
         prefix = "Local\\AgentDesk-Dispatch-"
         self.assertTrue(name.startswith(prefix))
@@ -575,17 +575,21 @@ class JobNameStructureTests(unittest.TestCase):
         self.assertTrue(all(c in "0123456789abcdef" for c in digest))
 
     def test_raw_generation_not_in_name(self) -> None:
-        name = dse.derive_job_name("GEN-SECRET-VALUE")
+        name = dse._derive_job_name("GEN-SECRET-VALUE")
         self.assertNotIn("GEN-SECRET-VALUE", name)
         self.assertNotIn("SECRET", name)
 
     def test_name_starts_with_local_prefix(self) -> None:
-        name = dse.derive_job_name("GEN-any")
+        name = dse._derive_job_name("GEN-any")
         self.assertTrue(name.startswith("Local\\AgentDesk-Dispatch-"))
 
 
 class JobCreationTests(unittest.TestCase):
-    """Real Windows Job Object creation, KILL_ON_JOB_CLOSE config, assignment."""
+    """Real Windows Job Object creation, KILL_ON_JOB_CLOSE config, assignment.
+
+    All tests go through the private ``_DispatchJobOwner`` typed owner;
+    no raw handle is obtained from the (removed) public API surface.
+    """
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -594,127 +598,119 @@ class JobCreationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self._gen_id = "GEN-job-create-" + secrets.token_hex(4)
-        self._handles: list[int] = []
+        self._owners: list[dse._DispatchJobOwner] = []
 
     def tearDown(self) -> None:
-        for h in self._handles:
-            dse.close_dispatch_job_handle(h)
-        self._handles.clear()
+        for owner in self._owners:
+            owner.close()
+        self._owners.clear()
 
     def test_create_job_success(self) -> None:
-        handle = dse.create_dispatch_job(self._gen_id)
-        self.assertIsInstance(handle, int)
-        self.assertGreater(handle, 0)
-        self._handles.append(handle)
+        owner = dse._DispatchJobOwner(self._gen_id)
+        self.assertIsInstance(owner, dse._DispatchJobOwner)
+        self.assertGreater(owner.handle, 0)
+        self._owners.append(owner)
 
     def test_kill_on_job_close_configured(self) -> None:
-        handle = dse.create_dispatch_job(self._gen_id)
-        self._handles.append(handle)
-        # KILL_ON_JOB_CLOSE is verified inside create_dispatch_job().
+        owner = dse._DispatchJobOwner(self._gen_id)
+        self._owners.append(owner)
+        # KILL_ON_JOB_CLOSE is verified inside _DispatchJobOwner.__init__.
         # If no exception was raised, the flag is confirmed.
 
     def test_assign_child_to_job_success(self) -> None:
-        """Assign a child process to a KILL_ON_JOB_CLOSE Job — safe for test
-        because the child is killed when we close the handle, not the test."""
-        handle = dse.create_dispatch_job(self._gen_id)
-        self._handles.append(handle)
+        """Assign a child process via owner.assign_supervisor()."""
+        owner = dse._DispatchJobOwner(self._gen_id)
+        self._owners.append(owner)
 
-        # Start a child process.
-        import subprocess as _sp
-        child = _sp.Popen(
+        child = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(15)"],
-            stdout=_sp.PIPE, stderr=_sp.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         try:
-            dse._assign_process_to_job(handle, child.pid)
-            # Verify child is in the job.
-            in_job = dse.is_process_in_dispatch_job(self._gen_id, child.pid)
+            owner.assign_supervisor(child.pid)
+            in_job = owner.is_process_in_job(child.pid)
             self.assertTrue(in_job)
         finally:
-            # Close handle → KILL_ON_JOB_CLOSE terminates the child.
-            dse.close_dispatch_job_handle(handle)
-            self._handles.remove(handle)
+            owner.close()
+            self._owners.remove(owner)
             try:
                 child.wait(timeout=10)
-            except _sp.TimeoutError:
+            except subprocess.TimeoutError:
                 child.kill()
                 child.wait()
 
     def test_invalid_pid_assignment_fails(self) -> None:
-        handle = dse.create_dispatch_job(self._gen_id)
-        self._handles.append(handle)
-        # PID 0 is the System Idle Process — should fail.
+        owner = dse._DispatchJobOwner(self._gen_id)
+        self._owners.append(owner)
         with self.assertRaises(OSError):
-            dse._assign_process_to_job(handle, 0)
+            owner.assign_supervisor(0)
 
     def test_create_job_different_generations_independent(self) -> None:
-        import subprocess as _sp
         gen_a = self._gen_id + "-a"
         gen_b = self._gen_id + "-b"
-        h1 = dse.create_dispatch_job(gen_a)
-        h2 = dse.create_dispatch_job(gen_b)
-        self._handles.extend([h1, h2])
-        self.assertNotEqual(h1, h2)
+        o1 = dse._DispatchJobOwner(gen_a)
+        o2 = dse._DispatchJobOwner(gen_b)
+        self._owners.extend([o1, o2])
+        self.assertNotEqual(o1.handle, o2.handle)
 
-        # Assign a child to gen_a's job.
-        child = _sp.Popen(
+        child = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(10)"],
-            stdout=_sp.PIPE, stderr=_sp.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         try:
-            dse._assign_process_to_job(h1, child.pid)
-            in_a = dse.is_process_in_dispatch_job(gen_a, child.pid)
-            in_b = dse.is_process_in_dispatch_job(gen_b, child.pid)
+            o1.assign_supervisor(child.pid)
+            in_a = o1.is_process_in_job(child.pid)
+            in_b = o2.is_process_in_job(child.pid)
             self.assertTrue(in_a)
             self.assertFalse(in_b)
         finally:
-            # Close both handles; KILL_ON_JOB_CLOSE on both.
-            dse.close_dispatch_job_handle(h1)
-            dse.close_dispatch_job_handle(h2)
-            self._handles.clear()
+            o1.close()
+            o2.close()
+            self._owners.clear()
             try:
                 child.wait(timeout=10)
-            except _sp.TimeoutError:
+            except subprocess.TimeoutError:
                 child.kill()
                 child.wait()
 
-    def test_close_handle_idempotent(self) -> None:
-        # Closing 0 or None should not raise.
-        dse.close_dispatch_job_handle(0)
-        dse.close_dispatch_job_handle(None)
+    def test_close_is_idempotent(self) -> None:
+        owner = dse._DispatchJobOwner(self._gen_id)
+        owner.close()
+        owner.close()  # must not raise
+        self.assertEqual(owner.handle, 0)
 
     def test_query_active_process_count(self) -> None:
-        import subprocess as _sp
-        handle = dse.create_dispatch_job(self._gen_id)
-        self._handles.append(handle)
-        # Before assignment, count should be 0.
-        count_before = dse.query_job_active_process_count(self._gen_id)
+        owner = dse._DispatchJobOwner(self._gen_id)
+        self._owners.append(owner)
+        count_before = owner.query_active_process_count()
         self.assertEqual(count_before, 0)
-        # Assign a child to the job.
-        child = _sp.Popen(
+
+        child = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(10)"],
-            stdout=_sp.PIPE, stderr=_sp.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         try:
-            dse._assign_process_to_job(handle, child.pid)
-            count_after = dse.query_job_active_process_count(self._gen_id)
+            owner.assign_supervisor(child.pid)
+            count_after = owner.query_active_process_count()
             self.assertIsNotNone(count_after)
             self.assertGreaterEqual(count_after, 1)
         finally:
-            dse.close_dispatch_job_handle(handle)
-            self._handles.remove(handle)
+            owner.close()
+            self._owners.remove(owner)
             try:
                 child.wait(timeout=10)
-            except _sp.TimeoutError:
+            except subprocess.TimeoutError:
                 child.kill()
                 child.wait()
 
     def test_query_missing_job_returns_none(self) -> None:
-        result = dse.query_job_active_process_count("GEN-nonexistent-job-9999")
+        result = dse._DispatchJobOwner.probe_job_by_name("GEN-nonexistent-job-9999")
         self.assertIsNone(result)
 
-    def test_is_process_in_dispatch_job_missing(self) -> None:
-        result = dse.is_process_in_dispatch_job("GEN-nonexistent-9999", os.getpid())
+    def test_is_process_in_job_missing(self) -> None:
+        result = dse._DispatchJobOwner.probe_process_in_job_by_name(
+            "GEN-nonexistent-9999", os.getpid()
+        )
         self.assertIsNone(result)
 
 
@@ -736,20 +732,18 @@ class OuterJobDetectionTests(unittest.TestCase):
 
     def test_nested_job_with_child_succeeds_or_reports_blocking(self) -> None:
         """If our process is in a host Job, test nested assignment with
-        a child process.  Windows 8+ supports nested Job assignment."""
-        import subprocess as _sp
+        a child process via _DispatchJobOwner."""
         gen = "GEN-nested-" + secrets.token_hex(4)
         in_external = dse._is_process_in_any_job(os.getpid())
-        handle = 0
-        child = _sp.Popen(
+        child = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(10)"],
-            stdout=_sp.PIPE, stderr=_sp.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
+        owner = None
         try:
-            handle = dse.create_dispatch_job(gen)
-            dse._assign_process_to_job(handle, child.pid)
-            # Assignment succeeded — nested Job allowed.
-            in_job = dse.is_process_in_dispatch_job(gen, child.pid)
+            owner = dse._DispatchJobOwner(gen)
+            owner.assign_supervisor(child.pid)
+            in_job = owner.is_process_in_job(child.pid)
             self.assertTrue(in_job)
         except OSError as exc:
             if in_external:
@@ -762,11 +756,11 @@ class OuterJobDetectionTests(unittest.TestCase):
             else:
                 raise
         finally:
-            if handle:
-                dse.close_dispatch_job_handle(handle)
+            if owner is not None:
+                owner.close()
             try:
                 child.wait(timeout=10)
-            except _sp.TimeoutError:
+            except subprocess.TimeoutError:
                 child.kill()
                 child.wait()
 
@@ -795,15 +789,14 @@ class WorkerInheritanceTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self._gen = "GEN-inherit-" + secrets.token_hex(4)
-        self._handle = dse.create_dispatch_job(self._gen)
+        self._owner = dse._DispatchJobOwner(self._gen)
 
     def tearDown(self) -> None:
-        if self._handle:
-            dse.close_dispatch_job_handle(self._handle)
+        if self._owner:
+            self._owner.close()
 
     def test_worker_inherits_job(self) -> None:
         """Worker started after supervisor is in Job inherits it."""
-        # Supervisor child that prints its PID and spawns a Worker.
         code = (
             "import subprocess as sp, sys, os, time; "
             "print(os.getpid()); "
@@ -817,17 +810,14 @@ class WorkerInheritanceTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         try:
-            dse._assign_process_to_job(self._handle, sup.pid)
+            self._owner.assign_supervisor(sup.pid)
             sup_pid_line = sup.stdout.readline().decode("utf-8").strip()
             supervisor_pid = int(sup_pid_line)
-            # Supervisor must be in the named Job.
-            in_job_sup = dse.is_process_in_dispatch_job(self._gen, supervisor_pid)
+            in_job_sup = self._owner.is_process_in_job(supervisor_pid)
             self.assertTrue(in_job_sup,
                             f"Supervisor PID {supervisor_pid} not in Job")
         finally:
-            # Close handle → KILL_ON_JOB_CLOSE terminates the supervisor.
-            dse.close_dispatch_job_handle(self._handle)
-            self._handle = 0
+            self._owner.close()
             try:
                 sup.wait(timeout=10)
             except subprocess.TimeoutError:
@@ -852,16 +842,14 @@ class WorkerInheritanceTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         try:
-            dse._assign_process_to_job(self._handle, sup.pid)
-            # Read the grandchild PID from supervisor's stdout.
+            self._owner.assign_supervisor(sup.pid)
             gc_pid_line = sup.stdout.readline().decode("utf-8").strip()
             gc_pid = int(gc_pid_line)
-            in_job = dse.is_process_in_dispatch_job(self._gen, gc_pid)
+            in_job = self._owner.is_process_in_job(gc_pid)
             self.assertTrue(in_job,
                             f"Grandchild PID {gc_pid} not in Job")
         finally:
-            dse.close_dispatch_job_handle(self._handle)
-            self._handle = 0
+            self._owner.close()
             try:
                 sup.wait(timeout=10)
             except subprocess.TimeoutError:
@@ -888,9 +876,9 @@ class WorkerInheritanceTests(unittest.TestCase):
 class ForcedTerminationTests(unittest.TestCase):
     """supervisor exit → KILL_ON_JOB_CLOSE terminates Worker + descendants.
 
-    Tests use a hierarchy of child processes: test creates Job, spawns
-    "supervisor" child, assigns it to Job, supervisor spawns Worker which
-    spawns grandchild.  Closing the last Job handle kills the whole tree.
+    Tests use a hierarchy of child processes: test creates Job via
+    _DispatchJobOwner, spawns "supervisor" child, assigns it to Job,
+    supervisor spawns Worker.  Closing the owner kills the whole tree.
     """
 
     @classmethod
@@ -907,12 +895,12 @@ class ForcedTerminationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def test_handle_close_kills_worker_tree(self) -> None:
-        """When the Job's last handle is closed, Worker + descendants die."""
+    def test_owner_close_kills_worker_tree(self) -> None:
+        """When the owner is closed, Worker + descendants die."""
 
-        handle = dse.create_dispatch_job(self._gen)
+        owner = dse._DispatchJobOwner(self._gen)
 
-        # Supervisor spawns a Worker, prints Worker PID and flushes.
+        # Supervisor child that spawns a Worker, prints Worker PID and flushes.
         code = (
             "import subprocess as sp, sys, time; "
             "w = sp.Popen([sys.executable, '-c', "
@@ -927,7 +915,7 @@ class ForcedTerminationTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         try:
-            dse._assign_process_to_job(handle, sup.pid)
+            owner.assign_supervisor(sup.pid)
 
             # Read the Worker PID from supervisor output.
             worker_line = sup.stdout.readline().decode("utf-8").strip()
@@ -935,17 +923,16 @@ class ForcedTerminationTests(unittest.TestCase):
             worker_pid = int(worker_line)
 
             # Verify Worker is in the Job.
-            in_job = dse.is_process_in_dispatch_job(self._gen, worker_pid)
+            in_job = owner.is_process_in_job(worker_pid)
             self.assertTrue(in_job)
 
             # Verify Job has active processes.
-            count_before = dse.query_job_active_process_count(self._gen)
+            count_before = owner.query_active_process_count()
             self.assertIsNotNone(count_before)
             self.assertGreater(count_before, 0)
 
-            # Close the Job handle → KILL_ON_JOB_CLOSE.
-            dse.close_dispatch_job_handle(handle)
-            handle = 0
+            # Close the owner → KILL_ON_JOB_CLOSE.
+            owner.close()
 
             # Supervisor and Worker should both terminate.
             try:
@@ -957,13 +944,11 @@ class ForcedTerminationTests(unittest.TestCase):
             self.assertIsNotNone(sup.returncode)
 
             # Job should be empty or gone.
-            count_after = dse.query_job_active_process_count(self._gen)
+            count_after = dse._DispatchJobOwner.probe_job_by_name(self._gen)
             if count_after is not None:
                 self.assertEqual(count_after, 0)
 
         finally:
-            if handle:
-                dse.close_dispatch_job_handle(handle)
             try:
                 if sup.returncode is None:
                     sup.kill()
@@ -979,7 +964,7 @@ class ForcedTerminationTests(unittest.TestCase):
         process object persists until all handles close.  We verify
         the Job membership instead.
         """
-        handle = dse.create_dispatch_job(self._gen)
+        owner = dse._DispatchJobOwner(self._gen)
 
         child = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -987,16 +972,15 @@ class ForcedTerminationTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         try:
-            dse._assign_process_to_job(handle, child.pid)
+            owner.assign_supervisor(child.pid)
             child_pid = child.pid
 
             # Verify child is in the Job.
-            in_job_before = dse.is_process_in_dispatch_job(self._gen, child_pid)
+            in_job_before = owner.is_process_in_job(child_pid)
             self.assertTrue(in_job_before)
 
-            # Kill via Job close.
-            dse.close_dispatch_job_handle(handle)
-            handle = 0
+            # Kill via owner close.
+            owner.close()
 
             try:
                 child.wait(timeout=10)
@@ -1007,12 +991,12 @@ class ForcedTerminationTests(unittest.TestCase):
             # Child exited — verify it is no longer in the Job.
             # (May return None if Job itself is gone, or False if
             # Job exists but child is gone.)
-            in_job_after = dse.is_process_in_dispatch_job(self._gen, child_pid)
+            in_job_after = dse._DispatchJobOwner.probe_process_in_job_by_name(
+                self._gen, child_pid
+            )
             self.assertNotEqual(in_job_after, True,
                                 "Terminated worker should NOT be in Job")
         finally:
-            if handle:
-                dse.close_dispatch_job_handle(handle)
             try:
                 if child.returncode is None:
                     child.kill()
@@ -1041,19 +1025,19 @@ class NormalCompletionTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def test_handle_closure_kills_child_not_test(self) -> None:
-        """Closing Job handle kills assigned child, but not the test process
+    def test_owner_close_kills_child_not_test(self) -> None:
+        """Closing owner kills assigned child, but not the test process
         (since test process was never assigned to it)."""
-        handle = dse.create_dispatch_job(self._gen)
+        owner = dse._DispatchJobOwner(self._gen)
         child = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(15)"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         try:
-            dse._assign_process_to_job(handle, child.pid)
-            self.assertTrue(dse.is_process_in_dispatch_job(self._gen, child.pid))
+            owner.assign_supervisor(child.pid)
+            self.assertTrue(owner.is_process_in_job(child.pid))
         finally:
-            dse.close_dispatch_job_handle(handle)
+            owner.close()
             try:
                 child.wait(timeout=10)
             except subprocess.TimeoutError:
@@ -1062,15 +1046,14 @@ class NormalCompletionTests(unittest.TestCase):
             # Child should have been terminated by Job close.
             self.assertIsNotNone(child.returncode)
 
-    def test_supervisor_runner_source_no_premature_handle_close(self) -> None:
-        """Verify the runner module does not close the handle in a plain finally
-        block that fires before the Worker result is emitted."""
+    def test_supervisor_runner_source_no_premature_owner_close(self) -> None:
+        """Verify the runner module uses _DispatchJobOwner, not raw handles."""
         import dispatch_supervisor_runner as dsr
         runner_src = Path(dsr.__file__).read_text(encoding="utf-8") if dsr.__file__ else ""
         if not runner_src:
             self.skipTest("cannot locate runner source")
-        self.assertIn("close_dispatch_job_handle", runner_src,
-                      "close_dispatch_job_handle should appear in runner")
+        self.assertIn("_DispatchJobOwner", runner_src,
+                      "_DispatchJobOwner should appear in runner")
 
 
 class ThreeStateProbeTests(unittest.TestCase):
@@ -1227,13 +1210,13 @@ class WindowsProbeTests(unittest.TestCase):
 
     def test_job_active_process_count_positive_returns_alive(self) -> None:
         """When Job exists and has active processes, returns ALIVE."""
-        handle = dse.create_dispatch_job(self._gen)
+        owner = dse._DispatchJobOwner(self._gen)
         child = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(10)"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         try:
-            dse._assign_process_to_job(handle, child.pid)
+            owner.assign_supervisor(child.pid)
             # Create receipt pointing to the child as supervisor.
             r = self._receipt(
                 phase="SUPERVISOR_READY",
@@ -1243,7 +1226,7 @@ class WindowsProbeTests(unittest.TestCase):
             result = dse.probe_dispatch_process_tree(r)
             self.assertEqual(result, dse.ProcessLiveness.ALIVE)
         finally:
-            dse.close_dispatch_job_handle(handle)
+            owner.close()
             try:
                 child.wait(timeout=10)
             except subprocess.TimeoutError:
@@ -1279,7 +1262,7 @@ class WindowsProbeTests(unittest.TestCase):
 
     def test_job_empty_supervisor_dead_returns_dead(self) -> None:
         """When Job exists but is empty AND supervisor is DEAD, return DEAD."""
-        handle = dse.create_dispatch_job(self._gen)
+        owner = dse._DispatchJobOwner(self._gen)
         try:
             # Job exists but is empty.  Supervisor PID is a non-existent PID
             # (guaranteed to be DEAD since it doesn't exist).
@@ -1292,7 +1275,7 @@ class WindowsProbeTests(unittest.TestCase):
             # Job empty (count == 0), supervisor DEAD (PID doesn't exist) → DEAD.
             self.assertEqual(result, dse.ProcessLiveness.DEAD)
         finally:
-            dse.close_dispatch_job_handle(handle)
+            owner.close()
 
     def test_job_missing_supervisor_dead_returns_unknown(self) -> None:
         """When Job doesn't exist AND supervisor is DEAD, but we can't
@@ -1328,6 +1311,148 @@ class FieldCountFreezeTests(unittest.TestCase):
         params = dse.DispatchProcessReceipt.__dataclass_params__
         self.assertTrue(params.frozen)
         self.assertTrue(params.slots)
+
+
+# ── TC-13.18d.12a-pre2.2.1 — API boundary closure tests ─────────────────
+
+
+class PublicApiBoundaryTests(unittest.TestCase):
+    """Verify that raw Job handle helpers are NOT in the public API."""
+
+    def test_all_does_not_contain_job_helpers(self) -> None:
+        """__all__ must not contain create_dispatch_job, close_*, query_*, derive_*."""
+        forbidden = {
+            "create_dispatch_job",
+            "close_dispatch_job_handle",
+            "query_job_active_process_count",
+            "is_process_in_dispatch_job",
+            "derive_job_name",
+        }
+        actual = set(dse.__all__)
+        overlap = forbidden & actual
+        self.assertEqual(overlap, set(),
+                         f"__all__ must not contain: {overlap}")
+
+    def test_all_contains_probe_dispatch_process_tree(self) -> None:
+        """probe_dispatch_process_tree is the sole public process-tree probe."""
+        self.assertIn("probe_dispatch_process_tree", dse.__all__)
+
+    def test_all_contains_original_public_symbols(self) -> None:
+        """All original public symbols are still in __all__."""
+        required = {
+            "SCHEMA_VERSION",
+            "DispatchReceiptPhase", "ProcessLiveness",
+            "DispatchProcessReceipt", "DispatchFinalizerTombstone",
+            "DispatchSupervisorEvidenceError",
+            "DispatchSupervisorValidationError",
+            "DispatchSupervisorStoreError",
+            "DispatchSupervisorPhaseError",
+            "DispatchSupervisorFencingError",
+            "DispatchSupervisorContentionError",
+            "validate_dispatch_supervisor_receipt",
+            "read_dispatch_receipt", "read_dispatch_tombstone",
+            "reserve_receipt",
+            "advance_to_supervisor_ready",
+            "advance_to_worker_started",
+            "advance_to_finalizing",
+            "write_finalizer_tombstone",
+            "get_boot_id", "get_process_creation_time",
+            "get_current_process_identity",
+            "probe_process",
+            "probe_dispatch_process_tree",
+        }
+        actual = set(dse.__all__)
+        missing = required - actual
+        self.assertEqual(missing, set(),
+                         f"__all__ missing required symbols: {missing}")
+
+    def test_dispatch_job_owner_is_private(self) -> None:
+        """_DispatchJobOwner is accessible for internal use but not in __all__."""
+        self.assertTrue(hasattr(dse, "_DispatchJobOwner"))
+        self.assertNotIn("_DispatchJobOwner", dse.__all__)
+        self.assertNotIn("DispatchJobOwner", dse.__all__)
+
+    def test_old_public_names_not_importable(self) -> None:
+        """Old public names (create_dispatch_job, etc.) are gone from the module."""
+        old_names = [
+            "create_dispatch_job",
+            "close_dispatch_job_handle",
+            "query_job_active_process_count",
+            "is_process_in_dispatch_job",
+            "derive_job_name",
+        ]
+        for name in old_names:
+            with self.assertRaises(AttributeError, msg=f"{name} should not exist"):
+                getattr(dse, name)
+
+    def test_probe_dispatch_process_tree_still_callable(self) -> None:
+        """The public probe entry point works with a valid receipt."""
+        import tempfile
+        tmp = tempfile.TemporaryDirectory(prefix="dse-api-boundary-")
+        try:
+            project = Path(tmp.name) / "project"
+            (project / ".agentdesk" / "runtime").mkdir(parents=True)
+            r = dse.reserve_receipt(
+                project, task_id="TC-001", revision=1, attempt=1,
+                dispatch_id="DSP-api-test", lease_epoch=1,
+                holder_instance_id="inst", generation_id="GEN-api-test",
+                creator_pid=os.getpid(),
+                creator_creation_time=dse.get_process_creation_time(os.getpid()) or "",
+                boot_id=dse.get_boot_id(),
+            )
+            result = dse.probe_dispatch_process_tree(r)
+            self.assertEqual(result, dse.ProcessLiveness.UNKNOWN)
+        finally:
+            tmp.cleanup()
+
+    def test_runner_uses_job_owner_not_raw_handles(self) -> None:
+        """Runner source references _DispatchJobOwner, not raw handle API."""
+        import dispatch_supervisor_runner as dsr
+        runner_src = Path(dsr.__file__).read_text(encoding="utf-8") if dsr.__file__ else ""
+        if not runner_src:
+            self.skipTest("cannot locate runner source")
+        self.assertIn("_DispatchJobOwner", runner_src,
+                      "Runner must use _DispatchJobOwner")
+        # The old raw names must NOT appear in the runner.
+        for forbidden in ("create_dispatch_job", "close_dispatch_job_handle",
+                          "_assign_process_to_job"):
+            self.assertNotIn(forbidden, runner_src,
+                             f"Runner must not use {forbidden}")
+
+    def test_no_raw_handle_in_all_exports(self) -> None:
+        """Only probe_dispatch_process_tree and typed evidence appear in __all__.
+        No handle, no raw-Win32-function, no generation_id-leak helpers."""
+        handle_keywords = {"handle", "job", "raw", "win32", "create_dispatch",
+                           "close_dispatch", "query_job", "process_in_job"}
+        for name in dse.__all__:
+            lower = name.lower()
+            for kw in handle_keywords:
+                self.assertNotIn(kw, lower,
+                                 f"__all__ entry '{name}' matches '{kw}'")
+
+    def test_no_handle_in_receipt_or_tombstone_schema(self) -> None:
+        """Receipt and tombstone fields must not include 'handle' or 'job'."""
+        for cls in (dse.DispatchProcessReceipt, dse.DispatchFinalizerTombstone):
+            for field_name in cls.__dataclass_fields__:
+                lower = field_name.lower()
+                self.assertNotIn("handle", lower,
+                                 f"{cls.__name__}.{field_name} must not be 'handle'")
+                self.assertNotIn("job", lower,
+                                 f"{cls.__name__}.{field_name} must not be 'job'")
+
+    def test_generation_not_in_job_error_messages(self) -> None:
+        """Error messages from _DispatchJobOwner must NOT leak generation_id."""
+        try:
+            dse._DispatchJobOwner("GEN-LEAK-TEST-MARKER-4242")
+        except Exception:
+            pass  # On non-Windows this raises OSError; check its message.
+        try:
+            owner = dse._DispatchJobOwner("GEN-LEAK-TEST-MARKER-4242")
+            owner.close()
+        except OSError as exc:
+            msg = str(exc)
+            self.assertNotIn("GEN-LEAK-TEST-MARKER-4242", msg,
+                             "Job Object error must not leak generation_id")
 
 
 if __name__ == "__main__":

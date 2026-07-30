@@ -7618,12 +7618,18 @@ identity independently probes `ALIVE`.  Phase presence alone never yields
 `still alive`.
 
 Status: TC-13.18d.11a/b/c Current; TC-13.18d.12a investigation
-complete; durable supervisor evidence Contract Current with runtime
-production implementation Current — TC-13.18d.12a-pre2 (real supervisor
-chain, durable receipt/tombstone store, three-state liveness probing);
-owner-loss recovery continues Target and must remain fail-closed until
-the §8 criteria are enforceable from durable evidence alone; Interface
-#22 Target.  This card flips no Current status.
+complete; durable supervisor evidence runtime
+`Current — TC-13.18d.12a-pre2.1` (real supervisor chain, durable
+receipt/tombstone store, three-state liveness probing); Windows Job
+Object process-tree containment `Current — TC-13.18d.12a-pre2.2`
+(named Job per generation with KILL_ON_JOB_CLOSE; supervisor assigned
+before SUPERVISOR_READY); Windows process-tree liveness evidence
+`Current — TC-13.18d.12a-pre2.2` (typed probe_dispatch_process_tree
+from durable evidence and Job Object); public API boundary closure
+`Current — TC-13.18d.12a-pre2.2.1` (raw handle helpers removed from
+__all__; private _DispatchJobOwner owns handle lifecycle); owner-loss
+recovery continues Target and must remain fail-closed; Interface #22
+Target.  This card flips no Current status beyond pre2.2/pre2.2.1.
 
 ---
 

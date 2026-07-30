@@ -12403,10 +12403,21 @@ class TC1318d12aPre2RuntimeContractTests(unittest.TestCase):
 
     def test_08_runtime_status_current(self) -> None:
         self.assertIn(
-            "production implementation Current — TC-13.18d.12a-pre2",
+            "Current — TC-13.18d.12a-pre2.1",
             self.contract_text,
         )
         self.assertIn(
-            "runtime\nproduction implementation Current — TC-13.18d.12a-pre2",
+            "Current — TC-13.18d.12a-pre2.1",
             self.adr_text,
         )
+        self.assertIn(
+            "Current — TC-13.18d.12a-pre2.2",
+            self.contract_text,
+        )
+        self.assertIn(
+            "Current — TC-13.18d.12a-pre2.2.1",
+            self.contract_text,
+        )
+        # Must still NOT claim owner-loss recovery is done.
+        self.assertIn("Owner-loss recovery: continues Target", self.contract_text)
+        self.assertIn("Interface #22: Target", self.contract_text)

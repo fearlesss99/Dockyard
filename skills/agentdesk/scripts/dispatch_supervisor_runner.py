@@ -158,22 +158,17 @@ async def _amain() -> int:
         _emit_fatal("bad_payload")
         return 2
 
-    # ── Windows Job Object setup (TC-13.18d.12a-pre2.2) ──────────────
-    job_handle: int = 0
-    job_initialized: bool = False
+    # ── Windows Job Object setup (TC-13.18d.12a-pre2.2.1) ────────────
+    job_owner: dse._DispatchJobOwner | None = None
     if os.name == "nt":
         try:
-            job_handle = dse.create_dispatch_job(generation_id)
+            job_owner = dse._DispatchJobOwner(generation_id)
+            job_owner.assign_supervisor(os.getpid())
         except Exception:
+            if job_owner is not None:
+                job_owner.close()
             _emit_fatal("supervisor_ready_failed")
             return 2
-        try:
-            dse._assign_process_to_job(job_handle, os.getpid())
-        except Exception:
-            dse.close_dispatch_job_handle(job_handle)
-            _emit_fatal("supervisor_ready_failed")
-            return 2
-        job_initialized = True
 
     # ── SUPERVISOR_READY ───────────────────────────────────────────────
     try:
@@ -188,8 +183,8 @@ async def _amain() -> int:
         )
     except Exception:
         _emit_fatal("supervisor_ready_failed")
-        if job_handle:
-            dse.close_dispatch_job_handle(job_handle)
+        if job_owner is not None:
+            job_owner.close()
         return 2
 
     _emit({"event": "ready"})

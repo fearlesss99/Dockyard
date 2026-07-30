@@ -322,14 +322,29 @@ for the `SUPERVISOR_READY → Worker starts` window).
 - TC-13.18d.11a/b/c: Current.
 - TC-13.18d.12a: investigation complete — owner-loss recovery is not
   currently implementable fail-closed.
-- Durable dispatch supervisor evidence: Contract Current; runtime
-  production implementation Current — TC-13.18d.12a-pre2 (real supervisor
-  chain, durable receipt/tombstone store, and three-state liveness probing
-  all implemented and covered by targeted tests).
+- Durable dispatch supervisor evidence:
+  `Current — TC-13.18d.12a-pre2.1` (real supervisor chain, durable
+  receipt/tombstone store, and three-state liveness probing all
+  implemented and covered by targeted tests).
+- Windows Job Object process-tree containment:
+  `Current — TC-13.18d.12a-pre2.2` (named Windows Job Object per
+  dispatch generation with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`;
+  supervisor assigned before `SUPERVISOR_READY`; Worker and descendants
+  inherit the Job through parent-child association).
+- Windows process-tree liveness evidence:
+  `Current — TC-13.18d.12a-pre2.2` (typed `probe_dispatch_process_tree`
+  producing strict ALIVE / DEAD / UNKNOWN from durable receipt and named
+  Job Object evidence; never conflates permission failures with death).
+- Public API boundary closure:
+  `Current — TC-13.18d.12a-pre2.2.1` (raw Windows Job handle helpers
+  removed from public `__all__`; private `_DispatchJobOwner` owns handle
+  lifecycle; only `probe_dispatch_process_tree` is the public
+  process-tree probe entry point).
 - Owner-loss recovery: continues Target; must remain fail-closed until
-  TC-13.18d.12a-pre2 lands and the §8 criteria are enforceable from
-  durable evidence alone.
+  the above Current capabilities land and the §8 criteria are
+  enforceable from durable evidence alone.
 - Interface #22: Target.
 
-This card does not flip any Current status.  Production implementation
-(TC-13.18d.12a-pre2) is generated only after this contract passes.
+This card does not flip any Current status except as recorded above.
+Production implementation (TC-13.18d.12a-pre2) is generated only after
+this contract passes.

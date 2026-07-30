@@ -58,11 +58,6 @@ __all__ = [
     "get_current_process_identity",
     "probe_process",
     "probe_dispatch_process_tree",
-    "create_dispatch_job",
-    "derive_job_name",
-    "close_dispatch_job_handle",
-    "query_job_active_process_count",
-    "is_process_in_dispatch_job",
 ]
 
 # ── constants ───────────────────────────────────────────────────────────────
@@ -1174,8 +1169,11 @@ def _derive_job_name(generation_id: str) -> str:
     return _JOB_NAME_PREFIX + digest
 
 
-def derive_job_name(generation_id: str) -> str:
-    """Public determinstic Job name derivation — pure, no Windows API."""
+def _derive_job_name_public(generation_id: str) -> str:
+    """Public determinstic Job name derivation — pure, no Windows API.
+
+    Kept for test compatibility.  Prefer ``_derive_job_name()`` for new code.
+    """
     return _derive_job_name(generation_id)
 
 
@@ -1491,82 +1489,141 @@ def _close_handle(handle: int) -> None:
     _kernel32.CloseHandle(handle)
 
 
-# ── public Windows Job Object API ──────────────────────────────────────────
+# ── _DispatchJobOwner — private typed supervisor-side Job handle owner ──────
+#
+# This class is the ONLY place that creates, holds, or closes a raw Job handle.
+# It is private to this module.  The supervisor runner and tests reach it
+# through module-internal access (``dse._DispatchJobOwner``), never through the
+# public ``__all__``.  The handle is NEVER exposed to dataclass, receipt,
+# tombstone, JSONL, argv, env, or exception message.
 
+class _DispatchJobOwner:
+    """Private typed owner of a Windows Job Object for a single dispatch
+    generation.
 
-def create_dispatch_job(generation_id: str) -> int:
-    """Create, configure, and return a dispatch Job Object handle.
+    Encapsulates the lifecycle:  create → configure → assign supervisor →
+    hold until process exit.  On error paths the caller may explicitly
+    ``close()`` to terminate the Job tree; on normal paths the handle
+    survives until the process exits and the OS closes it.
 
-    The returned handle is a raw Windows ``HANDLE`` (Python ``int``).
-    The caller owns the handle and must close it via
-    ``close_dispatch_job_handle()``.
-
-    On non-Windows platforms this raises ``OSError`` — callers must guard
-    with ``os.name == "nt"`` checks.
-
-    Steps:
-    1. Derives the deterministic Job name from *generation_id*.
-    2. Creates (or opens) the named Job Object.
-    3. Configures ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``.
-    4. Returns the live handle.
-
-    Raises ``OSError`` if any step fails.
+    On non-Windows platforms this is a no-op stub — ``create()`` raises
+    ``OSError`` and the runner must guard with ``os.name == "nt"``.
     """
-    job_name = _derive_job_name(generation_id)
-    handle = _create_dispatch_job(job_name)
-    try:
-        _set_kill_on_job_close(handle)
-    except Exception:
-        _close_handle(handle)
-        raise
-    return handle
+
+    __slots__ = ("_handle", "_generation_id")
+
+    def __init__(self, generation_id: str) -> None:
+        self._handle: int = 0
+        self._generation_id = generation_id
+        if os.name == "nt":
+            _validate_safe_id(generation_id, "generation_id")
+            job_name = _derive_job_name(generation_id)
+            self._handle = _create_dispatch_job(job_name)
+            try:
+                _set_kill_on_job_close(self._handle)
+            except Exception:
+                _close_handle(self._handle)
+                self._handle = 0
+                raise
+
+    @property
+    def handle(self) -> int:
+        """The raw handle (int, 0 when not initialised).  Internal-only."""
+        return self._handle
+
+    def assign_supervisor(self, pid: int) -> None:
+        """Assign the process identified by *pid* to this Job.
+
+        Must only be called after construction succeeded and before
+        ``SUPERVISOR_READY`` is persisted.
+
+        Raises ``OSError`` on failure.
+        """
+        if os.name != "nt":
+            raise OSError("Job Objects are only available on Windows")
+        if self._handle == 0:
+            raise OSError("_DispatchJobOwner has no live handle")
+        _assign_process_to_job(self._handle, pid)
+
+    def query_active_process_count(self) -> int | None:
+        """Return the number of active processes in this Job, or None."""
+        if os.name != "nt" or self._handle == 0:
+            return None
+        return _query_job_active_process_count(self._handle)
+
+    def is_process_in_job(self, pid: int) -> bool | None:
+        """Return True if *pid* is in this Job, False if not, None on error."""
+        if os.name != "nt" or self._handle == 0:
+            return None
+        return _is_process_in_specific_job(pid, self._handle)
+
+    def close(self) -> None:
+        """Close the Job handle, triggering KILL_ON_JOB_CLOSE.
+
+        Idempotent — safe to call multiple times.  After this call the
+        owner is exhausted.
+        """
+        if self._handle:
+            _close_handle(self._handle)
+            self._handle = 0
+
+    @staticmethod
+    def probe_job_by_name(generation_id: str) -> int | None:
+        """Open and query the named Job for *generation_id*.
+
+        Opens by name, queries active process count, then closes.
+        Returns None on any failure.  This is a probe-only door — it
+        opens, reads, and closes; it never holds a handle.
+
+        Public consumers call ``probe_dispatch_process_tree()`` instead;
+        this is only for the internal Windows probe path.
+        """
+        if os.name != "nt":
+            return None
+        job_name = _derive_job_name(generation_id)
+        try:
+            h = _open_dispatch_job(job_name)
+        except OSError:
+            return None
+        try:
+            return _query_job_active_process_count(h)
+        finally:
+            _close_handle(h)
+
+    @staticmethod
+    def probe_process_in_job_by_name(generation_id: str, pid: int) -> bool | None:
+        """Open the named Job and test *pid* membership.
+
+        Opens by name, queries membership, then closes.
+        Returns None on any failure.
+        """
+        if os.name != "nt":
+            return None
+        job_name = _derive_job_name(generation_id)
+        try:
+            h = _open_dispatch_job(job_name)
+        except OSError:
+            return None
+        try:
+            return _is_process_in_specific_job(pid, h)
+        finally:
+            _close_handle(h)
 
 
-def close_dispatch_job_handle(handle: int) -> None:
-    """Close a dispatch Job Object handle obtained from ``create_dispatch_job``.
+# ── legacy internal aliases — keep tests & runner working ───────────────────
+#
+# These module-internal names are retained so that existing code using
+# ``dse._assign_process_to_job``, ``dse._is_process_in_any_job``, etc.
+# continues to compile.  They are NOT in __all__ and are NOT public API.
+#
+# New callers inside this module should go through _DispatchJobOwner;
+# external callers (tests) may use these only for Windows API verification
+# tests, never for handle ownership.
 
-    Idempotent — safe to call on 0, None, or already-closed handles.
-    On non-Windows this is a no-op.
-    """
-    _close_handle(handle)
-
-
-def query_job_active_process_count(generation_id: str) -> int | None:
-    """Return the number of active processes in the named dispatch Job.
-
-    Opens the Job by name, queries the count, then closes the handle.
-    Returns ``None`` on any failure (permissions, Job not found, API error).
-    """
-    if os.name != "nt":
-        return None
-    job_name = _derive_job_name(generation_id)
-    try:
-        handle = _open_dispatch_job(job_name)
-    except OSError:
-        return None
-    try:
-        return _query_job_active_process_count(handle)
-    finally:
-        _close_handle(handle)
-
-
-def is_process_in_dispatch_job(generation_id: str, pid: int) -> bool | None:
-    """Return True if *pid* is in the dispatch Job for *generation_id*.
-
-    Opens the Job by name, queries membership, then closes the handle.
-    Returns ``None`` on any failure (permissions, Job not found, API error).
-    """
-    if os.name != "nt":
-        return None
-    job_name = _derive_job_name(generation_id)
-    try:
-        handle = _open_dispatch_job(job_name)
-    except OSError:
-        return None
-    try:
-        return _is_process_in_specific_job(pid, handle)
-    finally:
-        _close_handle(handle)
+_create_dispatch_job_handle = _create_dispatch_job  # (unused; tests call _DispatchJobOwner)
+_close_dispatch_job_handle = _close_handle  # (unused; tests call owner.close())
+_query_active_count_by_name = _DispatchJobOwner.probe_job_by_name
+_is_process_in_job_by_name = _DispatchJobOwner.probe_process_in_job_by_name
 
 
 # ── three-state process-tree probe (Windows Job Object path) ───────────────
@@ -1660,7 +1717,7 @@ def _probe_dispatch_job_windows(receipt: DispatchProcessReceipt) -> ProcessLiven
 
     # Probe the named Job.
     try:
-        count = query_job_active_process_count(receipt.generation_id)
+        count = _DispatchJobOwner.probe_job_by_name(receipt.generation_id)
     except Exception:
         return ProcessLiveness.UNKNOWN
 
