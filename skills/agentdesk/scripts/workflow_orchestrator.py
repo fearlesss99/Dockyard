@@ -658,6 +658,32 @@ class _DispatchFinalizerMetadata:
     failure_kind: _DispatchFailureKind | None
 
 
+# -- Owner-Loss Retry Lifecycle (TC-13.18d.12c.2.2) ---------------------------
+
+
+@dataclass
+class _OwnerLossRetryLifecycle:
+    """Private typed context carrying owner-loss retry reservation identity
+    through the attempt 2 dispatch lifecycle.
+
+    Created by ``_reserve_and_retry_owner_loss`` after ``RETRY_RESERVED``
+    is durably committed.  Threaded through ``start_dispatch_cycle`` and
+    ``_finalize_active_dispatch`` so phase advances fire at the correct
+    lifecycle boundaries, outside the state lock.
+
+    NOT frozen — it carries mutable phase state.  NOT persisted — its
+    lifetime is bounded by the retry execution.
+    """
+
+    __slots__ = (
+        "recovery_generation_id",
+        "next_dispatch_id",
+    )
+
+    recovery_generation_id: str
+    next_dispatch_id: str
+
+
 # -- ActiveDispatchCancellation types (TC-13.18d.9b) -------------------------
 
 
@@ -810,6 +836,7 @@ class ActiveDispatchExecution:
         "_start_monotonic",
         "_ready",
         "_generation_id",
+        "_retry_lifecycle",
     )
 
     def __init__(
@@ -849,6 +876,7 @@ class ActiveDispatchExecution:
         self._start_monotonic = start_monotonic
         self._ready = False
         self._generation_id = ""
+        self._retry_lifecycle: _OwnerLossRetryLifecycle | None = None
 
     @property
     def handle(self) -> ActiveDispatchHandle:
@@ -1838,9 +1866,13 @@ class WorkflowOrchestrator:
         self,
         request: DispatchCycleRequest,
         providers: Mapping[str, AgentCliProvider],
+        *,
+        _retry_lifecycle: _OwnerLossRetryLifecycle = None,
     ) -> DispatchCycleResult:
         """Compatibility wrapper over the live-execution API."""
-        execution = await self.start_dispatch_cycle(request, providers)
+        execution = await self.start_dispatch_cycle(
+            request, providers, _retry_lifecycle=_retry_lifecycle,
+        )
         try:
             return await execution.wait()
         except asyncio.CancelledError as outer_cancel:
@@ -1862,6 +1894,8 @@ class WorkflowOrchestrator:
         self,
         request: BoundedDispatchRetryRequest,
         providers: Mapping[str, AgentCliProvider],
+        *,
+        _retry_lifecycle: _OwnerLossRetryLifecycle = None,
     ) -> BoundedDispatchRetryResult:
         """Run a finite creator-owned retry plan without inferring failures."""
         if type(request) is not BoundedDispatchRetryRequest:
@@ -1888,6 +1922,7 @@ class WorkflowOrchestrator:
             execution = await self.start_dispatch_cycle(
                 cycle_request,
                 providers,
+                _retry_lifecycle=_retry_lifecycle,
             )
 
             try:
@@ -2007,12 +2042,26 @@ class WorkflowOrchestrator:
         self,
         request: DispatchCycleRequest,
         providers: Mapping[str, AgentCliProvider],
+        *,
+        _retry_lifecycle: _OwnerLossRetryLifecycle = None,
     ) -> ActiveDispatchExecution:
-        """Start a dispatch and return after ACK, before waiting for exit."""
+        """Start a dispatch and return after ACK, before waiting for exit.
+
+        The optional keyword-only ``_retry_lifecycle`` is threaded from
+        ``_reserve_and_retry_owner_loss`` to inject the durable retry
+        reservation identity into the attempt 2 execution lifecycle.  It
+        is not part of the public API.
+        """
         if not isinstance(request, DispatchCycleRequest):
             raise WorkflowInputError(
                 "request must be DispatchCycleRequest, "
                 f"got {type(request).__name__}"
+            )
+
+        lifecycle_to_inject: _OwnerLossRetryLifecycle | None = _retry_lifecycle
+        if lifecycle_to_inject is not None and type(lifecycle_to_inject) is not _OwnerLossRetryLifecycle:
+            raise WorkflowInputError(
+                "_retry_lifecycle must be _OwnerLossRetryLifecycle or None"
             )
 
         if not isinstance(providers, Mapping):
@@ -2191,6 +2240,32 @@ class WorkflowOrchestrator:
                 start_monotonic=start_mono,
             )
             execution._generation_id = generation_id
+            execution._retry_lifecycle = lifecycle_to_inject
+
+            # ── owner-loss retry phase advance: RETRY_RESERVED → RETRY_STARTED ─
+            # Advance the durable retry receipt only when a real Worker has
+            # been started for the reserved next attempt.  This occurs after
+            # ACK, outside the state lock, and before the runner begins.
+            if lifecycle_to_inject is not None:
+                worker_pid_val, worker_creation = (
+                    _dse.get_current_process_identity()
+                )
+                _dse.advance_retry_to_started(
+                    self.project_root,
+                    next_dispatch_id=(
+                        lifecycle_to_inject.next_dispatch_id
+                    ),
+                    recovery_generation_id=(
+                        lifecycle_to_inject.recovery_generation_id
+                    ),
+                    supervisor_pid=worker_pid_val,
+                    supervisor_creation_time=worker_creation,
+                    supervisor_boot_id=_dse.get_boot_id(),
+                    worker_pid=worker_pid_val,
+                    worker_creation_time=worker_creation,
+                    worker_boot_id=_dse.get_boot_id(),
+                )
+
             execution._runner_task = asyncio.ensure_future(
                 self._run_active_dispatch(execution)
             )
@@ -2584,11 +2659,40 @@ class WorkflowOrchestrator:
                 failure_kind=failure_kind,
             )
 
+            # ── owner-loss retry phase advance: RETRY_STARTED → RETRY_FINALIZING ─
+            # Advance only when the finalizer is about to publish metadata for a
+            # completion winner whose Worker, heartbeat, and release are confirmed.
+            # This happens inside the finalizer (outside the state lock).
+            if (
+                execution._retry_lifecycle is not None
+                and execution._finalizer_metadata.release_completed
+                and execution._finalizer_metadata.worker_done
+                and execution._finalizer_metadata.heartbeat_done
+                and execution._finalizer_metadata.winner == "completion"
+            ):
+                try:
+                    _dse.advance_retry_to_finalizing(
+                        self.project_root,
+                        next_dispatch_id=(
+                            execution._retry_lifecycle.next_dispatch_id
+                        ),
+                        recovery_generation_id=(
+                            execution._retry_lifecycle.recovery_generation_id
+                        ),
+                    )
+                except _dse.DispatchSupervisorEvidenceError:
+                    pass
+
             # Durable FINALIZED tombstone — exactly-once, byte-exact replay on
             # duplicate.  Written only after Worker ended, heartbeat ended,
             # and release completed.  A tombstone write failure does not mask
             # the primary completion/error path; the durable receipt remains
             # at FINALIZING and tombstone absence is fail-closed (not death).
+            #
+            # ── owner-loss retry phase advance: RETRY_FINALIZING → RETRY_FINALIZED ─
+            # Advance the durable retry receipt to FINALIZED after the tombstone
+            # is written and the finalizer winner/evidence is frozen.  Only for
+            # the retry execution lifecycle.
             if (
                 execution._finalizer_metadata.release_completed
                 and execution._finalizer_metadata.worker_done
@@ -2612,6 +2716,26 @@ class WorkflowOrchestrator:
                             if execution._finalizer_metadata.failure_kind
                             is not None
                             else None
+                        ),
+                    )
+                except _dse.DispatchSupervisorEvidenceError:
+                    pass
+
+            if (
+                execution._retry_lifecycle is not None
+                and execution._finalizer_metadata is not None
+                and execution._finalizer_metadata.release_completed
+                and execution._finalizer_metadata.worker_done
+                and execution._finalizer_metadata.heartbeat_done
+            ):
+                try:
+                    _dse.advance_retry_to_finalized(
+                        self.project_root,
+                        next_dispatch_id=(
+                            execution._retry_lifecycle.next_dispatch_id
+                        ),
+                        recovery_generation_id=(
+                            execution._retry_lifecycle.recovery_generation_id
                         ),
                     )
                 except _dse.DispatchSupervisorEvidenceError:
@@ -4705,4 +4829,10 @@ class WorkflowOrchestrator:
         )
 
         # ── 9. Call retry outside the state lock ───────────────────────
-        return await self.run_bounded_dispatch_retry(retry_plan, providers)
+        lifecycle = _OwnerLossRetryLifecycle(
+            recovery_generation_id=recovery_generation_id,
+            next_dispatch_id=next_dispatch_id,
+        )
+        return await self.run_bounded_dispatch_retry(
+            retry_plan, providers, _retry_lifecycle=lifecycle,
+        )
