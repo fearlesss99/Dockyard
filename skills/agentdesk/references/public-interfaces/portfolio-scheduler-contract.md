@@ -1,6 +1,6 @@
 # PortfolioScheduler — Durable Admission Contract (Contract Current — TC-13.24a)
 
-This document freezes the public contract for a future PortfolioScheduler.
+This document freezes the public contract for the PortfolioScheduler.
 TC-13.24a freezes types, durable evidence, deterministic admission order,
 conflict-key semantics, lock boundaries, and crash recovery only.  It does
 not implement a Scheduler, start a Worker, call a model, call a provider, or
@@ -14,9 +14,11 @@ existing `WorkerKind`: `basic_agent`, `standard_agent`, `advanced_agent`, and
 `expert_agent`.  Different worktrees and different available slots may be
 dispatched concurrently by external callers.
 
-There is currently no built-in queue and no PortfolioScheduler.  When the
-requested `WorkerKind` has no available slot, the existing admission path
-immediately raises `WorkerSlotCapacityError`; it does not enqueue or wait.
+The PortfolioScheduler selection-to-admission runtime now provides a bounded
+queue/store, durable plan, WorkerSlot admission, and `TASK_DISPATCHED`
+boundary.  It does not own Worker startup or the post-dispatch lifecycle.
+When the requested `WorkerKind` has no available slot, the admission boundary
+raises `WorkerSlotCapacityError` and does not wait indefinitely.
 Each `ActiveDispatchExecution` has a private asyncio lock.  That lock is not
 a cross-execution or cross-process global lock.
 
@@ -24,7 +26,7 @@ TC-13.24a's word **serial** means that one queue selection and reservation is
 completed at a time.  It does not mean that the Worker lifetime is globally
 serial or that the system can have only one active Worker.
 
-The future Scheduler owns only this boundary:
+The Scheduler runtime owns only this boundary:
 
 ```text
 queued → selected → TASK_DISPATCHED admission
@@ -428,13 +430,18 @@ Changing any `ModelSelectionSnapshot` field, task-card/base/branch/report
 field, expected Git HEAD, holder identity, canonical worktree, attempt, or
 selection generation is also a typed divergent-plan rejection.  ApprovalGate
 is not a plan-identity validator.  This contract freezes the evidence and
-ordering only; durable plan Store/runtime remains Target - TC-13.24b.2b.4a.3,
-and selection-to-admission runtime remains Target with the known defect open.
+ordering; durable plan Store/runtime is Current - TC-13.24b.2b.4a.3, and
+selection-to-admission runtime is Current - TC-13.24b.2b.4a.4.  Recovery
+canonical event identity is Current - TC-13.24b.2b.2c, with adversarial
+verification Verified - TC-13.24b.2b.2d.
 
 AdmissionPlan durable binding contract: **Contract Current - TC-13.24b.2b.4a.2**.
-Selection-to-Admission runtime: **Target - defect open**.
-Durable plan Store/runtime: **Target - TC-13.24b.2b.4a.3**.
-Recovery event identity repair status is unchanged by this contract card.
+Selection-to-Admission runtime: **Current - TC-13.24b.2b.4a.4**.
+Durable plan Store/runtime: **Current - TC-13.24b.2b.4a.3**.
+Recovery canonical event identity: **Current - TC-13.24b.2b.2c**.
+Recovery adversarial verification: **Verified - TC-13.24b.2b.2d**.
+Recovery action executor: **Target**.
+Worker startup/complete Scheduler runtime: **Target**.
 
 ## 10. Status and task split
 
@@ -445,7 +452,13 @@ Recovery event identity repair status is unchanged by this contract card.
   TC-13.24b.2b.1**.
 - PortfolioScheduler crash reconciliation decision core: **Current —
   TC-13.24b.2b.2**.
-- Admission orchestration/runtime wiring: **Target — TC-13.24b.2b.4**.
+- AdmissionPlan durable binding contract: **Contract Current - TC-13.24b.2b.4a.2**.
+- Durable AdmissionPlan Store/runtime: **Current - TC-13.24b.2b.4a.3**.
+- Selection-to-Admission runtime: **Current - TC-13.24b.2b.4a.4**.
+- Recovery canonical event identity: **Current - TC-13.24b.2b.2c**.
+- Recovery adversarial verification: **Verified - TC-13.24b.2b.2d**.
+- Admission orchestration/runtime wiring beyond this boundary: **Target**.
+- Recovery action executor: **Target**.
 - Complete PortfolioScheduler runtime and Worker startup/dispatch integration:
   **Target**.
 - WorktreeLifecycleManager: **Target** and independent.
@@ -453,6 +466,6 @@ Recovery event identity repair status is unchanged by this contract card.
 - Interface #22 core orchestration: unchanged, **Current — TC-13.18d.13b**;
   Codex/provider-429 extensions remain deferred.
 
-This document stops before queue reservation/admission runtime, Worker
-startup, model/provider/API calls, network access, and any change to the
-existing Orchestrator or ControlPlane production modules.
+This document stops before Recovery action execution, Worker startup,
+complete Scheduler runtime, model/provider/API calls, network access, and any
+change to the existing Orchestrator or ControlPlane production modules.

@@ -14085,7 +14085,7 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
             normalized_adr,
         )
         self.assertIn(
-            "admission orchestration/runtime wiring remains Target — TC-13.24b.2b.4",
+            "selection-to-admission runtime is Current - TC-13.24b.2b.4a.4",
             normalized_adr,
         )
         self.assertIn(
@@ -14122,7 +14122,7 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "Admission orchestration/runtime wiring: **Target — TC-13.24b.2b.4**",
+            "Selection-to-Admission runtime: **Current - TC-13.24b.2b.4a.4**",
             normalized,
         )
         self.assertIn("WorktreeLifecycleManager: **Target**", normalized)
@@ -14210,7 +14210,7 @@ class TC1322b3aAndTC1324b1IntegrationStatusTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "Admission orchestration/runtime wiring: **Target — TC-13.24b.2b.4**",
+            "Selection-to-Admission runtime: **Current - TC-13.24b.2b.4a.4**",
             normalized,
         )
         self.assertIn("WorktreeLifecycleManager **Target**", normalized)
@@ -14227,6 +14227,48 @@ class TC1322b3aAndTC1324b1IntegrationStatusTests(unittest.TestCase):
             normalized,
         )
         self.assertIn("Interface #22 is unchanged", normalized)
+        self.assertNotIn(
+            "| 36 | PortfolioScheduler durable admission | **Admission Runtime Current**",
+            normalized,
+        )
+
+
+class TC1324b4a5RuntimeRecoveryIntegrationStatusTests(unittest.TestCase):
+    """TC-13.24b.2b.4a.5 direct runtime/recovery status assertions."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        references = root / "skills" / "agentdesk" / "references"
+        cls.contract = (
+            references / "public-interfaces" / "portfolio-scheduler-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr = (
+            references / "adr" / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+
+    def test_plan_runtime_and_recovery_statuses_are_exact(self) -> None:
+        normalized = " ".join((self.contract + "\n" + self.adr).split())
+        for status in (
+            "AdmissionPlan durable binding contract: **Contract Current - TC-13.24b.2b.4a.2**",
+            "Durable AdmissionPlan Store/runtime: **Current - TC-13.24b.2b.4a.3**",
+            "Selection-to-Admission runtime: **Current - TC-13.24b.2b.4a.4**",
+            "Recovery canonical event identity: **Current - TC-13.24b.2b.2c**",
+            "Recovery adversarial verification: **Verified - TC-13.24b.2b.2d**",
+        ):
+            self.assertIn(status, normalized)
+        self.assertIn("Recovery action executor: **Target**", normalized)
+        self.assertIn("Worker startup/complete Scheduler runtime: **Target**", normalized)
+        self.assertNotIn("defect open", normalized)
+
+    def test_interface_22_is_unchanged_and_36_is_not_complete_runtime(self) -> None:
+        normalized = " ".join(self.adr.split())
+        self.assertIn("Interface #22 is unchanged", normalized)
+        self.assertIn(
+            "Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core Current",
+            normalized,
+        )
+        self.assertIn("Recovery action executor and Worker startup/complete Scheduler runtime remain Target", normalized)
         self.assertNotIn(
             "| 36 | PortfolioScheduler durable admission | **Admission Runtime Current**",
             normalized,
@@ -14258,11 +14300,11 @@ class TC1324b2aPortfolioSchedulerSelectionPolicyStatusTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "Admission orchestration/runtime wiring: **Target — TC-13.24b.2b.4**",
+            "Selection-to-Admission runtime: **Current - TC-13.24b.2b.4a.4**",
             normalized,
         )
         self.assertIn(
-            "admission orchestration/runtime wiring remains Target — TC-13.24b.2b.4",
+            "selection-to-admission runtime is Current - TC-13.24b.2b.4a.4",
             normalized,
         )
         self.assertNotIn(
@@ -14339,10 +14381,10 @@ class TC1324b2b3AdmissionRecoveryIntegrationSealTests(unittest.TestCase):
         for token in (
             "PortfolioScheduler admission reservation core: **Current — TC-13.24b.2b.1**",
             "PortfolioScheduler crash reconciliation decision core: **Current — TC-13.24b.2b.2**",
-            "Admission orchestration/runtime wiring: **Target — TC-13.24b.2b.4**",
+            "Selection-to-Admission runtime: **Current - TC-13.24b.2b.4a.4**",
             "admission reservation core Current — TC-13.24b.2b.1",
             "crash reconciliation decision core Current — TC-13.24b.2b.2",
-            "admission orchestration/runtime wiring remains Target — TC-13.24b.2b.4",
+            "selection-to-admission runtime is Current - TC-13.24b.2b.4a.4",
             "Complete PortfolioScheduler runtime and Worker startup/dispatch integration: **Target**",
             "Interface #22 is unchanged",
         ):
@@ -14666,17 +14708,20 @@ class TC1324b4a2AdmissionPlanBindingContractFreezeTests(unittest.TestCase):
             normalized,
         )
 
-    def test_runtime_and_store_remain_target(self) -> None:
+    def test_runtime_and_store_status_is_advanced(self) -> None:
         normalized = self._normalize(self.contract)
         for status in (
             "AdmissionPlan durable binding contract: **Contract Current - TC-13.24b.2b.4a.2**",
-            "Selection-to-Admission runtime: **Target - defect open**",
-            "Durable plan Store/runtime: **Target - TC-13.24b.2b.4a.3**",
-            "Recovery event identity repair status is unchanged",
+            "Selection-to-Admission runtime: **Current - TC-13.24b.2b.4a.4**",
+            "Durable plan Store/runtime: **Current - TC-13.24b.2b.4a.3**",
+            "Recovery canonical event identity: **Current - TC-13.24b.2b.2c**",
+            "Recovery adversarial verification: **Verified - TC-13.24b.2b.2d**",
+            "Recovery action executor: **Target**",
+            "Worker startup/complete Scheduler runtime: **Target**",
         ):
             self.assertIn(status, normalized)
         self.assertNotIn(
-            "Selection-to-Admission runtime: **Current",
+            "Selection-to-Admission runtime: **Target",
             normalized,
         )
 
@@ -14687,11 +14732,15 @@ class TC1324b4a2AdmissionPlanBindingContractFreezeTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "durable plan Store/runtime; that remains **Target - TC-13.24b.2b.4a.3**",
+            "Durable plan Store/runtime is **Current - TC-13.24b.2b.4a.3**",
             normalized,
         )
         self.assertIn(
-            "Selection-to-Admission runtime remains **Target - defect open**",
+            "Selection-to-Admission runtime is **Current - TC-13.24b.2b.4a.4**",
+            normalized,
+        )
+        self.assertIn(
+            "Recovery action execution and complete Scheduler runtime remain **Target**",
             normalized,
         )
         self.assertIn("Interface #22 remains unchanged", normalized)

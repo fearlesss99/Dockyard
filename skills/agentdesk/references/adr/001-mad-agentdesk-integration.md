@@ -46,7 +46,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 33 | AgentDesk WorkerOutput Decoder — Claude 2.1.214 | **Current** | TC-13.9c.1 | §2.20; version-locked, fail-closed; decode_worker_result(WorkerResult, version) → WorkerOutput; require_delivery_receipt(WorkerOutput) → DeliveryReceipt; claude + claudecode only; codex unsupported |
 | 34 | AgentDesk Provider Doctor and gateway.yaml template | **Current** — TC-13.21e.1 | TC-13.21e.1 | Read-only pre-start diagnostics (D001-D012, `scripts/doctor.py`) plus safe `agentdesk.gateway-config/v1` project template; zero writes/subprocess/network/model calls, no API-key handling; real provider execution remains Target, Codex decoder remains Target/deferred (TC-13.9c.2), provider rate-limit detection remains Target (TC-13.14c) |
 | 35 | PM TaskDifficulty Assessment | **Current — TC-13.22a** | TC-13.22a | Frozen seven-dimension PM assessment contract; deterministic assessor Current — TC-13.22b.1; canonical evidence codec Current — TC-13.22b.2a; evidence filesystem/ancestry store Current — TC-13.22b.2b; dispatch enforcement Current — TC-13.22b.3a; Interface #22 status unchanged |
-| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Recovery Core Current** | TC-13.24a / TC-13.24b.1 / TC-13.24b.2a / TC-13.24b.2b.1 / TC-13.24b.2b.2 | Frozen BusinessPriority, QueueEntry, ScheduleReceipt, durable evidence, deterministic v1 selection, conflict-key, lock-order, and crash-recovery contract; durable evidence store Current — TC-13.24b.1; deterministic selection policy Current — TC-13.24b.2a; admission reservation core Current — TC-13.24b.2b.1; crash reconciliation decision core Current — TC-13.24b.2b.2; admission orchestration/runtime wiring remains Target — TC-13.24b.2b.4; Interface #22 unchanged |
+| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core Current** | TC-13.24a / TC-13.24b.1 / TC-13.24b.2a / TC-13.24b.2b.1 / TC-13.24b.2b.2 / TC-13.24b.2b.4a.2 / TC-13.24b.2b.4a.3 / TC-13.24b.2b.4a.4 / TC-13.24b.2b.2c | Frozen BusinessPriority, QueueEntry, ScheduleReceipt, durable evidence, deterministic v1 selection, conflict-key, lock-order, crash-recovery, durable plan binding, plan persistence, and selection-to-admission runtime; Recovery adversarial verification is Verified — TC-13.24b.2b.2d; Recovery action executor and Worker startup/complete Scheduler runtime remain Target; Interface #22 unchanged |
 
 ---
 
@@ -7757,25 +7757,26 @@ Status: TaskDifficulty Assessment Contract **Current — TC-13.22a**;
 deterministic assessor **Current — TC-13.22b.1**; canonical evidence codec
 **Current — TC-13.22b.2a**; evidence filesystem/ancestry store **Current —
 TC-13.22b.2b**; dispatch/approval/lifecycle wiring **Current — TC-13.22b.3a**;
-PortfolioScheduler selection/admission runtime and WorktreeLifecycleManager
-remain **Target**; Interface #22 status is unchanged.
+PortfolioScheduler selection/admission runtime is **Current — TC-13.24b.2b.4a.4**;
+WorktreeLifecycleManager remains **Target**; Interface #22 status is unchanged.
 
 ---
 
 ## 2.25 PortfolioScheduler Durable Admission — Frozen Contract (Contract Current — TC-13.24a)
 
-TC-13.24a freezes the public admission boundary for a future
+TC-13.24a freezes the public admission boundary for the
 PortfolioScheduler.  The complete contract is in
 `skills/agentdesk/references/public-interfaces/portfolio-scheduler-contract.md`.
-This card does not implement a Scheduler, queue store, Worker startup, model
-or provider call, network access, or any WorkflowOrchestrator production
-change.
+The current implementation covers queue/store selection, durable plan binding,
+WorkerSlot admission, and the `TASK_DISPATCHED` boundary.  It does not
+implement Worker startup, model/provider calls, network access, or any
+WorkflowOrchestrator production change.
 
 The current system remains multi-Worker: `WorkerSlotLease` has eight stable
-slots, two per `WorkerKind`; no built-in PortfolioScheduler exists; and a
-full requested kind fails immediately with `WorkerSlotCapacityError`.  The
-future Scheduler's serial critical section covers one selection and
-reservation only, not the full Worker lifetime.  Its boundary is exactly
+slots, two per `WorkerKind`; the bounded PortfolioScheduler runtime owns
+selection through admission; and a full requested kind fails immediately with
+`WorkerSlotCapacityError`.  The Scheduler's serial critical section covers
+one selection and reservation only, not the full Worker lifetime.  Its boundary is exactly
 `queued → selected → TASK_DISPATCHED` admission.  After that canonical event,
 the existing WorkflowOrchestrator and ControlPlaneTransitionService own ACK,
 Worker, delivery, acceptance, integration, cancellation, supersession,
@@ -7813,26 +7814,31 @@ operation to invalidate the old receipt and requeue; it is not a normal
 reverse transition.  Attempt 4 is forbidden and retry facts remain owned by
 the existing Orchestrator retry contract.
 
-The deterministic selection policy is now implemented as a pure, tested
-function over verified queue/store values.  It produces exactly one selected
-receipt when eligible, does not reserve a queue sequence, acquire a WorkerSlot,
-write admission evidence, or emit `TASK_DISPATCHED`.  Queue reservation,
-WorkerSlot admission, and `TASK_DISPATCHED` orchestration wiring remain the
-follow-up runtime boundary.
+The deterministic selection policy is implemented as a pure, tested function
+over verified queue/store values.  The durable plan Store/runtime and
+selection-to-admission runtime now bind that plan, acquire the WorkerSlot, and
+reach the existing `TASK_DISPATCHED` boundary.  Recovery remains a read-only
+decision core: the Recovery action executor and Worker startup/complete
+Scheduler runtime remain Target.
 
 Status: PortfolioScheduler durable admission contract **Contract Current —
 TC-13.24a**; PortfolioScheduler durable evidence store **Current —
 TC-13.24b.1**; PortfolioScheduler deterministic selection policy **Current —
 TC-13.24b.2a**; PortfolioScheduler admission reservation core **Current —
 TC-13.24b.2b.1**; PortfolioScheduler crash reconciliation decision core
-**Current — TC-13.24b.2b.2**; admission orchestration/runtime wiring
-**Target — TC-13.24b.2b.4**; WorktreeLifecycleManager **Target**;
-TaskDifficulty dispatch/lifecycle wiring **Current — TC-13.22b.3a**; Interface
-#22 is unchanged.
+**Current — TC-13.24b.2b.2**; AdmissionPlan durable binding contract
+**Contract Current — TC-13.24b.2b.4a.2**; Durable AdmissionPlan Store/runtime
+**Current — TC-13.24b.2b.4a.3**; Selection-to-Admission runtime **Current —
+TC-13.24b.2b.4a.4**; Recovery canonical event identity **Current —
+TC-13.24b.2b.2c**; Recovery adversarial verification **Verified —
+TC-13.24b.2b.2d**; Recovery action executor **Target**; Worker
+startup/complete Scheduler runtime **Target**; WorktreeLifecycleManager
+**Target**; TaskDifficulty dispatch/lifecycle wiring **Current — TC-13.22b.3a**;
+Interface #22 is unchanged.
 
 #### 2.25.1 AdmissionPlan Binding Contract (Contract Current - TC-13.24b.2b.4a.2)
 
-TC-13.24b.4a.2 freezes the durable identity that binds one selected queue
+TC-13.24b.2b.4a.2 freezes the durable identity that binds one selected queue
 generation to one future admission plan.  The public
 `AdmissionPlanReservation` is frozen/slotted and has exactly twenty-eight
 typed fields: `schema_version`, `queue_id`, `receipt_id`, `task_id`,
@@ -7868,11 +7874,13 @@ task-card/base/branch/report substitution, Git HEAD substitution, holder or
 worktree substitution, and generation substitution are all rejected before
 lease acquisition.  ApprovalGate is not a plan-identity validator.
 
-This contract does not implement durable plan Store/runtime; that remains
-**Target - TC-13.24b.2b.4a.3**.  Selection-to-Admission runtime remains
-**Target - defect open**.  Recovery event identity status is unchanged, and
-Interface #22 remains unchanged.  Interface #36 must not be described as
-complete runtime Current.
+Durable plan Store/runtime is **Current - TC-13.24b.2b.4a.3** and
+Selection-to-Admission runtime is **Current - TC-13.24b.2b.4a.4**.  Recovery
+canonical event identity is **Current - TC-13.24b.2b.2c** and adversarial
+verification is **Verified - TC-13.24b.2b.2d**.  Recovery action execution and
+complete Scheduler runtime remain **Target**.  Interface #22 remains
+unchanged, and Interface #36 must not be described as complete runtime
+Current.
 
 ---
 
