@@ -428,12 +428,12 @@ Changing any `ModelSelectionSnapshot` field, task-card/base/branch/report
 field, expected Git HEAD, holder identity, canonical worktree, attempt, or
 selection generation is also a typed divergent-plan rejection.  ApprovalGate
 is not a plan-identity validator.  This contract freezes the evidence and
-ordering only; durable plan Store/runtime remains Target - TC-13.24b.4a.3,
+ordering only; durable plan Store/runtime remains Target - TC-13.24b.2b.4a.3,
 and selection-to-admission runtime remains Target with the known defect open.
 
 AdmissionPlan durable binding contract: **Contract Current - TC-13.24b.2b.4a.2**.
 Selection-to-Admission runtime: **Target - defect open**.
-Durable plan Store/runtime: **Target - TC-13.24b.4a.3**.
+Durable plan Store/runtime: **Target - TC-13.24b.2b.4a.3**.
 Recovery event identity repair status is unchanged by this contract card.
 
 ## 10. Status and task split

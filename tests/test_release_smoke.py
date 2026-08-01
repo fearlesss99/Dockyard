@@ -14671,7 +14671,7 @@ class TC1324b4a2AdmissionPlanBindingContractFreezeTests(unittest.TestCase):
         for status in (
             "AdmissionPlan durable binding contract: **Contract Current - TC-13.24b.2b.4a.2**",
             "Selection-to-Admission runtime: **Target - defect open**",
-            "Durable plan Store/runtime: **Target - TC-13.24b.4a.3**",
+            "Durable plan Store/runtime: **Target - TC-13.24b.2b.4a.3**",
             "Recovery event identity repair status is unchanged",
         ):
             self.assertIn(status, normalized)
@@ -14687,7 +14687,7 @@ class TC1324b4a2AdmissionPlanBindingContractFreezeTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "durable plan Store/runtime; that remains **Target - TC-13.24b.4a.3**",
+            "durable plan Store/runtime; that remains **Target - TC-13.24b.2b.4a.3**",
             normalized,
         )
         self.assertIn(

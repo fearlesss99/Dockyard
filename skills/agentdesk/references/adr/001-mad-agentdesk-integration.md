@@ -7869,7 +7869,7 @@ worktree substitution, and generation substitution are all rejected before
 lease acquisition.  ApprovalGate is not a plan-identity validator.
 
 This contract does not implement durable plan Store/runtime; that remains
-**Target - TC-13.24b.4a.3**.  Selection-to-Admission runtime remains
+**Target - TC-13.24b.2b.4a.3**.  Selection-to-Admission runtime remains
 **Target - defect open**.  Recovery event identity status is unchanged, and
 Interface #22 remains unchanged.  Interface #36 must not be described as
 complete runtime Current.
