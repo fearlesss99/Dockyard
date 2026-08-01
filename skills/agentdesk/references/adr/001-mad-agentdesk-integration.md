@@ -12,9 +12,9 @@ marked **Current** exist and are callable today; interfaces marked
 | # | Interface | Status | Implemented by | Notes |
 |---|-----------|--------|----------------|-------|
 | 1 | `mad agents` (TSV) | **Current** | N/A (MVP) | Tab-separated `id name adapter enabled` to stdout |
-| 2 | `mad agents --format json` | **Target** | TC-13.2 | `mad.agents/v1` 鈥?root object with `schema_version` + `agents` array |
+| 2 | `mad agents --format json` | **Current** — verified by TC-13.21f | TC-13.2 | `mad.agents/v1` 鈥?root object with `schema_version` + `agents` array |
 | 3 | `mad deliberate --format json` | **Current** | N/A (MVP) | `RunResult.to_dict()` to stdout; no public `schema_version` |
-| 4 | `mad.run-result/v1` schema | **Target** | TC-13.2 | Add `schema_version` only; keep all existing field shapes |
+| 4 | `mad.run-result/v1` schema | **Current** — verified by TC-13.21f | TC-13.2 | Add `schema_version` only; keep all existing field shapes |
 | 5 | `mad audit` sub-command | **Current** | TC-13.15 | `mad.audit-result/v1`; structured audit of a delivery |
 | 6 | `MAD_HOME` environment variable | **Current** | N/A (MVP) | Override data directory; read by `app_home()` |
 | 7 | `MAD_PARTICIPANT` recursion guard | **Current** | N/A (MVP) | Set to `"1"` in subprocess env to prevent re-entry |
@@ -164,11 +164,11 @@ AgentDesk does **not** currently have:
 
 | Interface | Schema | Implemented by | Description |
 |-----------|--------|----------------|-------------|
-| `mad agents --format json` | `mad.agents/v1` | TC-13.2 | Root object with `schema_version` + `agents` array |
-| `mad deliberate --format json` | `mad.run-result/v1` | TC-13.2 | Current output plus `schema_version` at top level; backward-compatible |
+| `mad agents --format json` | `mad.agents/v1` | TC-13.2 | Root object with `schema_version` + `agents` array (Current — verified by TC-13.21f) |
+| `mad deliberate --format json` | `mad.run-result/v1` | TC-13.2 | Current output plus `schema_version` at top level; backward-compatible (Current — verified by TC-13.21f) |
 | `mad audit <question> --workspace 鈥 | `mad.audit-result/v1` | TC-13.15 | Structured audit of a delivery workspace |
 
-**`mad.agents/v1` (Target 鈥?TC-13.2)**:
+**`mad.agents/v1` (Current — verified by TC-13.21f)**:
 
 Uses a root object, not a bare array:
 
@@ -211,7 +211,7 @@ The following AgentProfile fields are **forbidden** in the public output:
 The contract must never claim that `mad.agents/v1` outputs all `AgentProfile`
 fields.
 
-**`mad.run-result/v1` (Target 鈥?TC-13.2)**:
+**`mad.run-result/v1` (Current — verified by TC-13.21f)**:
 
 Backward-compatible: the only change from Current is the addition of
 `schema_version` at the top level.  All other fields keep their Current

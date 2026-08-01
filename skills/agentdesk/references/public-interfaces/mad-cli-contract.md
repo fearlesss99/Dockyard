@@ -13,10 +13,10 @@ a Target interface as if it were Current.
 | Interface | Status | Implemented by | Schema |
 |-----------|--------|----------------|--------|
 | `mad agents` (TSV) | **Current** | N/A (MVP) | None (tab-separated) |
-| `mad agents --format json` | **Target** | TC-13.2 | `mad.agents/v1` |
-| `mad deliberate --format json` | **Current** | N/A (MVP) | Informal (`RunResult.to_dict()`) |
-| `mad deliberate --format json` (formal) | **Target** | TC-13.2 | `mad.run-result/v1` |
-| `mad resume --format json` | **Current** | N/A (MVP) | Informal (same shape as deliberate) |
+| `mad agents --format json` | **Current** — verified by TC-13.21f | TC-13.2 | `mad.agents/v1` |
+| `mad deliberate --format json` | **Current** | N/A (MVP) | `mad.run-result/v1` (via `RunResult.to_dict()`) |
+| `mad deliberate --format json` (formal) | **Current** — verified by TC-13.21f | TC-13.2 | `mad.run-result/v1` |
+| `mad resume --format json` | **Current** — verified by TC-13.21f | TC-13.2 | `mad.run-result/v1` (same shape as deliberate) |
 | `mad audit` | **Current** | TC-13.15 | `mad.audit-result/v1` |
 | `agentdesk.mad-refs/v1` | **Current** | TC-13.6 | Runtime MAD invocation record |
 
@@ -56,13 +56,13 @@ Uncaught configuration exceptions (e.g. corrupt `agents.toml`) may produce
 non-zero exits; these are not stable public exit semantics.
 
 Limitations (Current):
-- No `--format` flag.
-- No JSON output.
-- Enabled/disabled is a localised Chinese string, not a machine-readable boolean.
+- TSV output shows enabled/disabled as a localised Chinese string
+  (`启用`/`禁用`), not a machine-readable boolean.  For machine-readable
+  output use `mad agents --format json` (see §3.1).
 
 ### 2.2 `mad deliberate --format json`
 
-**Status: Current**
+**Status: Current — verified by TC-13.21f**
 
 ```bash
 mad deliberate "<question>" \
@@ -77,6 +77,7 @@ Stdout is a single JSON object produced by `RunResult.to_dict()`:
 
 ```json
 {
+  "schema_version": "mad.run-result/v1",
   "deliberation_id": "<id>",
   "status": "完成 | 带警告完成",
   "report": "<full-markdown-report>",
@@ -88,8 +89,12 @@ Stdout is a single JSON object produced by `RunResult.to_dict()`:
 }
 ```
 
-Limitations (Current):
-- **No `schema_version`** field — consumers cannot version-detect the output.
+The root object contains exactly the `RunResult` fields plus `schema_version`
+(`"mad.run-result/v1"`); all existing field shapes are unchanged.  Stdout
+contains **only** this single JSON object — progress, preflight output, plan
+preview, and warnings all go to **stderr**.  See §3.2 for the formal schema.
+
+Notes:
 - `status` is a Chinese string (`"完成"`, `"带警告完成"`), not a machine-readable enum.
 - No `verdict` field (the concept does not exist in deliberation).
 - No structured `issues` or `evidence` arrays.
@@ -107,13 +112,15 @@ Exit codes for `mad deliberate`:
 
 ### 2.3 `mad resume --format json`
 
-**Status: Current**
+**Status: Current — verified by TC-13.21f**
 
 ```bash
 mad resume <deliberation_id> --format json
 ```
 
-Output shape is identical to `mad deliberate --format json`.
+Output shape is identical to `mad deliberate --format json` — a single JSON
+object with `"schema_version": "mad.run-result/v1"` to stdout; progress and
+warnings go to stderr.
 
 Exit codes for `mad resume`:
 
@@ -225,9 +232,13 @@ Key semantics:
 
 ## 3. Target Interfaces
 
+All interfaces previously listed here are now **Current — verified by TC-13.21f**
+against the MAD production serialisation code.  The section heading is retained
+for backward reference; status markers are updated below.
+
 ### 3.1 `mad agents --format json` → `mad.agents/v1`
 
-**Status: Target — to be implemented by TC-13.2**
+**Status: Current — verified by TC-13.21f**
 
 ```bash
 mad agents --format json
@@ -279,9 +290,14 @@ The contract must never claim that `mad.agents/v1` outputs the full
 
 Exit codes: `0` (success), `2` (argument error).
 
+**stdout/stderr boundary**: with `--format json`, stdout contains **only** the
+single JSON object above — no Markdown, no logging, no surrounding text.
+`mad agents` calls `initialize()` and `load_agents()` before printing, neither
+of which writes to stdout.
+
 ### 3.2 `mad deliberate --format json` → `mad.run-result/v1`
 
-**Status: Target — to be implemented by TC-13.2**
+**Status: Current — verified by TC-13.21f**
 
 Backward-compatible: the only change from Current is the addition of
 `schema_version` at the top level.  All other fields keep their Current
@@ -312,6 +328,17 @@ If future versions need English status strings, object-typed participants,
 or restructured convergence/plan, they must use `mad.run-result/v2`.
 
 Exit codes are the same as Current `mad deliberate`.
+
+**stdout/stderr boundary**: for both `mad deliberate --format json` and
+`mad resume --format json`, stdout contains **only** the single JSON object.
+Progress messages, preflight output, the plan preview, warnings, and the
+archive path line all go to **stderr** (via the `progress=` callback and
+`print(..., file=sys.stderr)`).
+
+**Verification source**: TC-13.21f verified these contracts against MAD
+production serialisation code (`src/mad/models.py`, `src/mad/cli.py`) and the
+corresponding CLI/audit tests at MAD commit
+`9b402874c9fbd3fd28fb402dc28ce3de6b21a568`.
 
 ---
 
@@ -466,3 +493,4 @@ unvalidated data to downstream systems, and alert the PM.
 | 2026-07-26 | 1 (Target) | PM | Initial contract.  All Target interfaces pending future TC numbers. |
 | 2026-07-26 | 2 (Target) | PM | Corrected Implemented-by references (→TC-13.2, TC-13.15, etc.). Added `mad.agents/v1` root object. Added `mad.run-result/v1` backward-compat rules. Split exit codes by sub-command. Added `agentdesk.mad-refs/v1` runtime schema. Clarified `verdict: blocked` vs infrastructure failure. |
 | 2026-07-28 | 3 (Current) | PM | TC-13.16a: `mad audit` → Current (TC-13.15); moved to §2.4. Frozen MadAuditGateway contract (§2.17 in ADR). Fixed `--depth <fast|balanced|deep>`, `status: "completed"` on exit 0, `plan` exact shape as `{"depth": "fast|balanced|deep"}`, 11-key root object. |
+| 2026-08-01 | 4 (Current) | TC-13.21f | `mad agents --format json` → `mad.agents/v1` and `mad deliberate/resume --format json` → `mad.run-result/v1` verified against MAD production code; statuses promoted to Current. Documented stdout/stderr boundary and MAD verification commit `9b402874c9fbd3fd28fb402dc28ce3de6b21a568`. |

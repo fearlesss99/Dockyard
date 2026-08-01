@@ -1363,6 +1363,12 @@ class ReleaseSmokeTests(unittest.TestCase):
     # -- Preserved original tests ------------------------------------------
 
     def test_adr_does_not_claim_target_interfaces_as_current(self) -> None:
+        """MAD JSON interfaces are now Current (verified by TC-13.21f).
+
+        Verifies the specific status strings used in the ADR Interface
+        Status table and the CLI contract summary — not the raw word
+        "Current", which is expected for the verified interfaces.
+        """
         adr_text = self._adr_path().read_text(encoding="utf-8")
         contract_text = self._cli_contract_path().read_text(encoding="utf-8")
 
@@ -1378,8 +1384,11 @@ class ReleaseSmokeTests(unittest.TestCase):
 
         for line in table_text.splitlines():
             if "mad agents --format json" in line:
-                self.assertNotIn("**Current**", line,
-                                 f"'mad agents --format json' must not be Current: {line.strip()}")
+                # Verified Current (TC-13.21f), not bare Target.
+                self.assertNotIn("| **Target** |", line,
+                                 f"'mad agents --format json' must not be Target: {line.strip()}")
+                self.assertIn("**Current**", line,
+                              f"'mad agents --format json' must be Current: {line.strip()}")
             if "| `mad audit " in line or line.strip().startswith("| `mad audit"):
                 self.assertNotIn("**Current**", line,
                                  f"'mad audit' must not be Current: {line.strip()}")
@@ -1393,19 +1402,22 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIsNotNone(status_section,
                              "CLI contract must have 'Interface Status Summary'")
         for line in status_section.group(1).splitlines():
-            if "mad audit" in line and "Target" not in line:
-                pass
-            elif "mad audit" in line:
-                self.assertNotIn(
+            if "mad audit" in line:
+                self.assertIn(
                     "Current",
                     line,
-                    f"CLI contract: 'mad audit' must not be Current: {line.strip()}",
+                    f"CLI contract: 'mad audit' must be Current: {line.strip()}",
                 )
             if "mad agents --format json" in line:
                 self.assertNotIn(
+                    "| **Target** |",
+                    line,
+                    f"CLI contract: 'mad agents --format json' must not be Target: {line.strip()}",
+                )
+                self.assertIn(
                     "Current",
                     line,
-                    f"CLI contract: 'mad agents --format json' must not be Current: {line.strip()}",
+                    f"CLI contract: 'mad agents --format json' must be Current: {line.strip()}",
                 )
 
     def test_adr_and_cli_contract_use_skill_internal_paths(self) -> None:
@@ -7800,6 +7812,110 @@ class ReleaseSmokeTests(unittest.TestCase):
                       .lower().replace(" ", ""),
                       section.lower().replace(" ", ""),
                       "§2.16.5 must state no custom exception classes")
+
+
+# ── TC-13.21f — MAD JSON contract verification ─────────────────────────────
+
+
+class TC1321fMadJsonContractVerificationTests(unittest.TestCase):
+    """TC-13.21f — cross-repo verification that the MAD JSON public
+    contracts are implemented, and that AgentDesk docs/gateway agree.
+
+    Static checks only: no MAD invocation, no model/API/network calls.
+    The MAD-side verification (production serialisation code + tests) is
+    recorded in reports/tc-13.21f-mad-json-contract-verification.md.
+    """
+
+    def _adr_path(self):
+        return SKILL_ROOT / "references" / "adr" / "001-mad-agentdesk-integration.md"
+
+    def _cli_contract_path(self):
+        return SKILL_ROOT / "references" / "public-interfaces" / "mad-cli-contract.md"
+
+    def _mad_gateway_path(self):
+        return SKILL_ROOT / "scripts" / "mad_gateway.py"
+
+    def _report_path(self):
+        return Path(__file__).resolve().parents[1] / "reports" / "tc-13.21f-mad-json-contract-verification.md"
+
+    # -- Interface #2: mad agents --format json → mad.agents/v1 ----------
+
+    def test_adr_interface_2_is_current_verified(self) -> None:
+        """ADR Interface Status row #2 must be Current, verified by TC-13.21f."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        self.assertIn("| 2 | `mad agents --format json` | **Current** — verified by TC-13.21f |",
+                      adr_text)
+
+    def test_adr_interface_4_is_current_verified(self) -> None:
+        """ADR Interface Status row #4 must be Current, verified by TC-13.21f."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        self.assertIn("| 4 | `mad.run-result/v1` schema | **Current** — verified by TC-13.21f |",
+                      adr_text)
+
+    def test_contract_status_summary_matches_verified_state(self) -> None:
+        """CLI contract status summary must mark the JSON interfaces Current."""
+        contract_text = self._cli_contract_path().read_text(encoding="utf-8")
+        self.assertIn("| `mad agents --format json` | **Current** — verified by TC-13.21f |",
+                      contract_text)
+        self.assertIn("| `mad deliberate --format json` (formal) | **Current** — verified by TC-13.21f |",
+                      contract_text)
+        self.assertIn("| `mad resume --format json` | **Current** — verified by TC-13.21f |",
+                      contract_text)
+
+    # -- Gateway constant / parser agreement ------------------------------
+
+    def test_gateway_schema_constant_matches_run_result(self) -> None:
+        """mad_gateway.py must consume exactly mad.run-result/v1."""
+        gateway_src = self._mad_gateway_path().read_text(encoding="utf-8")
+        self.assertIn('MAD_RUN_RESULT_SCHEMA = "mad.run-result/v1"', gateway_src)
+        # Fail-closed: wrong/missing schema_version must be rejected.
+        self.assertIn("if sv != MAD_RUN_RESULT_SCHEMA:", gateway_src)
+
+    def test_contract_and_gateway_schema_strings_agree(self) -> None:
+        """The contract doc and the gateway constant must both say mad.run-result/v1."""
+        contract_text = self._cli_contract_path().read_text(encoding="utf-8")
+        gateway_src = self._mad_gateway_path().read_text(encoding="utf-8")
+        for text, name in ((contract_text, "CLI contract"),
+                           (gateway_src, "mad_gateway.py")):
+            self.assertIn("mad.run-result/v1", text,
+                          f"{name}: must reference mad.run-result/v1")
+
+    def test_contract_forbids_mad_agents_v1_extra_fields(self) -> None:
+        """mad.agents/v1 example must not leak executable/extra_args/role."""
+        adr_text = self._adr_path().read_text(encoding="utf-8")
+        contract_text = self._cli_contract_path().read_text(encoding="utf-8")
+        for text, name in ((adr_text, "ADR"), (contract_text, "CLI contract")):
+            agent_example = re.search(
+                r'"agents":\s*\[\s*\{.*?\}\s*\]',
+                text,
+                re.DOTALL,
+            )
+            if agent_example:
+                example = agent_example.group(0)
+                self.assertNotIn('"executable"', example,
+                                 f"{name}: mad.agents/v1 must not expose executable")
+                self.assertNotIn('"extra_args"', example,
+                                 f"{name}: mad.agents/v1 must not expose extra_args")
+                self.assertNotIn('"role"', example,
+                                 f"{name}: mad.agents/v1 must not expose role")
+
+    # -- stdout/stderr boundary documented ---------------------------------
+
+    def test_contract_documents_stdout_stderr_boundary(self) -> None:
+        """The contract must document that stdout carries only the JSON object."""
+        contract_text = self._cli_contract_path().read_text(encoding="utf-8")
+        self.assertIn("stdout/stderr boundary", contract_text)
+        self.assertIn("stderr", contract_text)
+
+    # -- Report exists and records MAD commit -----------------------------
+
+    def test_verification_report_exists_and_records_mad_commit(self) -> None:
+        """TC-13.21f report must exist and record the MAD verification commit."""
+        report = self._report_path()
+        self.assertTrue(report.is_file(),
+                        "reports/tc-13.21f-mad-json-contract-verification.md must exist")
+        text = report.read_text(encoding="utf-8")
+        self.assertIn("9b402874c9fbd3fd28fb402dc28ce3de6b21a568", text)
 
 
 # ── TC-13.17b.2 — Contract freeze tests ────────────────────────────────────
