@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import ast
+import io
 import json
 import re
 import subprocess
 import sys
 import tempfile
+import tokenize
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +34,37 @@ def run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]
         text=True,
         timeout=30,
     )
+
+
+def _python_code_without_comments_and_docstrings(source: str) -> str:
+    """Return Python source with comments/docstrings blanked, preserving code strings."""
+    tree = ast.parse(source)
+    docstring_spans: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list) or not body:
+            continue
+        first = body[0]
+        value = getattr(first, "value", None)
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+        ):
+            docstring_spans.add(
+                ((value.lineno, value.col_offset),
+                 (value.end_lineno, value.end_col_offset))
+            )
+
+    tokens: list[tokenize.TokenInfo] = []
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        span = (token.start, token.end)
+        if token.type == tokenize.COMMENT or (
+            token.type == tokenize.STRING and span in docstring_spans
+        ):
+            token = token._replace(string="")
+        tokens.append(token)
+    return tokenize.untokenize(tokens)
 
 
 def tracked_skill_files() -> list[Path]:
@@ -577,12 +611,12 @@ class ReleaseSmokeTests(unittest.TestCase):
 
         # participants is list[str] in audit-result/v1.
         audit_section = re.search(
-            r"### 3\.3.*?```json\n(.*?)```",
+            r"### 2\.4.*?```json\n(.*?)```",
             contract_text,
             re.DOTALL,
         )
         self.assertIsNotNone(audit_section,
-                             "CLI contract: must have mad audit section 3.3")
+                             "CLI contract: must have mad audit section 2.4")
         audit_json = audit_section.group(1)
         self.assertIn('"participants": ["', audit_json,
                       "audit-result/v1: participants must be list[str]")
@@ -599,10 +633,10 @@ class ReleaseSmokeTests(unittest.TestCase):
         """
         contract_text = self._cli_contract_path().read_text(encoding="utf-8")
 
-        section_33 = _extract_markdown_section(contract_text, "### 3.3")
+        section_33 = _extract_markdown_section(contract_text, "### 2.4")
         self.assertIsNotNone(
             section_33,
-            "CLI contract must have mad audit section 3.3",
+            "CLI contract must have mad audit section 2.4",
         )
         text: str = section_33  # type: ignore[assignment]
 
@@ -610,7 +644,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         exit_row = _find_exit_code_table_row(text, "0")
         self.assertIsNotNone(
             exit_row,
-            "audit section 3.3: must have an exit-code table with a row "
+            "audit section 2.4: must have an exit-code table with a row "
             "for code 0",
         )
         condition_cell: str = exit_row  # type: ignore[assignment]
@@ -621,7 +655,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             self.assertIn(
                 verdict,
                 normalised,
-                f"audit section 3.3: exit-code-0 condition must mention "
+                f"audit section 2.4: exit-code-0 condition must mention "
                 f"verdict '{verdict}'; got: {condition_cell.strip()!r}",
             )
 
@@ -636,7 +670,7 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertGreater(
             len(linked),
             0,
-            "audit section 3.3: prose must explicitly state that exit code 0 "
+            "audit section 2.4: prose must explicitly state that exit code 0 "
             "covers verdict=fail/blocked scenarios",
         )
 
@@ -2362,20 +2396,7 @@ class ReleaseSmokeTests(unittest.TestCase):
     def test_tc137_no_claude_specific_params_in_production(self) -> None:
         """Production module must not reference Claude-specific parameters."""
         src = self._dispatcher_gateway_path().read_text(encoding="utf-8")
-        # Remove docstring/comment lines
-        in_docstring = False
-        lines: list[str] = []
-        for line in src.splitlines():
-            stripped = line.strip()
-            if '"""' in stripped:
-                in_docstring = not in_docstring
-                continue
-            if in_docstring:
-                continue
-            if stripped.startswith("#"):
-                continue
-            lines.append(line)
-        code = "\n".join(lines)
+        code = _python_code_without_comments_and_docstrings(src)
         self.assertNotIn("MAD_HOME", code)
         self.assertNotIn("MAD_PARTICIPANT", code)
         self.assertNotIn("--permission-mode", code)
@@ -5688,11 +5709,11 @@ class ReleaseSmokeTests(unittest.TestCase):
             self._resolve_col(row, "Task Card", "Task", "#"): row
             for row in rows
         }
-        tc1318 = by_id.get("TC-13.18")
-        self.assertIsNotNone(tc1318, "TC-13.18 must exist in Future Task Cards")
+        tc1318 = by_id.get("TC-13.18b")
+        self.assertIsNotNone(tc1318, "TC-13.18b must exist in Future Task Cards")
         tc1318_dep = self._resolve_col(tc1318, "Depends on", "Dep")
         self.assertIn("TC-13.10c", tc1318_dep,
-                      "TC-13.18 must depend on TC-13.10c")
+                      "TC-13.18b must depend on TC-13.10c")
 
     def test_tc1310a_tc1311_depends_on_tc1310c(self) -> None:
         """ADR §5: TC-13.11 must depend on TC-13.10c."""
@@ -5702,11 +5723,15 @@ class ReleaseSmokeTests(unittest.TestCase):
             self._resolve_col(row, "Task Card", "Task", "#"): row
             for row in rows
         }
-        tc1311 = by_id.get("TC-13.11")
-        self.assertIsNotNone(tc1311, "TC-13.11 must exist in Future Task Cards")
+        tc1311 = next(
+            (row for task_id, row in by_id.items()
+             if task_id.startswith("TC-13.11")),
+            None,
+        )
+        self.assertIsNotNone(tc1311, "TC-13.11a/b/c must exist in Future Task Cards")
         tc1311_dep = self._resolve_col(tc1311, "Depends on", "Dep")
         self.assertIn("TC-13.10c", tc1311_dep,
-                      "TC-13.11 must depend on TC-13.10c")
+                      "TC-13.11a/b/c must depend on TC-13.10c")
 
     def test_tc139a_claude_provider_still_current(self) -> None:
         """§2.11 and Interface Status #30 must still be Current."""
@@ -7716,8 +7741,8 @@ class ReleaseSmokeTests(unittest.TestCase):
             f"Interface #19 must be Target, got: {status}"
         )
 
-    def test_tc1313a_interface_20_through_25_still_target(self) -> None:
-        """Interfaces #20, #22–25 must remain Target; #21 is Current."""
+    def test_tc1313a_interface_20_through_25_are_current(self) -> None:
+        """Interfaces #20 and #22–25 are Current; #21 remains Current."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         rows = self._parse_interface_status_table(adr_text)
         for n in ("20", "22", "23", "24", "25"):
@@ -7729,8 +7754,8 @@ class ReleaseSmokeTests(unittest.TestCase):
             self.assertIsNotNone(row, f"Interface #{n} row not found")
             status = row.get("Status", "")
             self.assertTrue(
-                "Target" in status or "target" in status.lower(),
-                f"Interface #{n} must be Target, got: {status}",
+                "Current" in status or "current" in status.lower(),
+                f"Interface #{n} must be Current, got: {status}",
             )
         # Interface #21 is now Current
         row21 = None
@@ -8939,7 +8964,7 @@ class TC1317aContractFreezeTests(unittest.TestCase):
 class TC1318bProductionSmokeTests(unittest.TestCase):
     """TC-13.18b — WorkflowOrchestrator production smoke.
 
-    Covers: Interface #22 remains Target; ADR §2.19 exists;
+    Covers: Interface #22 core orchestration is Current; ADR §2.19 exists;
     public-interface contract doc exists + updated to Current;
     production module and test module present;
     ownership boundary (no direct
@@ -9327,7 +9352,7 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
     def test_quiescent_cancellation_current_in_adr(self) -> None:
         """TASK_CANCELLED quiescent path must be Current — TC-13.18d.7."""
         self.assertIn(
-            "TASK_CANCELLED quiescent path: Current — TC-13.18d.7",
+            "`TASK_CANCELLED` (quiescent path) | Current — TC-13.18d.7",
             self.adr_text,
             "ADR: TASK_CANCELLED quiescent path must be Current",
         )
@@ -9335,17 +9360,22 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
     def test_active_dispatch_cancellation_current_in_adr(self) -> None:
         """TASK_CANCELLED active dispatch path must be Current."""
         self.assertIn(
-            "TASK_CANCELLED active dispatch path: Current — TC-13.18d.9b",
+            "`TASK_CANCELLED` (active dispatch path) | Current — TC-13.18d.9b",
             self.adr_text,
             "ADR: TASK_CANCELLED active dispatch path must be Current",
         )
 
     def test_superseded_target_in_adr(self) -> None:
-        """TASK_SUPERSEDED must be Target."""
+        """TASK_SUPERSEDED paths must be Current with their card evidence."""
         self.assertIn(
-            "TASK_SUPERSEDED: Target",
+            "`TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8",
             self.adr_text,
-            "ADR: TASK_SUPERSEDED must be Target",
+            "ADR: TASK_SUPERSEDED quiescent path must be Current",
+        )
+        self.assertIn(
+            "`TASK_SUPERSEDED` (active dispatch path) | Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b",
+            self.adr_text,
+            "ADR: TASK_SUPERSEDED active dispatch path must retain contract and production status",
         )
 
     def test_no_stale_blanket_tc_target_line(self) -> None:
@@ -9395,11 +9425,16 @@ class TC1318bProductionSmokeTests(unittest.TestCase):
         )
 
     def test_contract_task_superseded_target_in_transition_table(self) -> None:
-        """Contract transition table must have superseded as Target."""
+        """Contract transition table must mark superseded paths Current."""
         self.assertIn(
-            "TASK_SUPERSEDED` | Target",
+            "TASK_SUPERSEDED` (quiescent path) | Current — TC-13.18d.8",
             self.contract_text,
-            "Contract: TASK_SUPERSEDED must be Target",
+            "Contract: TASK_SUPERSEDED quiescent path must be Current",
+        )
+        self.assertIn(
+            "TASK_SUPERSEDED` (active dispatch path) | Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b",
+            self.contract_text,
+            "Contract: TASK_SUPERSEDED active path must retain contract and production status",
         )
 
     def test_contract_no_stale_blanket_cancelled_superseded_target(self) -> None:
@@ -10005,7 +10040,7 @@ class TC1319jE2EProgramClosureTests(unittest.TestCase):
         """Interface #22 core orchestration is Current; Interface #24 Dashboard is Current."""
         # Interface #22
         self.assertIn(
-            "Interface #22 core orchestration is Current",
+            "Interface #22 core orchestration: **Current — TC-13.18d.13b**",
             self.adr_text,
             "ADR must declare Interface #22 core orchestration Current",
         )
@@ -11763,23 +11798,26 @@ class TC1318d10aActiveDispatchSupersessionContractTests(unittest.TestCase):
             self.contract_text,
         )
 
-    def test_19_interface_22_remains_target(self) -> None:
+    def test_19_interface_22_core_remains_current(self) -> None:
         row = next(
             line for line in self.adr_text.splitlines()
             if line.startswith("| 22 | AgentDesk WorkflowOrchestrator")
         )
-        self.assertIn("Target — TC-13.18", row)
+        self.assertIn("Current — TC-13.18d.13b", row)
         self.assertIn("Contract Current — TC-13.18d.10a", row)
         self.assertIn("Current — TC-13.18d.10b", row)
 
     def test_20_later_statuses_unchanged(self) -> None:
+        self.assertIn("TC-13.19 is Current — TC-13.19j", self.adr_text)
         self.assertIn(
-            "TC-13.19 and TC-13.20 statuses are unchanged", self.adr_text
+            "TC-13.20 (HTML Dashboard Interface #24) is Current — TC-13.20b",
+            self.adr_text,
         )
         self.assertIn(
-            "Provider rate-limit wiring and owner-loss recovery remain Target",
+            "provider rate-limit wiring remain Target",
             self.contract_text,
         )
+        self.assertIn("Owner-loss automatic retry is Current", self.contract_text)
 
 
 class TC1318d11aDispatchFailureRecoveryContractTests(unittest.TestCase):
@@ -12427,10 +12465,11 @@ class TC1318d12aPre1DurableSupervisorEvidenceContractTests(unittest.TestCase):
         for term in (
             "TC-13.18d.11a/b/c: Current",
             "TC-13.18d.12a: investigation complete",
-            "Owner-loss recovery: is Current",
-            "must remain fail-closed until",
+            "Owner-loss recovery: Contract Current — TC-13.18d.12b; transition-only",
+            "production Current — TC-13.18d.12c",
+            "ALIVE and UNKNOWN remain fail-closed.",
             "does not flip any Current status",
-            "Interface #22 core orchestration is Current",
+            "Interface #22 core orchestration: **Current — TC-13.18d.13b**",
         ):
             self.assertIn(term, self.contract_text)
 

@@ -35,7 +35,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 22 | AgentDesk WorkflowOrchestrator | Current — TC-13.18d.13b (core orchestration); Codex / Provider 429 deferred — see notes | Central scheduler integrating all services. Core orchestration Current: dispatch cycle + DELIVERY_SUBMITTED + DELIVERY_ACCEPTED + CHANGE_INTEGRATED (TC-13.18c.2); DELIVERY_RETURNED, TASK_REQUEUED (TC-13.18d.1); TASK_BLOCKED + escalation (TC-13.18d.2); BLOCKER_RESOLVED + single redispatch (TC-13.18d.3); BLOCKER_RESCOPED (TC-13.18d.5); BLOCKER_CANCELLED (TC-13.18d.6); TASK_CANCELLED quiescent path (TC-13.18d.7); TASK_CANCELLED active dispatch path (TC-13.18d.9b); TASK_SUPERSEDED quiescent path (TC-13.18d.8); TASK_SUPERSEDED active dispatch path: Contract Current — TC-13.18d.10a / Current — TC-13.18d.10b; dispatch failure recovery: Contract Current — TC-13.18d.11a / canonical transition Current — TC-13.18d.11b / creator-alive bounded retry Current — TC-13.18d.11c; owner-loss transition recovery: Current — TC-13.18d.12c; owner-loss durable automatic retry: Current — TC-13.18d.12c.2. Codex runtime/decoder: Target/deferred — TC-13.9c.2. Provider 429 detection: Evidence-dependent Target — TC-13.14c. RateLimit → Orchestrator wiring: Target, depends on real detection evidence. HTML Dashboard is Interface #24 (Current — TC-13.20b). |
 | 23 | E2E / Recovery tests | **Current** — TC-13.19j | E2E validation and recovery scenarios — nine scenario E2E tests committed; quiescent cancellation/supersession, expert user-decision paths, escalation chain, integration failure, and happy-path audit/accept/integrate all covered |
 | 24 | AgentDesk HTML Dashboard | **Current** | TC-13.20b | Read-only dashboard via StateProvider |
-| 25 | ADR status update (Target 鈫?Current) | **Target** | TC-13.21 | Update this ADR after all implementations complete |
+| 25 | ADR current-status closure | **Current — TC-13.21g** | TC-13.21g | Claude single-provider AgentDesk core closure; future provider/runtime extensions remain Target |
 | 26 | `agentdesk.mad-refs/v1` runtime schema | **Current** | TC-13.6 | Gitignored runtime record of MAD invocations |
 | 27 | AgentDesk shared core data types | **Current** | TC-13.4 | `TaskDifficulty`, `MadDeliberationDepth`, `WorkerKind` enums; no budget calculation or WorkerAdapter implementation |
 | 28 | AgentDesk ContextBudgetPolicy | **Current** | TC-13.5.1 | Per-tier budget: 20% / 35% / 50% / 65% with 64k / 128k / 256k / 512k hard caps; min(floor %, cap); six-field BudgetResult; retains 鈮?5% reserved; depends on TC-13.4 |
@@ -239,7 +239,7 @@ V1 explicitly does **not**:
 If future versions need English status strings or object-typed participants,
 they must use `mad.run-result/v2`.
 
-**`mad.audit-result/v1` (Current 鈥?TC-13.15)**:
+**`mad.audit-result/v1` (Current — TC-13.15)**:
 
 ```bash
 mad audit "<question>" \
@@ -444,7 +444,7 @@ consumes the policy's `BudgetResult`; this section describes the
 
 ### 2.5 Worker Slot Lease (Current 鈥?TC-13.10c)
 
-> **Frozen Contract 鈥?TC-13.10a.**  Subsections 搂2.5.1鈥撀?.5.16 below are
+> **Frozen Contract — TC-13.10a.**  Subsections §2.5.1–§2.5.16 below are
 > the frozen contract for ``agentdesk.worker-slot-lease/v1``.  The
 > production implementation is now complete: TC-13.10b (data model,
 > validation, runtime store, atomic I/O) and TC-13.10c (acquire / release
@@ -5457,10 +5457,10 @@ task may be handled by an Expert Worker after escalation, but the task's
 Frozen progression (exactly three tiers, no skip):
 
 ```
-basic_agent   鈫?standard_agent
-standard_agent 鈫?advanced_agent
-advanced_agent 鈫?expert_agent
-expert_agent   鈫?request_user_decision (no further tier)
+basic_agent   → standard_agent
+standard_agent → advanced_agent
+advanced_agent → expert_agent
+expert_agent   → request_user_decision (no further tier)
 ```
 
 No downward escalation, skip, or wrap-around to ``basic_agent`` is permitted.
@@ -5811,7 +5811,7 @@ intermediate "Current (contract frozen)" sub-status is permitted.
 
 ---
 
-### 2.17 MadAuditGateway 鈥?Frozen Contract (Current 鈥?TC-13.16b)
+### 2.17 MadAuditGateway — Frozen Contract (Current — TC-13.16b)
 
 TC-13.16a freezes the **MadAuditGateway contract** for subprocess invocation
 of `mad audit` with worktree validation.  No production module is shipped
@@ -6079,13 +6079,13 @@ TC-13.16b 鈫?TC-13.16a (this contract)
 
 #### 2.17.14 Status
 
-* ADR Interface Status row #20 "AgentDesk MadAuditGateway"
-  remains **Target** 鈥?TC-13.16a freezes the contract; TC-13.16b
-  (production implementation) is not yet complete.
-* This section (搂2.17) is the Frozen Contract for TC-13.16a.
+* ADR Interface Status row #20 "AgentDesk MadAuditGateway" is
+  **Current — TC-13.16b**; the production implementation is committed.
+* This section (§2.17) is the Frozen Contract for TC-13.16a and is
+  implemented under TC-13.16b.
 * TC-13.15 (`mad audit` sub-command) is **Current**.
-* TC-13.16b (production module `mad_audit_gateway.py`) is **Current** 鈥?committed.
-* This section (搂2.17) is **Current** 鈥?TC-13.16b.
+* TC-13.16b (production module `mad_audit_gateway.py`) is **Current**.
+* This section (§2.17) is **Current** — TC-13.16b.
 
 ---
 
@@ -7762,7 +7762,7 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.18d.2 | Escalation + retry + cancellation + replay + fault recovery | TC-13.18d.1 |
 | TC-13.19 | E2E / Recovery tests | TC-13.18d.2 |
 | TC-13.20 | HTML Dashboard | TC-13.17, TC-13.19 |
-| TC-13.21 | ADR status update (Target 鈫?Current) | TC-13.19 |
+| TC-13.21 | ADR current-status closure | TC-13.19, TC-13.21f |
 
 ---
 
