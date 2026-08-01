@@ -583,6 +583,7 @@ def _write_difficulty_assessment(
     )
     if _scripts not in _sys.path:
         _sys.path.insert(0, _scripts)
+    from core_types import TaskDifficulty
     import difficulty_assessor
     import difficulty_assessment_evidence as _evidence
     import difficulty_assessment_store as _store
