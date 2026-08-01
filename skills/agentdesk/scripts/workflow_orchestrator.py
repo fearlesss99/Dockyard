@@ -108,6 +108,12 @@ from worker_slot_lease import (
     release_worker_slot,
     renew_worker_slot,
 )
+from difficulty_assessment_store import (
+    DifficultyAssessmentStore,
+    read_by_task_revision,
+    validate_ancestry_for_dispatch,
+)
+from difficulty_assessor import TaskDifficultyAssessment
 
 # -- run_audit_gateway (imported for module-level reference) -------------------
 from mad_audit_gateway import run_audit_gateway
@@ -1528,6 +1534,175 @@ def _validate_next_dispatch_cycle_for_redispatch(
         )
 
 
+# -- TaskDifficulty assessment validation (TC-13.22b.3) ------------------------
+
+
+def _validate_difficulty_assessment(
+    *,
+    project_root: Path,
+    dispatch_request: object,
+    dispatch_transition: object,
+) -> str:
+    """Read and validate the durable assessment evidence before dispatch.
+
+    Returns the frozen ``assessment_id`` on success.  Raises
+    ``WorkflowInputError`` or ``WorkflowInvariantError`` for any of:
+    missing, corrupt, task/revision mismatch, task-card path/commit
+    mismatch, ancestry/snapshot mismatch, policy divergence, unknown
+    difficulty, or content-digest failure.
+
+    This function performs zero writes, acquires no lock, and starts no
+    Worker.
+    """
+    if not isinstance(project_root, Path):
+        raise WorkflowInputError(
+            "difficulty_assessment: project_root must be a Path"
+        )
+    if type(dispatch_request) is not DispatchRequest:
+        raise WorkflowInputError(
+            "difficulty_assessment: dispatch_request must be DispatchRequest"
+        )
+    if type(dispatch_transition) is not TransitionRequest:
+        raise WorkflowInputError(
+            "difficulty_assessment: dispatch_transition must be TransitionRequest"
+        )
+
+    identity = dispatch_request.identity
+    task_id = identity.task_id
+    revision = identity.revision
+    payload = dispatch_transition.payload
+    if not isinstance(payload, DispatchPayload):
+        raise WorkflowInputError(
+            "difficulty_assessment: dispatch_transition.payload "
+            "must be DispatchPayload"
+        )
+
+    task_card_path = payload.task_card_path
+    task_card_commit = payload.task_card_commit
+    cas_snapshot_commit = dispatch_transition.cas.expected_snapshot_commit
+
+    # 1. Read canonical task snapshot.
+    try:
+        snapshot = StateProvider(project_root).snapshot()
+    except StateProviderError:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: state snapshot unavailable"
+        )
+    task = None
+    for t in snapshot.tasks:
+        if t.task_id == task_id:
+            task = t
+            break
+    if task is None:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: target task not found in snapshot"
+        )
+    if task.revision != revision:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: task revision mismatch"
+        )
+    if task.task_card_path != task_card_path:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: task_card_path mismatch"
+        )
+    if task.task_card_commit != task_card_commit:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: task_card_commit mismatch"
+        )
+
+    # 2. Read durable assessment evidence.
+    evidence = read_by_task_revision(project_root, task_id, revision)
+    if evidence is None:
+        raise WorkflowInputError(
+            "difficulty_assessment: assessment evidence not found "
+            "or ambiguous for this task/revision"
+        )
+
+    assessment = evidence.assessment
+
+    # 3. Validate task identity.
+    if assessment.task_id != task_id:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: assessment task_id mismatch"
+        )
+    if assessment.revision != revision:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: assessment revision mismatch"
+        )
+
+    # 4. Validate schema and policy version.
+    _KNOWN_SCHEMA = "agentdesk.difficulty-assessment/v1"
+    _KNOWN_POLICY = "agentdesk.difficulty-policy/v1"
+    if assessment.schema_version != _KNOWN_SCHEMA:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: unknown schema_version"
+        )
+    if assessment.policy_version != _KNOWN_POLICY:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: unknown policy_version"
+        )
+
+    # 5. Validate snapshot commit ancestry.
+    snapshot_commit = evidence.snapshot_commit
+    if type(snapshot_commit) is not str or len(snapshot_commit) != 40:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: snapshot_commit malformed"
+        )
+    validate_ancestry_for_dispatch(
+        project_root, snapshot_commit, cas_snapshot_commit,
+    )
+
+    # 6. Validate selected_difficulty.
+    if type(assessment.selected_difficulty) is not TaskDifficulty:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: selected_difficulty is not "
+            "valid TaskDifficulty"
+        )
+    _VALID_DIFFICULTIES = frozenset({
+        TaskDifficulty.BASIC, TaskDifficulty.STANDARD,
+        TaskDifficulty.ADVANCED, TaskDifficulty.EXPERT,
+    })
+    if assessment.selected_difficulty not in _VALID_DIFFICULTIES:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: unknown difficulty value"
+        )
+
+    # 7. Content digest: re-encode and compare byte-exact against stored file.
+    import hashlib as _hashlib
+    from difficulty_assessment_evidence import (
+        encode_difficulty_assessment_evidence,
+    )
+    expected_encoded = encode_difficulty_assessment_evidence(evidence)
+    try:
+        stored_bytes = _read_stored_evidence_bytes(
+            project_root, task_id, revision, assessment.assessment_id,
+        )
+    except OSError:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: cannot read stored evidence for digest check"
+        )
+    if stored_bytes != expected_encoded:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: content digest mismatch"
+        )
+
+    return assessment.assessment_id
+
+
+def _read_stored_evidence_bytes(
+    project_root: Path,
+    task_id: str,
+    revision: int,
+    assessment_id: str,
+) -> bytes:
+    """Read raw canonical bytes for a specific assessment evidence file."""
+    target = (
+        project_root / "docs" / "pm" / "assessments"
+        / task_id / f"r{revision}" / f"{assessment_id}.yaml"
+    )
+    return target.read_bytes()
+
+
 # -- ACK Observer (internal, used within run_dispatch_cycle) ------------------
 
 
@@ -2088,6 +2263,33 @@ class WorkflowOrchestrator:
             raise WorkflowInputError("clock.now() must return UTC")
 
         start_mono = self.clock.monotonic()
+
+        # ── 0.  TaskDifficulty assessment validation ─────────────────────
+        # Must pass before any lease, transition, dispatch receipt, or Worker.
+        # Fail-closed: zero side effects on any failure.
+        _assessment_id = _validate_difficulty_assessment(
+            project_root=self.project_root,
+            dispatch_request=request.dispatch_request,
+            dispatch_transition=request.dispatch_transition_request,
+        )
+        # Freeze: the selected_difficulty from the assessment must
+        # exactly match the difficulty the caller supplied.
+        _evidence = read_by_task_revision(
+            self.project_root,
+            request.dispatch_request.identity.task_id,
+            request.dispatch_request.identity.revision,
+        )
+        if _evidence is None:
+            raise WorkflowInvariantError(
+                "difficulty_assessment: evidence disappeared "
+                "after validation"
+            )
+        _selected = _evidence.assessment.selected_difficulty
+        if _selected is not request.task_difficulty:
+            raise WorkflowInputError(
+                "task_difficulty must match the frozen "
+                "assessment selected_difficulty"
+            )
 
         try:
             snapshot = StateProvider(self.project_root).snapshot()

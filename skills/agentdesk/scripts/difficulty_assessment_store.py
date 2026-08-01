@@ -41,6 +41,8 @@ __all__ = [
     "DifficultyAssessmentStoreSecurityError",
     "DifficultyAssessmentStoreConflictError",
     "DifficultyAssessmentStoreAncestryError",
+    "read_by_task_revision",
+    "validate_ancestry_for_dispatch",
 ]
 
 
@@ -443,3 +445,106 @@ class DifficultyAssessmentStore:
             _error(DifficultyAssessmentStoreSecurityError, "read_identity")
         _resolved_within(target, assessments_root, strict=True)
         return evidence
+
+
+def read_by_task_revision(
+    project_root: Path,
+    task_id: str,
+    revision: int,
+) -> DifficultyAssessmentEvidence | None:
+    """Read the single assessment evidence for a task revision, or None.
+
+    This is a read-only lookup — no lock, no git, no write.  It scans
+    the revision directory for one ``.yaml`` evidence file.  If zero or
+    more than one file exists it returns ``None`` (ambiguous evidence is
+    not valid dispatch input).
+    """
+    if not isinstance(project_root, Path):
+        return None
+    if not project_root.is_absolute():
+        return None
+    try:
+        if _is_symlink_or_reparse(project_root):
+            return None
+        root_stat = os.lstat(str(project_root))
+    except OSError:
+        return None
+    if not stat.S_ISDIR(root_stat.st_mode):
+        return None
+
+    task = _validate_component(task_id, "task_id")
+    rev = _validate_revision(revision)
+    revision_dir = (
+        project_root / _ASSESSMENTS_RELATIVE / task / f"r{rev}"
+    )
+
+    try:
+        if _is_symlink_or_reparse(revision_dir):
+            return None
+        entries = list(os.scandir(str(revision_dir)))
+    except (OSError, DifficultyAssessmentStoreError):
+        return None
+
+    candidates: list[tuple[str, bytes]] = []
+    for entry in entries:
+        path = Path(entry.path)
+        try:
+            if _is_symlink_or_reparse(path):
+                return None
+            entry_stat = os.lstat(str(path))
+        except OSError:
+            return None
+        if stat.S_ISREG(entry_stat.st_mode) and path.suffix == ".yaml":
+            try:
+                data = path.read_bytes()
+            except OSError:
+                return None
+            candidates.append((path.name, data))
+
+    if len(candidates) != 1:
+        return None
+
+    try:
+        evidence = _decode_stored(candidates[0][1])
+    except Exception:
+        return None
+    if (
+        evidence.assessment.task_id != task_id
+        or evidence.assessment.revision != revision
+    ):
+        return None
+    return evidence
+
+
+def validate_ancestry_for_dispatch(
+    project_root: Path,
+    snapshot_commit: str,
+    expected_head: str,
+) -> None:
+    """Validate snapshot_commit is an ancestor of expected_head.
+
+    Raises ``DifficultyAssessmentStoreAncestryError`` on failure.
+    Read-only dispatch-side validator — no lock, no write.
+    """
+    if type(snapshot_commit) is not str or _SHA40_RE.fullmatch(snapshot_commit) is None:
+        _error(DifficultyAssessmentStoreAncestryError, "snapshot_format")
+    if type(expected_head) is not str or _SHA40_RE.fullmatch(expected_head) is None:
+        _error(DifficultyAssessmentStoreAncestryError, "expected_head_format")
+    returncode, stdout, _ = _git_command(
+        project_root,
+        ["git", "-C", str(project_root), "cat-file", "-t", snapshot_commit],
+    )
+    if returncode != 0 or stdout.strip() != b"commit":
+        _error(DifficultyAssessmentStoreAncestryError, "snapshot_not_commit")
+    if snapshot_commit == expected_head:
+        return
+    returncode, _, _ = _git_command(
+        project_root,
+        [
+            "git", "-C", str(project_root),
+            "merge-base", "--is-ancestor",
+            snapshot_commit, expected_head,
+        ],
+    )
+    if returncode != 0:
+        _error(DifficultyAssessmentStoreAncestryError, "snapshot_not_ancestor")

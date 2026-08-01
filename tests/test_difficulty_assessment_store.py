@@ -105,6 +105,8 @@ class DifficultyAssessmentStoreTests(unittest.TestCase):
                 "DifficultyAssessmentStoreSecurityError",
                 "DifficultyAssessmentStoreConflictError",
                 "DifficultyAssessmentStoreAncestryError",
+                "read_by_task_revision",
+                "validate_ancestry_for_dispatch",
             ],
         )
         self.assertTrue(dataclasses.is_dataclass(store.DifficultyAssessmentStoreRequest))

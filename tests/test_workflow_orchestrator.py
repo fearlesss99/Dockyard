@@ -189,7 +189,7 @@ def _make_transition_request(
         dispatch_id=dispatch_id,
         role_id="agent",
         model_selection=model_selection,
-        task_card_path="tasks/task.md",
+        task_card_path=f"tasks/{task_id}/task.md",
         task_card_commit="b" * 40,
         base_commit="c" * 40,
         branch="feat/test",
@@ -509,6 +509,8 @@ def _setup_project(task_id: str = "TC-001", state: str = "ready",
     _ensure_runtime_dir(tmp)
     # Write a TASK_APPROVAL grant so ApprovalGate.require() passes.
     _write_approval_grant(tmp)
+    # Write difficulty assessment evidence so the new wiring passes.
+    _write_difficulty_assessment(tmp, task_id=task_id, revision=revision)
     # Add and commit the approval to git.
     subprocess.run(
         ["git", "add", "-A"],
@@ -551,6 +553,59 @@ def _write_approval_grant(project_root: Path) -> None:
     }
     path = approvals_dir / "EVT-approval-001.yaml"
     path.write_text(json.dumps(grant, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_difficulty_assessment(
+    project_root: Path,
+    task_id: str = "TC-001",
+    revision: int = 1,
+    difficulty: str | None = None,
+) -> None:
+    """Write a minimal difficulty assessment evidence file for the task."""
+    import sys as _sys
+    _scripts = str(
+        Path(__file__).resolve().parents[1] / "skills" / "agentdesk" / "scripts"
+    )
+    if _scripts not in _sys.path:
+        _sys.path.insert(0, _scripts)
+    from core_types import TaskDifficulty
+    import difficulty_assessor
+    import difficulty_assessment_evidence as _evidence
+    import difficulty_assessment_store as _store
+    if difficulty is None:
+        diff = TaskDifficulty.ADVANCED
+    else:
+        diff = TaskDifficulty(difficulty)
+    assessment = difficulty_assessor.assess_task_difficulty(
+        assessment_id=f"ASM-{task_id}-r{revision}",
+        task_id=task_id,
+        revision=revision,
+        rationale_keys=(
+            "scope.single_module",
+            "clarity.known_pattern",
+            "concurrency.single_writer",
+            "contract.internal",
+            "impact.local_failure",
+            "rollback.tested",
+            "dependency.none",
+        ),
+        selected_difficulty=diff,
+    )
+    head = _git_head(project_root)
+    evidence = _evidence.DifficultyAssessmentEvidence(
+        assessment=assessment,
+        snapshot_commit=head,
+    )
+    store_inst = _store.DifficultyAssessmentStore()
+    store_inst.write(
+        _store.DifficultyAssessmentStoreRequest(
+            project_root=project_root,
+            evidence=evidence,
+            expected_head=head,
+        )
+    )
+    if _scripts in _sys.path:
+        _sys.path.remove(_scripts)
 
 
 # ── API tests ───────────────────────────────────────────────────────────
