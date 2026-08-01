@@ -13699,7 +13699,7 @@ class TC1322aTaskDifficultyAssessmentContractFreezeTests(unittest.TestCase):
         self.assertIn("Current — TC-13.22b.1", normalized_adr_text)
         self.assertIn("Current — TC-13.22b.2a", normalized_adr_text)
         self.assertIn("Current — TC-13.22b.2b", normalized_adr_text)
-        self.assertIn("Target — TC-13.22b.3", normalized_adr_text)
+        self.assertIn("Current — TC-13.22b.3a", normalized_adr_text)
         self.assertIn("PortfolioScheduler", normalized_adr_text)
         self.assertIn("WorktreeLifecycleManager", normalized_adr_text)
         self.assertIn("Interface #22 status is unchanged", normalized_adr_text)
@@ -13718,11 +13718,11 @@ class TC1322aTaskDifficultyAssessmentContractFreezeTests(unittest.TestCase):
             self.contract_text,
         )
         self.assertIn(
-            "Dispatch/approval/lifecycle wiring: **Target — TC-13.22b.3**",
+            "Dispatch/approval/lifecycle wiring: **Current — TC-13.22b.3a**",
             self.contract_text,
         )
         self.assertNotIn("Target — TC-13.22b.2b", self.contract_text)
-        self.assertNotIn("Current — TC-13.22b.3", self.contract_text)
+        self.assertNotIn("Target — TC-13.22b.3", self.contract_text)
 
 
 class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
@@ -14064,7 +14064,7 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
         ):
             self.assertIn(symbol, normalized_contract)
         self.assertIn("PortfolioScheduler admission is a separate contract", normalized_workflow)
-        self.assertIn("runtime/store remains Target", normalized_workflow)
+        self.assertIn("selection/admission runtime remains Target", normalized_workflow)
         self.assertIn("does not change `DispatchRequest`, `DispatchCAS`", normalized_workflow)
         self.assertIn("After `TASK_DISPATCHED`", normalized_workflow)
 
@@ -14076,7 +14076,11 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
         )
         self.assertIn("## 2.25 PortfolioScheduler Durable Admission", normalized_adr)
         self.assertIn("Contract Current — TC-13.24a", normalized_adr)
-        self.assertIn("PortfolioScheduler durable store/runtime **Target**", normalized_adr)
+        self.assertIn(
+            "PortfolioScheduler durable evidence store **Current — TC-13.24b.1**",
+            normalized_adr,
+        )
+        self.assertIn("PortfolioScheduler selection/admission runtime **Target**", normalized_adr)
         self.assertIn("WorktreeLifecycleManager **Target**", normalized_adr)
         self.assertIn("Interface #22 is unchanged", normalized_adr)
 
@@ -14086,10 +14090,13 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
             "PortfolioScheduler durable admission contract: **Contract Current — TC-13.24a**",
             normalized,
         )
-        self.assertIn("PortfolioScheduler durable store/runtime: **Target", normalized)
+        self.assertIn(
+            "PortfolioScheduler durable evidence store: **Current — TC-13.24b.1**",
+            normalized,
+        )
         self.assertIn("WorktreeLifecycleManager: **Target**", normalized)
         self.assertIn(
-            "TaskDifficulty dispatch/lifecycle wiring: **Target — TC-13.22b.3**",
+            "TaskDifficulty dispatch/lifecycle wiring: **Current — TC-13.22b.3a**",
             normalized,
         )
         self.assertIn("Interface #22 core orchestration: unchanged", normalized)
@@ -14098,7 +14105,7 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
 class TC1322b2bTaskDifficultyAssessmentStoreStatusTests(unittest.TestCase):
     """TC-13.22b.2b status boundary smoke assertions."""
 
-    def test_filesystem_ancestry_store_is_current_and_dispatch_remains_target(self) -> None:
+    def test_filesystem_ancestry_store_is_current_and_dispatch_is_current(self) -> None:
         root = Path(__file__).resolve().parents[1]
         contract = (
             root
@@ -14119,5 +14126,60 @@ class TC1322b2bTaskDifficultyAssessmentStoreStatusTests(unittest.TestCase):
         normalized = " ".join((contract + "\n" + adr).split())
         self.assertIn("Evidence filesystem/ancestry store: **Current — TC-13.22b.2b**", normalized)
         self.assertIn("evidence filesystem/ancestry store Current — TC-13.22b.2b", normalized)
-        self.assertIn("Dispatch/approval/lifecycle wiring: **Target — TC-13.22b.3**", normalized)
+        self.assertIn("Dispatch/approval/lifecycle wiring: **Current — TC-13.22b.3a**", normalized)
         self.assertNotIn("Evidence filesystem/ancestry store: **Target — TC-13.22b.2b**", normalized)
+
+
+class TC1322b3aAndTC1324b1IntegrationStatusTests(unittest.TestCase):
+    """TC-13.24b.1i direct status-boundary assertions."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        references = root / "skills" / "agentdesk" / "references"
+        cls.task_difficulty = (
+            references / "public-interfaces" / "task-difficulty-assessment-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.portfolio_scheduler = (
+            references / "public-interfaces" / "portfolio-scheduler-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.workflow = (
+            references / "public-interfaces" / "workflow-orchestrator-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr = (
+            references / "adr" / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+
+    def test_taskdifficulty_dispatch_wiring_is_current(self) -> None:
+        normalized = " ".join(
+            (self.task_difficulty + "\n" + self.workflow + "\n" + self.adr).split()
+        )
+        self.assertIn(
+            "Dispatch/approval/lifecycle wiring: **Current — TC-13.22b.3a**",
+            normalized,
+        )
+        self.assertIn("TaskDifficulty dispatch runtime wiring is **Current — TC-13.22b.3a**", normalized)
+        self.assertNotIn("Target — TC-13.22b.3a", normalized)
+
+    def test_portfolio_store_is_current_but_scheduler_runtime_is_target(self) -> None:
+        normalized = " ".join(
+            (self.portfolio_scheduler + "\n" + self.workflow + "\n" + self.adr).split()
+        )
+        self.assertIn(
+            "PortfolioScheduler durable evidence store: **Current — TC-13.24b.1**",
+            normalized,
+        )
+        self.assertIn("PortfolioScheduler durable evidence store **Current — TC-13.24b.1**", normalized)
+        self.assertIn("PortfolioScheduler selection/admission runtime **Target**", normalized)
+        self.assertIn("WorktreeLifecycleManager **Target**", normalized)
+        self.assertNotIn("PortfolioScheduler selection/admission runtime **Current**", normalized)
+
+    def test_interface_22_and_36_boundaries_remain_correct(self) -> None:
+        normalized = " ".join(self.adr.split())
+        self.assertIn("Interface #22 core orchestration is **Current — TC-13.18d.13b**", normalized)
+        self.assertIn(
+            "| 36 | PortfolioScheduler durable admission | **Contract Current — TC-13.24a**",
+            normalized,
+        )
+        self.assertIn("Interface #22 is unchanged", normalized)
+        self.assertNotIn("Interface #36 | **Current — TC-13.24b.1**", normalized)

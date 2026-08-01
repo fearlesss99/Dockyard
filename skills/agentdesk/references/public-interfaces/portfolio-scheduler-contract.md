@@ -318,11 +318,12 @@ boundary.  Any field or semantic change requires a versioned task card.
 ## 10. Status and task split
 
 - PortfolioScheduler durable admission contract: **Contract Current — TC-13.24a**.
-- PortfolioScheduler durable store/runtime: **Target — follow-up task**.
+- PortfolioScheduler durable evidence store: **Current — TC-13.24b.1**.
+- PortfolioScheduler selection/admission runtime: **Target — follow-up task**.
 - PortfolioScheduler Worker startup and dispatch integration: **Target —
   follow-up task**.
 - WorktreeLifecycleManager: **Target** and independent.
-- TaskDifficulty dispatch/lifecycle wiring: **Target — TC-13.22b.3**.
+- TaskDifficulty dispatch/lifecycle wiring: **Current — TC-13.22b.3a**.
 - Interface #22 core orchestration: unchanged, **Current — TC-13.18d.13b**;
   Codex/provider-429 extensions remain deferred.
 

@@ -304,10 +304,11 @@ verified call chain provide the consistency binding.
 - Runtime / deterministic assessor: **Current — TC-13.22b.1**.
 - Canonical evidence codec: **Current — TC-13.22b.2a**.
 - Evidence filesystem/ancestry store: **Current — TC-13.22b.2b**.
-- Dispatch/approval/lifecycle wiring: **Target — TC-13.22b.3**.
+- Dispatch/approval/lifecycle wiring: **Current — TC-13.22b.3a**.
 - PortfolioScheduler: **Target**.
 - WorktreeLifecycleManager: **Target**.
 - Interface #22 status is unchanged.
 
 The deterministic assessor and in-memory evidence codec remain pure
-policy/data modules; dispatch/approval/lifecycle wiring remains deferred.
+policy/data modules; dispatch/approval/lifecycle wiring is now enforced at
+the verified dispatch boundary by TC-13.22b.3a.

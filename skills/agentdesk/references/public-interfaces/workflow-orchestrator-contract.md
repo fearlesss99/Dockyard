@@ -1346,6 +1346,7 @@ and `run_dispatch_cycle()` retains its signature and compatibility behavior.
   wiring remains **Target**, depending on real detection evidence.
   Interface #24 (HTML Dashboard) is **Current — TC-13.20b**.
 - TC-13.19 and TC-13.20 statuses are unchanged.
+- TaskDifficulty dispatch runtime wiring is **Current — TC-13.22b.3a**.
 
 PortfolioScheduler admission is a separate contract introduced by
 TC-13.24a.  Its future boundary is limited to `queued → selected →
@@ -1355,7 +1356,8 @@ delivery/acceptance/integration state machine.  After `TASK_DISPATCHED`, the
 Orchestrator and ControlPlaneTransitionService remain the sole owners of ACK,
 Worker execution, delivery, acceptance, integration, cancellation,
 supersession, retry, and owner-loss semantics.  The PortfolioScheduler
-runtime/store remains Target until a later task card.
+selection/admission runtime remains Target until a later task card; the
+durable evidence store is **Current — TC-13.24b.1**.
 
 ---
 
