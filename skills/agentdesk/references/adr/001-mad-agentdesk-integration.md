@@ -46,7 +46,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 33 | AgentDesk WorkerOutput Decoder — Claude 2.1.214 | **Current** | TC-13.9c.1 | §2.20; version-locked, fail-closed; decode_worker_result(WorkerResult, version) → WorkerOutput; require_delivery_receipt(WorkerOutput) → DeliveryReceipt; claude + claudecode only; codex unsupported |
 | 34 | AgentDesk Provider Doctor and gateway.yaml template | **Current** — TC-13.21e.1 | TC-13.21e.1 | Read-only pre-start diagnostics (D001-D012, `scripts/doctor.py`) plus safe `agentdesk.gateway-config/v1` project template; zero writes/subprocess/network/model calls, no API-key handling; real provider execution remains Target, Codex decoder remains Target/deferred (TC-13.9c.2), provider rate-limit detection remains Target (TC-13.14c) |
 | 35 | PM TaskDifficulty Assessment | **Current — TC-13.22a** | TC-13.22a | Frozen seven-dimension PM assessment contract; deterministic assessor Current — TC-13.22b.1; canonical evidence codec Current — TC-13.22b.2a; evidence filesystem/ancestry store Current — TC-13.22b.2b; dispatch enforcement Current — TC-13.22b.3a; Interface #22 status unchanged |
-| 36 | PortfolioScheduler durable admission | **Contract Current — TC-13.24a** | TC-13.24a | Frozen BusinessPriority, QueueEntry, ScheduleReceipt, durable evidence, deterministic v1 selection, conflict-key, lock-order, and crash-recovery contract; durable evidence store Current — TC-13.24b.1; selection/admission runtime remains Target; Interface #22 unchanged |
+| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy Current** | TC-13.24a / TC-13.24b.1 / TC-13.24b.2a | Frozen BusinessPriority, QueueEntry, ScheduleReceipt, durable evidence, deterministic v1 selection, conflict-key, lock-order, and crash-recovery contract; durable evidence store Current — TC-13.24b.1; deterministic selection policy Current — TC-13.24b.2a; queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring remains Target — TC-13.24b.2b; Interface #22 unchanged |
 
 ---
 
@@ -7813,11 +7813,20 @@ operation to invalidate the old receipt and requeue; it is not a normal
 reverse transition.  Attempt 4 is forbidden and retry facts remain owned by
 the existing Orchestrator retry contract.
 
+The deterministic selection policy is now implemented as a pure, tested
+function over verified queue/store values.  It produces exactly one selected
+receipt when eligible, does not reserve a queue sequence, acquire a WorkerSlot,
+write admission evidence, or emit `TASK_DISPATCHED`.  Queue reservation,
+WorkerSlot admission, and `TASK_DISPATCHED` wiring remain the follow-up
+runtime boundary.
+
 Status: PortfolioScheduler durable admission contract **Contract Current —
 TC-13.24a**; PortfolioScheduler durable evidence store **Current —
-TC-13.24b.1**; PortfolioScheduler selection/admission runtime **Target**;
-WorktreeLifecycleManager **Target**; TaskDifficulty dispatch/lifecycle
-wiring **Current — TC-13.22b.3a**; Interface #22 is unchanged.
+TC-13.24b.1**; PortfolioScheduler deterministic selection policy **Current —
+TC-13.24b.2a**; queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring
+**Target — TC-13.24b.2b**; WorktreeLifecycleManager **Target**;
+TaskDifficulty dispatch/lifecycle wiring **Current — TC-13.22b.3a**; Interface
+#22 is unchanged.
 
 ---
 

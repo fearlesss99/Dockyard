@@ -14071,7 +14071,7 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
     def test_adr_interface_36_section_and_status_split_are_synchronized(self) -> None:
         normalized_adr = " ".join(self.adr_text.split())
         self.assertIn(
-            "| 36 | PortfolioScheduler durable admission | **Contract Current — TC-13.24a**",
+            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy Current**",
             normalized_adr,
         )
         self.assertIn("## 2.25 PortfolioScheduler Durable Admission", normalized_adr)
@@ -14080,7 +14080,14 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
             "PortfolioScheduler durable evidence store **Current — TC-13.24b.1**",
             normalized_adr,
         )
-        self.assertIn("PortfolioScheduler selection/admission runtime **Target**", normalized_adr)
+        self.assertIn(
+            "PortfolioScheduler deterministic selection policy **Current — TC-13.24b.2a**",
+            normalized_adr,
+        )
+        self.assertIn(
+            "queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring remains Target — TC-13.24b.2b",
+            normalized_adr,
+        )
         self.assertIn("WorktreeLifecycleManager **Target**", normalized_adr)
         self.assertIn("Interface #22 is unchanged", normalized_adr)
 
@@ -14092,6 +14099,14 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
         )
         self.assertIn(
             "PortfolioScheduler durable evidence store: **Current — TC-13.24b.1**",
+            normalized,
+        )
+        self.assertIn(
+            "PortfolioScheduler deterministic selection policy: **Current — TC-13.24b.2a**",
+            normalized,
+        )
+        self.assertIn(
+            "Queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring: **Target — TC-13.24b.2b**",
             normalized,
         )
         self.assertIn("WorktreeLifecycleManager: **Target**", normalized)
@@ -14161,7 +14176,7 @@ class TC1322b3aAndTC1324b1IntegrationStatusTests(unittest.TestCase):
         self.assertIn("TaskDifficulty dispatch runtime wiring is **Current — TC-13.22b.3a**", normalized)
         self.assertNotIn("Target — TC-13.22b.3a", normalized)
 
-    def test_portfolio_store_is_current_but_scheduler_runtime_is_target(self) -> None:
+    def test_portfolio_store_and_policy_are_current_but_admission_runtime_is_target(self) -> None:
         normalized = " ".join(
             (self.portfolio_scheduler + "\n" + self.workflow + "\n" + self.adr).split()
         )
@@ -14170,16 +14185,99 @@ class TC1322b3aAndTC1324b1IntegrationStatusTests(unittest.TestCase):
             normalized,
         )
         self.assertIn("PortfolioScheduler durable evidence store **Current — TC-13.24b.1**", normalized)
-        self.assertIn("PortfolioScheduler selection/admission runtime **Target**", normalized)
+        self.assertIn(
+            "PortfolioScheduler deterministic selection policy: **Current — TC-13.24b.2a**",
+            normalized,
+        )
+        self.assertIn(
+            "PortfolioScheduler deterministic selection policy **Current — TC-13.24b.2a**",
+            normalized,
+        )
+        self.assertIn(
+            "Queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring: **Target — TC-13.24b.2b**",
+            normalized,
+        )
         self.assertIn("WorktreeLifecycleManager **Target**", normalized)
-        self.assertNotIn("PortfolioScheduler selection/admission runtime **Current**", normalized)
+        self.assertNotIn(
+            "Queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring: **Current**",
+            normalized,
+        )
 
     def test_interface_22_and_36_boundaries_remain_correct(self) -> None:
         normalized = " ".join(self.adr.split())
         self.assertIn("Interface #22 core orchestration is **Current — TC-13.18d.13b**", normalized)
         self.assertIn(
-            "| 36 | PortfolioScheduler durable admission | **Contract Current — TC-13.24a**",
+            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy Current**",
             normalized,
         )
         self.assertIn("Interface #22 is unchanged", normalized)
-        self.assertNotIn("Interface #36 | **Current — TC-13.24b.1**", normalized)
+        self.assertNotIn(
+            "| 36 | PortfolioScheduler durable admission | **Admission Runtime Current**",
+            normalized,
+        )
+
+
+class TC1324b2aPortfolioSchedulerSelectionPolicyStatusTests(unittest.TestCase):
+    """TC-13.24b.2a direct selection-policy status assertions."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        references = root / "skills" / "agentdesk" / "references"
+        cls.contract = (
+            references / "public-interfaces" / "portfolio-scheduler-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr = (
+            references / "adr" / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+
+    def test_selection_policy_is_current_and_admission_runtime_is_target(self) -> None:
+        normalized = " ".join((self.contract + "\n" + self.adr).split())
+        self.assertIn(
+            "PortfolioScheduler deterministic selection policy: **Current — TC-13.24b.2a**",
+            normalized,
+        )
+        self.assertIn(
+            "PortfolioScheduler deterministic selection policy **Current — TC-13.24b.2a**",
+            normalized,
+        )
+        self.assertIn(
+            "Queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring: **Target — TC-13.24b.2b**",
+            normalized,
+        )
+        self.assertIn(
+            "queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring remains Target — TC-13.24b.2b",
+            normalized,
+        )
+        self.assertNotIn(
+            "Queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring: **Current**",
+            normalized,
+        )
+
+    def test_order_key_excludes_difficulty_and_deferred_extensions_remain_target(self) -> None:
+        normalized = " ".join(self.contract.split())
+        self.assertIn(
+            "(business_priority_rank, aging_promotion_rank, enqueue_sequence, queue_id)",
+            normalized,
+        )
+        self.assertIn("The order key must not contain `TaskDifficulty`", normalized)
+        self.assertIn(
+            "Deadline-aware scheduling and any `max_concurrent > 1` selection policy are not implemented in v1 and remain Target.",
+            normalized,
+        )
+
+    def test_interface_22_unchanged_and_36_is_not_full_runtime_current(self) -> None:
+        normalized = " ".join(self.adr.split())
+        self.assertIn(
+            "Interface #22 core orchestration is **Current — TC-13.18d.13b**",
+            normalized,
+        )
+        self.assertIn(
+            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy Current**",
+            normalized,
+        )
+        self.assertIn("Interface #22 is unchanged", normalized)
+        self.assertNotIn(
+            "| 36 | PortfolioScheduler durable admission | **Admission Runtime Current**",
+            normalized,
+        )

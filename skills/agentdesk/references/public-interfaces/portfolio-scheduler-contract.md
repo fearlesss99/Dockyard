@@ -244,6 +244,9 @@ provider, exception text, stdout, stderr, exit code, predicted changed paths,
 or deadline.  The same snapshot and policy version must produce byte-exact
 equal output.
 
+Deadline-aware scheduling and any `max_concurrent > 1` selection policy are
+not implemented in v1 and remain Target.
+
 ## 6. Conflict-key admission
 
 - `hard_exclusive` conflicts apply only to currently active leases or
@@ -319,14 +322,16 @@ boundary.  Any field or semantic change requires a versioned task card.
 
 - PortfolioScheduler durable admission contract: **Contract Current — TC-13.24a**.
 - PortfolioScheduler durable evidence store: **Current — TC-13.24b.1**.
-- PortfolioScheduler selection/admission runtime: **Target — follow-up task**.
-- PortfolioScheduler Worker startup and dispatch integration: **Target —
-  follow-up task**.
+- PortfolioScheduler deterministic selection policy: **Current — TC-13.24b.2a**.
+- Queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring: **Target —
+  TC-13.24b.2b**.
+- Complete PortfolioScheduler runtime and Worker startup/dispatch integration:
+  **Target**.
 - WorktreeLifecycleManager: **Target** and independent.
 - TaskDifficulty dispatch/lifecycle wiring: **Current — TC-13.22b.3a**.
 - Interface #22 core orchestration: unchanged, **Current — TC-13.18d.13b**;
   Codex/provider-429 extensions remain deferred.
 
-This card stops before Scheduler runtime, Worker startup, model/provider/API
-calls, network access, and any change to the existing Orchestrator or
-ControlPlane production modules.
+This document stops before queue reservation/admission runtime, Worker
+startup, model/provider/API calls, network access, and any change to the
+existing Orchestrator or ControlPlane production modules.
