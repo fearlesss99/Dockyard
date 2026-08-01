@@ -13400,3 +13400,306 @@ class TC1321e1ProviderDoctorSmokeTests(unittest.TestCase):
     def test_doctor_does_not_import_socket(self) -> None:
         source = self.doctor_py.read_text(encoding="utf-8")
         self.assertNotIn("import socket", source)
+
+
+class TC1322aTaskDifficultyAssessmentContractFreezeTests(unittest.TestCase):
+    """TC-13.22a — PM TaskDifficulty assessment contract freeze."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        cls.contract_path = (
+            root / "skills" / "agentdesk" / "references"
+            / "public-interfaces" / "task-difficulty-assessment-contract.md"
+        )
+        cls.adr_path = (
+            root / "skills" / "agentdesk" / "references" / "adr"
+            / "001-mad-agentdesk-integration.md"
+        )
+        cls.contract_text = cls.contract_path.read_text(encoding="utf-8")
+        cls.adr_text = cls.adr_path.read_text(encoding="utf-8")
+
+    def _between(self, start: str, end: str) -> str:
+        start_at = self.contract_text.index(start)
+        end_at = self.contract_text.index(end, start_at)
+        return self.contract_text[start_at:end_at]
+
+    def test_contract_document_exists(self) -> None:
+        self.assertTrue(self.contract_path.is_file())
+
+    def test_assessment_dimension_has_exact_seven_values_and_order(self) -> None:
+        block = self._between(
+            "serialization and `dimension_results` order:",
+            "Unknown values fail closed",
+        )
+        values = re.findall(r"^\d+\. `([^`]+)`$", block, re.MULTILINE)
+        self.assertEqual(
+            values,
+            [
+                "modification_scope",
+                "requirement_clarity",
+                "state_concurrency",
+                "public_contract",
+                "failure_impact",
+                "rollback_complexity",
+                "dependency_conflict",
+            ],
+        )
+
+    def test_dimension_result_is_frozen_slots_with_exact_four_fields(self) -> None:
+        block = self._between(
+            "`DimensionResult` is a frozen, slots value",
+            "The value has no free-form rationale text",
+        )
+        fields = re.findall(
+            r"^\|\s*\d+\s*\|\s*`([^`]+)`\s*\|",
+            block,
+            re.MULTILINE,
+        )
+        self.assertEqual(
+            fields,
+            ["dimension", "difficulty", "rationale_key", "hard_floor"],
+        )
+
+    def test_assessment_has_exact_twelve_public_fields(self) -> None:
+        block = self._between(
+            "`TaskDifficultyAssessment` is a frozen, slots value",
+            "The public value has no `snapshot_commit` field",
+        )
+        fields = re.findall(
+            r"^\|\s*\d+\s*\|\s*`([^`]+)`\s*\|",
+            block,
+            re.MULTILINE,
+        )
+        self.assertEqual(
+            fields,
+            [
+                "schema_version",
+                "assessment_id",
+                "task_id",
+                "revision",
+                "minimum_difficulty",
+                "recommended_difficulty",
+                "selected_difficulty",
+                "dimension_results",
+                "override_direction",
+                "override_reason",
+                "approval_id",
+                "policy_version",
+            ],
+        )
+
+    def test_public_values_are_immutable_and_not_untyped(self) -> None:
+        self.assertIn("frozen, slots", self.contract_text)
+        self.assertIn("tuple[DimensionResult, ...]", self.contract_text)
+        self.assertIn("no `Any`, `dict`", self.contract_text)
+        self.assertIn("`Mapping`, mutable `list`", self.contract_text)
+        self.assertIn("must not be added to the public twelve-field value", self.contract_text)
+
+    def test_schema_version_and_assessment_identity_are_frozen(self) -> None:
+        self.assertIn(
+            "agentdesk.difficulty-assessment/v1",
+            self.contract_text,
+        )
+        self.assertIn(
+            "Matches `ASM-[A-Za-z0-9][A-Za-z0-9._-]*`",
+            self.contract_text,
+        )
+        self.assertIn("Unknown values fail closed", self.contract_text)
+        self.assertIn(
+            "Exactly seven entries in enum order",
+            self.contract_text,
+        )
+
+    def test_rationale_allowlist_covers_all_dimensions_and_hard_floors(self) -> None:
+        rows = re.findall(
+            r"^\| `([^`]+)` \| `([^`]+)` \| `(basic|standard|advanced|expert)` \| (true|false) \|$",
+            self.contract_text,
+            re.MULTILINE,
+        )
+        self.assertEqual(len(rows), 29)
+        self.assertEqual(
+            {row[0] for row in rows},
+            {
+                "modification_scope",
+                "requirement_clarity",
+                "state_concurrency",
+                "public_contract",
+                "failure_impact",
+                "rollback_complexity",
+                "dependency_conflict",
+            },
+        )
+        for key in (
+            "concurrency.lock_cas",
+            "concurrency.cross_process_recovery",
+            "impact.security_boundary",
+            "impact.data_corruption",
+            "rollback.irreversible",
+            "contract.breaking_migration",
+        ):
+            self.assertIn(key, self.contract_text)
+        self.assertIn(
+            "`dependency.cross_repository` | `advanced` | false",
+            self.contract_text,
+        )
+
+    def test_aggregation_and_override_rules_are_fail_closed(self) -> None:
+        for term in (
+            "minimum_difficulty = max(difficulty for hard_floor == true)",
+            "recommended_difficulty = max(difficulty for all seven results)",
+            "selected_difficulty < minimum_difficulty` always fails closed",
+            "selected_difficulty > recommended_difficulty` sets `override_direction=up`",
+            "minimum_difficulty <= selected_difficulty < recommended_difficulty",
+            "override_direction=down",
+            "structured `override_reason`",
+            "approval_id",
+        ):
+            self.assertIn(term, self.contract_text)
+        self.assertIn("`none`, `up`, or `down`", self.contract_text)
+        self.assertIn("LLM output may be an untrusted suggestion only", self.contract_text)
+
+    def test_independent_concepts_and_non_rules_are_explicit(self) -> None:
+        for concept in (
+            "TaskDifficulty",
+            "WorkerKind",
+            "model tier",
+            "model price",
+            "model capability",
+            "`risk`",
+        ):
+            self.assertIn(concept, self.contract_text)
+        for forbidden_rule in (
+            "No consumer may derive `TaskDifficulty` from `WorkerKind`",
+            "Cross-repository scope, file count, and ordinary dependency count",
+            "Code-line count is never a difficulty rule",
+            "A stronger or more expensive model never reduces task difficulty",
+        ):
+            self.assertIn(forbidden_rule, self.contract_text)
+
+    def test_task_card_v2_optional_migration_is_frozen(self) -> None:
+        self.assertIn("agentdesk.task-card/v2", self.contract_text)
+        self.assertIn("task_difficulty", self.contract_text)
+        self.assertIn("difficulty_assessment_id", self.contract_text)
+        self.assertIn(
+            "The complete seven `dimension_results` are never embedded in a task card",
+            self.contract_text,
+        )
+        for rule in (
+            "An old v2 card without either field remains readable",
+            "A frozen old card is never modified in place",
+            "A new card and every new revision must write both fields",
+            "Before dispatch, the independent assessment evidence must exist",
+            "does not upgrade v2 to v3",
+        ):
+            self.assertIn(rule, self.contract_text)
+
+    def test_evidence_path_and_exact_key_envelope_are_frozen(self) -> None:
+        self.assertIn(
+            "docs/pm/assessments/<task_id>/r<revision>/<assessment_id>.yaml",
+            self.contract_text,
+        )
+        match = re.search(
+            r"evidence YAML root has exactly these thirteen keys in this\s+order:\s*```text\s*(.*?)```",
+            self.contract_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        keys = match.group(1).splitlines()  # type: ignore[union-attr]
+        self.assertEqual(
+            keys,
+            [
+                "schema_version",
+                "assessment_id",
+                "task_id",
+                "revision",
+                "minimum_difficulty",
+                "recommended_difficulty",
+                "selected_difficulty",
+                "dimension_results",
+                "override_direction",
+                "override_reason",
+                "approval_id",
+                "policy_version",
+                "snapshot_commit",
+            ],
+        )
+        self.assertIn(
+            "snapshot_commit` is the single evidence-only provenance key",
+            self.contract_text,
+        )
+
+    def test_evidence_canonical_replay_ancestry_and_security_rules(self) -> None:
+        for rule in (
+            "UTF-8 without BOM",
+            "LF line endings",
+            "no YAML anchors or aliases",
+            "no duplicate keys",
+            "byte-exact replayable",
+            "a full 40-hex Git commit",
+            "an ancestor of the task-card snapshot/commit",
+            "globally unique",
+            "reject symlink/reparse paths",
+            "must not expose prompts, model output, raw provider",
+        ):
+            self.assertIn(rule, self.contract_text)
+
+    def test_difficulty_override_is_a_separate_authorization_domain(self) -> None:
+        self.assertIn("scope = difficulty_override", self.contract_text)
+        for subject in ("task_id", "revision", "attempt", "dispatch_id"):
+            self.assertIn(subject, self.contract_text)
+        for domain in (
+            "dispatch approval",
+            "acceptance approval",
+            "integration approval",
+            "model degradation approval",
+        ):
+            self.assertIn(domain, self.contract_text)
+        for decision in (
+            "recommended_difficulty",
+            "minimum_difficulty",
+            "selected_difficulty",
+            "override_reason",
+            "approval_id",
+        ):
+            self.assertIn(decision, self.contract_text)
+        self.assertIn("does not modify the existing `ApprovalScope` enum", self.contract_text)
+        self.assertIn("approval_gate.py", self.contract_text)
+
+    def test_lifecycle_identity_rules_are_frozen(self) -> None:
+        for rule in (
+            "Initial dispatch requires a valid, independently verified assessment",
+            "Retry preserves `TaskDifficulty` and `assessment_id` exactly",
+            "Escalation may change `WorkerKind` only",
+            "Rescope or a revision bump creates a new `assessment_id`",
+            "A task card and its assessment are immutable within one revision",
+            "does not automatically invalidate an in-flight attempt",
+            "A new revision must use the current policy version",
+        ):
+            self.assertIn(rule, self.contract_text)
+
+    def test_two_layer_validation_and_control_plane_boundary(self) -> None:
+        self.assertIn("`validate_project` / PM pre-commit", self.contract_text)
+        self.assertIn("`TASK_DISPATCHED` control-plane boundary", self.contract_text)
+        self.assertIn("final hard\n   fail-closed validation", self.contract_text)
+        self.assertIn("WorkflowOrchestrator` consumes an already verified", self.contract_text)
+        self.assertIn("does not assess difficulty", self.contract_text)
+        self.assertIn("not added to `TransitionCAS` fields", self.contract_text)
+
+    def test_adr_interface_and_status_boundaries_are_synchronized(self) -> None:
+        self.assertIn(
+            "| 35 | PM TaskDifficulty Assessment | **Current — TC-13.22a**",
+            self.adr_text,
+        )
+        self.assertIn("### 2.24 PM TaskDifficulty Assessment", self.adr_text)
+        self.assertIn("Current — TC-13.22a", self.adr_text)
+        self.assertIn("Target — TC-13.22b", self.adr_text)
+        self.assertIn("PortfolioScheduler", self.adr_text)
+        self.assertIn("WorktreeLifecycleManager", self.adr_text)
+        self.assertIn("Interface #22 status is unchanged", self.adr_text)
+
+    def test_runtime_remains_target_and_no_production_module_is_claimed(self) -> None:
+        self.assertIn("runtime/deterministic assessor", self.contract_text)
+        self.assertIn("Target — TC-13.22b", self.contract_text)
+        self.assertIn("No production module is shipped by TC-13.22a", self.contract_text)
+        self.assertNotIn("Current — TC-13.22b", self.contract_text)

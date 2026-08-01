@@ -45,6 +45,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 32 | AgentDesk WorkerAdapter Core 鈥?Frozen Contract | **Current** | TC-13.9b | 搂2.13; run_worker(request, worker_kind, task_difficulty, providers) 鈫?WorkerResult; budget informational only; output remains opaque bytes; no retry/slot/lease/state writes |
 | 33 | AgentDesk WorkerOutput Decoder — Claude 2.1.214 | **Current** | TC-13.9c.1 | §2.20; version-locked, fail-closed; decode_worker_result(WorkerResult, version) → WorkerOutput; require_delivery_receipt(WorkerOutput) → DeliveryReceipt; claude + claudecode only; codex unsupported |
 | 34 | AgentDesk Provider Doctor and gateway.yaml template | **Current** — TC-13.21e.1 | TC-13.21e.1 | Read-only pre-start diagnostics (D001-D012, `scripts/doctor.py`) plus safe `agentdesk.gateway-config/v1` project template; zero writes/subprocess/network/model calls, no API-key handling; real provider execution remains Target, Codex decoder remains Target/deferred (TC-13.9c.2), provider rate-limit detection remains Target (TC-13.14c) |
+| 35 | PM TaskDifficulty Assessment | **Current — TC-13.22a** | TC-13.22a | Frozen seven-dimension PM assessment contract; runtime/deterministic assessor remains Target — TC-13.22b; Interface #22 status unchanged |
 
 ---
 
@@ -7681,6 +7682,77 @@ Status:
 - Owner-loss automatic retry: **Current**.
 - Interface #22 core orchestration is **Current — TC-13.18d.13b**; Codex / Provider 429 deferred.
 
+### 2.24 PM TaskDifficulty Assessment — Frozen Contract (Current — TC-13.22a)
+
+TC-13.22a freezes the PM-side TaskDifficulty assessment contract only.  The
+full public contract is in
+`skills/agentdesk/references/public-interfaces/task-difficulty-assessment-contract.md`.
+No production assessor, approval-gate change, task-card template change, or
+WorkflowOrchestrator change is delivered by this card.
+
+The contract keeps `TaskDifficulty`, `WorkerKind`, model tier, and risk
+independent.  TaskDifficulty is never inferred from WorkerKind, model price,
+model capability, code-line count, or a risk floor.
+
+`AssessmentDimension` has exactly these seven values and this order:
+`modification_scope`, `requirement_clarity`, `state_concurrency`,
+`public_contract`, `failure_impact`, `rollback_complexity`,
+`dependency_conflict`.
+
+`DimensionResult` is frozen/slots with exactly four fields:
+`dimension`, `difficulty`, `rationale_key`, and `hard_floor`.
+`TaskDifficultyAssessment` is frozen/slots with exactly twelve public fields:
+`schema_version`, `assessment_id`, `task_id`, `revision`,
+`minimum_difficulty`, `recommended_difficulty`, `selected_difficulty`,
+`dimension_results`, `override_direction`, `override_reason`, `approval_id`,
+and `policy_version`.  It has no `Any`, `dict`, `Mapping`, or mutable list;
+`dimension_results` is an exact seven-item tuple in enum order.
+
+The schema version is `agentdesk.difficulty-assessment/v1` and the stable
+assessment identity is `ASM-*`.  The canonical evidence path is
+`docs/pm/assessments/<task_id>/r<revision>/<assessment_id>.yaml`.  Its exact
+evidence envelope contains the twelve public keys plus the evidence-only
+`snapshot_commit` provenance key; `snapshot_commit` is not a thirteenth public
+dataclass field.  Evidence is UTF-8 canonical YAML, byte-exact replayable,
+ancestry-bound, identity-bound, globally unique, and rejects symlink/reparse
+paths and unsafe error-message content.
+
+Aggregation is deterministic: `minimum_difficulty` is the maximum hard-floor
+difficulty or BASIC; `recommended_difficulty` is the maximum of all seven
+dimensions.  A selected value below minimum fails closed even with approval;
+an upward selection needs no approval; a downward selection between minimum
+and recommended needs structured `override_reason` and exact approval.
+LLM suggestions are not authority.  Lock/CAS or cross-process recovery,
+security boundaries, possible data corruption, irreversible operations, and
+breaking public contracts/cross-version migration may be hard floors.
+Cross-repository scope, file count, and ordinary dependency count alone are
+not expert hard floors.
+
+The task-card schema remains `agentdesk.task-card/v2` and gains only optional
+`task_difficulty` and `difficulty_assessment_id` fields.  Full dimension
+results never enter the task card; old v2 cards remain readable and frozen
+old cards are not edited in place.  New cards/revisions require an independent
+assessment before dispatch.
+
+The independent authorization domain is `scope=difficulty_override`, bound to
+`task_id`, `revision`, `attempt`, and `dispatch_id`, and records recommended,
+minimum, selected, override reason, and approval ID.  It is separate from
+dispatch, acceptance, integration, and model-degradation approval.  TC-13.22a
+reuses existing ApprovalGate evidence primitives but does not modify
+`ApprovalScope`, `approval_gate.py`, or the production gate.
+
+Initial dispatch requires a verified assessment; retry preserves
+TaskDifficulty and assessment identity; escalation changes WorkerKind only;
+rescope/revision creates a new assessment; policy changes do not invalidate an
+in-flight attempt.  PM pre-commit validation is diagnostic, while
+`TASK_DISPATCHED` is the final hard fail-closed boundary.  WorkflowOrchestrator
+consumes verified difficulty and does not assess it; TransitionCAS fields are
+unchanged.
+
+Status: TaskDifficulty Assessment Contract **Current — TC-13.22a**;
+runtime/deterministic assessor **Target — TC-13.22b**; PortfolioScheduler and
+WorktreeLifecycleManager remain **Target**; Interface #22 status is unchanged.
+
 ---
 
 ## 3. Ownership Boundaries
@@ -7763,6 +7835,8 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.19 | E2E / Recovery tests | TC-13.18d.2 |
 | TC-13.20 | HTML Dashboard | TC-13.17, TC-13.19 |
 | TC-13.21 | ADR current-status closure | TC-13.19, TC-13.21f |
+| TC-13.22a | PM TaskDifficulty Assessment frozen contract (§2.24) | TC-13.21g.2 |
+| TC-13.22b | Runtime / deterministic TaskDifficulty assessor | TC-13.22a |
 
 ---
 
