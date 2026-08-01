@@ -13698,7 +13698,7 @@ class TC1322aTaskDifficultyAssessmentContractFreezeTests(unittest.TestCase):
         self.assertIn("Current — TC-13.22a", normalized_adr_text)
         self.assertIn("Current — TC-13.22b.1", normalized_adr_text)
         self.assertIn("Current — TC-13.22b.2a", normalized_adr_text)
-        self.assertIn("Target — TC-13.22b.2b", normalized_adr_text)
+        self.assertIn("Current — TC-13.22b.2b", normalized_adr_text)
         self.assertIn("Target — TC-13.22b.3", normalized_adr_text)
         self.assertIn("PortfolioScheduler", normalized_adr_text)
         self.assertIn("WorktreeLifecycleManager", normalized_adr_text)
@@ -13714,12 +13714,40 @@ class TC1322aTaskDifficultyAssessmentContractFreezeTests(unittest.TestCase):
             self.contract_text,
         )
         self.assertIn(
-            "Evidence filesystem/ancestry store: **Target — TC-13.22b.2b**",
+            "Evidence filesystem/ancestry store: **Current — TC-13.22b.2b**",
             self.contract_text,
         )
         self.assertIn(
             "Dispatch/approval/lifecycle wiring: **Target — TC-13.22b.3**",
             self.contract_text,
         )
-        self.assertNotIn("Current — TC-13.22b.2b", self.contract_text)
+        self.assertNotIn("Target — TC-13.22b.2b", self.contract_text)
         self.assertNotIn("Current — TC-13.22b.3", self.contract_text)
+
+
+class TC1322b2bTaskDifficultyAssessmentStoreStatusTests(unittest.TestCase):
+    """TC-13.22b.2b status boundary smoke assertions."""
+
+    def test_filesystem_ancestry_store_is_current_and_dispatch_remains_target(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        contract = (
+            root
+            / "skills"
+            / "agentdesk"
+            / "references"
+            / "public-interfaces"
+            / "task-difficulty-assessment-contract.md"
+        ).read_text(encoding="utf-8")
+        adr = (
+            root
+            / "skills"
+            / "agentdesk"
+            / "references"
+            / "adr"
+            / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+        normalized = " ".join((contract + "\n" + adr).split())
+        self.assertIn("Evidence filesystem/ancestry store: **Current — TC-13.22b.2b**", normalized)
+        self.assertIn("evidence filesystem/ancestry store Current — TC-13.22b.2b", normalized)
+        self.assertIn("Dispatch/approval/lifecycle wiring: **Target — TC-13.22b.3**", normalized)
+        self.assertNotIn("Evidence filesystem/ancestry store: **Target — TC-13.22b.2b**", normalized)

@@ -45,7 +45,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 32 | AgentDesk WorkerAdapter Core 鈥?Frozen Contract | **Current** | TC-13.9b | 搂2.13; run_worker(request, worker_kind, task_difficulty, providers) 鈫?WorkerResult; budget informational only; output remains opaque bytes; no retry/slot/lease/state writes |
 | 33 | AgentDesk WorkerOutput Decoder — Claude 2.1.214 | **Current** | TC-13.9c.1 | §2.20; version-locked, fail-closed; decode_worker_result(WorkerResult, version) → WorkerOutput; require_delivery_receipt(WorkerOutput) → DeliveryReceipt; claude + claudecode only; codex unsupported |
 | 34 | AgentDesk Provider Doctor and gateway.yaml template | **Current** — TC-13.21e.1 | TC-13.21e.1 | Read-only pre-start diagnostics (D001-D012, `scripts/doctor.py`) plus safe `agentdesk.gateway-config/v1` project template; zero writes/subprocess/network/model calls, no API-key handling; real provider execution remains Target, Codex decoder remains Target/deferred (TC-13.9c.2), provider rate-limit detection remains Target (TC-13.14c) |
-| 35 | PM TaskDifficulty Assessment | **Current — TC-13.22a** | TC-13.22a | Frozen seven-dimension PM assessment contract; deterministic assessor Current — TC-13.22b.1; canonical evidence codec Current — TC-13.22b.2a; evidence filesystem/ancestry store and dispatch enforcement remain Target — TC-13.22b.2b / TC-13.22b.3; Interface #22 status unchanged |
+| 35 | PM TaskDifficulty Assessment | **Current — TC-13.22a** | TC-13.22a | Frozen seven-dimension PM assessment contract; deterministic assessor Current — TC-13.22b.1; canonical evidence codec Current — TC-13.22b.2a; evidence filesystem/ancestry store Current — TC-13.22b.2b; dispatch enforcement remains Target — TC-13.22b.3; Interface #22 status unchanged |
 
 ---
 
@@ -7689,8 +7689,9 @@ pure deterministic assessor is delivered by TC-13.22b.1 and the in-memory
 canonical evidence codec by TC-13.22b.2a.  The full public
 contract is in
 `skills/agentdesk/references/public-interfaces/task-difficulty-assessment-contract.md`.
-No evidence filesystem/ancestry store, approval-gate change, task-card
-template change, or WorkflowOrchestrator change is delivered by TC-13.22b.2a.
+The filesystem/ancestry evidence store is delivered by TC-13.22b.2b.  No
+approval-gate change, task-card template change, or WorkflowOrchestrator
+change is delivered by TC-13.22b.2b.
 
 The contract keeps `TaskDifficulty`, `WorkerKind`, model tier, and risk
 independent.  TaskDifficulty is never inferred from WorkerKind, model price,
@@ -7753,7 +7754,7 @@ unchanged.
 
 Status: TaskDifficulty Assessment Contract **Current — TC-13.22a**;
 deterministic assessor **Current — TC-13.22b.1**; canonical evidence codec
-**Current — TC-13.22b.2a**; evidence filesystem/ancestry store **Target —
+**Current — TC-13.22b.2a**; evidence filesystem/ancestry store **Current —
 TC-13.22b.2b**; dispatch/approval/lifecycle wiring **Target — TC-13.22b.3**;
 PortfolioScheduler and WorktreeLifecycleManager remain **Target**; Interface
 #22 status is unchanged.

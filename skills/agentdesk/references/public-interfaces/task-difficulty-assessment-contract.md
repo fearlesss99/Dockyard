@@ -1,9 +1,10 @@
 # PM TaskDifficulty Assessment — Frozen Contract (Current — TC-13.22a)
 
 This document freezes the PM-side assessment evidence used before dispatch.
-It freezes public data shapes and validation boundaries only.  It does not
-ship evidence filesystem/ancestry storage or dispatch enforcement, modify
-`core_types.py`, extend `ApprovalScope`, or change any runtime gate.
+It freezes public data shapes and validation boundaries.  The canonical
+evidence codec and its filesystem/ancestry store are Current; dispatch
+enforcement remains deferred.  This contract does not modify `core_types.py`,
+extend `ApprovalScope`, or change any runtime gate.
 
 ## 1. Scope and independent concepts
 
@@ -23,7 +24,7 @@ but `risk` itself is not a difficulty value or a hard-floor shortcut.
 The deterministic assessor is implemented as a pure production module by
 TC-13.22b.1 and is **Current — TC-13.22b.1**.  The in-memory canonical
 evidence codec is implemented by TC-13.22b.2a and is **Current —
-TC-13.22b.2a**.  Evidence filesystem/ancestry storage remains **Target —
+TC-13.22b.2a**.  Evidence filesystem/ancestry storage is **Current —
 TC-13.22b.2b**.
 
 ## 2. Public types
@@ -230,6 +231,18 @@ Validation errors may expose only safe type names, field names, and stable
 failure codes.  They must not expose prompts, model output, raw provider
 output, secrets, workspace paths, Git paths, or arbitrary object repr/str.
 
+The filesystem/ancestry store is implemented by
+`skills/agentdesk/scripts/difficulty_assessment_store.py`.  Its public API is
+limited to `DifficultyAssessmentStoreRequest`,
+`DifficultyAssessmentStoreResult`, `DifficultyAssessmentStore`, and the four
+typed store errors.  `write()` accepts an absolute project root, a
+`DifficultyAssessmentEvidence` value, and an exact expected HEAD; it returns
+the canonical relative path, content SHA-256, and whether the write was an
+exact replay.  `read()` accepts the project root and the three path identity
+components and returns only strict, immutable decoded evidence.  The store
+does not dispatch work, acquire approval, modify task cards, or call a
+provider or network.
+
 ## 7. Difficulty override authorization boundary
 
 The independent authorization domain is:
@@ -290,12 +303,11 @@ verified call chain provide the consistency binding.
 - TaskDifficulty Assessment Contract: **Current — TC-13.22a**.
 - Runtime / deterministic assessor: **Current — TC-13.22b.1**.
 - Canonical evidence codec: **Current — TC-13.22b.2a**.
-- Evidence filesystem/ancestry store: **Target — TC-13.22b.2b**.
+- Evidence filesystem/ancestry store: **Current — TC-13.22b.2b**.
 - Dispatch/approval/lifecycle wiring: **Target — TC-13.22b.3**.
 - PortfolioScheduler: **Target**.
 - WorktreeLifecycleManager: **Target**.
 - Interface #22 status is unchanged.
 
-The deterministic assessor and in-memory evidence codec are pure policy/data
-modules only; evidence filesystem/ancestry storage and
-dispatch/approval/lifecycle wiring remain deferred.
+The deterministic assessor and in-memory evidence codec remain pure
+policy/data modules; dispatch/approval/lifecycle wiring remains deferred.
