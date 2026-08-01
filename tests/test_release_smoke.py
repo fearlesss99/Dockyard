@@ -14071,7 +14071,7 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
     def test_adr_interface_36_section_and_status_split_are_synchronized(self) -> None:
         normalized_adr = " ".join(self.adr_text.split())
         self.assertIn(
-            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy Current**",
+            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Recovery Core Current**",
             normalized_adr,
         )
         self.assertIn("## 2.25 PortfolioScheduler Durable Admission", normalized_adr)
@@ -14085,7 +14085,15 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
             normalized_adr,
         )
         self.assertIn(
-            "queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring remains Target — TC-13.24b.2b",
+            "admission orchestration/runtime wiring remains Target — TC-13.24b.2b.4",
+            normalized_adr,
+        )
+        self.assertIn(
+            "admission reservation core Current — TC-13.24b.2b.1",
+            normalized_adr,
+        )
+        self.assertIn(
+            "crash reconciliation decision core Current — TC-13.24b.2b.2",
             normalized_adr,
         )
         self.assertIn("WorktreeLifecycleManager **Target**", normalized_adr)
@@ -14106,7 +14114,15 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "Queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring: **Target — TC-13.24b.2b**",
+            "PortfolioScheduler admission reservation core: **Current — TC-13.24b.2b.1**",
+            normalized,
+        )
+        self.assertIn(
+            "PortfolioScheduler crash reconciliation decision core: **Current — TC-13.24b.2b.2**",
+            normalized,
+        )
+        self.assertIn(
+            "Admission orchestration/runtime wiring: **Target — TC-13.24b.2b.4**",
             normalized,
         )
         self.assertIn("WorktreeLifecycleManager: **Target**", normalized)
@@ -14194,12 +14210,12 @@ class TC1322b3aAndTC1324b1IntegrationStatusTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "Queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring: **Target — TC-13.24b.2b**",
+            "Admission orchestration/runtime wiring: **Target — TC-13.24b.2b.4**",
             normalized,
         )
         self.assertIn("WorktreeLifecycleManager **Target**", normalized)
         self.assertNotIn(
-            "Queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring: **Current**",
+            "Admission orchestration/runtime wiring: **Current**",
             normalized,
         )
 
@@ -14207,7 +14223,7 @@ class TC1322b3aAndTC1324b1IntegrationStatusTests(unittest.TestCase):
         normalized = " ".join(self.adr.split())
         self.assertIn("Interface #22 core orchestration is **Current — TC-13.18d.13b**", normalized)
         self.assertIn(
-            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy Current**",
+            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Recovery Core Current**",
             normalized,
         )
         self.assertIn("Interface #22 is unchanged", normalized)
@@ -14242,15 +14258,15 @@ class TC1324b2aPortfolioSchedulerSelectionPolicyStatusTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "Queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring: **Target — TC-13.24b.2b**",
+            "Admission orchestration/runtime wiring: **Target — TC-13.24b.2b.4**",
             normalized,
         )
         self.assertIn(
-            "queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring remains Target — TC-13.24b.2b",
+            "admission orchestration/runtime wiring remains Target — TC-13.24b.2b.4",
             normalized,
         )
         self.assertNotIn(
-            "Queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring: **Current**",
+            "Admission orchestration/runtime wiring: **Current**",
             normalized,
         )
 
@@ -14273,11 +14289,154 @@ class TC1324b2aPortfolioSchedulerSelectionPolicyStatusTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy Current**",
+            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Recovery Core Current**",
             normalized,
         )
         self.assertIn("Interface #22 is unchanged", normalized)
         self.assertNotIn(
             "| 36 | PortfolioScheduler durable admission | **Admission Runtime Current**",
             normalized,
+        )
+
+
+class TC1324b2b3AdmissionRecoveryIntegrationSealTests(unittest.TestCase):
+    """TC-13.24b.2b.3 — admission and recovery core integration seal."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        references = root / "skills" / "agentdesk" / "references"
+        scripts = root / "skills" / "agentdesk" / "scripts"
+        cls.contract = (
+            references
+            / "public-interfaces"
+            / "portfolio-scheduler-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr = (
+            references / "adr" / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+        cls.admission_source = (
+            scripts / "portfolio_scheduler_admission.py"
+        ).read_text(encoding="utf-8")
+        cls.recovery_source = (
+            scripts / "portfolio_scheduler_recovery.py"
+        ).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _import_modules():
+        import sys
+
+        script_dir = str(SKILL_ROOT / "scripts")
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        import portfolio_scheduler_admission
+        import portfolio_scheduler_recovery
+
+        return portfolio_scheduler_admission, portfolio_scheduler_recovery
+
+    def test_status_seal_is_exact(self) -> None:
+        normalized = " ".join((self.contract + "\n" + self.adr).split())
+        for token in (
+            "PortfolioScheduler admission reservation core: **Current — TC-13.24b.2b.1**",
+            "PortfolioScheduler crash reconciliation decision core: **Current — TC-13.24b.2b.2**",
+            "Admission orchestration/runtime wiring: **Target — TC-13.24b.2b.4**",
+            "admission reservation core Current — TC-13.24b.2b.1",
+            "crash reconciliation decision core Current — TC-13.24b.2b.2",
+            "admission orchestration/runtime wiring remains Target — TC-13.24b.2b.4",
+            "Complete PortfolioScheduler runtime and Worker startup/dispatch integration: **Target**",
+            "Interface #22 is unchanged",
+        ):
+            self.assertIn(token, normalized)
+        self.assertNotIn(
+            "| 36 | PortfolioScheduler durable admission | **Admission Runtime Current**",
+            normalized,
+        )
+
+    def test_admission_single_git_head_cas_and_no_second_identity(self) -> None:
+        self.assertIn("expected_snapshot_commit: str", self.admission_source)
+        self.assertIn(
+            '_require_sha(self.expected_snapshot_commit, "expected_snapshot_commit")',
+            self.admission_source,
+        )
+        self.assertIn(
+            "if request.expected_snapshot_commit != self._git_head():",
+            self.admission_source,
+        )
+        self.assertIn(
+            "expected_snapshot_commit=request.expected_snapshot_commit,",
+            self.admission_source,
+        )
+        self.assertIn("def _git_head(self) -> str:", self.admission_source)
+        self.assertNotIn("expected_transition_commit", self.admission_source)
+
+    def test_import_boundaries_and_no_runtime_calls(self) -> None:
+        self.assertNotIn(
+            "portfolio_scheduler_recovery", self.admission_source
+        )
+        self.assertNotIn(
+            "portfolio_scheduler_admission", self.recovery_source
+        )
+        for source in (self.admission_source, self.recovery_source):
+            for forbidden in (
+                "run_worker",
+                "worker_adapter",
+                "import requests",
+                "import urllib",
+                "import socket",
+                "from openai",
+                "from anthropic",
+            ):
+                self.assertNotIn(forbidden, source)
+        self.assertNotIn("subprocess", self.recovery_source)
+
+    def test_recovery_public_frozen_types_have_no_untyped_or_mutable_fields(
+        self,
+    ) -> None:
+        import dataclasses
+
+        _, recovery = self._import_modules()
+        for name in recovery.__all__:
+            value = getattr(recovery, name)
+            if not dataclasses.is_dataclass(value):
+                continue
+            self.assertTrue(value.__dataclass_params__.frozen)
+            self.assertTrue(hasattr(value, "__slots__"))
+            text = repr(value.__annotations__)
+            for forbidden in ("Any", "dict", "Mapping", "list", "set"):
+                self.assertNotIn(forbidden, text)
+
+    def test_recovery_three_evidence_types_participate_in_digest_and_decision(
+        self,
+    ) -> None:
+        import inspect
+
+        _, recovery = self._import_modules()
+        digest_src = inspect.getsource(recovery._compute_replay_digest)
+        for token in (
+            'h.update(b"|dre:")',
+            'h.update(b"|dte:")',
+            'h.update(b"|lease:")',
+        ):
+            self.assertIn(token, digest_src)
+        defense_src = inspect.getsource(recovery._run_defense)
+        decision_src = inspect.getsource(recovery.decide_reconciliation)
+        for token in (
+            "request.dispatch_receipt",
+            "request.dispatch_tombstone",
+            "request.lease_snapshot",
+        ):
+            self.assertIn(token, defense_src)
+            self.assertIn(token, decision_src)
+
+    def test_minimal_joint_import_and_public_symbols(self) -> None:
+        admission, recovery = self._import_modules()
+        self.assertTrue(callable(admission.PortfolioSchedulerAdmission))
+        self.assertTrue(callable(recovery.decide_reconciliation))
+        self.assertEqual(recovery.LivenessEvidence.DEAD.value, "dead")
+        self.assertEqual(
+            admission.PortfolioAdmissionError.__name__,
+            "PortfolioAdmissionError",
+        )
+        self.assertTrue(
+            set(admission.__all__).isdisjoint(set(recovery.__all__))
         )

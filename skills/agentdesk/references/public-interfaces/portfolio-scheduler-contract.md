@@ -323,8 +323,11 @@ boundary.  Any field or semantic change requires a versioned task card.
 - PortfolioScheduler durable admission contract: **Contract Current — TC-13.24a**.
 - PortfolioScheduler durable evidence store: **Current — TC-13.24b.1**.
 - PortfolioScheduler deterministic selection policy: **Current — TC-13.24b.2a**.
-- Queue reservation/WorkerSlot admission/TASK_DISPATCHED wiring: **Target —
-  TC-13.24b.2b**.
+- PortfolioScheduler admission reservation core: **Current —
+  TC-13.24b.2b.1**.
+- PortfolioScheduler crash reconciliation decision core: **Current —
+  TC-13.24b.2b.2**.
+- Admission orchestration/runtime wiring: **Target — TC-13.24b.2b.4**.
 - Complete PortfolioScheduler runtime and Worker startup/dispatch integration:
   **Target**.
 - WorktreeLifecycleManager: **Target** and independent.
