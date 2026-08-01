@@ -440,7 +440,8 @@ Selection-to-Admission runtime: **Current - TC-13.24b.2b.4a.4**.
 Durable plan Store/runtime: **Current - TC-13.24b.2b.4a.3**.
 Recovery canonical event identity: **Current - TC-13.24b.2b.2c**.
 Recovery adversarial verification: **Verified - TC-13.24b.2b.2d**.
-Recovery action executor: **Target**.
+Recovery Action Executor contract: **Contract Current — TC-13.24b.2b.4b.1**.
+Recovery Action Executor runtime: **Target — TC-13.24b.2b.4b.2**.
 Worker startup/complete Scheduler runtime: **Target**.
 
 ## 10. Status and task split
@@ -457,8 +458,9 @@ Worker startup/complete Scheduler runtime: **Target**.
 - Selection-to-Admission runtime: **Current - TC-13.24b.2b.4a.4**.
 - Recovery canonical event identity: **Current - TC-13.24b.2b.2c**.
 - Recovery adversarial verification: **Verified - TC-13.24b.2b.2d**.
+- Recovery Action Executor contract: **Contract Current — TC-13.24b.2b.4b.1**.
+- Recovery Action Executor runtime: **Target — TC-13.24b.2b.4b.2**.
 - Admission orchestration/runtime wiring beyond this boundary: **Target**.
-- Recovery action executor: **Target**.
 - Complete PortfolioScheduler runtime and Worker startup/dispatch integration:
   **Target**.
 - WorktreeLifecycleManager: **Target** and independent.
