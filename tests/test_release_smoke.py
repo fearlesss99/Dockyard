@@ -10038,23 +10038,65 @@ class TC1319jE2EProgramClosureTests(unittest.TestCase):
 
     def test_interface_22_core_current_interface_24_current(self) -> None:
         """Interface #22 core orchestration is Current; Interface #24 Dashboard is Current."""
-        # Interface #22
-        self.assertIn(
-            "Interface #22 core orchestration: **Current — TC-13.18d.13b**",
-            self.adr_text,
-            "ADR must declare Interface #22 core orchestration Current",
+        # Interface #22: bind all assertions to the Interface Status row so
+        # a similarly worded note elsewhere cannot satisfy this smoke test.
+        interface_22_rows = [
+            line for line in self.adr_text.splitlines()
+            if re.match(r"^\|\s*22\s*\|", line)
+        ]
+        self.assertEqual(
+            len(interface_22_rows),
+            1,
+            "ADR must contain exactly one Interface #22 status row",
         )
-        # Interface #24 / TC-13.20
-        found = False
-        for line in self.adr_text.splitlines():
-            if "| 24 |" in line and "Dashboard" in line:
-                self.assertIn(
-                    "**Current**", line,
-                    f"Interface #24 must be Current: {line!r}",
-                )
-                found = True
-                break
-        self.assertTrue(found, "Interface #24 (HTML Dashboard) must be Current")
+        interface_22 = interface_22_rows[0]
+        self.assertIn(
+            "AgentDesk WorkflowOrchestrator",
+            interface_22,
+            "Interface #22 must be the WorkflowOrchestrator row",
+        )
+        self.assertRegex(
+            interface_22,
+            r"Current\s+—\s+TC-13\.18d\.13b\s+\(core orchestration\)",
+            "Interface #22 core orchestration must be Current with its basis",
+        )
+        for deferred in (
+            "Codex runtime/decoder: Target/deferred",
+            "Provider 429 detection: Evidence-dependent Target",
+            "RateLimit → Orchestrator wiring: Target",
+        ):
+            self.assertIn(
+                deferred,
+                interface_22,
+                f"Interface #22 must preserve deferred extension status: {deferred}",
+            )
+
+        # Interface #24 / TC-13.20: assert the status on its own table row.
+        interface_24_rows = [
+            line for line in self.adr_text.splitlines()
+            if re.match(r"^\|\s*24\s*\|", line)
+        ]
+        self.assertEqual(
+            len(interface_24_rows),
+            1,
+            "ADR must contain exactly one Interface #24 status row",
+        )
+        interface_24 = interface_24_rows[0]
+        self.assertIn(
+            "AgentDesk HTML Dashboard",
+            interface_24,
+            "Interface #24 must be the HTML Dashboard row",
+        )
+        self.assertRegex(
+            interface_24,
+            r"\|\s*TC-13\.20b\s*\|",
+            "Interface #24 HTML Dashboard must be Current — TC-13.20b",
+        )
+        self.assertIn(
+            "**Current**",
+            interface_24,
+            "Interface #24 HTML Dashboard must be Current",
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────
