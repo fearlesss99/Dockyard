@@ -14440,3 +14440,266 @@ class TC1324b2b3AdmissionRecoveryIntegrationSealTests(unittest.TestCase):
         self.assertTrue(
             set(admission.__all__).isdisjoint(set(recovery.__all__))
         )
+
+
+class TC1324b4a2AdmissionPlanBindingContractFreezeTests(unittest.TestCase):
+    """TC-13.24b.2b.4a.2 durable AdmissionPlan binding contract freeze."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        references = root / "skills" / "agentdesk" / "references"
+        cls.contract = (
+            references
+            / "public-interfaces"
+            / "portfolio-scheduler-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr = (
+            references / "adr" / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        return " ".join(text.split())
+
+    def _plan_block(self) -> str:
+        start = self.contract.index(
+            "## 9.1 Durable Admission Plan Binding"
+        )
+        end = self.contract.index("## 10. Status and task split", start)
+        return self.contract[start:end]
+
+    def test_public_type_and_exact_twenty_eight_field_order(self) -> None:
+        block = self._plan_block()
+        self.assertIn("AdmissionPlanReservation", block)
+        self.assertIn("frozen,\nslotted, typed value", block)
+        fields = re.findall(
+            r"^\|\s*\d+\s*\|\s*`([^`]+)`\s*\|",
+            block,
+            re.MULTILINE,
+        )
+        self.assertEqual(
+            fields,
+            [
+                "schema_version",
+                "queue_id",
+                "receipt_id",
+                "task_id",
+                "revision",
+                "enqueue_sequence",
+                "selection_generation",
+                "worker_kind",
+                "assessment_id",
+                "dispatch_id",
+                "event_id",
+                "outbox_message_id",
+                "role_id",
+                "task_card_path",
+                "task_card_commit",
+                "base_commit",
+                "branch",
+                "report_path",
+                "model_selection",
+                "expected_task_state",
+                "expected_task_attempt",
+                "new_attempt",
+                "expected_snapshot_commit",
+                "policy_version",
+                "holder_instance_id",
+                "canonical_worktree",
+                "reserved_at",
+                "content_digest",
+            ],
+        )
+
+    def test_model_selection_and_public_field_safety_are_frozen(self) -> None:
+        normalized = self._normalize(self._plan_block())
+        self.assertIn(
+            "`model_selection` is the existing ten-field frozen typed `ModelSelectionSnapshot`",
+            normalized,
+        )
+        for forbidden in (
+            "Any",
+            "object",
+            "dict",
+            "Mapping",
+            "mutable collection",
+            "callback/factory",
+            "provider runtime object",
+            "exception text",
+            "stdout",
+            "stderr",
+            "exit code",
+        ):
+            self.assertIn(forbidden, normalized)
+
+    def test_path_identity_and_no_latest_or_overwrite_rule(self) -> None:
+        block = self._plan_block()
+        normalized = self._normalize(block)
+        self.assertIn(
+            "docs/pm/portfolio-scheduler/admission-plans/<queue_id>/g<selection_generation>.yaml",
+            block,
+        )
+        for rule in (
+            "The path components must equal the embedded `queue_id`",
+            "A generation has at most one plan reservation",
+            "symlink/reparse",
+            "never scans a directory to select a \"latest\" plan",
+            "never deletes or overwrites an existing plan",
+        ):
+            self.assertIn(rule, normalized)
+
+    def test_canonical_bytes_digest_and_replay_are_frozen(self) -> None:
+        normalized = self._normalize(self._plan_block())
+        for rule in (
+            "UTF-8 without BOM",
+            "LF line endings",
+            "one final LF",
+            "no tabs, anchors, aliases, or duplicate keys",
+            "`content_digest` is SHA-256 over the canonical bytes",
+            "Identical path and bytes are byte-exact replay",
+            "typed divergent replay",
+            "must not use `str()` or `repr()`",
+        ):
+            self.assertIn(rule, normalized)
+
+    def test_operation_time_is_not_durable_identity(self) -> None:
+        normalized = self._normalize(self._plan_block())
+        self.assertIn(
+            "`reserved_at` is the first reservation timestamp only",
+            normalized,
+        )
+        self.assertIn(
+            "an operation's `now` value is not durable plan identity",
+            normalized,
+        )
+        self.assertIn(
+            "must not change during byte-exact replay",
+            normalized,
+        )
+
+    def test_selection_to_admission_write_order_is_exact(self) -> None:
+        normalized = self._normalize(self._plan_block())
+        order = (
+            "Read a validated queue snapshot and run the existing pure policy selection",
+            "Under the queue-store lock, read the current plan, receipt, and reservation",
+            "Write or byte-exact replay the `AdmissionPlanReservation`",
+            "Write or byte-exact replay the `ScheduleReceipt`",
+            "Advance `QueueEntry` from `queued` to `selected`",
+            "Release the queue-store lock",
+            "Re-read and validate the plan reservation byte-exactly against the in-memory plan",
+            "Only then acquire `WorkerSlotLease`",
+            "Only after the lease succeeds may the existing canonical `TASK_DISPATCHED` transition be attempted",
+        )
+        positions = [normalized.index(item) for item in order]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_lock_and_lease_boundary_is_explicit(self) -> None:
+        normalized = self._normalize(self._plan_block())
+        self.assertIn(
+            "The queue-store lock is never held while acquiring a lease or calling `ControlPlaneTransitionService`",
+            normalized,
+        )
+        self.assertIn(
+            "divergent restart is rejected with zero lease calls",
+            normalized,
+        )
+
+    def test_crash_windows_have_typed_outcomes(self) -> None:
+        block = self._plan_block()
+        normalized = self._normalize(block)
+        for boundary in (
+            "Before plan write",
+            "After plan write, before receipt",
+            "After receipt, before queue `selected`",
+            "After queue `selected`, before lease",
+            "After lease, before `TASK_DISPATCHED`",
+            "After canonical event, before Scheduler evidence alignment",
+            "Missing plan",
+            "Divergent plan",
+            "Two Schedulers on one generation",
+            "Attempt 4",
+        ):
+            self.assertIn(boundary, block)
+        for outcome in (
+            "Resume selection",
+            "Reuse the exact plan",
+            "Byte-exact replay",
+            "RECOVERY_REQUIRED",
+            "Typed conflict",
+            "Reject before plan reservation",
+        ):
+            self.assertIn(outcome, normalized)
+
+    def test_identity_substitution_rules_are_explicit(self) -> None:
+        normalized = self._normalize(self._plan_block())
+        for identity in (
+            "dispatch_id",
+            "event_id",
+            "outbox_message_id",
+            "ModelSelectionSnapshot",
+            "task-card/base/branch/report",
+            "expected Git HEAD",
+            "holder identity",
+            "canonical worktree",
+            "attempt",
+            "selection generation",
+        ):
+            self.assertIn(identity, normalized)
+        self.assertIn(
+            "always rejected before lease acquisition",
+            normalized,
+        )
+        self.assertIn(
+            "ApprovalGate is not a plan-identity validator",
+            normalized,
+        )
+
+    def test_schedule_receipt_remains_separate_and_unchanged(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn(
+            "`ScheduleReceipt` remains unchanged and is not expanded",
+            normalized,
+        )
+        self.assertIn(
+            "The three identity substitutions that are always rejected",
+            normalized,
+        )
+
+    def test_runtime_and_store_remain_target(self) -> None:
+        normalized = self._normalize(self.contract)
+        for status in (
+            "AdmissionPlan durable binding contract: **Contract Current - TC-13.24b.2b.4a.2**",
+            "Selection-to-Admission runtime: **Target - defect open**",
+            "Durable plan Store/runtime: **Target - TC-13.24b.4a.3**",
+            "Recovery event identity repair status is unchanged",
+        ):
+            self.assertIn(status, normalized)
+        self.assertNotIn(
+            "Selection-to-Admission runtime: **Current",
+            normalized,
+        )
+
+    def test_adr_and_interface_36_do_not_claim_full_runtime_current(self) -> None:
+        normalized = self._normalize(self.adr)
+        self.assertIn(
+            "AdmissionPlan Binding Contract (Contract Current - TC-13.24b.2b.4a.2)",
+            normalized,
+        )
+        self.assertIn(
+            "durable plan Store/runtime; that remains **Target - TC-13.24b.4a.3**",
+            normalized,
+        )
+        self.assertIn(
+            "Selection-to-Admission runtime remains **Target - defect open**",
+            normalized,
+        )
+        self.assertIn("Interface #22 remains unchanged", normalized)
+        self.assertIn(
+            "Interface #36 must not be described as complete runtime Current",
+            normalized,
+        )
+        self.assertNotIn(
+            "| 36 | PortfolioScheduler durable admission | **Admission Runtime Current**",
+            normalized,
+        )

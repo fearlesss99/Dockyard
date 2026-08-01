@@ -318,6 +318,124 @@ The following remain unchanged and Current: `TaskDifficulty`, `WorkerKind`,
 state machine, and the ControlPlaneTransitionService canonical single-writer
 boundary.  Any field or semantic change requires a versioned task card.
 
+## 9.1 Durable Admission Plan Binding (Contract Current - TC-13.24b.2b.4a.2)
+
+The selected queue reservation needs a separate, immutable admission-plan
+identity.  `ScheduleReceipt` remains unchanged and is not expanded to carry
+dispatch or provider data.  The plan binding closes the gap between a
+selected reservation and the later lease/transition boundary: a restarted
+Scheduler must not submit a divergent plan for the same queue generation.
+
+The public value is named `AdmissionPlanReservation`.  It is a frozen,
+slotted, typed value with exactly these twenty-eight fields, in this order:
+
+| # | Field | Type |
+|---:|---|---|
+| 1 | `schema_version` | `str` |
+| 2 | `queue_id` | `str` |
+| 3 | `receipt_id` | `str` |
+| 4 | `task_id` | `str` |
+| 5 | `revision` | `int` |
+| 6 | `enqueue_sequence` | `int` |
+| 7 | `selection_generation` | `int` |
+| 8 | `worker_kind` | `WorkerKind` |
+| 9 | `assessment_id` | `str` |
+| 10 | `dispatch_id` | `str` |
+| 11 | `event_id` | `str` |
+| 12 | `outbox_message_id` | `str` |
+| 13 | `role_id` | `str` |
+| 14 | `task_card_path` | `str` |
+| 15 | `task_card_commit` | `str` |
+| 16 | `base_commit` | `str` |
+| 17 | `branch` | `str` |
+| 18 | `report_path` | `str` |
+| 19 | `model_selection` | `ModelSelectionSnapshot` |
+| 20 | `expected_task_state` | `str` |
+| 21 | `expected_task_attempt` | `int` |
+| 22 | `new_attempt` | `int` |
+| 23 | `expected_snapshot_commit` | `str` |
+| 24 | `policy_version` | `str` |
+| 25 | `holder_instance_id` | `str` |
+| 26 | `canonical_worktree` | `str` |
+| 27 | `reserved_at` | `str` |
+| 28 | `content_digest` | `str` |
+
+`model_selection` is the existing ten-field frozen typed
+`ModelSelectionSnapshot`; it is never a `dict` or `Mapping`.  No public plan
+field may use `Any`, `object`, `dict`, `Mapping`, a mutable collection,
+callback/factory, provider runtime object, exception text, stdout, stderr, or
+exit code.  `reserved_at` is the first reservation timestamp only.  It is not
+plan identity and must not change during byte-exact replay; an operation's
+`now` value is not durable plan identity.
+
+The sole v1 durable path is:
+
+```text
+docs/pm/portfolio-scheduler/admission-plans/<queue_id>/g<selection_generation>.yaml
+```
+
+The path components must equal the embedded `queue_id` and
+`selection_generation`.  A generation has at most one plan reservation.
+Missing, symlink/reparse, non-regular, extra, malformed, out-of-order, or
+digest-inconsistent evidence fails closed.  v1 never scans a directory to
+select a "latest" plan and never deletes or overwrites an existing plan.
+
+Plan bytes use the existing PortfolioScheduler canonical YAML rules: UTF-8
+without BOM, LF line endings, one final LF, no tabs, anchors, aliases, or
+duplicate keys, exact field order, and deterministic tuple order.  The
+`content_digest` is SHA-256 over the canonical bytes with the digest field
+excluded.  Identical path and bytes are byte-exact replay.  The same
+queue/generation with any differing field is a typed divergent replay and is
+rejected before lease acquisition, canonical transition, or Scheduler-phase
+write.  Digest construction must not use `str()` or `repr()`.
+
+The selection-to-admission write order is frozen:
+
+1. Read a validated queue snapshot and run the existing pure policy selection.
+2. Under the queue-store lock, read the current plan, receipt, and reservation.
+3. Write or byte-exact replay the `AdmissionPlanReservation`.
+4. Write or byte-exact replay the `ScheduleReceipt`.
+5. Advance `QueueEntry` from `queued` to `selected`.
+6. Release the queue-store lock.
+7. Re-read and validate the plan reservation byte-exactly against the
+   in-memory plan.
+8. Only then acquire `WorkerSlotLease`.
+9. Only after the lease succeeds may the existing canonical
+   `TASK_DISPATCHED` transition be attempted.
+
+The queue-store lock is never held while acquiring a lease or calling
+`ControlPlaneTransitionService`.  The plan is revalidated immediately before
+lease acquisition, so a divergent restart is rejected with zero lease calls.
+
+The frozen crash boundaries are:
+
+| Boundary | Required outcome |
+|---|---|
+| Before plan write | Resume selection; no plan identity exists |
+| After plan write, before receipt | Reuse the exact plan and complete the receipt; never create a second plan |
+| After receipt, before queue `selected` | Reuse the plan and receipt, then advance the queue by CAS |
+| After queue `selected`, before lease | Re-read and validate the exact plan; reject stale or divergent identity |
+| After lease, before `TASK_DISPATCHED` | Use existing lease release/fencing semantics; do not synthesize an event |
+| After canonical event, before Scheduler evidence alignment | Byte-exact replay and canonical-event alignment; never repeat dispatch |
+| Missing plan | `RECOVERY_REQUIRED` or typed fail-closed rejection; admission is forbidden |
+| Divergent plan | Typed conflict with zero lease acquisition |
+| Two Schedulers on one generation | One durable plan winner; the other receives a typed conflict |
+| Attempt 4 | Reject before plan reservation |
+
+The three identity substitutions that are always rejected before lease
+acquisition are `dispatch_id`, `event_id`, and `outbox_message_id`.
+Changing any `ModelSelectionSnapshot` field, task-card/base/branch/report
+field, expected Git HEAD, holder identity, canonical worktree, attempt, or
+selection generation is also a typed divergent-plan rejection.  ApprovalGate
+is not a plan-identity validator.  This contract freezes the evidence and
+ordering only; durable plan Store/runtime remains Target - TC-13.24b.4a.3,
+and selection-to-admission runtime remains Target with the known defect open.
+
+AdmissionPlan durable binding contract: **Contract Current - TC-13.24b.2b.4a.2**.
+Selection-to-Admission runtime: **Target - defect open**.
+Durable plan Store/runtime: **Target - TC-13.24b.4a.3**.
+Recovery event identity repair status is unchanged by this contract card.
+
 ## 10. Status and task split
 
 - PortfolioScheduler durable admission contract: **Contract Current — TC-13.24a**.

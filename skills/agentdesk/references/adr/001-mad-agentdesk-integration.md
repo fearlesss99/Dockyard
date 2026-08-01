@@ -7830,6 +7830,50 @@ TC-13.24b.2b.1**; PortfolioScheduler crash reconciliation decision core
 TaskDifficulty dispatch/lifecycle wiring **Current — TC-13.22b.3a**; Interface
 #22 is unchanged.
 
+#### 2.25.1 AdmissionPlan Binding Contract (Contract Current - TC-13.24b.2b.4a.2)
+
+TC-13.24b.4a.2 freezes the durable identity that binds one selected queue
+generation to one future admission plan.  The public
+`AdmissionPlanReservation` is frozen/slotted and has exactly twenty-eight
+typed fields: `schema_version`, `queue_id`, `receipt_id`, `task_id`,
+`revision`, `enqueue_sequence`, `selection_generation`, `worker_kind`,
+`assessment_id`, `dispatch_id`, `event_id`, `outbox_message_id`, `role_id`,
+`task_card_path`, `task_card_commit`, `base_commit`, `branch`, `report_path`,
+`model_selection`, `expected_task_state`, `expected_task_attempt`,
+`new_attempt`, `expected_snapshot_commit`, `policy_version`,
+`holder_instance_id`, `canonical_worktree`, `reserved_at`, and
+`content_digest`, in that exact order.  `model_selection` is the existing
+ten-field frozen typed `ModelSelectionSnapshot`; public plan fields contain
+no `Any`, `object`, `dict`, `Mapping`, mutable collection, callback/factory,
+provider runtime object, exception text, stdout, stderr, or exit code.
+
+The sole durable path is
+`docs/pm/portfolio-scheduler/admission-plans/<queue_id>/g<selection_generation>.yaml`.
+Path identity, exact key order, canonical UTF-8 YAML, LF-only bytes, digest
+over bytes excluding `content_digest`, and byte-exact replay are mandatory.
+An identity-matched but byte-divergent plan is a typed conflict and is
+rejected before any lease, canonical transition, or Scheduler-phase write.
+The plan is never deleted, overwritten, or selected by "latest" directory
+scanning.  `reserved_at` is the first reservation timestamp and does not
+change on replay; operation time is not plan identity.
+
+The frozen write order is validated queue snapshot and pure selection, then
+queue-lock plan/receipt evidence, QueueEntry `queued -> selected`, queue-lock
+release, plan re-read, WorkerSlotLease acquisition, and only then the existing
+`TASK_DISPATCHED` boundary.  The queue lock is never held across lease
+acquisition or `ControlPlaneTransitionService`.  Missing or divergent plan
+evidence is `RECOVERY_REQUIRED` or typed fail-closed rejection; attempt 4,
+dispatch/event/outbox identity substitution, model-selection substitution,
+task-card/base/branch/report substitution, Git HEAD substitution, holder or
+worktree substitution, and generation substitution are all rejected before
+lease acquisition.  ApprovalGate is not a plan-identity validator.
+
+This contract does not implement durable plan Store/runtime; that remains
+**Target - TC-13.24b.4a.3**.  Selection-to-Admission runtime remains
+**Target - defect open**.  Recovery event identity status is unchanged, and
+Interface #22 remains unchanged.  Interface #36 must not be described as
+complete runtime Current.
+
 ---
 
 ## 3. Ownership Boundaries
