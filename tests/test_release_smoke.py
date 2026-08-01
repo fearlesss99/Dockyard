@@ -13697,7 +13697,8 @@ class TC1322aTaskDifficultyAssessmentContractFreezeTests(unittest.TestCase):
         self.assertIn("### 2.24 PM TaskDifficulty Assessment", normalized_adr_text)
         self.assertIn("Current — TC-13.22a", normalized_adr_text)
         self.assertIn("Current — TC-13.22b.1", normalized_adr_text)
-        self.assertIn("Target — TC-13.22b.2", normalized_adr_text)
+        self.assertIn("Current — TC-13.22b.2a", normalized_adr_text)
+        self.assertIn("Target — TC-13.22b.2b", normalized_adr_text)
         self.assertIn("Target — TC-13.22b.3", normalized_adr_text)
         self.assertIn("PortfolioScheduler", normalized_adr_text)
         self.assertIn("WorktreeLifecycleManager", normalized_adr_text)
@@ -13709,12 +13710,16 @@ class TC1322aTaskDifficultyAssessmentContractFreezeTests(unittest.TestCase):
             self.contract_text,
         )
         self.assertIn(
-            "Canonical evidence runtime: **Target — TC-13.22b.2**",
+            "Canonical evidence codec: **Current — TC-13.22b.2a**",
+            self.contract_text,
+        )
+        self.assertIn(
+            "Evidence filesystem/ancestry store: **Target — TC-13.22b.2b**",
             self.contract_text,
         )
         self.assertIn(
             "Dispatch/approval/lifecycle wiring: **Target — TC-13.22b.3**",
             self.contract_text,
         )
-        self.assertNotIn("Current — TC-13.22b.2", self.contract_text)
+        self.assertNotIn("Current — TC-13.22b.2b", self.contract_text)
         self.assertNotIn("Current — TC-13.22b.3", self.contract_text)
