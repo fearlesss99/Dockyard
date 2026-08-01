@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 _SCRIPTS_DIR = str(
     Path(__file__).resolve().parents[1]
@@ -688,7 +689,20 @@ class PortfolioSchedulerRuntimeTickTests(unittest.TestCase):
             snapshot = store.enumerate_queue_snapshot()
             policy_receipt = select_next(snapshot, _admission_context())
             self.assertIsNotNone(policy_receipt)
-            runtime._persist_reservation(root, policy_receipt)
+            store_root = ps._prepare_store(root, True)
+            encoded_receipt = ps.encode_schedule_receipt(policy_receipt)
+            ps._atomic_store_bytes(
+                ps._receipt_path(store_root, policy_receipt.receipt_id),
+                encoded_receipt,
+            )
+            ps._atomic_store_bytes(
+                ps._reservation_path(
+                    store_root,
+                    policy_receipt.queue_id,
+                    policy_receipt.selection_generation,
+                ),
+                encoded_receipt,
+            )
             self.assertEqual(store.read_queue_entry(entry.queue_id).state, ps.QueuePhase.QUEUED)
             request = _make_tick_request(root, entry)
             result = runtime.tick(request)
@@ -706,7 +720,9 @@ class PortfolioSchedulerRuntimeTickTests(unittest.TestCase):
         try:
             store, entry, receipt = _setup_selected(root)
             request = _make_tick_request(root, entry, receipt)
-            result = pr.PortfolioSchedulerRuntime(root).tick(request)
+            runtime = pr.PortfolioSchedulerRuntime(root)
+            store.reserve_admission_plan(runtime._durable_plan(request.plan))
+            result = runtime.tick(request)
             self.assertEqual(
                 result.outcome.kind,
                 pr.PortfolioSchedulerTickOutcomeKind.ADMITTED,
@@ -721,11 +737,13 @@ class PortfolioSchedulerRuntimeTickTests(unittest.TestCase):
         try:
             store, entry, receipt = _setup_selected(root)
             plan = _make_plan(root, entry, receipt)
+            runtime = pr.PortfolioSchedulerRuntime(root)
+            store.reserve_admission_plan(runtime._durable_plan(plan))
             admission_request = _admission_request(plan, entry, receipt)
             _apply_dispatch_direct(root, admission_request)
             self.assertEqual(store.read_queue_entry(entry.queue_id).state, ps.QueuePhase.SELECTED)
             request = _make_tick_request(root, entry, receipt)
-            result = pr.PortfolioSchedulerRuntime(root).tick(request)
+            result = runtime.tick(request)
             self.assertEqual(
                 result.outcome.kind,
                 pr.PortfolioSchedulerTickOutcomeKind.ADMITTED,
@@ -960,6 +978,178 @@ class PortfolioSchedulerRuntimeTickTests(unittest.TestCase):
             self.assertEqual(_event_ids(root), [])
             self.assertEqual(_lease_count(root), 0)
             self.assertEqual(_receipt_ids(root), [])
+        finally:
+            _remove_tree(root)
+
+
+class PortfolioSchedulerAdmissionPlanRuntimeTests(unittest.TestCase):
+    def test_plan_identity_substitutions_fail_before_any_admission_side_effect(self) -> None:
+        root, head = _setup_project()
+        try:
+            store, entry = _setup_queued(root)
+            request = _make_tick_request(root, entry)
+            runtime = pr.PortfolioSchedulerRuntime(root)
+            receipt = _make_receipt(entry, request.plan.receipt_id)
+            store.reserve_admission_selection(
+                runtime._durable_plan(request.plan), receipt
+            )
+            replacements = (
+                ("dispatch_id", "DSP-CHANGED"),
+                ("event_id", "EVT-CHANGED"),
+                ("outbox_message_id", "MSG-CHANGED"),
+                ("task_card_path", "tasks/other/task.md"),
+                ("task_card_commit", "d" * 40),
+                ("base_commit", "e" * 40),
+                ("branch", "feat/other"),
+                ("report_path", "reports/other.md"),
+                ("expected_snapshot_commit", "f" * 40),
+                ("holder_instance_id", "holder-2"),
+                ("canonical_worktree", str(root.parent)),
+                ("receipt_id", "SR-CHANGED"),
+            )
+            changed_model = dataclasses.replace(
+                request.plan.model_selection,
+                selected_model_id="different-model",
+            )
+            replacements += (("model_selection", changed_model),)
+            for field_name, value in replacements:
+                with self.subTest(field_name=field_name):
+                    changed_plan = dataclasses.replace(request.plan, **{field_name: value})
+                    changed_request = pr.PortfolioSchedulerTickRequest(
+                        project_root=root,
+                        plan=changed_plan,
+                        admission_context=_admission_context(),
+                    )
+                    with self.assertRaises(pr.PortfolioSchedulerRuntimeConflictError):
+                        runtime.tick(changed_request)
+                    self.assertEqual(_event_ids(root), [])
+                    self.assertEqual(_outbox_ids(root), [])
+                    self.assertEqual(_lease_count(root), 0)
+            attempt_plan = dataclasses.replace(
+                request.plan,
+                expected_task_attempt=1,
+                new_attempt=2,
+            )
+            with self.assertRaises(pr.PortfolioSchedulerRuntimeConflictError):
+                runtime.tick(
+                    pr.PortfolioSchedulerTickRequest(
+                        project_root=root,
+                        plan=attempt_plan,
+                        admission_context=_admission_context(),
+                    )
+                )
+            self.assertEqual(_event_ids(root), [])
+            self.assertEqual(_outbox_ids(root), [])
+            self.assertEqual(_lease_count(root), 0)
+            self.assertEqual(store.read_queue_entry(entry.queue_id).state, ps.QueuePhase.SELECTED)
+            self.assertEqual(
+                store.read_schedule_receipt(request.plan.receipt_id).phase,
+                ps.ReceiptPhase.SELECTED,
+            )
+        finally:
+            _remove_tree(root)
+
+    def test_plan_only_crash_replay_uses_original_durable_identity(self) -> None:
+        root, head = _setup_project()
+        try:
+            store, entry = _setup_queued(root)
+            request = _make_tick_request(root, entry)
+            runtime = pr.PortfolioSchedulerRuntime(root)
+            durable = runtime._durable_plan(request.plan)
+            store.reserve_admission_plan(durable)
+            result = runtime.tick(request)
+            self.assertEqual(
+                result.outcome.kind,
+                pr.PortfolioSchedulerTickOutcomeKind.ADMITTED,
+            )
+            self.assertEqual(store.read_admission_plan(entry.queue_id, 1), durable)
+            self.assertEqual(_event_ids(root), ["EVT-ADMIT-001"])
+        finally:
+            _remove_tree(root)
+
+    def test_selected_without_durable_plan_is_recovery_required(self) -> None:
+        root, head = _setup_project()
+        try:
+            store, entry, receipt = _setup_selected(root)
+            request = _make_tick_request(root, entry, receipt)
+            result = pr.PortfolioSchedulerRuntime(root).tick(request)
+            self.assertEqual(
+                result.outcome.kind,
+                pr.PortfolioSchedulerTickOutcomeKind.RECOVERY_REQUIRED,
+            )
+            self.assertEqual(_event_ids(root), [])
+            self.assertEqual(_outbox_ids(root), [])
+            self.assertEqual(_lease_count(root), 0)
+        finally:
+            _remove_tree(root)
+
+    def test_store_lock_is_released_before_admission_boundary(self) -> None:
+        root, head = _setup_project()
+        try:
+            store, entry = _setup_queued(root)
+            request = _make_tick_request(root, entry)
+            observed: list[bool] = []
+
+            def fake_admit(
+                runtime: pr.PortfolioSchedulerRuntime,
+                current_request: pr.PortfolioSchedulerTickRequest,
+                current_entry: ps.QueueEntry,
+                current_receipt: ps.ScheduleReceipt,
+            ) -> pr.PortfolioSchedulerTickResult:
+                observed.append(
+                    (root / ps.STORE_LOCK_FILENAME).exists()
+                )
+                return pr.PortfolioSchedulerTickResult(
+                    outcome=pr.PortfolioSchedulerTickOutcome(
+                        kind=pr.PortfolioSchedulerTickOutcomeKind.ADMITTED,
+                        plan=current_request.plan,
+                        entry=current_entry,
+                        receipt=current_receipt,
+                    )
+                )
+
+            with mock.patch.object(pr.PortfolioSchedulerRuntime, "_admit", fake_admit):
+                result = pr.PortfolioSchedulerRuntime(root).tick(request)
+            self.assertEqual(result.outcome.kind, pr.PortfolioSchedulerTickOutcomeKind.ADMITTED)
+            self.assertEqual(observed, [False])
+        finally:
+            _remove_tree(root)
+
+
+class PortfolioSchedulerAdmissionPlanConcurrencyTests(unittest.TestCase):
+    def test_two_schedulers_one_durable_plan_winner(self) -> None:
+        root, head = _setup_project()
+        try:
+            store, entry = _setup_queued(root)
+            request = _make_tick_request(root, entry)
+            first = pr.PortfolioSchedulerRuntime(root)
+            second = pr.PortfolioSchedulerRuntime(root)
+
+            async def run() -> tuple[object, object]:
+                return await asyncio.gather(
+                    asyncio.to_thread(first.tick, request),
+                    asyncio.to_thread(second.tick, request),
+                    return_exceptions=True,
+                )
+
+            results = asyncio.run(run())
+            successes = [
+                result
+                for result in results
+                if isinstance(result, pr.PortfolioSchedulerTickResult)
+            ]
+            failures = [
+                result for result in results if isinstance(result, BaseException)
+            ]
+            self.assertEqual(len(successes), 1)
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(_event_ids(root), ["EVT-ADMIT-001"])
+            self.assertEqual(_outbox_ids(root), ["MSG-ADMIT-001"])
+            self.assertEqual(_lease_count(root), 1)
+            self.assertEqual(
+                store.enumerate_validated_admission_plans()[0].queue_id,
+                entry.queue_id,
+            )
         finally:
             _remove_tree(root)
 

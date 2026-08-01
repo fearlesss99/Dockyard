@@ -16,6 +16,7 @@ if str(SCRIPT_ROOT) not in sys.path:
 
 import portfolio_scheduler_store as ps  # noqa: E402
 from core_types import WorkerKind  # noqa: E402
+from dispatcher_gateway import ModelSelectionSnapshot  # noqa: E402
 
 
 STAMP = "2026-01-01T00:00:00.000000Z"
@@ -561,6 +562,219 @@ class PortfolioSchedulerFilesystemTests(StoreTestCase):
         self.store.reserve_enqueue_sequence()
         self.assertEqual(list((self.root / "docs" / "pm" / "portfolio-scheduler").glob(".tmp-*")), [])
         self.assertFalse((self.root / ".state-transition.lock").exists())
+
+
+class PortfolioSchedulerAdmissionPlanCodecTests(StoreTestCase):
+    def make_plan(
+        self,
+        entry: ps.QueueEntry,
+        receipt: ps.ScheduleReceipt | None = None,
+        **changes: object,
+    ) -> ps.AdmissionPlanReservation:
+        receipt_id = "SR-PLAN-1" if receipt is None else receipt.receipt_id
+        provisional = ps.AdmissionPlanReservation(
+            schema_version=ps.SCHEMA_VERSION,
+            queue_id=entry.queue_id,
+            receipt_id=receipt_id,
+            task_id=entry.task_id,
+            revision=entry.revision,
+            enqueue_sequence=entry.enqueue_sequence,
+            selection_generation=entry.selection_generation,
+            worker_kind=entry.worker_kind_request,
+            assessment_id=entry.assessment_id,
+            dispatch_id="DSP-PLAN-1",
+            event_id="EVT-PLAN-1",
+            outbox_message_id="MSG-PLAN-1",
+            role_id="agent",
+            task_card_path="tasks/TC-2401/task.md",
+            task_card_commit="a" * 40,
+            base_commit="b" * 40,
+            branch="feat/plan",
+            report_path="reports/plan.md",
+            model_selection=ModelSelectionSnapshot(
+                required_model_tier="standard",
+                required_model_capabilities=(),
+                model_binding_id="binding-1",
+                selected_model_provider="claude",
+                selected_model_id="model-1",
+                selected_model_tier="standard",
+                selected_deliberation_tier="balanced",
+                selected_context_window_tokens=200000,
+                selected_model_capabilities=(),
+                model_degradation_approval_id=None,
+            ),
+            expected_task_state="ready",
+            expected_task_attempt=0,
+            new_attempt=1,
+            expected_snapshot_commit="c" * 40,
+            policy_version=ps.SCHEMA_VERSION,
+            holder_instance_id="holder-1",
+            canonical_worktree=str(self.root),
+            reserved_at=STAMP,
+            content_digest="sha256:" + "0" * 64,
+        )
+        plan = dataclasses.replace(provisional, **changes)
+        return dataclasses.replace(plan, content_digest=ps._plan_digest(plan))
+
+    def test_public_plan_is_exact_frozen_28_field_type(self) -> None:
+        self.assertEqual(
+            tuple(field.name for field in dataclasses.fields(ps.AdmissionPlanReservation)),
+            ps._PLAN_FIELDS,
+        )
+        self.assertTrue(ps.AdmissionPlanReservation.__dataclass_params__.frozen)
+        self.assertTrue(hasattr(ps.AdmissionPlanReservation, "__slots__"))
+
+    def test_canonical_plan_round_trip_path_binding_and_enumeration(self) -> None:
+        entry = self.queue_one()
+        plan = self.make_plan(entry)
+        encoded = ps.encode_admission_plan(plan)
+        self.assertEqual(encoded, ps.encode_admission_plan(ps.decode_admission_plan(encoded)))
+        self.assertNotIn(b"\xef\xbb\xbf", encoded)
+        self.assertNotIn(b"\r", encoded)
+        self.assertTrue(encoded.endswith(b"\n"))
+        stored = self.store.reserve_admission_plan(plan)
+        self.assertEqual(stored, plan)
+        self.assertEqual(
+            self.store.read_admission_plan(entry.queue_id, entry.selection_generation),
+            plan,
+        )
+        self.assertEqual(self.store.enumerate_validated_admission_plans(), (plan,))
+        self.assertEqual(
+            (
+                self.root
+                / "docs"
+                / "pm"
+                / "portfolio-scheduler"
+                / "admission-plans"
+                / entry.queue_id
+                / "g1.yaml"
+            ).read_bytes(),
+            encoded,
+        )
+
+    def test_plan_replay_ignores_reserved_at_but_rejects_divergent_identity(self) -> None:
+        entry = self.queue_one()
+        plan = self.make_plan(entry)
+        self.store.reserve_admission_plan(plan)
+        replay = self.make_plan(entry, reserved_at="2026-01-01T00:00:01.000000Z")
+        self.assertEqual(self.store.reserve_admission_plan(replay), plan)
+        divergent = self.make_plan(entry, dispatch_id="DSP-PLAN-2")
+        with self.assertRaises(ps.PortfolioSchedulerConflictError):
+            self.store.reserve_admission_plan(divergent)
+
+    def test_composite_plan_receipt_queue_transition_and_replay(self) -> None:
+        entry = self.queue_one()
+        receipt = make_receipt(entry, receipt_id="SR-PLAN-1")
+        plan = self.make_plan(entry, receipt)
+        durable_plan, durable_receipt, selected = self.store.reserve_admission_selection(
+            plan, receipt
+        )
+        self.assertEqual(durable_plan, plan)
+        self.assertEqual(durable_receipt, receipt)
+        self.assertIs(selected.state, ps.QueuePhase.SELECTED)
+        replay_plan = self.make_plan(
+            entry,
+            receipt,
+            reserved_at="2026-01-01T00:00:02.000000Z",
+        )
+        result = self.store.reserve_admission_selection(replay_plan, receipt)
+        self.assertEqual(result[0], plan)
+        self.assertEqual(result[1], receipt)
+        self.assertEqual(result[2], selected)
+
+    def test_plan_codec_rejects_noncanonical_document_and_malicious_field(self) -> None:
+        entry = self.queue_one()
+        plan = self.make_plan(entry)
+        encoded = ps.encode_admission_plan(plan)
+        with self.assertRaises(ps.PortfolioSchedulerSchemaError):
+            ps.decode_admission_plan(encoded.replace(b"\n", b"\r\n"))
+        with self.assertRaises(ps.PortfolioSchedulerInputError):
+            self.make_plan(entry, dispatch_id="DSP-PLAN-\nrepr")
+
+
+class PortfolioSchedulerAdmissionPlanStoreTests(StoreTestCase):
+    def make_plan(
+        self,
+        entry: ps.QueueEntry,
+        receipt: ps.ScheduleReceipt | None = None,
+        **changes: object,
+    ) -> ps.AdmissionPlanReservation:
+        return PortfolioSchedulerAdmissionPlanCodecTests.make_plan(
+            self, entry, receipt, **changes
+        )
+
+    def test_plan_only_crash_replay_completes_missing_receipt_and_selection(self) -> None:
+        entry = self.queue_one()
+        receipt = make_receipt(entry, receipt_id="SR-PLAN-1")
+        plan = self.make_plan(entry, receipt)
+        self.store.reserve_admission_plan(plan)
+        self.assertEqual(self.store.read_queue_entry(entry.queue_id).state, ps.QueuePhase.QUEUED)
+        durable_plan, durable_receipt, selected = self.store.reserve_admission_selection(
+            plan, receipt
+        )
+        self.assertEqual(durable_plan, plan)
+        self.assertEqual(durable_receipt, receipt)
+        self.assertIs(selected.state, ps.QueuePhase.SELECTED)
+
+    def test_divergent_receipt_or_extra_plan_file_fails_closed(self) -> None:
+        entry = self.queue_one()
+        receipt = make_receipt(entry, receipt_id="SR-PLAN-1")
+        plan = self.make_plan(entry, receipt)
+        self.store.reserve_admission_selection(plan, receipt)
+        divergent_receipt = make_receipt(entry, receipt_id="SR-PLAN-1")
+        divergent_receipt = dataclasses.replace(
+            divergent_receipt,
+            selection_reason="different-reason",
+        )
+        divergent_receipt = dataclasses.replace(
+            divergent_receipt,
+            content_digest=ps._receipt_digest(divergent_receipt),
+        )
+        with self.assertRaises(ps.PortfolioSchedulerConflictError):
+            self.store.reserve_admission_selection(plan, divergent_receipt)
+        plan_path = (
+            self.root
+            / "docs"
+            / "pm"
+            / "portfolio-scheduler"
+            / "admission-plans"
+            / entry.queue_id
+        )
+        (plan_path / "unexpected.txt").write_text("x", encoding="utf-8")
+        with self.assertRaises(ps.PortfolioSchedulerSchemaError):
+            self.store.read_admission_plan(entry.queue_id, entry.selection_generation)
+
+    def test_plan_path_symlink_is_security_error(self) -> None:
+        entry = self.queue_one()
+        plan = self.make_plan(entry)
+        self.store.reserve_admission_plan(plan)
+        plan_path = (
+            self.root
+            / "docs"
+            / "pm"
+            / "portfolio-scheduler"
+            / "admission-plans"
+            / entry.queue_id
+            / "g1.yaml"
+        )
+        outside = self.root.parent / f"{self.root.name}-outside-plan"
+        outside.write_bytes(plan_path.read_bytes())
+        original = plan_path.read_bytes()
+        plan_path.unlink()
+        try:
+            plan_path.symlink_to(outside)
+        except (OSError, NotImplementedError):
+            plan_path.write_bytes(original)
+            outside.unlink()
+            self.skipTest("symlink creation is unavailable")
+        try:
+            with self.assertRaises(ps.PortfolioSchedulerSecurityError):
+                self.store.read_admission_plan(entry.queue_id, entry.selection_generation)
+        finally:
+            if plan_path.is_symlink():
+                plan_path.unlink()
+            plan_path.write_bytes(original)
+            outside.unlink()
 
 
 if __name__ == "__main__":

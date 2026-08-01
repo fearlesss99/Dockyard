@@ -9,7 +9,7 @@ never calls a provider/model/API/network, and never executes recovery actions.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -30,6 +30,7 @@ from portfolio_scheduler_recovery import (
     decide_reconciliation,
 )
 from portfolio_scheduler_store import (
+    AdmissionPlanReservation,
     SCHEMA_VERSION,
     PortfolioSchedulerNotFoundError,
     PortfolioSchedulerStore,
@@ -37,18 +38,7 @@ from portfolio_scheduler_store import (
     QueuePhase,
     ReceiptPhase,
     ScheduleReceipt,
-    _atomic_store_bytes,
-    _find_queue_entry,
-    _load_state,
-    _prepare_store,
-    _receipt_path,
-    _read_receipt_file,
-    _replace_entry,
-    _reservation_path,
-    _safe_file,
-    _store_lock,
-    _write_queue,
-    encode_schedule_receipt,
+    _plan_digest,
 )
 from state_provider import StateProvider
 
@@ -392,18 +382,27 @@ class PortfolioSchedulerRuntime:
                 raise PortfolioSchedulerRuntimeConflictError(
                     "portfolio_scheduler_runtime:plan_queue_mismatch"
                 )
+            durable_plan = self._read_plan(root, entry)
             receipt = self._read_reservation(root, entry)
-            if receipt is None:
+            if durable_plan is None and entry.state is QueuePhase.SELECTED:
                 return self._recovery_required(root, request, entry, None)
-            self._validate_reservation(plan, entry, receipt)
-            if entry.state is QueuePhase.QUEUED:
-                entry = self._advance_to_selected(
-                    root, entry.queue_id, entry.selection_generation
+            if durable_plan is not None:
+                self._validate_durable_plan(plan, durable_plan)
+            if receipt is None:
+                if entry.state is not QueuePhase.QUEUED:
+                    return self._recovery_required(root, request, entry, None)
+                policy_receipt = select_next(snapshot, request.admission_context)
+                if policy_receipt is None:
+                    return self._idle(request)
+                self._validate_policy_receipt(plan, entry, policy_receipt)
+                durable_plan, receipt, entry = self._reserve_selection(
+                    request, entry, policy_receipt
                 )
             elif entry.state is not QueuePhase.SELECTED:
-                raise PortfolioSchedulerRuntimeConflictError(
-                    "portfolio_scheduler_runtime:pending_phase"
+                durable_plan, receipt, entry = self._reserve_selection(
+                    request, entry, receipt
                 )
+            self._validate_reservation(plan, entry, receipt)
             return self._admit(request, entry, receipt)
 
         if entry.state in (QueuePhase.DISPATCHED, QueuePhase.RETIRED):
@@ -421,15 +420,9 @@ class PortfolioSchedulerRuntime:
         if policy_receipt is None:
             return self._idle(request)
         self._validate_policy_receipt(plan, entry, policy_receipt)
-        self._persist_reservation(root, policy_receipt)
-        entry = self._advance_to_selected(
-            root, entry.queue_id, entry.selection_generation
+        _, receipt, entry = self._reserve_selection(
+            request, entry, policy_receipt
         )
-        receipt = self._read_reservation(root, entry)
-        if receipt is None:
-            raise PortfolioSchedulerRuntimeConflictError(
-                "portfolio_scheduler_runtime:reservation_missing_after_write"
-            )
         return self._admit(request, entry, receipt)
 
     def _idle(
@@ -447,6 +440,13 @@ class PortfolioSchedulerRuntime:
         entry: QueueEntry,
         receipt: ScheduleReceipt,
     ) -> PortfolioSchedulerTickResult:
+        durable_plan = self._read_plan(request.project_root, entry)
+        if durable_plan is None:
+            raise PortfolioSchedulerRuntimeConflictError(
+                "portfolio_scheduler_runtime:admission_plan_missing"
+            )
+        self._validate_durable_plan(request.plan, durable_plan)
+        self._validate_reservation(request.plan, entry, receipt)
         admission_request = self._build_admission_request(
             request.plan, entry, receipt
         )
@@ -479,6 +479,10 @@ class PortfolioSchedulerRuntime:
             return self._recovery_required(root, request, entry, None)
         if receipt.phase is not ReceiptPhase.DISPATCHED:
             return self._recovery_required(root, request, entry, receipt)
+        durable_plan = self._read_plan(root, entry)
+        if durable_plan is None:
+            return self._recovery_required(root, request, entry, receipt)
+        self._validate_durable_plan(request.plan, durable_plan)
         self._validate_reservation(request.plan, entry, receipt)
         return self._admit(request, entry, receipt)
 
@@ -560,9 +564,22 @@ class PortfolioSchedulerRuntime:
             if entry.state is QueuePhase.SELECTED:
                 pending.append(entry.queue_id)
             elif entry.state is QueuePhase.QUEUED:
-                if self._read_reservation(root, entry) is not None:
+                if (
+                    self._read_plan(root, entry) is not None
+                    or self._read_reservation(root, entry) is not None
+                ):
                     pending.append(entry.queue_id)
         return tuple(pending)
+
+    def _read_plan(
+        self, root: Path, entry: QueueEntry
+    ) -> AdmissionPlanReservation | None:
+        try:
+            return self._store.read_admission_plan(
+                entry.queue_id, entry.selection_generation, root
+            )
+        except PortfolioSchedulerNotFoundError:
+            return None
 
     def _read_reservation(
         self, root: Path, entry: QueueEntry
@@ -573,6 +590,103 @@ class PortfolioSchedulerRuntime:
             )
         except PortfolioSchedulerNotFoundError:
             return None
+
+    @staticmethod
+    def _durable_plan(
+        plan: PortfolioAdmissionPlan,
+    ) -> AdmissionPlanReservation:
+        reserved_at = plan.now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        provisional = AdmissionPlanReservation(
+            schema_version=plan.schema_version,
+            queue_id=plan.queue_id,
+            receipt_id=plan.receipt_id,
+            task_id=plan.task_id,
+            revision=plan.revision,
+            enqueue_sequence=plan.enqueue_sequence,
+            selection_generation=plan.selection_generation,
+            worker_kind=plan.worker_kind,
+            assessment_id=plan.assessment_id,
+            dispatch_id=plan.dispatch_id,
+            event_id=plan.event_id,
+            outbox_message_id=plan.outbox_message_id,
+            role_id=plan.role_id,
+            task_card_path=plan.task_card_path,
+            task_card_commit=plan.task_card_commit,
+            base_commit=plan.base_commit,
+            branch=plan.branch,
+            report_path=plan.report_path,
+            model_selection=plan.model_selection,
+            expected_task_state=plan.expected_task_state,
+            expected_task_attempt=plan.expected_task_attempt,
+            new_attempt=plan.new_attempt,
+            expected_snapshot_commit=plan.expected_snapshot_commit,
+            policy_version=plan.policy_version,
+            holder_instance_id=plan.holder_instance_id,
+            canonical_worktree=plan.canonical_worktree,
+            reserved_at=reserved_at,
+            content_digest="sha256:" + "0" * 64,
+        )
+        return replace(provisional, content_digest=_plan_digest(provisional))
+
+    @staticmethod
+    def _validate_durable_plan(
+        plan: PortfolioAdmissionPlan,
+        durable: AdmissionPlanReservation,
+    ) -> None:
+        expected = {
+            "schema_version": plan.schema_version,
+            "queue_id": plan.queue_id,
+            "receipt_id": plan.receipt_id,
+            "task_id": plan.task_id,
+            "revision": plan.revision,
+            "enqueue_sequence": plan.enqueue_sequence,
+            "selection_generation": plan.selection_generation,
+            "worker_kind": plan.worker_kind,
+            "assessment_id": plan.assessment_id,
+            "dispatch_id": plan.dispatch_id,
+            "event_id": plan.event_id,
+            "outbox_message_id": plan.outbox_message_id,
+            "role_id": plan.role_id,
+            "task_card_path": plan.task_card_path,
+            "task_card_commit": plan.task_card_commit,
+            "base_commit": plan.base_commit,
+            "branch": plan.branch,
+            "report_path": plan.report_path,
+            "model_selection": plan.model_selection,
+            "expected_task_state": plan.expected_task_state,
+            "expected_task_attempt": plan.expected_task_attempt,
+            "new_attempt": plan.new_attempt,
+            "expected_snapshot_commit": plan.expected_snapshot_commit,
+            "policy_version": plan.policy_version,
+            "holder_instance_id": plan.holder_instance_id,
+            "canonical_worktree": plan.canonical_worktree,
+        }
+        for field_name, expected_value in expected.items():
+            if getattr(durable, field_name) != expected_value:
+                raise PortfolioSchedulerRuntimeConflictError(
+                    "portfolio_scheduler_runtime:durable_plan_identity"
+                )
+
+    def _reserve_selection(
+        self,
+        request: PortfolioSchedulerTickRequest,
+        entry: QueueEntry,
+        receipt: ScheduleReceipt,
+    ) -> tuple[AdmissionPlanReservation, ScheduleReceipt, QueueEntry]:
+        durable_plan, durable_receipt, selected_entry = (
+            self._store.reserve_admission_selection(
+                self._durable_plan(request.plan),
+                receipt,
+                request.project_root,
+            )
+        )
+        reread_plan = self._store.read_admission_plan(
+            selected_entry.queue_id,
+            selected_entry.selection_generation,
+            request.project_root,
+        )
+        self._validate_durable_plan(request.plan, reread_plan)
+        return reread_plan, durable_receipt, selected_entry
 
     def _validate_reservation(
         self,
@@ -649,72 +763,6 @@ class PortfolioSchedulerRuntime:
             raise PortfolioSchedulerRuntimeConflictError(
                 "portfolio_scheduler_runtime:assessment_mismatch"
             )
-
-    def _persist_reservation(
-        self, root: Path, receipt: ScheduleReceipt
-    ) -> ScheduleReceipt:
-        encoded = encode_schedule_receipt(receipt)
-        with _store_lock(root):
-            store_root = _prepare_store(root, True)
-            entries, _ = _load_state(store_root)
-            entry = _find_queue_entry(entries, receipt.queue_id)
-            if (
-                entry.task_id != receipt.task_id
-                or entry.revision != receipt.revision
-                or entry.enqueue_sequence != receipt.enqueue_sequence
-                or entry.selection_generation != receipt.selection_generation
-                or entry.worker_kind_request is not receipt.worker_kind
-            ):
-                raise PortfolioSchedulerRuntimeConflictError(
-                    "portfolio_scheduler_runtime:reservation_entry_identity"
-                )
-            receipt_path = _receipt_path(store_root, receipt.receipt_id)
-            existing = _read_receipt_file(store_root, receipt.receipt_id)
-            if existing is not None:
-                if encode_schedule_receipt(existing) != encoded:
-                    raise PortfolioSchedulerRuntimeConflictError(
-                        "portfolio_scheduler_runtime:receipt_divergent_replay"
-                    )
-            reservation_path = _reservation_path(
-                store_root,
-                receipt.queue_id,
-                receipt.selection_generation,
-            )
-            reservation = _safe_file(reservation_path, True)
-            if reservation is not None and reservation != encoded:
-                raise PortfolioSchedulerRuntimeConflictError(
-                    "portfolio_scheduler_runtime:reservation_divergent"
-                )
-            if existing is None:
-                _atomic_store_bytes(receipt_path, encoded)
-            if reservation is None:
-                _atomic_store_bytes(reservation_path, encoded)
-        return receipt
-
-    def _advance_to_selected(
-        self, root: Path, queue_id: str, generation: int
-    ) -> QueueEntry:
-        with _store_lock(root):
-            store_root = _prepare_store(root, True)
-            entries, _ = _load_state(store_root)
-            current = _find_queue_entry(entries, queue_id)
-            if current.selection_generation != generation:
-                raise PortfolioSchedulerRuntimeConflictError(
-                    "portfolio_scheduler_runtime:queue_generation_stale"
-                )
-            if current.state is QueuePhase.SELECTED:
-                return current
-            if current.state is not QueuePhase.QUEUED:
-                raise PortfolioSchedulerRuntimeTransitionError(
-                    "portfolio_scheduler_runtime:queue_phase_transition"
-                )
-            updated_entry = _replace_entry(current, state=QueuePhase.SELECTED)
-            updated = tuple(
-                updated_entry if item.queue_id == queue_id else item
-                for item in entries
-            )
-            _write_queue(store_root, updated)
-            return updated_entry
 
     def _build_admission_request(
         self,

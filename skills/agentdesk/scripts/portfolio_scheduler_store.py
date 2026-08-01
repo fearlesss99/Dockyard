@@ -27,6 +27,7 @@ from dispatch_supervisor_evidence import (
     _is_symlink_or_reparse,
 )
 from core_types import WorkerKind
+from dispatcher_gateway import ModelSelectionSnapshot
 
 __all__ = [
     "BusinessPriority",
@@ -36,6 +37,7 @@ __all__ = [
     "ConflictKey",
     "QueueEntry",
     "ScheduleReceipt",
+    "AdmissionPlanReservation",
     "PortfolioSchedulerStore",
     "PortfolioSchedulerError",
     "PortfolioSchedulerInputError",
@@ -51,6 +53,8 @@ __all__ = [
     "decode_queue_entry",
     "encode_schedule_receipt",
     "decode_schedule_receipt",
+    "encode_admission_plan",
+    "decode_admission_plan",
 ]
 
 
@@ -61,9 +65,11 @@ QUEUE_FILENAME = "queue.yaml"
 RECEIPTS_DIRECTORY = "receipts"
 TOMBSTONES_DIRECTORY = "tombstones"
 RESERVATIONS_DIRECTORY = "reservations"
+ADMISSION_PLANS_DIRECTORY = "admission-plans"
 STORE_LOCK_FILENAME = ".portfolio-scheduler-store.lock"
 
 _SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_SHA40_RE = re.compile(r"[0-9a-f]{40}\Z")
 _SAFE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _SAFE_KEY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]*\Z")
 _TIMESTAMP_RE = re.compile(
@@ -112,6 +118,49 @@ _RECEIPT_FIELDS = (
     "phase",
     "content_digest",
     "selection_generation",
+)
+_PLAN_FILENAME_RE = re.compile(r"g([1-9][0-9]*)\.yaml\Z")
+_PLAN_FIELDS = (
+    "schema_version",
+    "queue_id",
+    "receipt_id",
+    "task_id",
+    "revision",
+    "enqueue_sequence",
+    "selection_generation",
+    "worker_kind",
+    "assessment_id",
+    "dispatch_id",
+    "event_id",
+    "outbox_message_id",
+    "role_id",
+    "task_card_path",
+    "task_card_commit",
+    "base_commit",
+    "branch",
+    "report_path",
+    "model_selection",
+    "expected_task_state",
+    "expected_task_attempt",
+    "new_attempt",
+    "expected_snapshot_commit",
+    "policy_version",
+    "holder_instance_id",
+    "canonical_worktree",
+    "reserved_at",
+    "content_digest",
+)
+_MODEL_SELECTION_FIELDS = (
+    "required_model_tier",
+    "required_model_capabilities",
+    "model_binding_id",
+    "selected_model_provider",
+    "selected_model_id",
+    "selected_model_tier",
+    "selected_deliberation_tier",
+    "selected_context_window_tokens",
+    "selected_model_capabilities",
+    "model_degradation_approval_id",
 )
 
 
@@ -326,6 +375,43 @@ class ScheduleReceipt:
         _validate_schedule_receipt_fields(self)
 
 
+@dataclass(frozen=True, slots=True)
+class AdmissionPlanReservation:
+    """The immutable, durable identity consumed before admission."""
+
+    schema_version: str
+    queue_id: str
+    receipt_id: str
+    task_id: str
+    revision: int
+    enqueue_sequence: int
+    selection_generation: int
+    worker_kind: WorkerKind
+    assessment_id: str
+    dispatch_id: str
+    event_id: str
+    outbox_message_id: str
+    role_id: str
+    task_card_path: str
+    task_card_commit: str
+    base_commit: str
+    branch: str
+    report_path: str
+    model_selection: ModelSelectionSnapshot
+    expected_task_state: str
+    expected_task_attempt: int
+    new_attempt: int
+    expected_snapshot_commit: str
+    policy_version: str
+    holder_instance_id: str
+    canonical_worktree: str
+    reserved_at: str
+    content_digest: str
+
+    def __post_init__(self) -> None:
+        _validate_admission_plan_fields(self)
+
+
 def _validate_worker_kind(value: object, code: str) -> None:
     if type(value) is not WorkerKind:
         _raise(PortfolioSchedulerInputError, f"{code}_type")
@@ -387,6 +473,96 @@ def _validate_schedule_receipt_fields(receipt: ScheduleReceipt) -> None:
         _raise(PortfolioSchedulerInputError, "dispatched_event_missing")
     _validate_digest(receipt.content_digest, "content_digest")
     _validate_non_bool_int(receipt.selection_generation, "selection_generation", 1)
+
+
+def _validate_model_selection(snapshot: ModelSelectionSnapshot) -> None:
+    if type(snapshot) is not ModelSelectionSnapshot:
+        _raise(PortfolioSchedulerInputError, "model_selection_type")
+    string_fields = (
+        "required_model_tier",
+        "model_binding_id",
+        "selected_model_provider",
+        "selected_model_id",
+        "selected_model_tier",
+        "selected_deliberation_tier",
+    )
+    for field_name in string_fields:
+        value = getattr(snapshot, field_name)
+        if type(value) is not str or not value:
+            _raise(PortfolioSchedulerInputError, f"model_selection_{field_name}")
+        _require_exact_string(value, f"model_selection_{field_name}")
+    for field_name in (
+        "required_model_capabilities",
+        "selected_model_capabilities",
+    ):
+        values = getattr(snapshot, field_name)
+        if type(values) is not tuple:
+            _raise(PortfolioSchedulerInputError, f"model_selection_{field_name}_type")
+        for value in values:
+            if type(value) is not str or not value:
+                _raise(PortfolioSchedulerInputError, f"model_selection_{field_name}_value")
+            _require_exact_string(value, f"model_selection_{field_name}_value")
+    _validate_non_bool_int(
+        snapshot.selected_context_window_tokens,
+        "selected_context_window_tokens",
+        1,
+    )
+    if snapshot.model_degradation_approval_id is not None:
+        _require_exact_string(
+            snapshot.model_degradation_approval_id,
+            "model_degradation_approval_id",
+        )
+
+
+def _validate_sha40(value: object, code: str) -> str:
+    text = _require_exact_string(value, code)
+    if _SHA40_RE.fullmatch(text) is None:
+        _raise(PortfolioSchedulerInputError, f"{code}_format")
+    return text
+
+
+def _validate_admission_plan_fields(plan: AdmissionPlanReservation) -> None:
+    if plan.schema_version != SCHEMA_VERSION:
+        _raise(PortfolioSchedulerInputError, "plan_schema_version")
+    _validate_id(plan.queue_id, "queue_id", "Q-")
+    _validate_id(plan.receipt_id, "receipt_id", "SR-")
+    _validate_id(plan.task_id, "task_id")
+    _validate_non_bool_int(plan.revision, "revision", 1)
+    _validate_non_bool_int(plan.enqueue_sequence, "enqueue_sequence", 1)
+    _validate_non_bool_int(plan.selection_generation, "selection_generation", 1)
+    _validate_worker_kind(plan.worker_kind, "worker_kind")
+    _validate_id(plan.assessment_id, "assessment_id", "ASM-")
+    _validate_id(plan.dispatch_id, "dispatch_id", "DSP-")
+    _validate_event_id(plan.event_id)
+    _validate_id(plan.outbox_message_id, "outbox_message_id", "MSG-")
+    for field_name in (
+        "role_id",
+        "task_card_path",
+        "branch",
+        "report_path",
+        "holder_instance_id",
+        "canonical_worktree",
+    ):
+        _require_exact_string(getattr(plan, field_name), field_name)
+    _validate_sha40(plan.task_card_commit, "task_card_commit")
+    _validate_sha40(plan.base_commit, "base_commit")
+    _validate_model_selection(plan.model_selection)
+    if plan.expected_task_state != "ready":
+        _raise(PortfolioSchedulerInputError, "expected_task_state")
+    _validate_non_bool_int(plan.expected_task_attempt, "expected_task_attempt", 0)
+    _validate_non_bool_int(plan.new_attempt, "new_attempt", 1)
+    if plan.expected_task_attempt >= 3 or plan.new_attempt > 3:
+        _raise(PortfolioSchedulerInputError, "attempt_limit")
+    if plan.new_attempt != plan.expected_task_attempt + 1:
+        _raise(PortfolioSchedulerInputError, "attempt_sequence")
+    _validate_sha40(plan.expected_snapshot_commit, "expected_snapshot_commit")
+    if plan.policy_version != SCHEMA_VERSION:
+        _raise(PortfolioSchedulerInputError, "policy_version")
+    _require_exact_string(plan.canonical_worktree, "canonical_worktree")
+    if not Path(plan.canonical_worktree).is_absolute():
+        _raise(PortfolioSchedulerSecurityError, "canonical_worktree_absolute")
+    _validate_timestamp(plan.reserved_at, "reserved_at")
+    _validate_digest(plan.content_digest, "content_digest")
 
 
 def _entry_lines(entry: QueueEntry, include_digest: bool, indent: str = "") -> list[str]:
@@ -685,6 +861,163 @@ def decode_schedule_receipt(data: bytes) -> ScheduleReceipt:
     return receipt
 
 
+def _model_selection_lines(
+    snapshot: ModelSelectionSnapshot, indent: str = ""
+) -> list[str]:
+    _validate_model_selection(snapshot)
+    lines = [f"{indent}model_selection:"]
+    for field_name in _MODEL_SELECTION_FIELDS:
+        value = getattr(snapshot, field_name)
+        if field_name in (
+            "required_model_capabilities",
+            "selected_model_capabilities",
+        ):
+            lines.append(f"{indent}  {field_name}:")
+            lines.extend(
+                f"{indent}    - {_scalar(item, field_name)}" for item in value
+            )
+        else:
+            lines.append(
+                f"{indent}  {field_name}: {_scalar(value, field_name)}"
+            )
+    return lines
+
+
+def _plan_lines(
+    plan: AdmissionPlanReservation, include_digest: bool, indent: str = ""
+) -> list[str]:
+    lines = [
+        f"{indent}schema_version: {_scalar(plan.schema_version, 'schema_version')}",
+        f"{indent}queue_id: {_scalar(plan.queue_id, 'queue_id')}",
+        f"{indent}receipt_id: {_scalar(plan.receipt_id, 'receipt_id')}",
+        f"{indent}task_id: {_scalar(plan.task_id, 'task_id')}",
+        f"{indent}revision: {_scalar(plan.revision, 'revision')}",
+        f"{indent}enqueue_sequence: {_scalar(plan.enqueue_sequence, 'enqueue_sequence')}",
+        f"{indent}selection_generation: {_scalar(plan.selection_generation, 'selection_generation')}",
+        f"{indent}worker_kind: {_scalar(plan.worker_kind.value, 'worker_kind')}",
+        f"{indent}assessment_id: {_scalar(plan.assessment_id, 'assessment_id')}",
+        f"{indent}dispatch_id: {_scalar(plan.dispatch_id, 'dispatch_id')}",
+        f"{indent}event_id: {_scalar(plan.event_id, 'event_id')}",
+        f"{indent}outbox_message_id: {_scalar(plan.outbox_message_id, 'outbox_message_id')}",
+        f"{indent}role_id: {_scalar(plan.role_id, 'role_id')}",
+        f"{indent}task_card_path: {_scalar(plan.task_card_path, 'task_card_path')}",
+        f"{indent}task_card_commit: {_scalar(plan.task_card_commit, 'task_card_commit')}",
+        f"{indent}base_commit: {_scalar(plan.base_commit, 'base_commit')}",
+        f"{indent}branch: {_scalar(plan.branch, 'branch')}",
+        f"{indent}report_path: {_scalar(plan.report_path, 'report_path')}",
+    ]
+    lines.extend(_model_selection_lines(plan.model_selection, indent))
+    lines.extend(
+        (
+            f"{indent}expected_task_state: {_scalar(plan.expected_task_state, 'expected_task_state')}",
+            f"{indent}expected_task_attempt: {_scalar(plan.expected_task_attempt, 'expected_task_attempt')}",
+            f"{indent}new_attempt: {_scalar(plan.new_attempt, 'new_attempt')}",
+            f"{indent}expected_snapshot_commit: {_scalar(plan.expected_snapshot_commit, 'expected_snapshot_commit')}",
+            f"{indent}policy_version: {_scalar(plan.policy_version, 'policy_version')}",
+            f"{indent}holder_instance_id: {_scalar(plan.holder_instance_id, 'holder_instance_id')}",
+            f"{indent}canonical_worktree: {_scalar(plan.canonical_worktree, 'canonical_worktree')}",
+            f"{indent}reserved_at: {_scalar(plan.reserved_at, 'reserved_at')}",
+        )
+    )
+    if include_digest:
+        lines.append(f"{indent}content_digest: {_scalar(plan.content_digest, 'content_digest')}")
+    return lines
+
+
+def _plan_digest(plan: AdmissionPlanReservation) -> str:
+    return "sha256:" + hashlib.sha256(_finish(_plan_lines(plan, False))).hexdigest()
+
+
+def _ensure_admission_plan_digest(plan: AdmissionPlanReservation) -> None:
+    if plan.content_digest != _plan_digest(plan):
+        _raise(PortfolioSchedulerSchemaError, "plan_digest_mismatch")
+
+
+def encode_admission_plan(plan: AdmissionPlanReservation) -> bytes:
+    if type(plan) is not AdmissionPlanReservation:
+        _raise(PortfolioSchedulerInputError, "admission_plan_type")
+    _validate_admission_plan_fields(plan)
+    _ensure_admission_plan_digest(plan)
+    return _finish(_plan_lines(plan, True))
+
+
+def _parse_capabilities_at(
+    lines: list[str], cursor: int, indent: str, key: str
+) -> tuple[tuple[str, ...], int]:
+    if cursor >= len(lines) or lines[cursor] != f"{indent}{key}:":
+        _raise(PortfolioSchedulerSchemaError, f"field_order_{key}")
+    cursor += 1
+    values: list[str] = []
+    prefix = f"{indent}  - "
+    while cursor < len(lines) and lines[cursor].startswith(prefix):
+        value = _parse_scalar(lines[cursor][len(prefix):], key)
+        if type(value) is not str:
+            _raise(PortfolioSchedulerSchemaError, f"{key}_value")
+        values.append(value)
+        cursor += 1
+    return tuple(values), cursor
+
+
+def _parse_model_selection_at(
+    lines: list[str], cursor: int, indent: str
+) -> tuple[ModelSelectionSnapshot, int]:
+    if cursor >= len(lines) or lines[cursor] != f"{indent}model_selection:":
+        _raise(PortfolioSchedulerSchemaError, "field_order_model_selection")
+    cursor += 1
+    values: dict[str, object] = {}
+    for key in _MODEL_SELECTION_FIELDS:
+        if key in ("required_model_capabilities", "selected_model_capabilities"):
+            values[key], cursor = _parse_capabilities_at(
+                lines, cursor, indent + "  ", key
+            )
+        else:
+            values[key], cursor = _parse_line_scalar(
+                lines, cursor, indent + "  ", key
+            )
+    try:
+        snapshot = ModelSelectionSnapshot(**values)
+        _validate_model_selection(snapshot)
+    except PortfolioSchedulerError:
+        raise
+    except (TypeError, ValueError):
+        _raise(PortfolioSchedulerSchemaError, "model_selection_fields")
+    return snapshot, cursor
+
+
+def _parse_admission_plan_at(
+    lines: list[str], cursor: int, indent: str
+) -> tuple[AdmissionPlanReservation, int]:
+    values: dict[str, object] = {}
+    for key in _PLAN_FIELDS:
+        if key == "model_selection":
+            values[key], cursor = _parse_model_selection_at(lines, cursor, indent)
+        else:
+            values[key], cursor = _parse_line_scalar(lines, cursor, indent, key)
+    if type(values["worker_kind"]) is not str:
+        _raise(PortfolioSchedulerSchemaError, "worker_kind_enum")
+    values["worker_kind"] = _parse_enum(values["worker_kind"], WorkerKind, "worker_kind")
+    try:
+        plan = AdmissionPlanReservation(**values)
+    except PortfolioSchedulerSchemaError:
+        raise
+    except PortfolioSchedulerError:
+        _raise(PortfolioSchedulerSchemaError, "admission_plan_fields")
+    except (TypeError, ValueError):
+        _raise(PortfolioSchedulerSchemaError, "admission_plan_fields")
+    return plan, cursor
+
+
+def decode_admission_plan(data: bytes) -> AdmissionPlanReservation:
+    lines = _decode_document(data, "admission_plan")
+    plan, cursor = _parse_admission_plan_at(lines, 0, "")
+    if cursor != len(lines):
+        _raise(PortfolioSchedulerSchemaError, "admission_plan_unknown_or_extra")
+    canonical = encode_admission_plan(plan)
+    if canonical != data:
+        _raise(PortfolioSchedulerSchemaError, "admission_plan_noncanonical")
+    return plan
+
+
 def _validate_project_root(project_root: object) -> Path:
     if not isinstance(project_root, Path):
         _raise(PortfolioSchedulerInputError, "project_root_type")
@@ -731,7 +1064,12 @@ def _prepare_store(project_root: Path, create: bool) -> Path:
         current = current / component
         _ensure_directory(current, create)
     store_root = current
-    for component in (RECEIPTS_DIRECTORY, TOMBSTONES_DIRECTORY, RESERVATIONS_DIRECTORY):
+    for component in (
+        RECEIPTS_DIRECTORY,
+        TOMBSTONES_DIRECTORY,
+        RESERVATIONS_DIRECTORY,
+        ADMISSION_PLANS_DIRECTORY,
+    ):
         _ensure_directory(store_root / component, create)
     return store_root
 
@@ -1256,6 +1594,21 @@ def _reservation_path(
     return directory / f"g{selection_generation}.yaml"
 
 
+def _plan_path(
+    store_root: Path,
+    queue_id: str,
+    selection_generation: int,
+    create: bool = True,
+) -> Path:
+    _validate_id(queue_id, "queue_id", "Q-")
+    _validate_non_bool_int(selection_generation, "selection_generation", 1)
+    plans_root = store_root / ADMISSION_PLANS_DIRECTORY
+    _ensure_directory(plans_root, create)
+    queue_directory = plans_root / queue_id
+    _ensure_directory(queue_directory, create)
+    return queue_directory / f"g{selection_generation}.yaml"
+
+
 def _load_queue(store_root: Path) -> tuple[QueueEntry, ...]:
     raw = _safe_file(_entry_path(store_root), True)
     if raw is None:
@@ -1345,6 +1698,126 @@ def _read_tombstone(store_root: Path, receipt_id: str) -> _Tombstone | None:
 def _read_receipt_file(store_root: Path, receipt_id: str) -> ScheduleReceipt | None:
     raw = _safe_file(_receipt_path(store_root, receipt_id), True)
     return None if raw is None else decode_schedule_receipt(raw)
+
+
+def _validate_plan_directory(
+    store_root: Path,
+    queue_id: str,
+    selection_generation: int | None = None,
+) -> Path:
+    _validate_id(queue_id, "queue_id", "Q-")
+    _validate_non_bool_int(
+        selection_generation if selection_generation is not None else 1,
+        "selection_generation",
+        1,
+    )
+    plans_root = store_root / ADMISSION_PLANS_DIRECTORY
+    _ensure_directory(plans_root, False)
+    queue_directory = plans_root / queue_id
+    _ensure_directory(queue_directory, False)
+    try:
+        paths = sorted(queue_directory.iterdir(), key=lambda path: path.name)
+    except OSError:
+        _raise(PortfolioSchedulerPermissionError, "plan_enumerate")
+    for path in paths:
+        if _is_symlink_or_reparse(path):
+            _raise(PortfolioSchedulerSecurityError, "plan_entry_link")
+        try:
+            mode = os.lstat(str(path)).st_mode
+        except FileNotFoundError:
+            _raise(PortfolioSchedulerSecurityError, "plan_entry_raced")
+        except OSError:
+            _raise(PortfolioSchedulerPermissionError, "plan_entry_unknown")
+        if not stat.S_ISREG(mode):
+            _raise(PortfolioSchedulerSecurityError, "plan_entry_not_regular")
+        if _PLAN_FILENAME_RE.fullmatch(path.name) is None:
+            _raise(PortfolioSchedulerSchemaError, "plan_unknown_file")
+    return queue_directory
+
+
+def _read_admission_plan_file(
+    store_root: Path,
+    queue_id: str,
+    selection_generation: int,
+    missing_ok: bool,
+) -> AdmissionPlanReservation | None:
+    queue_directory = _validate_plan_directory(
+        store_root, queue_id, selection_generation
+    )
+    path = queue_directory / f"g{selection_generation}.yaml"
+    raw = _safe_file(path, missing_ok)
+    if raw is None:
+        return None
+    plan = decode_admission_plan(raw)
+    if (
+        plan.queue_id != queue_id
+        or plan.selection_generation != selection_generation
+    ):
+        _raise(PortfolioSchedulerConflictError, "plan_path_binding")
+    return plan
+
+
+def _plan_identity_equal(
+    left: AdmissionPlanReservation, right: AdmissionPlanReservation
+) -> bool:
+    return all(
+        getattr(left, field_name) == getattr(right, field_name)
+        for field_name in _PLAN_FIELDS
+        if field_name not in ("reserved_at", "content_digest")
+    )
+
+
+def _validate_plan_receipt_binding(
+    plan: AdmissionPlanReservation,
+    receipt: ScheduleReceipt,
+    entry: QueueEntry,
+    allow_queued_entry: bool,
+) -> None:
+    if (
+        plan.queue_id != entry.queue_id
+        or plan.task_id != entry.task_id
+        or plan.revision != entry.revision
+        or plan.enqueue_sequence != entry.enqueue_sequence
+        or plan.selection_generation != entry.selection_generation
+        or plan.worker_kind is not entry.worker_kind_request
+        or plan.assessment_id != entry.assessment_id
+        or receipt.receipt_id != plan.receipt_id
+        or receipt.queue_id != plan.queue_id
+        or receipt.task_id != plan.task_id
+        or receipt.revision != plan.revision
+        or receipt.enqueue_sequence != plan.enqueue_sequence
+        or receipt.selection_generation != plan.selection_generation
+        or receipt.worker_kind is not plan.worker_kind
+        or receipt.phase is not ReceiptPhase.SELECTED
+    ):
+        _raise(PortfolioSchedulerConflictError, "plan_selection_binding")
+    if entry.state is QueuePhase.QUEUED and allow_queued_entry:
+        return
+    if entry.state is not QueuePhase.SELECTED:
+        _raise(PortfolioSchedulerTransitionError, "plan_selection_phase")
+
+
+def _reserve_admission_plan_locked(
+    store_root: Path,
+    plan: AdmissionPlanReservation,
+) -> AdmissionPlanReservation:
+    encoded = encode_admission_plan(plan)
+    path = _plan_path(
+        store_root,
+        plan.queue_id,
+        plan.selection_generation,
+        create=True,
+    )
+    raw = _safe_file(path, True)
+    if raw is None:
+        _atomic_store_bytes(path, encoded)
+        return plan
+    existing = decode_admission_plan(raw)
+    if raw == encoded:
+        return existing
+    if _plan_identity_equal(existing, plan):
+        return existing
+    _raise(PortfolioSchedulerConflictError, "plan_divergent_replay")
 
 
 def _validate_tombstone_for_receipt(tombstone: _Tombstone, receipt: ScheduleReceipt) -> None:
@@ -1471,6 +1944,131 @@ class PortfolioSchedulerStore:
             updated = tuple(updated_entry if item.queue_id == queue_id else item for item in entries)
             _write_queue(store_root, updated)
             return updated_entry
+
+    def reserve_admission_plan(
+        self,
+        plan: AdmissionPlanReservation,
+        project_root: Path | None = None,
+    ) -> AdmissionPlanReservation:
+        if type(plan) is not AdmissionPlanReservation:
+            _raise(PortfolioSchedulerInputError, "admission_plan_type")
+        _validate_admission_plan_fields(plan)
+        _ensure_admission_plan_digest(plan)
+        with self._locked(project_root) as store_root:
+            return _reserve_admission_plan_locked(store_root, plan)
+
+    def read_admission_plan(
+        self,
+        queue_id: str,
+        selection_generation: int,
+        project_root: Path | None = None,
+    ) -> AdmissionPlanReservation:
+        _validate_id(queue_id, "queue_id", "Q-")
+        generation = _validate_expected_generation(selection_generation)
+        root = self._root(project_root)
+        store_root = _prepare_store(root, False)
+        plan = _read_admission_plan_file(store_root, queue_id, generation, True)
+        if plan is None:
+            _raise(PortfolioSchedulerNotFoundError, "admission_plan_missing")
+        return plan
+
+    def enumerate_validated_admission_plans(
+        self, project_root: Path | None = None
+    ) -> tuple[AdmissionPlanReservation, ...]:
+        root = self._root(project_root)
+        store_root = _prepare_store(root, False)
+        plans_root = store_root / ADMISSION_PLANS_DIRECTORY
+        _ensure_directory(plans_root, False)
+        try:
+            queue_directories = sorted(plans_root.iterdir(), key=lambda path: path.name)
+        except OSError:
+            _raise(PortfolioSchedulerPermissionError, "plan_enumerate")
+        result: list[AdmissionPlanReservation] = []
+        for queue_directory in queue_directories:
+            if _is_symlink_or_reparse(queue_directory):
+                _raise(PortfolioSchedulerSecurityError, "plan_queue_link")
+            try:
+                mode = os.lstat(str(queue_directory)).st_mode
+            except OSError:
+                _raise(PortfolioSchedulerPermissionError, "plan_queue_unknown")
+            if not stat.S_ISDIR(mode):
+                _raise(PortfolioSchedulerSecurityError, "plan_queue_not_directory")
+            _validate_id(queue_directory.name, "queue_id", "Q-")
+            _validate_plan_directory(store_root, queue_directory.name)
+            for path in sorted(queue_directory.iterdir(), key=lambda item: item.name):
+                match = _PLAN_FILENAME_RE.fullmatch(path.name)
+                if match is None:
+                    _raise(PortfolioSchedulerSchemaError, "plan_unknown_file")
+                generation = int(match.group(1))
+                plan = _read_admission_plan_file(
+                    store_root, queue_directory.name, generation, False
+                )
+                if plan is None:
+                    _raise(PortfolioSchedulerNotFoundError, "admission_plan_missing")
+                result.append(plan)
+        return tuple(
+            sorted(result, key=lambda plan: (plan.queue_id, plan.selection_generation))
+        )
+
+    def reserve_admission_selection(
+        self,
+        plan: AdmissionPlanReservation,
+        receipt: ScheduleReceipt,
+        project_root: Path | None = None,
+    ) -> tuple[AdmissionPlanReservation, ScheduleReceipt, QueueEntry]:
+        if type(plan) is not AdmissionPlanReservation:
+            _raise(PortfolioSchedulerInputError, "admission_plan_type")
+        if type(receipt) is not ScheduleReceipt:
+            _raise(PortfolioSchedulerInputError, "schedule_receipt_type")
+        _validate_admission_plan_fields(plan)
+        _ensure_admission_plan_digest(plan)
+        _validate_schedule_receipt_fields(receipt)
+        _ensure_receipt_digest(receipt)
+        if receipt.phase is not ReceiptPhase.SELECTED:
+            _raise(PortfolioSchedulerTransitionError, "selection_receipt_phase")
+        with self._locked(project_root) as store_root:
+            entries, _ = _load_state(store_root)
+            current = _find_queue_entry(entries, plan.queue_id)
+            if current.state not in (QueuePhase.QUEUED, QueuePhase.SELECTED):
+                _raise(PortfolioSchedulerTransitionError, "selection_queue_phase")
+            if current.selection_generation != plan.selection_generation:
+                _raise(PortfolioSchedulerConflictError, "queue_generation_stale")
+            _validate_plan_receipt_binding(
+                plan, receipt, current, allow_queued_entry=True
+            )
+            durable_plan = _reserve_admission_plan_locked(store_root, plan)
+
+            receipt_bytes = encode_schedule_receipt(receipt)
+            existing_receipt = _read_receipt_file(store_root, receipt.receipt_id)
+            if existing_receipt is not None:
+                if encode_schedule_receipt(existing_receipt) != receipt_bytes:
+                    _raise(PortfolioSchedulerConflictError, "receipt_divergent_replay")
+                durable_receipt = existing_receipt
+            else:
+                _atomic_store_bytes(
+                    _receipt_path(store_root, receipt.receipt_id), receipt_bytes
+                )
+                durable_receipt = receipt
+            reservation_path = _reservation_path(
+                store_root,
+                receipt.queue_id,
+                receipt.selection_generation,
+            )
+            reservation = _safe_file(reservation_path, True)
+            if reservation is not None and reservation != receipt_bytes:
+                _raise(PortfolioSchedulerConflictError, "reservation_divergent")
+            if reservation is None:
+                _atomic_store_bytes(reservation_path, receipt_bytes)
+
+            if current.state is QueuePhase.QUEUED:
+                updated_entry = _replace_entry(current, state=QueuePhase.SELECTED)
+                updated_entries = tuple(
+                    updated_entry if item.queue_id == current.queue_id else item
+                    for item in entries
+                )
+                _write_queue(store_root, updated_entries)
+                current = updated_entry
+            return durable_plan, durable_receipt, current
 
     def retire_queue_entry(
         self, queue_id: str, expected_generation: int, project_root: Path | None = None
