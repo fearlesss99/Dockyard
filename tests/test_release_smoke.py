@@ -13725,6 +13725,376 @@ class TC1322aTaskDifficultyAssessmentContractFreezeTests(unittest.TestCase):
         self.assertNotIn("Current — TC-13.22b.3", self.contract_text)
 
 
+class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
+    """TC-13.24a — PortfolioScheduler durable admission contract freeze."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        cls.contract_path = (
+            root
+            / "skills"
+            / "agentdesk"
+            / "references"
+            / "public-interfaces"
+            / "portfolio-scheduler-contract.md"
+        )
+        cls.workflow_path = (
+            root
+            / "skills"
+            / "agentdesk"
+            / "references"
+            / "public-interfaces"
+            / "workflow-orchestrator-contract.md"
+        )
+        cls.adr_path = (
+            root
+            / "skills"
+            / "agentdesk"
+            / "references"
+            / "adr"
+            / "001-mad-agentdesk-integration.md"
+        )
+        cls.contract_text = cls.contract_path.read_text(encoding="utf-8")
+        cls.workflow_text = cls.workflow_path.read_text(encoding="utf-8")
+        cls.adr_text = cls.adr_path.read_text(encoding="utf-8")
+
+    def _between(self, text: str, start: str, end: str) -> str:
+        start_at = text.index(start)
+        end_at = text.index(end, start_at)
+        return text[start_at:end_at]
+
+    def test_contract_exists_and_freezes_v1_scope(self) -> None:
+        self.assertTrue(self.contract_path.is_file())
+        self.assertIn(
+            "PortfolioScheduler — Durable Admission Contract (Contract Current — TC-13.24a)",
+            self.contract_text,
+        )
+        self.assertIn("agentdesk.portfolio-scheduler/v1", self.contract_text)
+        self.assertIn("does not implement a Scheduler", " ".join(self.contract_text.split()))
+
+    def test_current_system_allows_multiple_workers_without_builtin_scheduler(self) -> None:
+        normalized = " ".join(self.contract_text.split())
+        for statement in (
+            "not a single-Worker architecture",
+            "eight stable slots",
+            "no built-in queue and no PortfolioScheduler",
+            "WorkerSlotCapacityError",
+            "does not mean that the Worker lifetime is globally serial",
+            "can have only one active Worker",
+        ):
+            self.assertIn(statement, normalized)
+
+    def test_business_priority_is_exact_and_independent_from_difficulty(self) -> None:
+        block = self._between(
+            self.contract_text,
+            "### 2.1 BusinessPriority",
+            "### 2.2 TaskDifficulty",
+        )
+        normalized = " ".join(block.split())
+        self.assertIn("P0, P1, P2, P3", normalized)
+        self.assertIn(
+            "It is not `TaskDifficulty`, `WorkerKind`, model tier, model price, provider, or risk.",
+            normalized,
+        )
+
+    def test_fairness_dimensions_are_separate_and_deadline_deferred(self) -> None:
+        block = self._between(
+            self.contract_text,
+            "### 2.3 Fairness dimensions",
+            "## 3. Public value types",
+        )
+        for field in (
+            "business_priority",
+            "enqueue_sequence",
+            "aging_basis_at",
+            "deadline",
+        ):
+            self.assertIn(f"`{field}`", block)
+        self.assertIn("deadline-aware promotion", block)
+
+    def test_queue_entry_has_exact_fifteen_frozen_fields(self) -> None:
+        block = self._between(
+            self.contract_text,
+            "### 3.2 QueueEntry",
+            "### 3.3 ScheduleReceipt",
+        )
+        fields = re.findall(
+            r"^\|\s*\d+\s*\|\s*`([^`]+)`\s*\|",
+            block,
+            re.MULTILINE,
+        )
+        self.assertEqual(
+            fields,
+            [
+                "schema_version",
+                "queue_id",
+                "task_id",
+                "revision",
+                "enqueue_sequence",
+                "enqueued_at",
+                "business_priority",
+                "aging_basis_at",
+                "worker_kind_request",
+                "assessment_id",
+                "state",
+                "conflict_keys",
+                "retry_budget_used",
+                "content_digest",
+                "selection_generation",
+            ],
+        )
+
+    def test_queue_phase_and_recovery_are_forward_only(self) -> None:
+        normalized = " ".join(self.contract_text.split())
+        self.assertIn("queued, selected, dispatched, retired", normalized)
+        self.assertIn("queued → selected → dispatched → retired", normalized)
+        self.assertIn("recover_selected_without_dispatch", normalized)
+        self.assertIn("not a normal reverse phase transition", normalized)
+
+    def test_queue_entry_excludes_untyped_and_mutable_public_fields(self) -> None:
+        block = self._between(
+            self.contract_text,
+            "## 3. Public value types",
+            "## 4. Canonical evidence",
+        )
+        normalized = " ".join(block.split())
+        self.assertIn("frozen/slotted and immutable", normalized)
+        self.assertIn("must not contain `Any`, `dict`, `Mapping`", normalized)
+        self.assertIn("Collection fields use tuples", normalized)
+        self.assertIn("tuple[ConflictKey, ...]", normalized)
+        self.assertIn("sha256:` followed by 64 lowercase", normalized)
+
+    def test_schedule_receipt_has_exact_fourteen_fields_and_is_separate(self) -> None:
+        block = self._between(
+            self.contract_text,
+            "### 3.3 ScheduleReceipt",
+            "## 4. Canonical evidence",
+        )
+        fields = re.findall(
+            r"^\|\s*\d+\s*\|\s*`([^`]+)`\s*\|",
+            block,
+            re.MULTILINE,
+        )
+        self.assertEqual(
+            fields,
+            [
+                "schema_version",
+                "receipt_id",
+                "queue_id",
+                "task_id",
+                "revision",
+                "enqueue_sequence",
+                "selected_at",
+                "order_key",
+                "selection_reason",
+                "worker_kind",
+                "dispatch_event_id",
+                "phase",
+                "content_digest",
+                "selection_generation",
+            ],
+        )
+        self.assertIn("ScheduleReceipt` is a separate frozen/slotted value", block)
+        normalized = " ".join(block.split())
+        self.assertIn("For one generation, the same request must return the same", normalized)
+        self.assertIn("a divergent replay is rejected", normalized)
+
+    def test_receipt_phase_and_canonical_dispatch_anchor_are_distinct(self) -> None:
+        normalized = " ".join(self.contract_text.split())
+        self.assertIn("selected, dispatched", normalized)
+        self.assertIn("TASK_DISPATCHED` is the only dispatch fact boundary", normalized)
+        self.assertIn("dispatch_event_id=null", normalized)
+        self.assertIn("receipt never copies or rejudges lease, ACK, Worker", normalized)
+        self.assertIn("may not manufacture a canonical dispatch event", normalized)
+
+    def test_queue_store_is_authoritative_and_sequence_is_durable(self) -> None:
+        normalized = " ".join(self.contract_text.split())
+        self.assertIn("independent authoritative store", normalized)
+        self.assertIn("not a derived view of `tasks.yaml`", normalized)
+        for path in (
+            "docs/pm/portfolio-scheduler/sequence.yaml",
+            "docs/pm/portfolio-scheduler/queue.yaml",
+            "docs/pm/portfolio-scheduler/receipts/<receipt_id>.yaml",
+            "docs/pm/portfolio-scheduler/reservations/<queue_id>/g<selection_generation>.yaml",
+        ):
+            self.assertIn(path, self.contract_text)
+        self.assertIn("never reconstruct `max(existing enqueue_sequence) + 1`", normalized)
+
+    def test_canonical_serialization_atomicity_and_replay_are_frozen(self) -> None:
+        normalized = " ".join(self.contract_text.split())
+        for rule in (
+            "canonical UTF-8 YAML",
+            "no BOM",
+            "LF line endings",
+            "no anchors or aliases",
+            "no duplicate keys",
+            "atomic replace",
+            "file flush/fsync",
+            "directory fsync",
+            "byte-exact replay",
+            "same identity with different bytes is a conflict",
+            "fails closed",
+        ):
+            self.assertIn(rule, normalized)
+
+    def test_v1_selection_api_and_exact_order_key(self) -> None:
+        normalized = " ".join(self.contract_text.split())
+        self.assertIn(
+            "select_next(queue_snapshot, admission_context) -> ScheduleReceipt | None",
+            normalized,
+        )
+        self.assertIn(
+            "(business_priority_rank, aging_promotion_rank, enqueue_sequence, queue_id)",
+            normalized,
+        )
+        self.assertIn("Lower `business_priority_rank` means more urgent", normalized)
+        self.assertIn("same snapshot and policy version must produce byte-exact", normalized)
+
+    def test_selection_order_excludes_task_difficulty_and_runtime_text(self) -> None:
+        block = self._between(
+            self.contract_text,
+            "## 5. Selection strategy",
+            "## 6. Conflict-key admission",
+        )
+        for forbidden in (
+            "TaskDifficulty",
+            "model name",
+            "model tier",
+            "provider",
+            "exception text",
+            "stdout",
+            "stderr",
+            "exit code",
+            "predicted changed paths",
+            "deadline",
+        ):
+            self.assertIn(forbidden, block)
+
+    def test_conflict_key_classes_and_fail_closed_rules_are_frozen(self) -> None:
+        block = self._between(
+            self.contract_text,
+            "## 6. Conflict-key admission",
+            "## 7. Lock and execution boundary",
+        )
+        block = " ".join(block.split())
+        for classification in ("hard_exclusive", "advisory", "unknown"):
+            self.assertIn(f"`{classification}`", self.contract_text)
+        for rule in (
+            "currently active leases or executions",
+            "queued task alone does not create a hard conflict",
+            "forced admission requires explicit authorization",
+            "unparseable keys fail closed",
+            "Caller-supplied contract/interface keys are untrusted",
+            "Changed paths are post-execution advisory evidence only",
+            "A `GLOBAL` conflict key is invalid",
+        ):
+            self.assertIn(rule, block)
+
+    def test_lock_order_and_worker_boundary_are_explicit(self) -> None:
+        block = self._between(
+            self.contract_text,
+            "## 7. Lock and execution boundary",
+            "## 8. Crash recovery matrix",
+        )
+        block = " ".join(block.split())
+        self.assertIn(
+            "worker-slot lease coordination → state-transition lock → queue-store write",
+            block,
+        )
+        for rule in (
+            "short critical sections",
+            "must not start a Worker while holding the state-transition lock",
+            "must not hold that lock across a Worker lifetime",
+            "must not call `run_dispatch_cycle()` while any global lock is held",
+            "never waits indefinitely",
+        ):
+            self.assertIn(rule, block)
+
+    def test_crash_recovery_matrix_covers_all_required_boundaries(self) -> None:
+        block = self._between(
+            self.contract_text,
+            "## 8. Crash recovery matrix",
+            "## 9. Retry and unchanged interfaces",
+        )
+        for condition in (
+            "queued and not selected",
+            "selected with no `TASK_DISPATCHED`",
+            "receipt write interrupted",
+            "reservation after slot coordination, before `TASK_DISPATCHED`",
+            "`TASK_DISPATCHED` committed",
+            "canonical event committed but queue phase not advanced",
+            "ACK not yet observed at Scheduler crash",
+            "Worker running at Scheduler crash",
+            "receipt tombstone/phase boundary crash",
+            "two Schedulers choose one QueueEntry",
+            "stale queue generation/CAS",
+            "PID reuse, boot-id change, or insufficient permission",
+            "queue corruption or sequence discontinuity",
+        ):
+            self.assertIn(condition, block)
+        self.assertIn("Recovery never promotes a queue phase", block)
+
+    def test_retry_boundary_forbids_attempt_four_and_duplicate_retry_policy(self) -> None:
+        block = self._between(
+            self.contract_text,
+            "## 9. Retry and unchanged interfaces",
+            "## 10. Status and task split",
+        )
+        block = " ".join(block.split())
+        for rule in (
+            "does not define a second attempt limit",
+            "never infers retry from provider output or exception text",
+            "Attempt 3 is the maximum",
+            "attempt-4 reservation or dispatch is forbidden",
+            "existing failure or recovery event identity",
+        ):
+            self.assertIn(rule, block)
+
+    def test_existing_interfaces_and_workflow_contract_remain_unchanged(self) -> None:
+        normalized_workflow = " ".join(self.workflow_text.split())
+        normalized_contract = " ".join(self.contract_text.split())
+        for symbol in (
+            "DispatchRequest",
+            "DispatchCAS",
+            "WorkerSlotLease",
+            "run_dispatch_cycle()",
+            "delivery/acceptance/integration state machine",
+            "ControlPlaneTransitionService",
+        ):
+            self.assertIn(symbol, normalized_contract)
+        self.assertIn("PortfolioScheduler admission is a separate contract", normalized_workflow)
+        self.assertIn("runtime/store remains Target", normalized_workflow)
+        self.assertIn("does not change `DispatchRequest`, `DispatchCAS`", normalized_workflow)
+        self.assertIn("After `TASK_DISPATCHED`", normalized_workflow)
+
+    def test_adr_interface_36_section_and_status_split_are_synchronized(self) -> None:
+        normalized_adr = " ".join(self.adr_text.split())
+        self.assertIn(
+            "| 36 | PortfolioScheduler durable admission | **Contract Current — TC-13.24a**",
+            normalized_adr,
+        )
+        self.assertIn("## 2.25 PortfolioScheduler Durable Admission", normalized_adr)
+        self.assertIn("Contract Current — TC-13.24a", normalized_adr)
+        self.assertIn("PortfolioScheduler durable store/runtime **Target**", normalized_adr)
+        self.assertIn("WorktreeLifecycleManager **Target**", normalized_adr)
+        self.assertIn("Interface #22 is unchanged", normalized_adr)
+
+    def test_status_keeps_taskdifficulty_wiring_and_interface_22_boundaries(self) -> None:
+        normalized = " ".join(self.contract_text.split())
+        self.assertIn(
+            "PortfolioScheduler durable admission contract: **Contract Current — TC-13.24a**",
+            normalized,
+        )
+        self.assertIn("PortfolioScheduler durable store/runtime: **Target", normalized)
+        self.assertIn("WorktreeLifecycleManager: **Target**", normalized)
+        self.assertIn(
+            "TaskDifficulty dispatch/lifecycle wiring: **Target — TC-13.22b.3**",
+            normalized,
+        )
+        self.assertIn("Interface #22 core orchestration: unchanged", normalized)
+
+
 class TC1322b2bTaskDifficultyAssessmentStoreStatusTests(unittest.TestCase):
     """TC-13.22b.2b status boundary smoke assertions."""
 

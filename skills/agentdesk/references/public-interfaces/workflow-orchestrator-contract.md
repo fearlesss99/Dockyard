@@ -1347,6 +1347,16 @@ and `run_dispatch_cycle()` retains its signature and compatibility behavior.
   Interface #24 (HTML Dashboard) is **Current — TC-13.20b**.
 - TC-13.19 and TC-13.20 statuses are unchanged.
 
+PortfolioScheduler admission is a separate contract introduced by
+TC-13.24a.  Its future boundary is limited to `queued → selected →
+TASK_DISPATCHED` admission; it does not change `DispatchRequest`, `DispatchCAS`,
+`WorkerSlotLease`, `run_dispatch_cycle()`, or the WorkflowOrchestrator
+delivery/acceptance/integration state machine.  After `TASK_DISPATCHED`, the
+Orchestrator and ControlPlaneTransitionService remain the sole owners of ACK,
+Worker execution, delivery, acceptance, integration, cancellation,
+supersession, retry, and owner-loss semantics.  The PortfolioScheduler
+runtime/store remains Target until a later task card.
+
 ---
 
 ## 16. Dispatch Failure Recovery and Bounded Retry — Frozen Contract (Contract Current — TC-13.18d.11a)

@@ -46,6 +46,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 33 | AgentDesk WorkerOutput Decoder — Claude 2.1.214 | **Current** | TC-13.9c.1 | §2.20; version-locked, fail-closed; decode_worker_result(WorkerResult, version) → WorkerOutput; require_delivery_receipt(WorkerOutput) → DeliveryReceipt; claude + claudecode only; codex unsupported |
 | 34 | AgentDesk Provider Doctor and gateway.yaml template | **Current** — TC-13.21e.1 | TC-13.21e.1 | Read-only pre-start diagnostics (D001-D012, `scripts/doctor.py`) plus safe `agentdesk.gateway-config/v1` project template; zero writes/subprocess/network/model calls, no API-key handling; real provider execution remains Target, Codex decoder remains Target/deferred (TC-13.9c.2), provider rate-limit detection remains Target (TC-13.14c) |
 | 35 | PM TaskDifficulty Assessment | **Current — TC-13.22a** | TC-13.22a | Frozen seven-dimension PM assessment contract; deterministic assessor Current — TC-13.22b.1; canonical evidence codec Current — TC-13.22b.2a; evidence filesystem/ancestry store Current — TC-13.22b.2b; dispatch enforcement remains Target — TC-13.22b.3; Interface #22 status unchanged |
+| 36 | PortfolioScheduler durable admission | **Contract Current — TC-13.24a** | TC-13.24a | Frozen BusinessPriority, QueueEntry, ScheduleReceipt, durable evidence, deterministic v1 selection, conflict-key, lock-order, and crash-recovery contract; Scheduler store/runtime remains Target; Interface #22 unchanged |
 
 ---
 
@@ -7761,6 +7762,64 @@ PortfolioScheduler and WorktreeLifecycleManager remain **Target**; Interface
 
 ---
 
+## 2.25 PortfolioScheduler Durable Admission — Frozen Contract (Contract Current — TC-13.24a)
+
+TC-13.24a freezes the public admission boundary for a future
+PortfolioScheduler.  The complete contract is in
+`skills/agentdesk/references/public-interfaces/portfolio-scheduler-contract.md`.
+This card does not implement a Scheduler, queue store, Worker startup, model
+or provider call, network access, or any WorkflowOrchestrator production
+change.
+
+The current system remains multi-Worker: `WorkerSlotLease` has eight stable
+slots, two per `WorkerKind`; no built-in PortfolioScheduler exists; and a
+full requested kind fails immediately with `WorkerSlotCapacityError`.  The
+future Scheduler's serial critical section covers one selection and
+reservation only, not the full Worker lifetime.  Its boundary is exactly
+`queued → selected → TASK_DISPATCHED` admission.  After that canonical event,
+the existing WorkflowOrchestrator and ControlPlaneTransitionService own ACK,
+Worker, delivery, acceptance, integration, cancellation, supersession,
+retry, and owner-loss semantics.
+
+The frozen independent types are `BusinessPriority` (`P0`, `P1`, `P2`,
+`P3`), `QueuePhase` (`queued`, `selected`, `dispatched`, `retired`),
+`ReceiptPhase` (`selected`, `dispatched`), and `ConflictKeyClass`
+(`hard_exclusive`, `advisory`, `unknown`).  `QueueEntry` is frozen/slotted
+with fifteen fields: `schema_version`, `queue_id`, `task_id`, `revision`,
+`enqueue_sequence`, `enqueued_at`, `business_priority`, `aging_basis_at`,
+`worker_kind_request`, `assessment_id`, `state`, `conflict_keys`,
+`retry_budget_used`, `content_digest`, and `selection_generation`.
+`ScheduleReceipt` is a separate frozen/slotted value with fourteen fields:
+`schema_version`, `receipt_id`, `queue_id`, `task_id`, `revision`,
+`enqueue_sequence`, `selected_at`, `order_key`, `selection_reason`,
+`worker_kind`, `dispatch_event_id`, `phase`, `content_digest`, and
+`selection_generation`.  Neither public value permits `Any`, `dict`,
+`Mapping`, or mutable collections.
+
+The authoritative queue evidence is independent of `tasks.yaml` and retains
+the durable sequence, timestamps, phase, retry usage, frozen conflict keys,
+reservation identity, receipt, and replay/fencing identity.  Canonical UTF-8
+YAML, exact key order, content digest, atomic replace, file/directory fsync,
+byte-exact replay, and fail-closed divergent/corrupt/missing/identity-invalid
+handling are required.  v1 selection orders only BusinessPriority, aging
+promotion, enqueue sequence, and queue ID; TaskDifficulty, model/provider
+details, exception/output text, changed paths, and deadline are excluded.
+
+The lock order is strictly `worker-slot lease coordination → state-transition
+lock → queue-store write`.  The state-transition lock is never held across a
+Worker lifetime or Worker start, and `run_dispatch_cycle()` is never called
+under a global lock.  Selected-without-event recovery uses a named recovery
+operation to invalidate the old receipt and requeue; it is not a normal
+reverse transition.  Attempt 4 is forbidden and retry facts remain owned by
+the existing Orchestrator retry contract.
+
+Status: PortfolioScheduler durable admission contract **Contract Current —
+TC-13.24a**; PortfolioScheduler durable store/runtime **Target**;
+WorktreeLifecycleManager **Target**; TaskDifficulty dispatch/lifecycle
+wiring **Target — TC-13.22b.3**; Interface #22 is unchanged.
+
+---
+
 ## 3. Ownership Boundaries
 
 | Domain | Owned by | Description |
@@ -7846,6 +7905,8 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.22b.2a | Canonical TaskDifficulty assessment evidence codec | TC-13.22b.1 |
 | TC-13.22b.2b | Evidence filesystem/ancestry store | TC-13.22b.2a |
 | TC-13.22b.3 | Dispatch/approval/lifecycle enforcement | TC-13.22b.2b |
+| TC-13.24a | PortfolioScheduler durable admission contract | TC-13.22b.2b |
+| TC-13.24b | PortfolioScheduler durable store/runtime | TC-13.24a |
 
 ---
 
