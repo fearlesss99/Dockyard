@@ -13630,6 +13630,7 @@ class TC1322aTaskDifficultyAssessmentContractFreezeTests(unittest.TestCase):
         )
 
     def test_evidence_canonical_replay_ancestry_and_security_rules(self) -> None:
+        normalized_contract_text = " ".join(self.contract_text.split())
         for rule in (
             "UTF-8 without BOM",
             "LF line endings",
@@ -13642,9 +13643,10 @@ class TC1322aTaskDifficultyAssessmentContractFreezeTests(unittest.TestCase):
             "reject symlink/reparse paths",
             "must not expose prompts, model output, raw provider",
         ):
-            self.assertIn(rule, self.contract_text)
+            self.assertIn(rule, normalized_contract_text)
 
     def test_difficulty_override_is_a_separate_authorization_domain(self) -> None:
+        normalized_contract_text = " ".join(self.contract_text.split())
         self.assertIn("scope = difficulty_override", self.contract_text)
         for subject in ("task_id", "revision", "attempt", "dispatch_id"):
             self.assertIn(subject, self.contract_text)
@@ -13654,7 +13656,7 @@ class TC1322aTaskDifficultyAssessmentContractFreezeTests(unittest.TestCase):
             "integration approval",
             "model degradation approval",
         ):
-            self.assertIn(domain, self.contract_text)
+            self.assertIn(domain, normalized_contract_text)
         for decision in (
             "recommended_difficulty",
             "minimum_difficulty",
