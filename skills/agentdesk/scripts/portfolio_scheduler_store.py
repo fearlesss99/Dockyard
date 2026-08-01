@@ -773,9 +773,14 @@ def _atomic_store_bytes(path: Path, content: bytes) -> None:
 
 _WIN32_ERROR_FILE_EXISTS = 80
 _WIN32_ERROR_ALREADY_EXISTS = 183
+_WIN32_ERROR_FILE_NOT_FOUND = 2
+_WIN32_ERROR_PATH_NOT_FOUND = 3
 _WIN32_ERROR_ACCESS_DENIED = 5
 _WIN32_ERROR_SHARING_VIOLATION = 32
 _WIN32_ERROR_LOCK_VIOLATION = 33
+_WIN32_INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
+_WIN32_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+_WIN32_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 _WIN32_ERROR_PERMISSION_CODES = frozenset(
     {
         1,    # ERROR_INVALID_FUNCTION
@@ -800,7 +805,9 @@ _WIN32_ERROR_PERMISSION_CODES = frozenset(
 )
 
 
-def _windows_create_lock_handle(lock_path: Path) -> tuple[object, object]:
+def _windows_create_lock_handle(
+    project_root: Path, lock_path: Path
+) -> tuple[object, object]:
     import ctypes
     from ctypes import wintypes
 
@@ -817,27 +824,77 @@ def _windows_create_lock_handle(lock_path: Path) -> tuple[object, object]:
     kernel32.CreateFileW.restype = wintypes.HANDLE
     kernel32.GetLastError.argtypes = []
     kernel32.GetLastError.restype = wintypes.DWORD
+    kernel32.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
+    kernel32.GetFileAttributesW.restype = wintypes.DWORD
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
-    handle = kernel32.CreateFileW(
-        str(lock_path),
-        0x40000000,  # GENERIC_WRITE
-        0x00000001 | 0x00000002,  # FILE_SHARE_READ | FILE_SHARE_WRITE
-        None,
-        1,            # CREATE_NEW
-        0x00000080,   # FILE_ATTRIBUTE_NORMAL
-        None,
-    )
-    error_code = int(kernel32.GetLastError())
-    invalid_handle = ctypes.c_void_p(-1).value
-    handle_value = handle.value if hasattr(handle, "value") else handle
-    if handle_value in (None, invalid_handle):
+
+    expected_lock_path = project_root / STORE_LOCK_FILENAME
+    if lock_path != expected_lock_path or lock_path.parent != project_root:
+        _raise(PortfolioSchedulerSecurityError, "lock_path")
+
+    def _create_once() -> tuple[object | None, int]:
+        handle = kernel32.CreateFileW(
+            str(lock_path),
+            0x40000000,  # GENERIC_WRITE
+            0x00000001 | 0x00000002,  # FILE_SHARE_READ | FILE_SHARE_WRITE
+            None,
+            1,            # CREATE_NEW
+            0x00000080,   # FILE_ATTRIBUTE_NORMAL
+            None,
+        )
+        error_code = int(kernel32.GetLastError())
+        invalid_handle = ctypes.c_void_p(-1).value
+        handle_value = handle.value if hasattr(handle, "value") else handle
+        if handle_value in (None, invalid_handle):
+            return None, error_code
+        return handle, 0
+
+    def _path_state() -> str:
+        attributes = int(kernel32.GetFileAttributesW(str(lock_path)))
+        error_code = int(kernel32.GetLastError())
+        if attributes == _WIN32_INVALID_FILE_ATTRIBUTES:
+            if error_code in (_WIN32_ERROR_FILE_NOT_FOUND, _WIN32_ERROR_PATH_NOT_FOUND):
+                return "missing"
+            return "unreadable"
+        if attributes & (
+            _WIN32_FILE_ATTRIBUTE_DIRECTORY | _WIN32_FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            return "unsafe"
+        return "regular"
+
+    def _map_create_error(error_code: int) -> None:
         if error_code in (_WIN32_ERROR_FILE_EXISTS, _WIN32_ERROR_ALREADY_EXISTS):
             _raise(PortfolioSchedulerLockConflictError, "lock_contention")
         if error_code in _WIN32_ERROR_PERMISSION_CODES:
             _raise(PortfolioSchedulerPermissionError, "lock_create")
         _raise(PortfolioSchedulerError, "win32_lock_create_unknown")
-    return kernel32, handle
+
+    handle, error_code = _create_once()
+    if handle is not None:
+        return kernel32, handle
+    if error_code != _WIN32_ERROR_ACCESS_DENIED:
+        _map_create_error(error_code)
+
+    state = _path_state()
+    if state == "regular":
+        _raise(PortfolioSchedulerLockConflictError, "lock_contention")
+    if state == "unsafe":
+        _raise(PortfolioSchedulerSecurityError, "lock_path_type")
+    if state == "unreadable":
+        _raise(PortfolioSchedulerPermissionError, "lock_state")
+
+    handle, error_code = _create_once()
+    if handle is not None:
+        return kernel32, handle
+    if error_code != _WIN32_ERROR_ACCESS_DENIED:
+        _map_create_error(error_code)
+    state = _path_state()
+    if state == "regular":
+        _raise(PortfolioSchedulerLockConflictError, "lock_contention")
+    if state == "unsafe":
+        _raise(PortfolioSchedulerSecurityError, "lock_path_type")
+    _raise(PortfolioSchedulerPermissionError, "lock_state")
 
 
 def _windows_write_and_flush(kernel32: object, handle: object, token: bytes) -> bool:
@@ -900,7 +957,7 @@ def _store_lock(project_root: Path) -> Iterator[None]:
     win_kernel32: object | None = None
     win_handle: object | None = None
     if os.name == "nt":
-        win_kernel32, win_handle = _windows_create_lock_handle(lock_path)
+        win_kernel32, win_handle = _windows_create_lock_handle(project_root, lock_path)
         created = True
         if not _windows_write_and_flush(win_kernel32, win_handle, token.encode("ascii")):
             closed = _windows_close_handle(win_kernel32, win_handle)

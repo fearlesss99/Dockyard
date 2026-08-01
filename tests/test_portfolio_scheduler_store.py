@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import dataclasses
+import ctypes
+import os
 import sys
 import tempfile
 import threading
@@ -17,6 +19,68 @@ from core_types import WorkerKind  # noqa: E402
 
 
 STAMP = "2026-01-01T00:00:00.000000Z"
+_INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+class _FakeWin32Function:
+    def __init__(self, implementation):
+        self._implementation = implementation
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *args):
+        return self._implementation(*args)
+
+
+class _FakeWin32Handle:
+    def __init__(self, value: int):
+        self.value = value
+
+
+class _FakeWin32Kernel32:
+    def __init__(self, path_kind: str):
+        self.path_kind = path_kind
+        self.last_error = 0
+        self.created_handles = 0
+        self.create_arguments: list[tuple[int, int]] = []
+        self.CreateFileW = _FakeWin32Function(self._create_file)
+        self.GetLastError = _FakeWin32Function(lambda: self.last_error)
+        self.GetFileAttributesW = _FakeWin32Function(self._get_attributes)
+        self.CloseHandle = _FakeWin32Function(lambda handle: True)
+
+    def _create_file(self, path, desired_access, share_mode, security, disposition, flags, template):
+        self.create_arguments.append((int(share_mode), int(disposition)))
+        if self.path_kind == "vanish_then_success":
+            self.path_kind = "vanished_missing"
+            self.last_error = 5
+            return _FakeWin32Handle(_INVALID_HANDLE_VALUE)
+        if self.path_kind == "success_pending":
+            self.created_handles += 1
+            self.last_error = 0
+            self.path_kind = "regular"
+            return _FakeWin32Handle(100 + self.created_handles)
+        self.last_error = 5
+        return _FakeWin32Handle(_INVALID_HANDLE_VALUE)
+
+    def _get_attributes(self, path):
+        if self.path_kind == "missing":
+            self.last_error = 2
+            return 0xFFFFFFFF
+        if self.path_kind == "vanished_missing":
+            self.last_error = 2
+            self.path_kind = "success_pending"
+            return 0xFFFFFFFF
+        if self.path_kind == "directory":
+            self.last_error = 0
+            return 0x00000010
+        if self.path_kind == "reparse":
+            self.last_error = 0
+            return 0x00000400
+        if self.path_kind in ("regular", "success_pending"):
+            self.last_error = 0
+            return 0
+        self.last_error = 5
+        return 0xFFFFFFFF
 
 
 def make_entry(
@@ -338,6 +402,60 @@ class PortfolioSchedulerReplayTombstoneTests(StoreTestCase):
         receipt_path.write_bytes(ps.encode_schedule_receipt(altered))
         with self.assertRaises(ps.PortfolioSchedulerConflictError):
             self.store.read_schedule_receipt(receipt.receipt_id)
+
+
+@unittest.skipUnless(os.name == "nt", "Win32 scheduler lock fixture")
+class PortfolioSchedulerWindowsRaceTests(StoreTestCase):
+    def _run_windows_create(self, path_kind: str):
+        import ctypes
+
+        fake = _FakeWin32Kernel32(path_kind)
+        lock_path = self.root / ps.STORE_LOCK_FILENAME
+        with mock.patch.object(ctypes, "WinDLL", return_value=fake):
+            result = ps._windows_create_lock_handle(self.root, lock_path)
+        return fake, result
+
+    def test_access_denied_with_existing_regular_lock_is_conflict(self) -> None:
+        fake = _FakeWin32Kernel32("regular")
+        import ctypes
+
+        with mock.patch.object(ctypes, "WinDLL", return_value=fake):
+            with self.assertRaises(ps.PortfolioSchedulerLockConflictError):
+                ps._windows_create_lock_handle(self.root, self.root / ps.STORE_LOCK_FILENAME)
+        self.assertEqual(fake.create_arguments, [(3, 1)])
+        self.assertEqual(fake.created_handles, 0)
+
+    def test_access_denied_then_exact_missing_retries_once_and_succeeds(self) -> None:
+        fake, result = self._run_windows_create("vanish_then_success")
+        kernel32, handle = result
+        self.assertIs(kernel32, fake)
+        self.assertEqual(handle.value, 101)
+        self.assertEqual(fake.create_arguments, [(3, 1), (3, 1)])
+        self.assertEqual(fake.created_handles, 1)
+
+    def test_access_denied_twice_with_missing_path_is_permission(self) -> None:
+        fake = _FakeWin32Kernel32("missing")
+        import ctypes
+
+        with mock.patch.object(ctypes, "WinDLL", return_value=fake):
+            with self.assertRaises(ps.PortfolioSchedulerPermissionError):
+                ps._windows_create_lock_handle(self.root, self.root / ps.STORE_LOCK_FILENAME)
+        self.assertEqual(fake.create_arguments, [(3, 1), (3, 1)])
+        self.assertEqual(fake.created_handles, 0)
+
+    def test_directory_and_reparse_are_not_contention(self) -> None:
+        import ctypes
+
+        for path_kind in ("directory", "reparse"):
+            with self.subTest(path_kind=path_kind):
+                fake = _FakeWin32Kernel32(path_kind)
+                with mock.patch.object(ctypes, "WinDLL", return_value=fake):
+                    with self.assertRaises(ps.PortfolioSchedulerSecurityError):
+                        ps._windows_create_lock_handle(
+                            self.root, self.root / ps.STORE_LOCK_FILENAME
+                        )
+                self.assertEqual(fake.create_arguments, [(3, 1)])
+                self.assertEqual(fake.created_handles, 0)
 
 
 class PortfolioSchedulerConcurrencyTests(StoreTestCase):
