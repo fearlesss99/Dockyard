@@ -2,8 +2,8 @@
 
 This document freezes the PM-side assessment evidence used before dispatch.
 It freezes public data shapes and validation boundaries only.  It does not
-ship a production assessor, modify `core_types.py`, extend `ApprovalScope`,
-or change any runtime gate.
+ship canonical evidence runtime or dispatch enforcement, modify
+`core_types.py`, extend `ApprovalScope`, or change any runtime gate.
 
 ## 1. Scope and independent concepts
 
@@ -20,8 +20,9 @@ model capability, or a risk floor.  A stronger or more expensive model never red
 Risk may contribute to a dimension result through a frozen policy rationale,
 but `risk` itself is not a difficulty value or a hard-floor shortcut.
 
-The runtime/deterministic assessor is not part of this card and remains
-`Target — TC-13.22b`.
+The deterministic assessor is implemented as a pure production module by
+TC-13.22b.1 and is **Current — TC-13.22b.1**.  Canonical evidence runtime
+remains **Target — TC-13.22b.2**.
 
 ## 2. Public types
 
@@ -285,9 +286,12 @@ verified call chain provide the consistency binding.
 ## 9. Status and deferred work
 
 - TaskDifficulty Assessment Contract: **Current — TC-13.22a**.
-- Runtime / deterministic assessor: **Target — TC-13.22b**.
+- Runtime / deterministic assessor: **Current — TC-13.22b.1**.
+- Canonical evidence runtime: **Target — TC-13.22b.2**.
+- Dispatch/approval/lifecycle wiring: **Target — TC-13.22b.3**.
 - PortfolioScheduler: **Target**.
 - WorktreeLifecycleManager: **Target**.
 - Interface #22 status is unchanged.
 
-No production module is shipped by TC-13.22a.
+The deterministic assessor is a pure policy module only; canonical evidence
+runtime and dispatch/approval/lifecycle wiring remain deferred.

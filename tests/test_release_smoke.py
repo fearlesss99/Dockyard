@@ -13689,19 +13689,32 @@ class TC1322aTaskDifficultyAssessmentContractFreezeTests(unittest.TestCase):
         self.assertIn("not added to `TransitionCAS` fields", self.contract_text)
 
     def test_adr_interface_and_status_boundaries_are_synchronized(self) -> None:
+        normalized_adr_text = " ".join(self.adr_text.split())
         self.assertIn(
             "| 35 | PM TaskDifficulty Assessment | **Current — TC-13.22a**",
-            self.adr_text,
+            normalized_adr_text,
         )
-        self.assertIn("### 2.24 PM TaskDifficulty Assessment", self.adr_text)
-        self.assertIn("Current — TC-13.22a", self.adr_text)
-        self.assertIn("Target — TC-13.22b", self.adr_text)
-        self.assertIn("PortfolioScheduler", self.adr_text)
-        self.assertIn("WorktreeLifecycleManager", self.adr_text)
-        self.assertIn("Interface #22 status is unchanged", self.adr_text)
+        self.assertIn("### 2.24 PM TaskDifficulty Assessment", normalized_adr_text)
+        self.assertIn("Current — TC-13.22a", normalized_adr_text)
+        self.assertIn("Current — TC-13.22b.1", normalized_adr_text)
+        self.assertIn("Target — TC-13.22b.2", normalized_adr_text)
+        self.assertIn("Target — TC-13.22b.3", normalized_adr_text)
+        self.assertIn("PortfolioScheduler", normalized_adr_text)
+        self.assertIn("WorktreeLifecycleManager", normalized_adr_text)
+        self.assertIn("Interface #22 status is unchanged", normalized_adr_text)
 
-    def test_runtime_remains_target_and_no_production_module_is_claimed(self) -> None:
-        self.assertIn("runtime/deterministic assessor", self.contract_text)
-        self.assertIn("Target — TC-13.22b", self.contract_text)
-        self.assertIn("No production module is shipped by TC-13.22a", self.contract_text)
-        self.assertNotIn("Current — TC-13.22b", self.contract_text)
+    def test_runtime_status_is_split_and_deferred_work_remains_target(self) -> None:
+        self.assertIn(
+            "Runtime / deterministic assessor: **Current — TC-13.22b.1**",
+            self.contract_text,
+        )
+        self.assertIn(
+            "Canonical evidence runtime: **Target — TC-13.22b.2**",
+            self.contract_text,
+        )
+        self.assertIn(
+            "Dispatch/approval/lifecycle wiring: **Target — TC-13.22b.3**",
+            self.contract_text,
+        )
+        self.assertNotIn("Current — TC-13.22b.2", self.contract_text)
+        self.assertNotIn("Current — TC-13.22b.3", self.contract_text)
