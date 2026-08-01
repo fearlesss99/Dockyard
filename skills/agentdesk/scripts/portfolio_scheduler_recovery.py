@@ -9,6 +9,12 @@ durable admission contract (TC-13.24a §8).
 
 All evidence must be explicitly passed via frozen typed RecoveryRequest.
 Same input → exact same output (pure, deterministic).
+
+All public types are frozen/slotted with no Any, dict, Mapping, or
+mutable collection annotations.  Three external evidence classes are
+re-presented as frozen local projections — pure data, no I/O — so the
+decision core stays decoupled from dispatch_supervisor_evidence and
+worker_slot_lease imports while still consuming exact typed fields.
 """
 
 from __future__ import annotations
@@ -16,7 +22,6 @@ from __future__ import annotations
 import enum
 import hashlib
 from dataclasses import dataclass
-from typing import Any
 
 from portfolio_scheduler_store import (
     SCHEMA_VERSION,
@@ -24,7 +29,6 @@ from portfolio_scheduler_store import (
     ReceiptPhase,
     QueueEntry,
     ScheduleReceipt,
-    _entry_digest,
     _receipt_digest,
 )
 from state_provider import EventEntry, TaskEntry
@@ -33,6 +37,9 @@ __all__ = [
     "RecoveryAction",
     "RecoveryReason",
     "LivenessEvidence",
+    "DispatchReceiptEvidence",
+    "DispatchTombstoneEvidence",
+    "LeaseEvidence",
     "RecoveryRequest",
     "RecoveryDecision",
     "RecoveryError",
@@ -76,6 +83,9 @@ class RecoveryReason(str, enum.Enum):
     TOMBSTONE_REPLAY_OK = "tombstone_replay_ok"
     TOMBSTONE_DIVERGENT = "tombstone_divergent"
     LEASE_RESERVED_NO_EVENT = "lease_reserved_no_event"
+    LEASE_IDENTITY_DIVERGENCE = "lease_identity_divergence"
+    RECEIPT_TOMBSTONE_IDENTITY_DIVERGENCE = "receipt_tombstone_identity_divergence"
+    EVIDENCE_IDENTITY_DIVERGENCE = "evidence_identity_divergence"
     ALIVE = "alive"
     UNKNOWN_LIVENESS = "unknown_liveness"
     DEAD = "dead"
@@ -88,6 +98,7 @@ class RecoveryReason(str, enum.Enum):
     IDENTITY_MISMATCH = "identity_mismatch"
     MULTIPLE_DISPATCH = "multiple_dispatch"
     RETIRED_NO_OP = "retired_no_op"
+    FINALIZED_TOMBSTONE_REPLAY = "finalized_tombstone_replay"
 
 
 class LivenessEvidence(str, enum.Enum):
@@ -120,7 +131,149 @@ class RecoveryDivergenceError(RecoveryError):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Frozen request — all evidence explicitly passed in
+# Frozen evidence projections — pure data, no I/O, no external imports
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchReceiptEvidence:
+    """Frozen projection of dispatch process receipt — identity + phase only.
+
+    Mirrors DispatchProcessReceipt without the I/O-layer fields.
+    Every field is typed; no Any, dict, mutable collections, or
+    process-handle exposure.
+    """
+
+    task_id: str
+    revision: int
+    attempt: int
+    dispatch_id: str
+    generation_id: str
+    phase: str  # DispatchReceiptPhase value string
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.task_id, str) or not self.task_id:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dre_task_id")
+        if type(self.revision) is not int or isinstance(self.revision, bool):
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dre_revision")
+        if self.revision < 1:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dre_revision_range")
+        if type(self.attempt) is not int or isinstance(self.attempt, bool):
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dre_attempt")
+        if self.attempt < 1:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dre_attempt_range")
+        if not isinstance(self.dispatch_id, str) or not self.dispatch_id:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dre_dispatch_id")
+        if not isinstance(self.generation_id, str) or not self.generation_id:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dre_generation_id")
+        if not isinstance(self.phase, str) or not self.phase:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dre_phase")
+        # Validate known phase values
+        valid_phases = frozenset({
+            "RESERVED", "SUPERVISOR_READY", "WORKER_STARTED",
+            "FINALIZING", "FINALIZED",
+        })
+        if self.phase not in valid_phases:
+            raise RecoveryDefenseError(
+                "portfolio_scheduler_recovery:dre_phase_unknown")
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchTombstoneEvidence:
+    """Frozen projection of dispatch finalizer tombstone — outcome only.
+
+    Mirrors DispatchFinalizerTombstone without I/O-layer fields.
+    No handles, no timestamps used as safety conclusions.
+    """
+
+    task_id: str
+    revision: int
+    attempt: int
+    dispatch_id: str
+    generation_id: str
+    winner: str
+    worker_done: bool
+    heartbeat_done: bool
+    release_completed: bool
+    failure_kind: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.task_id, str) or not self.task_id:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dte_task_id")
+        if type(self.revision) is not int or isinstance(self.revision, bool):
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dte_revision")
+        if self.revision < 1:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dte_revision_range")
+        if type(self.attempt) is not int or isinstance(self.attempt, bool):
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dte_attempt")
+        if self.attempt < 1:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dte_attempt_range")
+        if not isinstance(self.dispatch_id, str) or not self.dispatch_id:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dte_dispatch_id")
+        if not isinstance(self.generation_id, str) or not self.generation_id:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dte_generation_id")
+        if not isinstance(self.winner, str) or not self.winner:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dte_winner")
+        if not isinstance(self.worker_done, bool):
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dte_worker_done")
+        if not isinstance(self.heartbeat_done, bool):
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dte_heartbeat_done")
+        if not isinstance(self.release_completed, bool):
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:dte_release_completed")
+        if self.failure_kind is not None:
+            if not isinstance(self.failure_kind, str) or not self.failure_kind:
+                raise RecoveryInputError(
+                    "portfolio_scheduler_recovery:dte_failure_kind")
+
+
+@dataclass(frozen=True, slots=True)
+class LeaseEvidence:
+    """Frozen projection of WorkerSlot lease — identity + binding only.
+
+    No TTL, no expiry-as-safety, no slot-capacity inference.
+    """
+
+    lease_id: str
+    slot_id: str
+    holder_dispatch_id: str
+    holder_instance_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.lease_id, str) or not self.lease_id:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:le_lease_id")
+        if not isinstance(self.slot_id, str) or not self.slot_id:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:le_slot_id")
+        if not isinstance(self.holder_dispatch_id, str) or not self.holder_dispatch_id:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:le_holder_dispatch_id")
+        if not isinstance(self.holder_instance_id, str) or not self.holder_instance_id:
+            raise RecoveryInputError(
+                "portfolio_scheduler_recovery:le_holder_instance_id")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Frozen request — all evidence explicitly passed in, zero Any
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -128,8 +281,8 @@ class RecoveryDivergenceError(RecoveryError):
 class RecoveryRequest:
     """All evidence explicitly passed in — pure, no I/O, no probes.
 
-    Every input is typed, frozen, and slotted.  No filesystem,
-    environment, clock, lock, network, or model access.
+    Every input is typed, frozen, and slotted.  No Any, dict, Mapping,
+    or mutable collections.
     """
 
     # Required scheduler evidence
@@ -141,12 +294,12 @@ class RecoveryRequest:
     # Optional: schedule receipt snapshot
     schedule_receipt: ScheduleReceipt | None = None
 
-    # Optional: durable dispatch supervisor evidence
-    dispatch_receipt: Any = None        # DispatchProcessReceipt (untracked import)
-    dispatch_tombstone: Any = None      # DispatchFinalizerTombstone
+    # Optional: durable dispatch supervisor evidence (typed projections)
+    dispatch_receipt: DispatchReceiptEvidence | None = None
+    dispatch_tombstone: DispatchTombstoneEvidence | None = None
 
-    # Optional: WorkerSlotLease snapshot
-    lease_snapshot: Any = None
+    # Optional: WorkerSlotLease snapshot (typed projection)
+    lease_snapshot: LeaseEvidence | None = None
 
     # Recovery metadata
     recovery_time: str = ""
@@ -198,6 +351,23 @@ class RecoveryRequest:
             raise RecoveryInputError(
                 "portfolio_scheduler_recovery:liveness_type"
             )
+
+        # Evidence type guards — wrong concrete type → typed reject
+        if self.dispatch_receipt is not None:
+            if type(self.dispatch_receipt) is not DispatchReceiptEvidence:
+                raise RecoveryInputError(
+                    "portfolio_scheduler_recovery:dispatch_receipt_type"
+                )
+        if self.dispatch_tombstone is not None:
+            if type(self.dispatch_tombstone) is not DispatchTombstoneEvidence:
+                raise RecoveryInputError(
+                    "portfolio_scheduler_recovery:dispatch_tombstone_type"
+                )
+        if self.lease_snapshot is not None:
+            if type(self.lease_snapshot) is not LeaseEvidence:
+                raise RecoveryInputError(
+                    "portfolio_scheduler_recovery:lease_snapshot_type"
+                )
 
         # Policy version must match
         if self.policy_version != SCHEMA_VERSION:
@@ -352,27 +522,6 @@ def _has_any_dispatched_event(
     return False
 
 
-def _count_dispatched_for_attempt(
-    events: tuple[EventEntry, ...],
-    task_id: str,
-    revision: int,
-    attempt: int | None,
-) -> int:
-    """Count TASK_DISPATCHED events for one attempt."""
-    if attempt is None:
-        return 0
-    count = 0
-    for evt in events:
-        if (
-            evt.event_type == "TASK_DISPATCHED"
-            and evt.task_id == task_id
-            and evt.revision == revision
-            and evt.attempt == attempt
-        ):
-            count += 1
-    return count
-
-
 def _compute_replay_digest(
     entry: QueueEntry,
     receipt: ScheduleReceipt | None,
@@ -380,12 +529,14 @@ def _compute_replay_digest(
     events: tuple[EventEntry, ...],
     recovery_generation: int,
     liveness: LivenessEvidence | None,
+    dre: DispatchReceiptEvidence | None,
+    dte: DispatchTombstoneEvidence | None,
+    lease: LeaseEvidence | None,
 ) -> str:
     """Deterministic SHA-256 digest over all input evidence.
 
-    Binds the exact snapshot so callers can detect stale / divergent
-    recovery requests.
-    """
+    Binds every typed evidence field so any single evidence change
+    produces a different digest."""
     h = hashlib.sha256()
     # Queue entry identity
     h.update(b"entry:")
@@ -402,6 +553,42 @@ def _compute_replay_digest(
         h.update(receipt.phase.value.encode("utf-8"))
         h.update(str(receipt.selection_generation).encode("utf-8"))
         h.update(receipt.content_digest.encode("utf-8"))
+    else:
+        h.update(b"none")
+    # Dispatch receipt evidence
+    h.update(b"|dre:")
+    if dre is not None:
+        h.update(dre.task_id.encode("utf-8"))
+        h.update(str(dre.revision).encode("utf-8"))
+        h.update(str(dre.attempt).encode("utf-8"))
+        h.update(dre.dispatch_id.encode("utf-8"))
+        h.update(dre.generation_id.encode("utf-8"))
+        h.update(dre.phase.encode("utf-8"))
+    else:
+        h.update(b"none")
+    # Dispatch tombstone evidence
+    h.update(b"|dte:")
+    if dte is not None:
+        h.update(dte.task_id.encode("utf-8"))
+        h.update(str(dte.revision).encode("utf-8"))
+        h.update(str(dte.attempt).encode("utf-8"))
+        h.update(dte.dispatch_id.encode("utf-8"))
+        h.update(dte.generation_id.encode("utf-8"))
+        h.update(dte.winner.encode("utf-8"))
+        h.update(b"1" if dte.worker_done else b"0")
+        h.update(b"1" if dte.heartbeat_done else b"0")
+        h.update(b"1" if dte.release_completed else b"0")
+        if dte.failure_kind:
+            h.update(dte.failure_kind.encode("utf-8"))
+    else:
+        h.update(b"none")
+    # Lease evidence
+    h.update(b"|lease:")
+    if lease is not None:
+        h.update(lease.lease_id.encode("utf-8"))
+        h.update(lease.slot_id.encode("utf-8"))
+        h.update(lease.holder_dispatch_id.encode("utf-8"))
+        h.update(lease.holder_instance_id.encode("utf-8"))
     else:
         h.update(b"none")
     # Canonical task
@@ -465,7 +652,7 @@ def _build_decision(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Defense validators (§10) — fail-fast on corrupt / malicious evidence
+# Defense validators — fail-fast on corrupt / malicious evidence
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -475,6 +662,9 @@ def _run_defense(request: RecoveryRequest) -> None:
     receipt = request.schedule_receipt
     task = request.canonical_task
     events = request.canonical_events
+    dre = request.dispatch_receipt
+    dte = request.dispatch_tombstone
+    lease = request.lease_snapshot
 
     # Bool-as-int on canonical task integer fields
     if isinstance(task.revision, bool):
@@ -503,9 +693,67 @@ def _run_defense(request: RecoveryRequest) -> None:
             "portfolio_scheduler_recovery:unknown_queue_phase"
         )
 
-    # Impossible phase combinations
+    # ── Optional evidence binding to canonical (task_id, revision) ──────
+
+    if dre is not None:
+        if dre.task_id != task.task_id or dre.revision != task.revision:
+            raise RecoveryDefenseError(
+                "portfolio_scheduler_recovery:dre_identity_divergence"
+            )
+        if task.attempt is not None and dre.attempt != task.attempt:
+            raise RecoveryDefenseError(
+                "portfolio_scheduler_recovery:dre_attempt_mismatch"
+            )
+
+    if dte is not None:
+        if dte.task_id != task.task_id or dte.revision != task.revision:
+            raise RecoveryDefenseError(
+                "portfolio_scheduler_recovery:dte_identity_divergence"
+            )
+        if task.attempt is not None and dte.attempt != task.attempt:
+            raise RecoveryDefenseError(
+                "portfolio_scheduler_recovery:dte_attempt_mismatch"
+            )
+
+    # receipt/tombstone mutual consistency
+    if dre is not None and dte is not None:
+        if dre.task_id != dte.task_id or dre.revision != dte.revision:
+            raise RecoveryDefenseError(
+                "portfolio_scheduler_recovery:dre_dte_identity_divergence"
+            )
+        if dre.attempt != dte.attempt:
+            raise RecoveryDefenseError(
+                "portfolio_scheduler_recovery:dre_dte_attempt_divergence"
+            )
+        if dre.dispatch_id != dte.dispatch_id:
+            raise RecoveryDefenseError(
+                "portfolio_scheduler_recovery:dre_dte_dispatch_divergence"
+            )
+        if dre.generation_id != dte.generation_id:
+            raise RecoveryDefenseError(
+                "portfolio_scheduler_recovery:dre_dte_generation_divergence"
+            )
+        # Impossible phase combinations: tombstone exists but receipt not FINALIZED
+        # The tombstone signals completion; receipt must be FINALIZED or FINALIZING
+        if dre.phase not in ("WORKER_STARTED", "FINALIZING", "FINALIZED"):
+            raise RecoveryDefenseError(
+                "portfolio_scheduler_recovery:impossible_dre_dte_phase"
+            )
+
+    # lease identity binds to task
+    if lease is not None:
+        # holder_dispatch_id should align with canonical dispatch if present
+        canonical_dispatch_id = None
+        if task.current_dispatch is not None:
+            canonical_dispatch_id = task.current_dispatch.dispatch_id
+        if canonical_dispatch_id is not None:
+            if lease.holder_dispatch_id != canonical_dispatch_id:
+                raise RecoveryDefenseError(
+                    "portfolio_scheduler_recovery:lease_dispatch_divergence"
+                )
+
+    # Impossible phase combinations — receipt vs queue entry
     if receipt is not None:
-        # selected receipt requires selected queue
         if (
             receipt.phase is ReceiptPhase.SELECTED
             and entry.state not in (QueuePhase.QUEUED, QueuePhase.SELECTED)
@@ -513,7 +761,6 @@ def _run_defense(request: RecoveryRequest) -> None:
             raise RecoveryDefenseError(
                 "portfolio_scheduler_recovery:impossible_phase"
             )
-        # dispatched receipt requires dispatched/retired queue
         if (
             receipt.phase is ReceiptPhase.DISPATCHED
             and entry.state not in (QueuePhase.DISPATCHED, QueuePhase.RETIRED)
@@ -552,9 +799,6 @@ def _run_defense(request: RecoveryRequest) -> None:
             "portfolio_scheduler_recovery:mutable_collection"
         )
 
-    # Duplicate enqueue_sequence check for consistency
-    # (single entry so just verify sequence is positive)
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Core entry point — pure, read-only, deterministic
@@ -580,9 +824,13 @@ def decide_reconciliation(request: RecoveryRequest) -> RecoveryDecision:
     task = request.canonical_task
     events = request.canonical_events
     generation = request.recovery_generation
+    dre = request.dispatch_receipt
+    dte = request.dispatch_tombstone
+    lease = request.lease_snapshot
 
     replay_digest = _compute_replay_digest(
-        entry, receipt, task, events, generation, request.liveness
+        entry, receipt, task, events, generation, request.liveness,
+        dre, dte, lease,
     )
 
     def decide(
@@ -619,10 +867,34 @@ def decide_reconciliation(request: RecoveryRequest) -> RecoveryDecision:
                           RecoveryReason.UNKNOWN_LIVENESS)
         # DEAD — fall through to recovery logic below
 
-    # ── 2. Canonical events — highest priority (§9) ──────────────────────
+    # ── 2. Tombstone-finalized → byte-exact replay check ────────────────
+    if dte is not None:
+        finished = dte.worker_done and dte.heartbeat_done and dte.release_completed
+        if finished:
+            # Tombstone says dispatch completed; receipt must align.
+            if dre is not None and dre.phase == "FINALIZED":
+                # Byte-exact replay: decision is no-op; Orchestrator owns lifecycle.
+                return decide(
+                    RecoveryAction.RETIRE_QUEUE_ENTRY,
+                    RecoveryReason.FINALIZED_TOMBSTONE_REPLAY,
+                )
+            # Tombstone without matching FINALIZED receipt → divergence
+            if dre is not None and dre.phase != "FINALIZED":
+                return decide(
+                    RecoveryAction.FAIL_CLOSED,
+                    RecoveryReason.RECEIPT_TOMBSTONE_IDENTITY_DIVERGENCE,
+                )
+            # Tombstone present but receipt absent — fail-closed
+            return decide(
+                RecoveryAction.FAIL_CLOSED,
+                RecoveryReason.TOMBSTONE_DIVERGENT,
+            )
+
+    # ── 3. Canonical events — highest priority (§9) ──────────────────────
 
     # CASE: canonical task state shows Worker running (precedes dispatch)
     if task.state == "in_progress":
+        # Pre-ACK: dispatch receipt may be WORKER_STARTED or FINALIZING
         return decide(RecoveryAction.NO_OP, RecoveryReason.WORKER_RUNNING)
 
     canonical_attempt = task.attempt
@@ -649,7 +921,7 @@ def decide_reconciliation(request: RecoveryRequest) -> RecoveryDecision:
             dispatch_event_id=dispatch_id,
         )
 
-    # CASE: canonical task state shows dispatch (without canonical event in snapshot yet)
+    # CASE: canonical task state shows dispatch (without event in snapshot yet)
     has_dispatch_state = task.state in ("dispatched", "review_ready")
     has_dispatch_info = task.current_dispatch is not None
 
@@ -671,12 +943,21 @@ def decide_reconciliation(request: RecoveryRequest) -> RecoveryDecision:
             )
 
     # CASE: Pre-ACK crash (task dispatched, no ACK observed)
-    # Scheduler must NOT dispatch again — Orchestrator owns lifecycle
     if task.state == "dispatched":
         return decide(
             RecoveryAction.WAIT_FOR_EXECUTION_OWNER,
             RecoveryReason.PRE_ACK_CRASH,
         )
+
+    # ── 4. Lease evidence — reserved before dispatch ────────────────────
+    if lease is not None:
+        # Lease exists but no canonical dispatch → lease reserved, no event
+        if not has_dispatch_state and not has_dispatch_info:
+            if entry.state in (QueuePhase.QUEUED, QueuePhase.SELECTED):
+                return decide(
+                    RecoveryAction.FAIL_CLOSED,
+                    RecoveryReason.LEASE_RESERVED_NO_EVENT,
+                )
 
     # CASE: Scheduler shows dispatched but canonical has no evidence (orphan)
     if entry.state == QueuePhase.DISPATCHED:
@@ -688,7 +969,7 @@ def decide_reconciliation(request: RecoveryRequest) -> RecoveryDecision:
                 RecoveryAction.FAIL_CLOSED, RecoveryReason.SCHEDULER_ORPHAN
             )
 
-    # ── 3. Decision by queue phase ───────────────────────────────────────
+    # ── 5. Decision by queue phase ───────────────────────────────────────
 
     # queued, not selected → resume
     if entry.state == QueuePhase.QUEUED:
@@ -699,22 +980,18 @@ def decide_reconciliation(request: RecoveryRequest) -> RecoveryDecision:
     # selected, no TASK_DISPATCHED → invalidate + requeue
     if entry.state == QueuePhase.SELECTED:
         if receipt is None:
-            # Selected but no durable receipt evidence
             return decide(
                 RecoveryAction.INVALIDATE_SELECTION,
                 RecoveryReason.SELECTED_NO_EVENT,
             )
 
         if receipt.phase == ReceiptPhase.SELECTED:
-            # Verify receipt digest integrity
             expected = _receipt_digest(receipt)
             if receipt.content_digest != expected:
-                # Receipt write incomplete or divergent → fail-closed
                 return decide(
                     RecoveryAction.FAIL_CLOSED,
                     RecoveryReason.PARTIAL_RECEIPT,
                 )
-            # Valid selected receipt, no dispatch → requeue
             return decide(
                 RecoveryAction.REQUEUE_SELECTED,
                 RecoveryReason.SELECTED_NO_EVENT,
@@ -722,13 +999,11 @@ def decide_reconciliation(request: RecoveryRequest) -> RecoveryDecision:
             )
 
         if receipt.phase == ReceiptPhase.DISPATCHED:
-            # Receipt says dispatched but canonical has no evidence
             if not has_dispatch_state:
                 return decide(
                     RecoveryAction.FAIL_CLOSED,
                     RecoveryReason.RECEIPT_DIVERGENT,
                 )
-            # Canonical does show dispatch → adopt
             return decide(
                 RecoveryAction.ADOPT_CANONICAL_DISPATCH,
                 RecoveryReason.CANONICAL_DISPATCHED,
@@ -737,7 +1012,6 @@ def decide_reconciliation(request: RecoveryRequest) -> RecoveryDecision:
 
     # dispatched — canonical handled above; orphan handled above
     if entry.state == QueuePhase.DISPATCHED:
-        # If we reach here, canonical shows dispatch too — retire
         return decide(
             RecoveryAction.RETIRE_QUEUE_ENTRY,
             RecoveryReason.CANONICAL_DISPATCHED,

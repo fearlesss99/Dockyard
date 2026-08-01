@@ -1387,4 +1387,3 @@ class PidReuseBootMismatchTests(unittest.TestCase):
 # 22. No pass-only tests — every test has an assertion
 # ═══════════════════════════════════════════════════════════════════════════
 # All tests above have explicit assertions — no pass-only tests exist.
-
