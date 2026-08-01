@@ -532,11 +532,15 @@ def _compute_replay_digest(
     dre: DispatchReceiptEvidence | None,
     dte: DispatchTombstoneEvidence | None,
     lease: LeaseEvidence | None,
+    canonical_event_id: str | None = None,
 ) -> str:
     """Deterministic SHA-256 digest over all input evidence.
 
     Binds every typed evidence field so any single evidence change
-    produces a different digest."""
+    produces a different digest.  Also binds the canonical dispatch
+    event_id when known so that swapping event_id ↔ dispatch_id
+    in the decision triggers a digest change.
+    """
     h = hashlib.sha256()
     # Queue entry identity
     h.update(b"entry:")
@@ -608,6 +612,12 @@ def _compute_replay_digest(
         h.update(str(evt.attempt or 0).encode("utf-8"))
         if evt.dispatch_id:
             h.update(evt.dispatch_id.encode("utf-8"))
+    # Canonical dispatch event_id binding — binds which event is canonical
+    h.update(b"|canonical_event:")
+    if canonical_event_id is not None:
+        h.update(canonical_event_id.encode("utf-8"))
+    else:
+        h.update(b"none")
     # Recovery metadata
     h.update(b"|recovery:")
     h.update(str(recovery_generation).encode("utf-8"))
@@ -740,17 +750,8 @@ def _run_defense(request: RecoveryRequest) -> None:
                 "portfolio_scheduler_recovery:impossible_dre_dte_phase"
             )
 
-    # lease identity binds to task
-    if lease is not None:
-        # holder_dispatch_id should align with canonical dispatch if present
-        canonical_dispatch_id = None
-        if task.current_dispatch is not None:
-            canonical_dispatch_id = task.current_dispatch.dispatch_id
-        if canonical_dispatch_id is not None:
-            if lease.holder_dispatch_id != canonical_dispatch_id:
-                raise RecoveryDefenseError(
-                    "portfolio_scheduler_recovery:lease_dispatch_divergence"
-                )
+    # lease identity binds to task — validated in decision layer against
+    # canonical event where available; defense only checks structural form
 
     # Impossible phase combinations — receipt vs queue entry
     if receipt is not None:
@@ -904,45 +905,109 @@ def decide_reconciliation(request: RecoveryRequest) -> RecoveryDecision:
 
     # CASE: canonical TASK_DISPATCHED event exists for this attempt
     if dispatched_evt is not None:
-        dispatch_id = dispatched_evt.dispatch_id or ""
+        canonical_event_id = dispatched_evt.event_id
+        canonical_event_dispatch_id = dispatched_evt.dispatch_id or ""
+
+        # Recompute digest with canonical event_id bound
+        digest = _compute_replay_digest(
+            entry, receipt, task, events, generation, request.liveness,
+            dre, dte, lease, canonical_event_id=canonical_event_id,
+        )
+
+        # ── Divergence check: event dispatch_id must match canonical current_dispatch ──
+        if task.current_dispatch is not None:
+            if task.current_dispatch.dispatch_id != canonical_event_dispatch_id:
+                return _build_decision(
+                    entry, receipt, task,
+                    RecoveryAction.FAIL_CLOSED,
+                    RecoveryReason.EVIDENCE_IDENTITY_DIVERGENCE,
+                    entry.selection_generation,
+                    digest,
+                    dispatch_event_id=None,
+                )
+            if task.attempt is not None and dispatched_evt.attempt != task.attempt:
+                return _build_decision(
+                    entry, receipt, task,
+                    RecoveryAction.FAIL_CLOSED,
+                    RecoveryReason.EVIDENCE_IDENTITY_DIVERGENCE,
+                    entry.selection_generation,
+                    digest,
+                    dispatch_event_id=None,
+                )
+
+        # ── Divergence check: dispatch_receipt dispatch_id must match ──
+        if dre is not None and dre.dispatch_id != canonical_event_dispatch_id:
+            return _build_decision(
+                entry, receipt, task,
+                RecoveryAction.FAIL_CLOSED,
+                RecoveryReason.EVIDENCE_IDENTITY_DIVERGENCE,
+                entry.selection_generation,
+                digest,
+                dispatch_event_id=None,
+            )
+
+        # ── Divergence check: tombstone dispatch_id must match ──
+        if dte is not None and dte.dispatch_id != canonical_event_dispatch_id:
+            return _build_decision(
+                entry, receipt, task,
+                RecoveryAction.FAIL_CLOSED,
+                RecoveryReason.EVIDENCE_IDENTITY_DIVERGENCE,
+                entry.selection_generation,
+                digest,
+                dispatch_event_id=None,
+            )
+
+        # ── Divergence check: lease holder_dispatch_id must match ──
+        if lease is not None and lease.holder_dispatch_id != canonical_event_dispatch_id:
+            return _build_decision(
+                entry, receipt, task,
+                RecoveryAction.FAIL_CLOSED,
+                RecoveryReason.EVIDENCE_IDENTITY_DIVERGENCE,
+                entry.selection_generation,
+                digest,
+                dispatch_event_id=None,
+            )
 
         if entry.state in (QueuePhase.QUEUED, QueuePhase.SELECTED):
             # Scheduler evidence lags canonical — align to dispatched
-            return decide(
+            return _build_decision(
+                entry, receipt, task,
                 RecoveryAction.ADOPT_CANONICAL_DISPATCH,
                 RecoveryReason.CANONICAL_ADVANCED,
-                dispatch_event_id=dispatch_id,
+                entry.selection_generation,
+                digest,
+                dispatch_event_id=canonical_event_id,
             )
 
         # dispatched / retired — canonical dispatcher owns lifecycle
-        return decide(
+        return _build_decision(
+            entry, receipt, task,
             RecoveryAction.RETIRE_QUEUE_ENTRY,
             RecoveryReason.CANONICAL_DISPATCHED,
-            dispatch_event_id=dispatch_id,
+            entry.selection_generation,
+            digest,
+            dispatch_event_id=canonical_event_id,
         )
 
-    # CASE: canonical task state shows dispatch (without event in snapshot yet)
+    # CASE: canonical task state shows dispatch but NO matching TASK_DISPATCHED event
     has_dispatch_state = task.state in ("dispatched", "review_ready")
     has_dispatch_info = task.current_dispatch is not None
 
     if has_dispatch_state and has_dispatch_info:
-        dispatch_id = task.current_dispatch.dispatch_id
+        # Frozen crash matrix: task shows dispatch but no matching event.
+        # MUST NOT return ADOPT_CANONICAL_DISPATCH (no event to adopt).
+        # MUST NOT fill event-id field with dispatch_id.
+        # MUST return WAIT_FOR_EXECUTION_OWNER or FAIL_CLOSED.
+        #
+        # Rationale: without a canonical TASK_DISPATCHED event we cannot
+        # prove dispatch happened at this attempt.  The execution owner
+        # (Orchestrator) must resolve; we fail-closed until then.
+        return decide(
+            RecoveryAction.WAIT_FOR_EXECUTION_OWNER,
+            RecoveryReason.PRE_ACK_CRASH,
+        )
 
-        if entry.state in (QueuePhase.QUEUED, QueuePhase.SELECTED):
-            return decide(
-                RecoveryAction.ADOPT_CANONICAL_DISPATCH,
-                RecoveryReason.CANONICAL_ADVANCED,
-                dispatch_event_id=dispatch_id,
-            )
-
-        if entry.state in (QueuePhase.DISPATCHED, QueuePhase.RETIRED):
-            return decide(
-                RecoveryAction.RETIRE_QUEUE_ENTRY,
-                RecoveryReason.CANONICAL_DISPATCHED,
-                dispatch_event_id=dispatch_id,
-            )
-
-    # CASE: Pre-ACK crash (task dispatched, no ACK observed)
+    # CASE: Pre-ACK crash (task dispatched, no ACK observed, no current_dispatch)
     if task.state == "dispatched":
         return decide(
             RecoveryAction.WAIT_FOR_EXECUTION_OWNER,
@@ -1004,6 +1069,7 @@ def decide_reconciliation(request: RecoveryRequest) -> RecoveryDecision:
                     RecoveryAction.FAIL_CLOSED,
                     RecoveryReason.RECEIPT_DIVERGENT,
                 )
+            # Receipt has dispatch_event_id — use it (already validated as EVT- prefix)
             return decide(
                 RecoveryAction.ADOPT_CANONICAL_DISPATCH,
                 RecoveryReason.CANONICAL_DISPATCHED,

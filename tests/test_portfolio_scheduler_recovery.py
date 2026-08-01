@@ -447,14 +447,14 @@ class CanonicalDispatchedTests(unittest.TestCase):
         )
         request = _req(entry, task, events=(evt,))
         decision = rec.decide_reconciliation(request)
-        # Adopt binds exact dispatch_event_id, does not create new one
+        # Adopt binds exact canonical event_id, not dispatch_id
         self.assertEqual(
             decision.canonical_dispatch_event_id,
-            evt.dispatch_id,
+            evt.event_id,
         )
 
     def test_dispatch_event_id_precise_binding(self):
-        """dispatch_event_id must be precisely bound in decision."""
+        """dispatch_event_id must be precisely the event_id, not dispatch_id."""
         entry = _entry(state=ps.QueuePhase.QUEUED)
         evt = _event(
             task_id=entry.task_id, revision=entry.revision,
@@ -467,7 +467,8 @@ class CanonicalDispatchedTests(unittest.TestCase):
         )
         request = _req(entry, task, events=(evt,))
         decision = rec.decide_reconciliation(request)
-        self.assertEqual(decision.canonical_dispatch_event_id, "DISP-SPECIFIC")
+        self.assertEqual(decision.canonical_dispatch_event_id, evt.event_id)
+        self.assertNotEqual(decision.canonical_dispatch_event_id, "DISP-SPECIFIC")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -530,9 +531,9 @@ class PreAckCrashTests(unittest.TestCase):
             decision.recovery_action,
             rec.RecoveryAction.ADOPT_CANONICAL_DISPATCH,
         )
-        # And it must NOT generate a new dispatch event ID
+        # And it must bind the canonical event_id, not the dispatch_id
         self.assertEqual(
-            decision.canonical_dispatch_event_id, evt.dispatch_id)
+            decision.canonical_dispatch_event_id, evt.event_id)
 
     def test_dispatched_state_wait_not_re_enqueue(self):
         """Canonical task shows dispatched — scheduler aligns, no requeue."""
@@ -1384,6 +1385,299 @@ class PidReuseBootMismatchTests(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 22. No pass-only tests — every test has an assertion
+# 22. Canonical Dispatch Event Identity Repair (TC-13.24b.2b.2c)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class CanonicalDispatchEventIdentityRepairTests(unittest.TestCase):
+    """TC-13.24b.2b.2c — canonical_dispatch_event_id must be EventEntry.event_id,
+    never dispatch_id; event-missing paths must never ADOPT; replay binds both
+    event_id and dispatch_id separately."""
+
+    # ── rule 1: event_id == EventEntry.event_id ───────────────────────────
+
+    def test_canonical_event_id_equals_event_entry_event_id(self):
+        """canonical_dispatch_event_id must be EventEntry.event_id."""
+        entry = _entry(state=ps.QueuePhase.QUEUED)
+        evt = _event(
+            event_id="EVT-CANON-001", task_id=entry.task_id,
+            revision=entry.revision, event_type="TASK_DISPATCHED",
+            attempt=1, dispatch_id="DISP-001",
+        )
+        task = _task(
+            task_id=entry.task_id, revision=entry.revision,
+            state="dispatched", attempt=1, dispatch_id="DISP-001",
+        )
+        d = rec.decide_reconciliation(_req(entry, task, events=(evt,)))
+        self.assertEqual(d.canonical_dispatch_event_id, "EVT-CANON-001")
+        self.assertEqual(d.canonical_dispatch_event_id, evt.event_id)
+
+    # ── rule 2: event_id ≠ dispatch_id → still uses event_id ─────────────
+
+    def test_event_id_differs_from_dispatch_id_still_uses_event_id(self):
+        """When event_id and dispatch_id are clearly different,
+        canonical_dispatch_event_id must still be the event_id."""
+        entry = _entry(state=ps.QueuePhase.QUEUED)
+        evt = _event(
+            event_id="EVT-UNRELATED", task_id=entry.task_id,
+            revision=entry.revision, event_type="TASK_DISPATCHED",
+            attempt=1, dispatch_id="DISP-TOTALLY-DIFFERENT",
+        )
+        task = _task(
+            task_id=entry.task_id, revision=entry.revision,
+            state="dispatched", attempt=1, dispatch_id="DISP-TOTALLY-DIFFERENT",
+        )
+        d = rec.decide_reconciliation(_req(entry, task, events=(evt,)))
+        self.assertEqual(d.canonical_dispatch_event_id, "EVT-UNRELATED")
+        self.assertNotEqual(d.canonical_dispatch_event_id, "DISP-TOTALLY-DIFFERENT")
+
+    # ── rule 3: task/current_dispatch exists, event missing → no ADOPT ────
+
+    def test_task_dispatched_no_matching_event_must_not_adopt(self):
+        """task state=dispatched, current_dispatch present, but no matching
+        TASK_DISPATCHED event → must NOT return ADOPT_CANONICAL_DISPATCH."""
+        entry = _entry(state=ps.QueuePhase.QUEUED)
+        task = _task(
+            task_id=entry.task_id, revision=entry.revision,
+            state="dispatched", attempt=1, dispatch_id="DISP-NO-EVT",
+        )
+        # No matching event for this attempt
+        events: tuple[EventEntry, ...] = ()
+        d = rec.decide_reconciliation(_req(entry, task, events=events))
+        self.assertNotEqual(
+            d.recovery_action, rec.RecoveryAction.ADOPT_CANONICAL_DISPATCH,
+        )
+        self.assertIsNone(d.canonical_dispatch_event_id)
+
+    def test_task_dispatched_no_event_returns_wait_for_owner(self):
+        """task dispatched + current_dispatch but no event → WAIT_FOR_EXECUTION_OWNER."""
+        entry = _entry(state=ps.QueuePhase.QUEUED)
+        task = _task(
+            task_id=entry.task_id, revision=entry.revision,
+            state="dispatched", attempt=1, dispatch_id="DISP-NO-EVT",
+        )
+        d = rec.decide_reconciliation(_req(entry, task, events=()))
+        self.assertIs(
+            d.recovery_action, rec.RecoveryAction.WAIT_FOR_EXECUTION_OWNER,
+        )
+
+    def test_review_ready_state_no_event_must_not_adopt(self):
+        """task state=review_ready, current_dispatch present, no event →
+        must NOT ADOPT."""
+        entry = _entry(state=ps.QueuePhase.DISPATCHED)
+        task = _task(
+            task_id=entry.task_id, revision=entry.revision,
+            state="review_ready", attempt=1, dispatch_id="DISP-RR",
+        )
+        d = rec.decide_reconciliation(_req(entry, task, events=()))
+        self.assertNotEqual(
+            d.recovery_action, rec.RecoveryAction.ADOPT_CANONICAL_DISPATCH,
+        )
+
+    # ── rule 4: event dispatch_id vs current_dispatch divergence ──────────
+
+    def test_event_dispatch_id_diverges_from_current_dispatch(self):
+        """event has dispatch_id X, current_dispatch has dispatch_id Y → fail-closed."""
+        entry = _entry(state=ps.QueuePhase.QUEUED)
+        evt = _event(
+            event_id="EVT-DIVERGE", task_id=entry.task_id,
+            revision=entry.revision, event_type="TASK_DISPATCHED",
+            attempt=1, dispatch_id="DISP-X",
+        )
+        task = _task(
+            task_id=entry.task_id, revision=entry.revision,
+            state="dispatched", attempt=1, dispatch_id="DISP-Y",
+        )
+        d = rec.decide_reconciliation(_req(entry, task, events=(evt,)))
+        self.assertIs(d.recovery_action, rec.RecoveryAction.FAIL_CLOSED)
+        self.assertIs(d.reason, rec.RecoveryReason.EVIDENCE_IDENTITY_DIVERGENCE)
+
+    # ── rule 5: receipt dispatch_id diverges from canonical event ─────────
+
+    def test_receipt_dispatch_id_diverges_from_canonical_event(self):
+        """DRE dispatch_id != canonical event dispatch_id → fail-closed."""
+        entry = _entry(state=ps.QueuePhase.QUEUED)
+        evt = _event(
+            event_id="EVT-RCPT-DIV", task_id=entry.task_id,
+            revision=entry.revision, event_type="TASK_DISPATCHED",
+            attempt=1, dispatch_id="DISP-CANON",
+        )
+        task = _task(
+            task_id=entry.task_id, revision=entry.revision,
+            state="dispatched", attempt=1, dispatch_id="DISP-CANON",
+        )
+        dre = rec.DispatchReceiptEvidence(
+            task_id=entry.task_id, revision=entry.revision,
+            attempt=1, dispatch_id="DISP-DIFFERENT",
+            generation_id="GEN-001", phase="WORKER_STARTED",
+        )
+        request = rec.RecoveryRequest(
+            queue_entry=entry, canonical_task=task,
+            canonical_events=(evt,), dispatch_receipt=dre,
+        )
+        d = rec.decide_reconciliation(request)
+        self.assertIs(d.recovery_action, rec.RecoveryAction.FAIL_CLOSED)
+        self.assertIs(d.reason, rec.RecoveryReason.EVIDENCE_IDENTITY_DIVERGENCE)
+
+    # ── rule 6: lease dispatch_id diverges from canonical event ───────────
+
+    def test_lease_dispatch_id_diverges_from_canonical_event(self):
+        """Lease holder_dispatch_id != canonical event dispatch_id → fail-closed."""
+        entry = _entry(state=ps.QueuePhase.QUEUED)
+        evt = _event(
+            event_id="EVT-LEASE-DIV", task_id=entry.task_id,
+            revision=entry.revision, event_type="TASK_DISPATCHED",
+            attempt=1, dispatch_id="DISP-CANON",
+        )
+        task = _task(
+            task_id=entry.task_id, revision=entry.revision,
+            state="dispatched", attempt=1, dispatch_id="DISP-CANON",
+        )
+        lease = rec.LeaseEvidence(
+            lease_id="L-001", slot_id="SLOT-001",
+            holder_dispatch_id="DISP-WRONG",
+            holder_instance_id="INST-001",
+        )
+        request = rec.RecoveryRequest(
+            queue_entry=entry, canonical_task=task,
+            canonical_events=(evt,), lease_snapshot=lease,
+        )
+        d = rec.decide_reconciliation(request)
+        self.assertIs(d.recovery_action, rec.RecoveryAction.FAIL_CLOSED)
+        self.assertIs(d.reason, rec.RecoveryReason.EVIDENCE_IDENTITY_DIVERGENCE)
+
+    # ── rule 7: duplicate TASK_DISPATCHED for same attempt ────────────────
+
+    def test_duplicate_dispatched_event_same_attempt(self):
+        """Two TASK_DISPATCHED events for same (task, revision, attempt) →
+        defense error."""
+        entry = _entry(state=ps.QueuePhase.QUEUED)
+        evt1 = _event(
+            event_id="EVT-DUP-A", task_id=entry.task_id,
+            revision=entry.revision, event_type="TASK_DISPATCHED",
+            attempt=1, dispatch_id="DISP-A",
+        )
+        evt2 = _event(
+            event_id="EVT-DUP-B", task_id=entry.task_id,
+            revision=entry.revision, event_type="TASK_DISPATCHED",
+            attempt=1, dispatch_id="DISP-B",
+        )
+        task = _task(
+            task_id=entry.task_id, revision=entry.revision,
+            state="dispatched", attempt=1, dispatch_id="DISP-A",
+        )
+        request = rec.RecoveryRequest(
+            queue_entry=entry, canonical_task=task,
+            canonical_events=(evt1, evt2),
+        )
+        with self.assertRaises(rec.RecoveryDefenseError):
+            rec.decide_reconciliation(request)
+
+    # ── rule 8: event identity change → digest change ─────────────────────
+
+    def test_event_identity_change_digest_changes(self):
+        """Changing canonical event_id must change replay_digest."""
+        entry = _entry(state=ps.QueuePhase.QUEUED)
+        evt_a = _event(
+            event_id="EVT-AAA", task_id=entry.task_id,
+            revision=entry.revision, event_type="TASK_DISPATCHED",
+            attempt=1, dispatch_id="DISP-001",
+        )
+        evt_b = _event(
+            event_id="EVT-BBB", task_id=entry.task_id,
+            revision=entry.revision, event_type="TASK_DISPATCHED",
+            attempt=1, dispatch_id="DISP-001",
+        )
+        task = _task(
+            task_id=entry.task_id, revision=entry.revision,
+            state="dispatched", attempt=1, dispatch_id="DISP-001",
+        )
+        da = rec.decide_reconciliation(_req(entry, task, events=(evt_a,)))
+        db = rec.decide_reconciliation(_req(entry, task, events=(evt_b,)))
+        self.assertNotEqual(da.replay_digest, db.replay_digest)
+        # canonical_dispatch_event_id must differ
+        self.assertNotEqual(
+            da.canonical_dispatch_event_id,
+            db.canonical_dispatch_event_id,
+        )
+
+    def test_dispatch_id_change_alone_digest_changes(self):
+        """Changing dispatch_id (keeping event_id) must change replay_digest
+        because both are independently bound."""
+        entry = _entry(state=ps.QueuePhase.QUEUED)
+        evt_a = _event(
+            event_id="EVT-SAME", task_id=entry.task_id,
+            revision=entry.revision, event_type="TASK_DISPATCHED",
+            attempt=1, dispatch_id="DISP-DA",
+        )
+        evt_b = _event(
+            event_id="EVT-SAME", task_id=entry.task_id,
+            revision=entry.revision, event_type="TASK_DISPATCHED",
+            attempt=1, dispatch_id="DISP-DB",
+        )
+        task_a = _task(
+            task_id=entry.task_id, revision=entry.revision,
+            state="dispatched", attempt=1, dispatch_id="DISP-DA",
+        )
+        task_b = _task(
+            task_id=entry.task_id, revision=entry.revision,
+            state="dispatched", attempt=1, dispatch_id="DISP-DB",
+        )
+        da = rec.decide_reconciliation(_req(entry, task_a, events=(evt_a,)))
+        db = rec.decide_reconciliation(_req(entry, task_b, events=(evt_b,)))
+        self.assertNotEqual(da.replay_digest, db.replay_digest)
+
+    # ── rule 9: byte-exact replay → same decision + same digest ───────────
+
+    def test_byte_exact_replay_same_decision_same_digest(self):
+        """Identical inputs in two separate calls → byte-identical decision."""
+        entry = _entry(state=ps.QueuePhase.QUEUED)
+        evt = _event(
+            event_id="EVT-REPLAY", task_id=entry.task_id,
+            revision=entry.revision, event_type="TASK_DISPATCHED",
+            attempt=1, dispatch_id="DISP-RP",
+        )
+        task = _task(
+            task_id=entry.task_id, revision=entry.revision,
+            state="dispatched", attempt=1, dispatch_id="DISP-RP",
+        )
+        d1 = rec.decide_reconciliation(_req(entry, task, events=(evt,)))
+        d2 = rec.decide_reconciliation(_req(entry, task, events=(evt,)))
+        self.assertEqual(d1, d2)
+        self.assertEqual(d1.replay_digest, d2.replay_digest)
+        self.assertEqual(
+            d1.canonical_dispatch_event_id,
+            d2.canonical_dispatch_event_id,
+        )
+
+    # ── rule 10: source-level — no path passes dispatch_id as event_id ────
+
+    def test_no_dispatch_id_passed_as_canonical_event_id(self):
+        """Source must NOT contain a path that passes EventEntry.dispatch_id
+        or TaskEntry.current_dispatch.dispatch_id as canonical_dispatch_event_id."""
+        import inspect
+        source = inspect.getsource(rec)
+        # The module must use dispatch_id for binding/verification only,
+        # never as the canonical_dispatch_event_id value.
+        # Check that _build_decision dispatch_event_id kwarg receives
+        # canonical_event_id (from evt.event_id), not dispatch_id.
+        # The key invariant: the string "dispatch_event_id=dispatch_id"
+        # with dispatch_id being a local variable (not receipt.dispatch_event_id)
+        # must not appear.
+        lines = source.splitlines()
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            # Allow receipt.dispatch_event_id (receipt field IS event_id)
+            # But reject bare dispatch_id passed as dispatch_event_id
+            if "dispatch_event_id=dispatch_id" in stripped:
+                # Only acceptable if it's receipt.dispatch_event_id
+                if "receipt.dispatch_event_id" not in stripped:
+                    self.fail(
+                        f"dispatch_id passed as dispatch_event_id at line {i}: {stripped!r}"
+                    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 23. No pass-only tests — every test has an assertion
 # ═══════════════════════════════════════════════════════════════════════════
 # All tests above have explicit assertions — no pass-only tests exist.
