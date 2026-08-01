@@ -1595,7 +1595,7 @@ if os.name == "nt":
 
     def _get_last_error_message() -> str:
         """Return a safe Win32 error code — never path, pid, or handle."""
-        err = ctypes.get_last_error()
+        err = int(_kernel32.GetLastError())
         return "win32-error-" + str(err)
 
 
@@ -1626,7 +1626,7 @@ def _open_dispatch_job(job_name: str, *, desire_access: int | None = None) -> in
     access = desire_access if desire_access is not None else _JOB_OBJECT_QUERY
     handle = _kernel32.OpenJobObjectW(access, False, job_name)
     if not handle:
-        error_code = ctypes.get_last_error()
+        error_code = int(_kernel32.GetLastError())
         raise OSError(
             error_code,
             "OpenJobObjectW failed: " + _get_last_error_message(),

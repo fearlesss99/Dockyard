@@ -2292,10 +2292,15 @@ class WorkflowOrchestrator:
                         "must not equal recovery generation"
                     )
                 receipt_phase = _dse.DispatchReceiptPhase(ds_receipt.phase)
-                if receipt_phase is not _dse.DispatchReceiptPhase.WORKER_STARTED:
+                receipt_phase_order = _dse.DispatchReceiptPhase.order()
+                if receipt_phase_order.index(receipt_phase) < (
+                    receipt_phase_order.index(
+                        _dse.DispatchReceiptPhase.WORKER_STARTED
+                    )
+                ):
                     raise WorkflowInvariantError(
                         "owner-loss retry: dispatch receipt phase must "
-                        "be WORKER_STARTED"
+                        "be at least WORKER_STARTED"
                     )
                 if (
                     ds_receipt.supervisor_pid is None
@@ -4766,11 +4771,21 @@ class WorkflowOrchestrator:
 
         # ── execute transition (under state lock) ─────────────────────────
         transition_service = ControlPlaneTransitionService(self.project_root)
+        transition_now = self.clock.now()
+        if replay_event is not None:
+            try:
+                transition_now = datetime.fromisoformat(
+                    replay_event.occurred_at.replace("Z", "+00:00")
+                )
+            except (TypeError, ValueError) as exc:
+                raise WorkflowInvariantError(
+                    "owner-loss replay event occurred_at is invalid"
+                ) from exc
         recovery_transition = apply_owner_loss_recovery_transition(
             transition_service,
             transition_request,
             check,
-            self.clock.now(),
+            transition_now,
         )
 
         # ── atomic retry reservation (TC-13.18d.12c.1 §18.4) ─────────────

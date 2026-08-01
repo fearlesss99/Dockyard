@@ -5143,6 +5143,24 @@ def apply_owner_loss_recovery_transition(
         state = _read_tasks_yaml(project_root)
         task, _task_index = _find_task(state, check.task_id)
         head_commit = _resolve_head_commit(project_root)
+        pm_control = state.get("pm_control")
+        if not isinstance(pm_control, dict):
+            raise TransitionCASConflictError(
+                "owner-loss pm_control is missing"
+            )
+        pm_lease_epoch = pm_control.get("lease_epoch")
+        pm_holder_id = pm_control.get("holder_id")
+        if (
+            isinstance(pm_lease_epoch, bool)
+            or not isinstance(pm_lease_epoch, int)
+            or pm_lease_epoch < 0
+            or not isinstance(pm_holder_id, str)
+            or not pm_holder_id
+        ):
+            raise TransitionCASConflictError(
+                "owner-loss pm_control is invalid"
+            )
+        event_lease_epoch = max(1, pm_lease_epoch)
         effective_request = _dc.replace(
             transition_request,
             cas=_dc.replace(
@@ -5160,8 +5178,8 @@ def apply_owner_loss_recovery_transition(
                 effective_request,
                 spec,
                 now,
-                lease_epoch=0,
-                pm_holder_id="",
+                lease_epoch=event_lease_epoch,
+                pm_holder_id=pm_holder_id,
             )
         else:
             _validate_owner_loss_check_against_ledger(check, task, now)
@@ -5280,8 +5298,8 @@ def apply_owner_loss_recovery_transition(
                 effective_request,
                 spec,
                 now,
-                lease_epoch=0,
-                pm_holder_id="",
+                lease_epoch=event_lease_epoch,
+                pm_holder_id=pm_holder_id,
             )
 
     if result is None:

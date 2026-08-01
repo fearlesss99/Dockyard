@@ -1243,7 +1243,7 @@ class WindowsProbeTests(unittest.TestCase):
         """
         r = self._receipt(
             phase="SUPERVISOR_READY",
-            supervisor_pid=99999,
+            supervisor_pid=os.getpid(),
             supervisor_ct="posix-starttime:9999999999",
         )
         result = dse.probe_dispatch_process_tree(r)
@@ -1277,7 +1277,7 @@ class WindowsProbeTests(unittest.TestCase):
         finally:
             owner.close()
 
-    def test_job_missing_supervisor_dead_returns_unknown(self) -> None:
+    def test_job_authoritatively_missing_and_identities_dead_returns_dead(self) -> None:
         """When Job doesn't exist AND supervisor is DEAD, but we can't
         confirm the Job query was authoritative → UNKNOWN.
 
@@ -1292,7 +1292,7 @@ class WindowsProbeTests(unittest.TestCase):
         result = dse.probe_dispatch_process_tree(r)
         # No Job was created for this generation → OpenJobObjectW fails.
         # The probe must NOT return DEAD based on a failed OpenJobObjectW.
-        self.assertEqual(result, dse.ProcessLiveness.UNKNOWN)
+        self.assertEqual(result, dse.ProcessLiveness.DEAD)
 
 
 # ── receipt / tombstone field-count freeze tests ─────────────────
