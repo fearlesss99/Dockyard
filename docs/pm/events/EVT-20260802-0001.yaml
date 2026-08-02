@@ -1,0 +1,32 @@
+schema_version: agentdesk.state-event/v2
+event_id: EVT-20260802-0001
+event_type: TASK_DISPATCHED
+source_message_id: null
+task_id: TC-001
+revision: 3
+attempt: 1
+dispatch_id: DSP-TC001-R1-A1-0001
+from_state: ready
+to_state: dispatched
+lease_epoch: 1
+actor_role_id: PM
+occurred_at: "2026-08-02T10:35:00Z"
+evidence_refs:
+  - docs/pm/tasks/TC-001-r3-standard-dispatch-probe.md
+guard_results:
+  - guard: dependencies
+    inputs: { depends_on: [] }
+    result: passed
+    checked_at: "2026-08-02T10:35:00Z"
+    evidence_ref: docs/pm/state/tasks.yaml
+  - guard: base_commit
+    inputs: { base_commit: c60444e37656197bbc23d8f9d3072c4186f5a0d9 }
+    result: passed
+    checked_at: "2026-08-02T10:35:00Z"
+    evidence_ref: git-rev-parse:exit-0
+  - guard: runtime_routes
+    inputs: { pm_role_id: PM, destination_role_id: DEV }
+    result: passed
+    checked_at: "2026-08-02T10:35:00Z"
+    evidence_ref: validate_runtime:exit-0
+payload_digest: sha256:ba6be4e4e556dc6973c6aae820bff1e451079284ee8050bb5360f4e3ff0eb20a

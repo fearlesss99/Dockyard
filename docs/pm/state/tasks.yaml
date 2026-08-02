@@ -2,11 +2,67 @@
   "schema_version": "agentdesk.tasks/v2",
   "project_id": "AgentDeskSkill-0.1.0-beta-standard-validation",
   "adoption_level": "standard",
-  "updated_at": "2026-08-02T09:26:28Z",
+  "updated_at": "2026-08-02T10:35:00Z",
   "pm_control": {
     "holder_id": "pm-session-bootstrap",
     "lease_epoch": 1,
     "mode": "timed"
   },
-  "tasks": []
+  "tasks": [
+    {
+      "task_id": "TC-001",
+      "revision": 3,
+      "task_card_path": "docs/pm/tasks/TC-001-r3-standard-dispatch-probe.md",
+      "task_card_commit": "291a19bc48fa481deb5640ead6928bb23a281086",
+      "state": "dispatched",
+      "attempt": 1,
+      "current_dispatch": {
+        "dispatch_id": "DSP-TC001-R1-A1-0001",
+        "attempt_id": "attempt-1",
+        "role_id": "DEV",
+        "base_commit": "c60444e37656197bbc23d8f9d3072c4186f5a0d9",
+        "branch": "feat/tc-001-r1-standard-dispatch-probe",
+        "dispatched_at": "2026-08-02T10:35:00Z",
+        "model_selection": {
+          "required_model_tier": "standard",
+          "required_model_capabilities": ["coding", "testing"],
+          "model_binding_id": "deepseek-v4-pro-via-claude-opus",
+          "selected_model_provider": "claude",
+          "selected_model_id": "claude-opus-4-8[1M]",
+          "selected_model_tier": "expert",
+          "selected_deliberation_tier": "deep",
+          "selected_context_window_tokens": 1000000,
+          "selected_model_capabilities": ["adversarial_review", "architecture", "code_review", "coding", "planning", "risk_assessment", "test_design", "testing"],
+          "model_degradation_approval_id": null
+        }
+      },
+      "report_path": "docs/pm/reports/TC-001-r3-a1.md",
+      "granted_approval_ids": [],
+      "delivery_state": "none",
+      "integration_state": "not_applicable",
+      "implementation_commit": null,
+      "report_commit": null,
+      "accepted_commit": null,
+      "acceptance_path": null,
+      "integrated_commit": null,
+      "blocked_reason": null,
+      "blocked_kind": null,
+      "blocked_owner": null,
+      "unblock_condition": null,
+      "review_after": null,
+      "blocked_attempt_valid": null,
+      "resume_state": null,
+      "timestamps": {
+        "created_at": "2026-08-02T10:30:00Z",
+        "ready_at": "2026-08-02T10:30:00Z",
+        "dispatched_at": "2026-08-02T10:35:00Z",
+        "started_at": null,
+        "delivered_at": null,
+        "blocked_at": null,
+        "accepted_at": null,
+        "integrated_at": null,
+        "updated_at": "2026-08-02T10:35:00Z"
+      }
+    }
+  ]
 }

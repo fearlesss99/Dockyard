@@ -1,0 +1,28 @@
+schema_version: agentdesk.outbox-message/v2
+message_id: MSG-20260802-0001
+event_id: EVT-20260802-0001
+message_type: task.dispatch
+dedupe_key: TC-001/r3/a1/DSP-TC001-R1-A1-0001/task.dispatch
+task_id: TC-001
+revision: 3
+attempt: 1
+dispatch_id: DSP-TC001-R1-A1-0001
+destination_role_id: DEV
+created_at: "2026-08-02T10:38:00Z"
+model_selection:
+  required_model_tier: standard
+  required_model_capabilities: [coding, testing]
+  model_binding_id: deepseek-v4-pro-via-claude-opus
+  selected_model_provider: claude
+  selected_model_id: "claude-opus-4-8[1M]"
+  selected_model_tier: expert
+  selected_deliberation_tier: deep
+  selected_context_window_tokens: 1000000
+  selected_model_capabilities: [adversarial_review, architecture, code_review, coding, planning, risk_assessment, test_design, testing]
+  model_degradation_approval_id: null
+payload:
+  task_path: docs/pm/tasks/TC-001-r3-standard-dispatch-probe.md
+  task_card_commit: 291a19bc48fa481deb5640ead6928bb23a281086
+  base_commit: c60444e37656197bbc23d8f9d3072c4186f5a0d9
+  branch: feat/tc-001-r1-standard-dispatch-probe
+  report_path: docs/pm/reports/TC-001-r3-a1.md
