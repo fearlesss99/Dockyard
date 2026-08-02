@@ -81,6 +81,81 @@ def _request(root: Path) -> runtime.PmExternalWorkerRequest:
 
 
 class PmExternalWorkerRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_mad_fail_routes_to_delivery_return_and_requeue(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            dispatch = object.__new__(DispatchCycleResult)
+            accepted = runtime.PmExternalAcceptanceResult(
+                SimpleNamespace(dispatch_cycle_result=dispatch),
+                SimpleNamespace(audit_result=SimpleNamespace(verdict="fail")),
+            )
+            plan = runtime.PmExternalAcceptancePlan(
+                None, None, None, WorkerKind.BASIC_AGENT, "INSTANCE-1"
+            )
+            routing = runtime.PmExternalReviewRoutingPlan(object(), object(), None)
+            remediation_result = object()
+            orchestrator = WorkflowOrchestrator(root, _Clock())
+            with (
+                patch.object(runtime, "run_pm_external_worker_acceptance", AsyncMock(return_value=accepted)),
+                patch.object(runtime, "DeliveryRemediationRequest", return_value="REMEDIATION") as build,
+                patch.object(WorkflowOrchestrator, "run_delivery_remediation", AsyncMock(return_value=remediation_result)) as remediate,
+            ):
+                result = await runtime.run_pm_external_worker_review(
+                    _request(root), plan, routing, {}, orchestrator, object()
+                )
+            build.assert_called_once()
+            remediate.assert_awaited_once_with("REMEDIATION")
+            self.assertIs(result.remediation, remediation_result)
+            self.assertIsNone(result.blocked_audit)
+
+    async def test_mad_blocked_routes_to_escalation_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            dispatch = object.__new__(DispatchCycleResult)
+            accepted = runtime.PmExternalAcceptanceResult(
+                SimpleNamespace(dispatch_cycle_result=dispatch),
+                SimpleNamespace(audit_result=SimpleNamespace(verdict="blocked")),
+            )
+            plan = runtime.PmExternalAcceptancePlan(
+                None, None, None, WorkerKind.EXPERT_AGENT, "INSTANCE-1"
+            )
+            routing = runtime.PmExternalReviewRoutingPlan(None, None, object())
+            blocked_result = object()
+            orchestrator = WorkflowOrchestrator(root, _Clock())
+            with (
+                patch.object(runtime, "run_pm_external_worker_acceptance", AsyncMock(return_value=accepted)),
+                patch.object(runtime, "BlockedAuditRequest", return_value="BLOCKED") as build,
+                patch.object(WorkflowOrchestrator, "run_blocked_audit_cycle", AsyncMock(return_value=blocked_result)) as block,
+            ):
+                result = await runtime.run_pm_external_worker_review(
+                    _request(root), plan, routing, {}, orchestrator, object()
+                )
+            build.assert_called_once()
+            block.assert_awaited_once_with("BLOCKED")
+            self.assertIs(result.blocked_audit, blocked_result)
+            self.assertIsNone(result.remediation)
+
+    async def test_mad_pass_rejects_failure_routing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            accepted = runtime.PmExternalAcceptanceResult(
+                SimpleNamespace(dispatch_cycle_result=object()),
+                SimpleNamespace(audit_result=SimpleNamespace(verdict="pass")),
+            )
+            plan = runtime.PmExternalAcceptancePlan(
+                None, None, None, WorkerKind.BASIC_AGENT, "INSTANCE-1"
+            )
+            orchestrator = WorkflowOrchestrator(root, _Clock())
+            with patch.object(
+                runtime, "run_pm_external_worker_acceptance", AsyncMock(return_value=accepted)
+            ):
+                with self.assertRaises(runtime.PmExternalWorkerInputError):
+                    await runtime.run_pm_external_worker_review(
+                        _request(root), plan,
+                        runtime.PmExternalReviewRoutingPlan(object(), object(), None),
+                        {}, orchestrator, object(),
+                    )
+
     async def test_fresh_external_delivery_enters_mad_acceptance_cycle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

@@ -28,6 +28,10 @@ from portfolio_scheduler_worker_handoff_runtime import (
 from workflow_orchestrator import (
     AcceptanceCycleRequest,
     AcceptanceCycleResult,
+    BlockedAuditRequest,
+    BlockedAuditResult,
+    DeliveryRemediationRequest,
+    DeliveryRemediationResult,
     DispatchCycleResult,
     WorkflowOrchestrator,
 )
@@ -115,6 +119,21 @@ class PmExternalAcceptancePlan:
 class PmExternalAcceptanceResult:
     worker_run: PmExternalWorkerRunResult
     acceptance_cycle: AcceptanceCycleResult
+
+
+@dataclass(frozen=True, slots=True)
+class PmExternalReviewRoutingPlan:
+    return_transition_request: TransitionRequest | None
+    requeue_transition_request: TransitionRequest | None
+    block_transition_request: TransitionRequest | None
+
+
+@dataclass(frozen=True, slots=True)
+class PmExternalReviewResult:
+    worker_run: PmExternalWorkerRunResult
+    acceptance_cycle: AcceptanceCycleResult
+    remediation: DeliveryRemediationResult | None
+    blocked_audit: BlockedAuditResult | None
 
 
 def _safe_text(value: object, field: str) -> str:
@@ -366,12 +385,86 @@ async def run_pm_external_worker_acceptance(
     return PmExternalAcceptanceResult(worker_run, acceptance_cycle)
 
 
+async def run_pm_external_worker_review(
+    request: PmExternalWorkerRequest,
+    acceptance_plan: PmExternalAcceptancePlan,
+    routing_plan: PmExternalReviewRoutingPlan,
+    providers: Mapping[str, AgentCliProvider],
+    orchestrator: WorkflowOrchestrator,
+    audit_config: MadGatewayConfig,
+) -> PmExternalReviewResult:
+    """Run the mandatory MAD gate and route its exact verdict fail-closed."""
+    if type(routing_plan) is not PmExternalReviewRoutingPlan:
+        raise PmExternalWorkerInputError("external_worker:routing_plan")
+    accepted = await run_pm_external_worker_acceptance(
+        request, acceptance_plan, providers, orchestrator, audit_config
+    )
+    verdict = accepted.acceptance_cycle.audit_result.verdict
+    remediation = None
+    blocked_audit = None
+    if verdict == "pass":
+        if any((
+            routing_plan.return_transition_request,
+            routing_plan.requeue_transition_request,
+            routing_plan.block_transition_request,
+        )):
+            raise PmExternalWorkerInputError("external_worker:pass_routing")
+    elif verdict == "fail":
+        if (
+            routing_plan.return_transition_request is None
+            or routing_plan.requeue_transition_request is None
+            or routing_plan.block_transition_request is not None
+        ):
+            raise PmExternalWorkerInputError("external_worker:fail_routing")
+        dispatch_result = accepted.worker_run.dispatch_cycle_result
+        if dispatch_result is None:
+            raise PmExternalWorkerConflictError("external_worker:missing_delivery")
+        remediation = await orchestrator.run_delivery_remediation(
+            DeliveryRemediationRequest(
+                acceptance_cycle_result=accepted.acceptance_cycle,
+                dispatch_cycle_result=dispatch_result,
+                return_transition_request=routing_plan.return_transition_request,
+                requeue_transition_request=routing_plan.requeue_transition_request,
+                worker_kind=acceptance_plan.worker_kind,
+                holder_instance_id=acceptance_plan.holder_instance_id,
+            )
+        )
+    elif verdict == "blocked":
+        if (
+            routing_plan.block_transition_request is None
+            or routing_plan.return_transition_request is not None
+            or routing_plan.requeue_transition_request is not None
+        ):
+            raise PmExternalWorkerInputError("external_worker:blocked_routing")
+        dispatch_result = accepted.worker_run.dispatch_cycle_result
+        if dispatch_result is None:
+            raise PmExternalWorkerConflictError("external_worker:missing_delivery")
+        blocked_audit = await orchestrator.run_blocked_audit_cycle(
+            BlockedAuditRequest(
+                acceptance_cycle_result=accepted.acceptance_cycle,
+                dispatch_cycle_result=dispatch_result,
+                block_transition_request=routing_plan.block_transition_request,
+                current_worker_kind=acceptance_plan.worker_kind,
+            )
+        )
+    else:
+        raise PmExternalWorkerConflictError("external_worker:audit_verdict")
+    return PmExternalReviewResult(
+        accepted.worker_run,
+        accepted.acceptance_cycle,
+        remediation,
+        blocked_audit,
+    )
+
+
 __all__ = [
     "CONFIG_SCHEMA", "RECEIPT_SCHEMA", "ExternalWorkerEndpoint",
     "PmExternalWorkerRequest", "PmExternalWorkerReceipt",
     "PmExternalWorkerRunResult",
     "PmExternalAcceptancePlan", "PmExternalAcceptanceResult",
+    "PmExternalReviewRoutingPlan", "PmExternalReviewResult",
     "PmExternalWorkerError", "PmExternalWorkerInputError",
     "PmExternalWorkerConflictError", "load_external_worker_endpoint",
     "run_pm_external_worker", "run_pm_external_worker_acceptance",
+    "run_pm_external_worker_review",
 ]

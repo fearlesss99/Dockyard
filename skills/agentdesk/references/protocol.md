@@ -23,6 +23,8 @@
 
 Standard / Automated 必须同时实现可观察的真实闭环：唯一 PM/Leader 真实任务把卡交给规范命名的独立 Codex 岗位任务，或交给已验证的外部 provider endpoint；Worker 在独立 worktree 执行并持久化报告，通过跨任务 callback 或同步 PM-return receipt 返回；MAD audit 通过后控制面才推进验收。仓库账本、outbox 或逻辑 role 只保存事实和意图，不能替代真实执行与 receipt；heartbeat 只兜底漏通知。
 
+外部 Worker 的生产组合入口是 `pm_external_worker_runtime.run_pm_external_worker_review()`：唯一 PM 提交冻结的 handoff、MAD acceptance 与 verdict routing 输入；runtime 复用 Scheduler handoff 启动 provider，将新鲜 delivery 交给 MAD audit，并按精确 verdict 分流。`pass` 只允许验收/可选集成 transition，`fail` 执行 `DELIVERY_RETURNED` 后 `TASK_REQUEUED`，`blocked` 执行 `TASK_BLOCKED` 并产生既有 escalation decision。升级后的下一次 dispatch 仍必须由 PM 显式提供完整不可变请求，runtime 不根据模型价格、异常文本或 provider 自行编造重派身份。
+
 ## 2. 控制面与唯一写入权
 
 ### 2.1 唯一写入者
