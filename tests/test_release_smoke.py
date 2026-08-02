@@ -14233,6 +14233,72 @@ class TC1322b3aAndTC1324b1IntegrationStatusTests(unittest.TestCase):
         )
 
 
+class TC1326aSchedulerWorkerHandoffRuntimeContractTests(unittest.TestCase):
+    """TC-13.26a admitted-dispatch handoff runtime contract freeze."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        refs = root / "skills" / "agentdesk" / "references"
+        cls.text = (refs / "public-interfaces" / "scheduler-worker-handoff-runtime-contract.md").read_text(encoding="utf-8")
+        cls.adr = (refs / "adr" / "001-mad-agentdesk-integration.md").read_text(encoding="utf-8")
+        cls.workflow = (refs / "public-interfaces" / "workflow-orchestrator-contract.md").read_text(encoding="utf-8")
+        cls.portfolio = (refs / "public-interfaces" / "portfolio-scheduler-contract.md").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _normalized(text: str) -> str:
+        return " ".join(text.split())
+
+    def _fields(self, start: str, end: str) -> list[str]:
+        section = self.text[self.text.index(start):self.text.index(end)]
+        return re.findall(r"^\|\s*\d+\s*\|\s*`([^`]+)`", section, re.MULTILINE)
+
+    def test_request_fields_are_exact(self) -> None:
+        self.assertEqual(self._fields("### 2.1", "### 2.2"), ["schema_version", "operation_id", "project_root", "queue_id", "receipt_id", "task_id", "revision", "attempt", "dispatch_id", "dispatch_event_id", "outbox_message_id", "selection_generation", "plan_digest", "handoff_id", "worktree_id", "lease_id", "lease_epoch", "holder_instance_id", "requested_at"])
+
+    def test_result_fields_are_exact(self) -> None:
+        self.assertEqual(self._fields("### 2.2", "## 3."), ["schema_version", "operation_id", "task_id", "revision", "attempt", "dispatch_id", "handoff_id", "generation_id", "phase", "outcome", "process_receipt_phase", "content_digest"])
+
+    def test_types_and_durable_binding_are_frozen(self) -> None:
+        n = self._normalized(self.text)
+        self.assertIn("@dataclass(frozen=True, slots=True)", n)
+        self.assertIn("no `Any`, bare `dict`, `Mapping`, `list`, `set`", n)
+        for value in ("AdmissionPlan", "ScheduleReceipt", "TASK_DISPATCHED", "WorkerSlotLease", "DispatchProcessReceipt", "READY managed-worktree record"):
+            self.assertIn(value, n)
+
+    def test_provider_lock_and_no_duplicate_order(self) -> None:
+        n = self._normalized(self.text)
+        self.assertIn("Provider validation finishes before the first handoff write or process start", n)
+        self.assertIn("prove every Store/state lock released", n)
+        self.assertIn("never performs Admission", n)
+        self.assertIn("must never call the private dispatch cycle", n)
+
+    def test_seven_phases_are_forward_only(self) -> None:
+        n = self._normalized(self.text)
+        for phase in ("ADMISSION_COMMITTED", "HANDOFF_RESERVED", "SUPERVISOR_STARTED", "WORKER_STARTED", "ACKNOWLEDGED", "FINALIZING", "FINALIZED"):
+            self.assertIn(phase, n)
+        self.assertIn("No skip, rollback, overwrite, second handoff, or second process generation", n)
+
+    def test_crash_liveness_and_replay_matrix(self) -> None:
+        n = self._normalized(self.text)
+        for value in ("before ACK", "after ACK before finalizer", "tombstone before FINALIZED", "owner loss or late success", "ALIVE waits/adopts", "DEAD requests recovery", "UNKNOWN fails closed", "byte-exact no-op"):
+            self.assertIn(value, n)
+
+    def test_attempt_and_interface_boundaries(self) -> None:
+        n = self._normalized(self.text + "\n" + self.workflow + "\n" + self.portfolio)
+        self.assertIn("Attempt is exactly 1..3", n)
+        self.assertIn("attempt 4 fails before any write", n)
+        self.assertIn("Interface #22", n)
+        self.assertIn("complete Scheduler runtime remains **Target**", n)
+
+    def test_status_is_contract_current_runtime_target(self) -> None:
+        n = self._normalized(self.text + "\n" + self.adr)
+        self.assertIn("Handoff Runtime Contract: **Contract Current — TC-13.26a**", n)
+        self.assertIn("Handoff Runtime: **Target — TC-13.26b**", n)
+        self.assertIn("Handoff E2E verification: **Target — TC-13.26c**", n)
+        self.assertIn("| 38 | Scheduler-to-Worker Handoff Runtime | **Contract Current — TC-13.26a**", n)
+
+
 class TC1325aWorktreeLifecycleContractFreezeTests(unittest.TestCase):
     """TC-13.25a WorktreeLifecycleManager durable contract freeze."""
 

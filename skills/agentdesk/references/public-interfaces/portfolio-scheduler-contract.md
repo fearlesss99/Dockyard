@@ -490,3 +490,8 @@ Scheduler integration may consume only a validated `WorktreeLifecycleResult`;
 PortfolioScheduler never runs Git worktree commands, parses worktree
 inventory, or deletes a path.  Interface #36 is unchanged and does not claim
 WorktreeLifecycleManager or complete Scheduler runtime Current.
+
+The Scheduler-to-Worker Handoff Runtime Contract is **Contract Current —
+TC-13.26a**. Its production runtime is **Target — TC-13.26b** and E2E
+verification is **Target — TC-13.26c**. It may only adopt an already admitted
+dispatch and does not make the complete PortfolioScheduler runtime Current.

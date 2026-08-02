@@ -48,6 +48,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 35 | PM TaskDifficulty Assessment | **Current — TC-13.22a** | TC-13.22a | Frozen seven-dimension PM assessment contract; deterministic assessor Current — TC-13.22b.1; canonical evidence codec Current — TC-13.22b.2a; evidence filesystem/ancestry store Current — TC-13.22b.2b; dispatch enforcement Current — TC-13.22b.3a; Interface #22 status unchanged |
 | 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core + Recovery Action Executor Runtime + Worker Handoff Contract + Worker Handoff Store Current** | TC-13.24a / TC-13.24b.1 / TC-13.24b.2a / TC-13.24b.2b.1 / TC-13.24b.2b.2 / TC-13.24b.2b.4a.2 / TC-13.24b.2b.4a.3 / TC-13.24b.2b.4a.4 / TC-13.24b.2b.2c / TC-13.24b.2b.4b.2 / TC-13.24b.2b.4c.1 / TC-13.24b.2b.4c.2 | Frozen BusinessPriority, QueueEntry, ScheduleReceipt, durable evidence, deterministic v1 selection, conflict-key, lock-order, crash-recovery, durable plan binding, plan persistence, selection-to-admission runtime, Scheduler-local Recovery Action Executor, and durable Worker Handoff evidence Store; Recovery Executor adversarial verification is Verified — TC-13.24b.2b.4b.2a; Worker Handoff adversarial verification is Verified — TC-13.24b.2b.4c.1a.i; Worker Handoff execution runtime and complete Scheduler runtime remain Target; Interface #22 unchanged |
 | 37 | WorktreeLifecycleManager | **Contract + Store + Runtime Current; Verified — TC-13.25d** | TC-13.25a / TC-13.25b / TC-13.25c / TC-13.25d | Frozen independent managed-worktree identity, durable reservation, porcelain inventory, path/reparse/UNC/case-fold security, forward-only lifecycle, crash reconciliation, concurrency, generation-aware process evidence, and fail-closed release; Interfaces #22 and #36 unchanged |
+| 38 | Scheduler-to-Worker Handoff Runtime | **Contract Current — TC-13.26a** | TC-13.26a | Frozen adoption of an already admitted dispatch, exact plan/event/lease/worktree/handoff/process binding, provider-before-write validation, seven forward-only phases, and crash replay; runtime Target — TC-13.26b; E2E Target — TC-13.26c; Interface #22 unchanged |
 
 ---
 
@@ -7965,6 +7966,22 @@ Durable Store and pure reconciliation are **Current — TC-13.25b**;
 Create/Release Runtime is **Current — TC-13.25c**; adversarial verification is
 **Verified — TC-13.25d**.  Interface #22 is unchanged.  Interface #36 remains
 unchanged and does not claim complete Scheduler runtime Current.
+
+#### 2.27 Scheduler-to-Worker Handoff Runtime (Contract Current — TC-13.26a)
+
+The frozen contract is
+`skills/agentdesk/references/public-interfaces/scheduler-worker-handoff-runtime-contract.md`.
+It adopts only an already committed AdmissionPlan, ScheduleReceipt,
+`TASK_DISPATCHED`, WorkerSlotLease, READY managed worktree, durable handoff,
+and exact DispatchProcessReceipt. Provider validation precedes every handoff
+write and process start. No second Admission, lease, event, dispatch, attempt,
+or process generation is permitted; all Store/state locks are released before
+Worker startup.
+
+Handoff Runtime Contract is **Contract Current — TC-13.26a**; production
+runtime is **Target — TC-13.26b**; E2E verification is **Target — TC-13.26c**.
+Interface #22 remains the canonical cancellation, supersession, ACK, delivery,
+and finalization owner. Interface #36 does not claim complete runtime Current.
 
 ---
 

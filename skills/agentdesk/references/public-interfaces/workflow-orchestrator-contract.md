@@ -2154,3 +2154,14 @@ released.
 
 Interface #22 remains **Current — TC-13.18d.13b** with unchanged ownership;
 TC-13.25 adds no WorkflowOrchestrator production method or state field.
+
+## 20. Admitted Scheduler Dispatch Adoption Boundary (TC-13.26a)
+
+The Scheduler-to-Worker Handoff Runtime Contract is **Contract Current —
+TC-13.26a**; runtime is **Target — TC-13.26b** and E2E verification is
+**Target — TC-13.26c**. A future explicit
+`start_admitted_dispatch_execution` entry may adopt an existing canonical
+dispatch, lease, and handoff identity. It must not acquire a second lease,
+apply `TASK_DISPATCHED`, change attempt, or call the private dispatch cycle.
+Interface #22 ownership of ACK, cancellation, supersession, delivery, and
+finalization remains unchanged.
