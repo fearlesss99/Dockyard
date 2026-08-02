@@ -8,7 +8,15 @@ import subprocess
 import threading
 from pathlib import Path
 
-from dispatch_supervisor_evidence import _is_symlink_or_reparse
+from dispatch_supervisor_evidence import (
+    DispatchReceiptPhase,
+    ProcessLiveness,
+    _is_symlink_or_reparse,
+    probe_dispatch_process_tree,
+    read_dispatch_receipt,
+    read_dispatch_tombstone,
+)
+from worker_slot_lease import read_worker_slot_leases
 from worktree_lifecycle_store import (
     SCHEMA_VERSION,
     WorktreeInventoryEntry,
@@ -207,6 +215,58 @@ class WorktreeLifecycleManager:
             self._timeout_seconds,
         ) == b""
 
+    def _verify_release_ownership(self, request: WorktreeLifecycleRequest) -> None:
+        """Fail closed unless durable lease and exact process evidence are clear."""
+        try:
+            lease_store = read_worker_slot_leases(self._repository_root)
+            leases = lease_store["leases"]
+            if type(leases) is not dict:
+                _fail(WorktreeLifecycleReleaseRefusedError, "lease_unknown")
+            for raw in leases.values():
+                if type(raw) is not dict:
+                    _fail(WorktreeLifecycleReleaseRefusedError, "lease_unknown")
+                if (
+                    raw.get("holder_dispatch_id") == request.dispatch_id
+                    or os.path.normcase(str(raw.get("canonical_worktree")))
+                    == os.path.normcase(request.worktree_path)
+                ):
+                    _fail(WorktreeLifecycleReleaseRefusedError, "lease_active")
+            receipt = read_dispatch_receipt(self._repository_root, request.dispatch_id)
+            tombstone = read_dispatch_tombstone(self._repository_root, request.dispatch_id)
+        except WorktreeLifecycleReleaseRefusedError:
+            raise
+        except Exception:
+            _fail(WorktreeLifecycleReleaseRefusedError, "ownership_unknown")
+
+        if receipt is None:
+            _fail(WorktreeLifecycleReleaseRefusedError, "process_unknown")
+        if (
+            receipt.task_id != request.task_id
+            or receipt.revision != request.revision
+            or receipt.attempt != request.attempt
+            or receipt.dispatch_id != request.dispatch_id
+        ):
+            _fail(WorktreeLifecycleReleaseRefusedError, "process_identity")
+
+        phase = DispatchReceiptPhase(receipt.phase)
+        if phase is DispatchReceiptPhase.RESERVED:
+            return
+        if tombstone is not None:
+            if (
+                tombstone.task_id != request.task_id
+                or tombstone.revision != request.revision
+                or tombstone.attempt != request.attempt
+                or tombstone.dispatch_id != request.dispatch_id
+                or tombstone.generation_id != receipt.generation_id
+                or not tombstone.worker_done
+                or not tombstone.heartbeat_done
+                or not tombstone.release_completed
+            ):
+                _fail(WorktreeLifecycleReleaseRefusedError, "tombstone_identity")
+            return
+        if probe_dispatch_process_tree(receipt) is not ProcessLiveness.DEAD:
+            _fail(WorktreeLifecycleReleaseRefusedError, "process_active_or_unknown")
+
     def _ensure_managed_parent(self, request: WorktreeLifecycleRequest) -> None:
         expected = Path(expected_worktree_path(request.repository_root, request.expected_worktree_id))
         if os.path.normcase(str(expected)) != os.path.normcase(request.worktree_path):
@@ -297,16 +357,10 @@ class WorktreeLifecycleManager:
     def release(
         self,
         request: WorktreeLifecycleRequest,
-        *,
-        process_active: bool | None,
-        lease_active: bool | None,
     ) -> WorktreeLifecycleResult:
         if type(request) is not WorktreeLifecycleRequest or request.action is not WorktreeLifecycleAction.RELEASE:
             _fail(WorktreeLifecycleInputError, "release_request")
-        if type(process_active) is not bool or type(lease_active) is not bool:
-            _fail(WorktreeLifecycleReleaseRefusedError, "ownership_unknown")
-        if process_active or lease_active:
-            _fail(WorktreeLifecycleReleaseRefusedError, "ownership_active")
+        self._verify_release_ownership(request)
         with _operation_lock(request.repository_root, request.expected_worktree_id):
             self._repository_identity(request)
             reservation = self._store.read_reservation(request.expected_worktree_id)

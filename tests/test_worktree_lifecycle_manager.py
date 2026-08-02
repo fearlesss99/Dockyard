@@ -95,6 +95,10 @@ class WorktreeLifecycleManagerTests(unittest.TestCase):
             self.common_dir,
         )
 
+    def _release(self, request: WorktreeLifecycleRequest):
+        with patch.object(self.manager, "_verify_release_ownership"):
+            return self.manager.release(request)
+
     def test_create_materializes_ready_worktree_after_durable_reservation(self) -> None:
         result = self.manager.create(self.create_request)
         self.assertEqual(result.outcome, WorktreeLifecycleOutcome.READY)
@@ -157,25 +161,18 @@ class WorktreeLifecycleManagerTests(unittest.TestCase):
 
     def test_release_clean_worktree_and_replay(self) -> None:
         self.manager.create(self.create_request)
-        released = self.manager.release(
-            self._release_request(), process_active=False, lease_active=False
-        )
+        released = self._release(self._release_request())
         self.assertEqual(released.outcome, WorktreeLifecycleOutcome.RELEASED)
         self.assertEqual(released.phase, WorktreePhase.RELEASED)
         self.assertFalse(Path(self.worktree_path).exists())
-        replay = self.manager.release(
-            self._release_request("2026-08-02T01:00:02.000000Z"),
-            process_active=False, lease_active=False,
-        )
+        replay = self._release(self._release_request("2026-08-02T01:00:02.000000Z"))
         self.assertEqual(replay.outcome, WorktreeLifecycleOutcome.REPLAYED)
 
     def test_release_refuses_dirty_and_untracked_worktree(self) -> None:
         self.manager.create(self.create_request)
         Path(self.worktree_path, "dirty.txt").write_text("dirty", encoding="utf-8")
         with self.assertRaises(WorktreeLifecycleReleaseRefusedError):
-            self.manager.release(
-                self._release_request(), process_active=False, lease_active=False
-            )
+            self._release(self._release_request())
         self.assertTrue(Path(self.worktree_path).exists())
         self.assertEqual(self.manager.store.read_record(self.worktree_id).phase, WorktreePhase.READY)
 
@@ -186,20 +183,13 @@ class WorktreeLifecycleManagerTests(unittest.TestCase):
         _git(path, "add", "README.md")
         _git(path, "commit", "-m", "diverge")
         with self.assertRaises(WorktreeLifecycleReleaseRefusedError):
-            self.manager.release(
-                self._release_request(), process_active=False, lease_active=False
-            )
+            self._release(self._release_request())
         self.assertTrue(path.exists())
 
-    def test_release_refuses_active_or_unknown_ownership(self) -> None:
+    def test_release_refuses_missing_process_evidence(self) -> None:
         self.manager.create(self.create_request)
-        for process_active, lease_active in ((True, False), (False, True), (None, False), (False, None)):
-            with self.assertRaises(WorktreeLifecycleReleaseRefusedError):
-                self.manager.release(
-                    self._release_request(),
-                    process_active=process_active,
-                    lease_active=lease_active,
-                )
+        with self.assertRaises(WorktreeLifecycleReleaseRefusedError):
+            self.manager.release(self._release_request())
 
     def test_wrong_identity_is_rejected_before_git_side_effect(self) -> None:
         bad = replace(self.create_request, branch="agentdesk/TC-025/r1/a1/DSP-WRONG")
