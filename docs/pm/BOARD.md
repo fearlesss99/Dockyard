@@ -2,7 +2,7 @@
 
 <!-- GENERATED FILE: source=docs/pm/state/tasks.yaml -->
 > Generated view — do not edit by hand. The only current-state authority is `docs/pm/state/tasks.yaml`.
-> 生成时间（取状态源 `updated_at`，确保结果可复现）：`2026-08-02T10:35:00Z`
+> 生成时间（取状态源 `updated_at`，确保结果可复现）：`2026-08-02T10:55:00Z`
 
 Project: `AgentDeskSkill-0.1.0-beta-standard-validation`
 
@@ -12,14 +12,14 @@ Project: `AgentDeskSkill-0.1.0-beta-standard-validation`
 | --- | ---: |
 | `draft` | 0 |
 | `ready` | 0 |
-| `dispatched` | 1 |
+| `dispatched` | 0 |
 | `in_progress` | 0 |
 | `review_ready` | 0 |
 | `returned` | 0 |
 | `blocked` | 0 |
 | `accepted` | 0 |
 | `integrated` | 0 |
-| `cancelled` | 0 |
+| `cancelled` | 1 |
 | `superseded` | 0 |
 
 ## draft (0)
@@ -34,11 +34,11 @@ Project: `AgentDeskSkill-0.1.0-beta-standard-validation`
 | --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |
 | — | — | — | — | — | — | — | — | — | — |
 
-## dispatched (1)
+## dispatched (0)
 
 | Task | Revision | Attempt | Role | Required model | Selected model | Delivery | Integration | Report | Updated |
 | --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |
-| TC-001 | 3 | 1 | DEV | standard | expert: claude/claude-opus-4-8[1M] | none | not_applicable | docs/pm/reports/TC-001-r3-a1.md | 2026-08-02T10:35:00Z |
+| — | — | — | — | — | — | — | — | — | — |
 
 ## in_progress (0)
 
@@ -76,11 +76,11 @@ Project: `AgentDeskSkill-0.1.0-beta-standard-validation`
 | --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |
 | — | — | — | — | — | — | — | — | — | — |
 
-## cancelled (0)
+## cancelled (1)
 
 | Task | Revision | Attempt | Role | Required model | Selected model | Delivery | Integration | Report | Updated |
 | --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |
-| — | — | — | — | — | — | — | — | — | — |
+| TC-001 | 3 | 1 | — | — | — | none | not_applicable | docs/pm/reports/TC-001-r3-a1.md | 2026-08-02T10:55:00Z |
 
 ## superseded (0)
 

@@ -1,0 +1,22 @@
+schema_version: agentdesk.state-event/v2
+event_id: EVT-20260802-0002
+event_type: TASK_CANCELLED
+source_message_id: null
+task_id: TC-001
+revision: 3
+attempt: 1
+dispatch_id: DSP-TC001-R1-A1-0001
+from_state: dispatched
+to_state: cancelled
+lease_epoch: 1
+actor_role_id: PM
+occurred_at: "2026-08-02T10:55:00Z"
+evidence_refs:
+  - docs/pm/events/EVT-20260802-0001.yaml
+guard_results:
+  - guard: executor_binding_identity
+    inputs: { selected_provider: claude, observed_transport: codex }
+    result: failed
+    checked_at: "2026-08-02T10:55:00Z"
+    evidence_ref: runtime-route-audit
+reason: Actual executor was a Codex task and did not prove the frozen Claude provider binding.
