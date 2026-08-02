@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -139,6 +140,30 @@ def _lease(project_root: Path, request: AdmittedDispatchStartRequest) -> WorkerS
     return lease
 
 
+def _verify_git_worktree(path: Path, expected_head: str, expected_branch: str) -> None:
+    if not path.is_absolute() or not path.is_dir():
+        _fail(AdmittedDispatchConflictError, "git_worktree_path")
+    try:
+        def run(*arguments: str) -> bytes:
+            completed = subprocess.run(
+                ["git", *arguments], cwd=path, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
+                check=False, timeout=15,
+            )
+            if completed.returncode != 0:
+                _fail(AdmittedDispatchConflictError, "git_worktree_read")
+            return bytes(completed.stdout)
+        head = run("rev-parse", "HEAD").decode("ascii").strip()
+        branch = run("branch", "--show-current").decode("utf-8").strip()
+        clean = run("status", "--porcelain=v1", "-z", "--untracked-files=all")
+    except AdmittedDispatchRuntimeError:
+        raise
+    except Exception:
+        _fail(AdmittedDispatchConflictError, "git_worktree_unknown")
+    if head != expected_head or branch != expected_branch or clean != b"":
+        _fail(AdmittedDispatchConflictError, "git_worktree_identity")
+
+
 async def start_admitted_dispatch(request: AdmittedDispatchStartRequest, providers: Mapping[str, AgentCliProvider], orchestrator: WorkflowOrchestrator) -> AdmittedDispatchStartResult:
     if type(request) is not AdmittedDispatchStartRequest:
         _fail(AdmittedDispatchInputError, "request")
@@ -167,8 +192,20 @@ async def start_admitted_dispatch(request: AdmittedDispatchStartRequest, provide
     if lease.canonical_worktree != str(dr.workspace):
         _fail(AdmittedDispatchConflictError, "worktree_lease")
     record = WorktreeLifecycleStore(root).read_record(request.worktree_id, missing_ok=False)
-    if record is None or record.phase is not WorktreePhase.READY or record.worktree_path != str(dr.workspace) or record.dispatch_id != request.dispatch_id:
+    if (
+        record is None
+        or record.phase is not WorktreePhase.READY
+        or record.worktree_path != str(dr.workspace)
+        or record.dispatch_id != request.dispatch_id
+        or record.task_id != request.task_id
+        or record.revision != request.revision
+        or record.attempt != request.attempt
+        or record.base_commit != plan.base_commit
+        or record.branch != plan.branch
+        or record.head_commit != plan.base_commit
+    ):
         _fail(AdmittedDispatchConflictError, "worktree_record")
+    _verify_git_worktree(Path(record.worktree_path), record.head_commit, record.branch)
     snapshot = StateProvider(root).snapshot()
     event = next((e for e in snapshot.events if e.event_id == request.dispatch_event_id), None)
     outbox = next((o for o in snapshot.outbox if o.message_id == request.outbox_message_id), None)

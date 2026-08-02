@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -77,8 +78,30 @@ class HandoffRuntimeTypeTests(unittest.TestCase):
         self.assertNotIn("run_dispatch_cycle(", source)
         self.assertIn("read_dispatch_receipt", source)
 
+    def test_git_worktree_identity_is_reread_from_real_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "tracked.txt").write_text("clean\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True, capture_output=True)
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+            runtime._verify_git_worktree(root, head, "main")
+            (root / "dirty.txt").write_text("dirty", encoding="utf-8")
+            with self.assertRaises(runtime.AdmittedDispatchConflictError):
+                runtime._verify_git_worktree(root, head, "main")
+
 
 class HandoffRuntimeFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._git_patcher = patch.object(runtime, "_verify_git_worktree")
+        self._git_patcher.start()
+
+    async def asyncTearDown(self) -> None:
+        self._git_patcher.stop()
+
     def _existing_generation_context(self, request):
         plan = SimpleNamespace(
             receipt_id=request.receipt_id, task_id=request.task_id,
@@ -87,6 +110,7 @@ class HandoffRuntimeFlowTests(unittest.IsolatedAsyncioTestCase):
             outbox_message_id=request.outbox_message_id,
             selection_generation=request.selection_generation,
             content_digest=request.plan_digest,
+            base_commit="a" * 40, branch="agentdesk/TC-026/r1/a1/DSP-26",
         )
         scheduler = MagicMock()
         scheduler.read_admission_plan.return_value = plan
@@ -96,7 +120,10 @@ class HandoffRuntimeFlowTests(unittest.IsolatedAsyncioTestCase):
         worktrees = MagicMock()
         worktrees.read_record.return_value = SimpleNamespace(
             phase=WorktreePhase.READY, worktree_path=workspace,
-            dispatch_id=request.dispatch_id,
+            dispatch_id=request.dispatch_id, task_id=request.task_id,
+            revision=request.revision, attempt=request.attempt,
+            base_commit="a" * 40, head_commit="a" * 40,
+            branch="agentdesk/TC-026/r1/a1/DSP-26",
         )
         event = SimpleNamespace(
             event_id=request.dispatch_event_id, event_type="TASK_DISPATCHED",
@@ -235,6 +262,7 @@ class HandoffRuntimeFlowTests(unittest.IsolatedAsyncioTestCase):
                 content_digest=request.plan_digest, worker_kind=WorkerKind.BASIC_AGENT, assessment_id="ASM-1",
                 expected_snapshot_commit="a" * 40,
                 model_selection=SimpleNamespace(model_binding_id="BIND-1"),
+                base_commit="a" * 40, branch="agentdesk/TC-026/r1/a1/DSP-26",
             )
             scheduler = MagicMock()
             scheduler.read_admission_plan.return_value = plan
@@ -244,7 +272,9 @@ class HandoffRuntimeFlowTests(unittest.IsolatedAsyncioTestCase):
             worktrees.read_record.return_value = SimpleNamespace(
                 phase=WorktreePhase.READY,
                 worktree_path=str(request.dispatch_cycle_request.dispatch_request.workspace),
-                dispatch_id="DSP-26",
+                dispatch_id="DSP-26", task_id="TC-026", revision=1, attempt=1,
+                base_commit="a" * 40, head_commit="a" * 40,
+                branch="agentdesk/TC-026/r1/a1/DSP-26",
             )
             event = SimpleNamespace(event_id="EVT-26", event_type="TASK_DISPATCHED", dispatch_id="DSP-26", from_state="ready", to_state="dispatched", occurred_at="2026-08-02T03:00:00.000000Z")
             snapshot = SimpleNamespace(events=(event,), outbox=(SimpleNamespace(message_id="MSG-26", event_id="EVT-26"),), tasks=(SimpleNamespace(task_id="TC-026", current_dispatch="DSP-26"),))
