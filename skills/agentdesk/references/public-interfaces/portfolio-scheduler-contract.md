@@ -474,8 +474,9 @@ Worker startup/complete Scheduler runtime: **Target**.
 - Complete PortfolioScheduler runtime and Worker startup/dispatch integration:
   **Target**.
 - WorktreeLifecycleManager Contract: **Contract Current — TC-13.25a**.
-- WorktreeLifecycleManager Store/reconciliation: **Target — TC-13.25b**.
-- WorktreeLifecycleManager Create/Release Runtime: **Target — TC-13.25c**.
+- WorktreeLifecycleManager Store/reconciliation: **Current — TC-13.25b**.
+- WorktreeLifecycleManager Create/Release Runtime: **Current — TC-13.25c**.
+- WorktreeLifecycleManager adversarial verification: **Verified — TC-13.25d**.
 - TaskDifficulty dispatch/lifecycle wiring: **Current — TC-13.22b.3a**.
 - Interface #22 core orchestration: unchanged, **Current — TC-13.18d.13b**;
   Codex/provider-429 extensions remain deferred.

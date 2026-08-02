@@ -2136,8 +2136,8 @@ This contract's retry runtime is Current — TC-13.18d.12c.2.
 ## 19. WorktreeLifecycleManager Delegation Boundary (TC-13.25a)
 
 WorktreeLifecycleManager Contract is **Contract Current — TC-13.25a**;
-Store/reconciliation and create/release runtime remain **Target —
-TC-13.25b/TC-13.25c**.
+Store/reconciliation is **Current — TC-13.25b**; create/release runtime is
+**Current — TC-13.25c**; adversarial verification is **Verified — TC-13.25d**.
 
 WorkflowOrchestrator does not create, switch, remove, prune, scan, or reconcile
 Git worktrees.  It never invokes `git worktree add`, `git worktree remove`,
@@ -2153,4 +2153,4 @@ UNKNOWN, live process/lease, or identity-mismatched worktrees are never
 released.
 
 Interface #22 remains **Current — TC-13.18d.13b** with unchanged ownership;
-TC-13.25a adds no WorkflowOrchestrator production method or state field.
+TC-13.25 adds no WorkflowOrchestrator production method or state field.

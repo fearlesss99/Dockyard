@@ -14403,11 +14403,12 @@ class TC1325aWorktreeLifecycleContractFreezeTests(unittest.TestCase):
             self.contract + "\n" + self.workflow + "\n" + self.portfolio + "\n" + self.adr
         )
         self.assertIn("WorktreeLifecycleManager Contract: **Contract Current — TC-13.25a**", normalized)
-        self.assertIn("Durable Store and pure reconciliation: **Target — TC-13.25b**", normalized)
-        self.assertIn("Create/Release Runtime: **Target — TC-13.25c**", normalized)
+        self.assertIn("Durable Store and pure reconciliation: **Current — TC-13.25b**", normalized)
+        self.assertIn("Create/Release Runtime: **Current — TC-13.25c**", normalized)
+        self.assertIn("Adversarial verification: **Verified — TC-13.25d**", normalized)
         self.assertIn("Interface #22 is unchanged", normalized)
         self.assertIn("Interface #36 remains unchanged", normalized)
-        self.assertNotIn("WorktreeLifecycleManager Runtime Current", normalized)
+        self.assertIn("Contract + Store + Runtime Current; Verified — TC-13.25d", normalized)
 
 
 class TC1324b2b4d1SchedulerRecoveryHandoffIntegrationSealTests(unittest.TestCase):

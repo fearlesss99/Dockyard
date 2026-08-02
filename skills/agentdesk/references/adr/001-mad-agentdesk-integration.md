@@ -47,7 +47,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 34 | AgentDesk Provider Doctor and gateway.yaml template | **Current** — TC-13.21e.1 | TC-13.21e.1 | Read-only pre-start diagnostics (D001-D012, `scripts/doctor.py`) plus safe `agentdesk.gateway-config/v1` project template; zero writes/subprocess/network/model calls, no API-key handling; real provider execution remains Target, Codex decoder remains Target/deferred (TC-13.9c.2), provider rate-limit detection remains Target (TC-13.14c) |
 | 35 | PM TaskDifficulty Assessment | **Current — TC-13.22a** | TC-13.22a | Frozen seven-dimension PM assessment contract; deterministic assessor Current — TC-13.22b.1; canonical evidence codec Current — TC-13.22b.2a; evidence filesystem/ancestry store Current — TC-13.22b.2b; dispatch enforcement Current — TC-13.22b.3a; Interface #22 status unchanged |
 | 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core + Recovery Action Executor Runtime + Worker Handoff Contract + Worker Handoff Store Current** | TC-13.24a / TC-13.24b.1 / TC-13.24b.2a / TC-13.24b.2b.1 / TC-13.24b.2b.2 / TC-13.24b.2b.4a.2 / TC-13.24b.2b.4a.3 / TC-13.24b.2b.4a.4 / TC-13.24b.2b.2c / TC-13.24b.2b.4b.2 / TC-13.24b.2b.4c.1 / TC-13.24b.2b.4c.2 | Frozen BusinessPriority, QueueEntry, ScheduleReceipt, durable evidence, deterministic v1 selection, conflict-key, lock-order, crash-recovery, durable plan binding, plan persistence, selection-to-admission runtime, Scheduler-local Recovery Action Executor, and durable Worker Handoff evidence Store; Recovery Executor adversarial verification is Verified — TC-13.24b.2b.4b.2a; Worker Handoff adversarial verification is Verified — TC-13.24b.2b.4c.1a.i; Worker Handoff execution runtime and complete Scheduler runtime remain Target; Interface #22 unchanged |
-| 37 | WorktreeLifecycleManager | **Contract Current — TC-13.25a** | TC-13.25a | Frozen independent managed-worktree identity, durable reservation, porcelain inventory, path/reparse/UNC/case-fold security, forward-only lifecycle, crash reconciliation, concurrency, and fail-closed release contract; Store/runtime remain Target; Interfaces #22 and #36 unchanged |
+| 37 | WorktreeLifecycleManager | **Contract + Store + Runtime Current; Verified — TC-13.25d** | TC-13.25a / TC-13.25b / TC-13.25c / TC-13.25d | Frozen independent managed-worktree identity, durable reservation, porcelain inventory, path/reparse/UNC/case-fold security, forward-only lifecycle, crash reconciliation, concurrency, generation-aware process evidence, and fail-closed release; Interfaces #22 and #36 unchanged |
 
 ---
 
@@ -7961,9 +7961,9 @@ UNKNOWN states.  It never uses recursive deletion, `--force`, `reset`,
 `clean`, implicit `prune`, directory guessing, or path globs.
 
 WorktreeLifecycleManager Contract is **Contract Current — TC-13.25a**;
-Durable Store and pure reconciliation are **Target — TC-13.25b**;
-Create/Release Runtime is **Target — TC-13.25c**; adversarial verification is
-**Target — TC-13.25d**.  Interface #22 is unchanged.  Interface #36 remains
+Durable Store and pure reconciliation are **Current — TC-13.25b**;
+Create/Release Runtime is **Current — TC-13.25c**; adversarial verification is
+**Verified — TC-13.25d**.  Interface #22 is unchanged.  Interface #36 remains
 unchanged and does not claim complete Scheduler runtime Current.
 
 ---

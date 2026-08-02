@@ -1,7 +1,8 @@
 # WorktreeLifecycleManager Durable Contract
 
-Status: **Contract Current — TC-13.25a**.  Durable Store, reconciliation, and
-create/release runtime are **Target — TC-13.25b/TC-13.25c**.
+Status: **Contract Current — TC-13.25a**.  Durable Store and reconciliation are
+**Current — TC-13.25b**; create/release runtime is **Current — TC-13.25c**;
+adversarial verification is **Verified — TC-13.25d**.
 
 ## 1. Scope and authority
 
@@ -291,9 +292,9 @@ text, stdout/stderr, exit code, directory absence alone, or mtime.
 ## 10. Status boundaries
 
 - WorktreeLifecycleManager Contract: **Contract Current — TC-13.25a**.
-- Durable Store and pure reconciliation: **Target — TC-13.25b**.
-- Create/Release Runtime: **Target — TC-13.25c**.
-- Adversarial verification: **Target — TC-13.25d**.
+- Durable Store and pure reconciliation: **Current — TC-13.25b**.
+- Create/Release Runtime: **Current — TC-13.25c**.
+- Adversarial verification: **Verified — TC-13.25d**.
 - WorkflowOrchestrator Interface #22 remains unchanged and does not execute
   Git worktree commands.
 - PortfolioScheduler Interface #36 remains unchanged and does not claim
