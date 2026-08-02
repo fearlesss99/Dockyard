@@ -14254,7 +14254,7 @@ class TC1326aSchedulerWorkerHandoffRuntimeContractTests(unittest.TestCase):
         return re.findall(r"^\|\s*\d+\s*\|\s*`([^`]+)`", section, re.MULTILINE)
 
     def test_request_fields_are_exact(self) -> None:
-        self.assertEqual(self._fields("### 2.1", "### 2.2"), ["schema_version", "operation_id", "project_root", "queue_id", "receipt_id", "task_id", "revision", "attempt", "dispatch_id", "dispatch_event_id", "outbox_message_id", "selection_generation", "plan_digest", "handoff_id", "worktree_id", "lease_id", "lease_epoch", "holder_instance_id", "requested_at"])
+        self.assertEqual(self._fields("### 2.1", "### 2.2"), ["schema_version", "operation_id", "project_root", "queue_id", "receipt_id", "task_id", "revision", "attempt", "dispatch_id", "dispatch_event_id", "outbox_message_id", "selection_generation", "plan_digest", "handoff_id", "worktree_id", "lease_id", "lease_epoch", "holder_instance_id", "requested_at", "dispatch_cycle_request"])
 
     def test_result_fields_are_exact(self) -> None:
         self.assertEqual(self._fields("### 2.2", "## 3."), ["schema_version", "operation_id", "task_id", "revision", "attempt", "dispatch_id", "handoff_id", "generation_id", "phase", "outcome", "process_receipt_phase", "content_digest"])

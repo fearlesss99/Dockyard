@@ -24,7 +24,7 @@ fields contain no `Any`, bare `dict`, `Mapping`, `list`, `set`, callback,
 subprocess object, exception text, stdout, stderr, argv, environment, token,
 or provider credential.
 
-### 2.1 AdmittedDispatchStartRequest — exactly 19 fields
+### 2.1 AdmittedDispatchStartRequest — exactly 20 fields
 
 | # | field | type |
 |---:|---|---|
@@ -47,6 +47,13 @@ or provider credential.
 | 17 | `lease_epoch` | `int` |
 | 18 | `holder_instance_id` | `str` |
 | 19 | `requested_at` | `str` |
+| 20 | `dispatch_cycle_request` | `DispatchCycleRequest` |
+
+`dispatch_cycle_request` supplies the already frozen prompt, model selection,
+TaskDifficulty, ACK/delivery transition identities, WorkerKind, timeout, and
+holder binding. Every overlapping identity must equal durable evidence. The
+embedded `TASK_DISPATCHED` request is validation evidence only and is never
+applied again.
 
 ### 2.2 AdmittedDispatchStartResult — exactly 12 fields
 
