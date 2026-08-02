@@ -13,6 +13,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import pm_external_worker_runtime as runtime
+import validate_runtime
 from core_types import WorkerKind
 from portfolio_scheduler_worker_handoff_runtime import (
     AdmittedDispatchCompletionResult,
@@ -278,6 +279,48 @@ class PmExternalWorkerRuntimeTests(unittest.IsolatedAsyncioTestCase):
             endpoint = runtime.load_external_worker_endpoint(root, "DEV")
             self.assertEqual(endpoint.provider_id, "claude")
             self.assertEqual(endpoint.status, "verified")
+
+    def test_runtime_validator_accepts_external_worker_without_codex_thread(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            executable = root / "claude.exe"
+            executable.write_bytes(b"")
+            _write_config(root, executable)
+            (root / "worker").mkdir()
+            roles = {
+                "PM": validate_runtime.Role(
+                    "PM", "PM", "项目经理", "Active"
+                ),
+                "DEV": validate_runtime.Role(
+                    "R1", "DEV", "开发工程师", "Active"
+                )
+            }
+            routes_path = root / ".agentdesk/runtime/routes.yaml"
+            routes_path.write_text(
+                json.dumps({
+                    "schema_version": validate_runtime.ROUTES_SCHEMA,
+                    "routes": {
+                        "PM": {
+                            "role_no": "PM", "role_name": "项目经理",
+                            "expected_title": "PM . 项目经理",
+                            "actual_title": "PM . 项目经理",
+                            "status": "verified",
+                            "verified_at": "2026-08-02T11:00:00Z",
+                            "host_id": "local", "worktree": str(root),
+                            "thread_id": "019fc1f0-707b-7ab3-ad6a-5a95024001aa",
+                            "transport": "codex",
+                        }
+                    },
+                }),
+                encoding="utf-8",
+            )
+            reporter = validate_runtime.Reporter()
+            _, endpoint_ids = validate_runtime._validate_routes(
+                root, roles, {"DEV"}, reporter
+            )
+            self.assertEqual(reporter.errors, 0)
+            self.assertIn("DEV", endpoint_ids)
+            self.assertEqual(endpoint_ids["DEV"], "EXT-DEV-1")
 
 
 if __name__ == "__main__":

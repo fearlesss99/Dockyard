@@ -17,6 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from pm_external_worker_runtime import (
+    PmExternalWorkerError,
+    load_external_worker_endpoint,
+)
+
 
 ROUTES_SCHEMA = "agentdesk.routes/v2"
 RECEIPTS_SCHEMA = "agentdesk.transport-receipts/v1"
@@ -266,6 +271,25 @@ def _validate_routes(
     else:
         required.add("PM")
 
+    external_config_path = (
+        project / ".agentdesk/runtime/external-workers.yaml"
+    )
+    external_role_ids: set[str] = set()
+    if external_config_path.is_file() and not external_config_path.is_symlink():
+        try:
+            external_raw = json.loads(
+                external_config_path.read_text(encoding="utf-8")
+            )
+            workers = external_raw.get("workers")
+            if isinstance(workers, dict):
+                external_role_ids = {
+                    str(role_id) for role_id in workers
+                }
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            reporter.error(
+                "cannot parse .agentdesk/runtime/external-workers.yaml"
+            )
+
     thread_ids: dict[str, str] = {}
     worktrees: dict[str, str] = {}
     for role_id in sorted(required):
@@ -273,7 +297,22 @@ def _validate_routes(
         if role is None:
             reporter.error(f"required runtime role is absent from ROLES.md: {role_id}")
             continue
-        thread_id = _validate_route(role, routes.get(role_id), reporter)
+        thread_id = None
+        if role_id != "PM" and role_id in external_role_ids:
+            try:
+                endpoint = load_external_worker_endpoint(project, role_id)
+            except PmExternalWorkerError:
+                reporter.error(
+                    f"external worker endpoint[{role_id}] is not verified"
+                )
+            else:
+                thread_id = endpoint.endpoint_id
+                reporter.passed(
+                    f"external worker endpoint[{role_id}] records a verified "
+                    f"{endpoint.provider_id} provider attestation"
+                )
+        else:
+            thread_id = _validate_route(role, routes.get(role_id), reporter)
         if thread_id is not None:
             if thread_id in thread_ids.values():
                 other = next(key for key, value in thread_ids.items() if value == thread_id)
@@ -283,7 +322,7 @@ def _validate_routes(
             thread_ids[role_id] = thread_id
             route = routes.get(role_id)
             worktree = route.get("worktree") if isinstance(route, dict) else None
-            if isinstance(worktree, str):
+            if role_id not in external_role_ids and isinstance(worktree, str):
                 if worktree in worktrees.values():
                     other = next(key for key, value in worktrees.items() if value == worktree)
                     reporter.error(

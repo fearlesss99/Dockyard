@@ -21,7 +21,7 @@
 
 这套协议自动化的是**项目协作与推进**，不是绕过审查自动合并代码。任意新 PM 应能只读仓库恢复状态；角色执行、消息投递和回调允许安全重试；“交付”“验收”“进入公共基线”必须分别证明；只有持权控制面可以迁移状态，易失运行信息不进入仓库真相。
 
-Standard / Automated 必须同时实现可观察的真实闭环：PM/Leader 真实任务把卡投递到规范命名的独立岗位任务，岗位在独立 worktree 执行并持久化报告，岗位主动跨任务回调来源 PM，PM 验收后推进。仓库账本、outbox 或逻辑 role 只保存事实和意图，不能替代真实任务或真实消息；heartbeat 只兜底漏通知。
+Standard / Automated 必须同时实现可观察的真实闭环：唯一 PM/Leader 真实任务把卡交给规范命名的独立 Codex 岗位任务，或交给已验证的外部 provider endpoint；Worker 在独立 worktree 执行并持久化报告，通过跨任务 callback 或同步 PM-return receipt 返回；MAD audit 通过后控制面才推进验收。仓库账本、outbox 或逻辑 role 只保存事实和意图，不能替代真实执行与 receipt；heartbeat 只兜底漏通知。
 
 ## 2. 控制面与唯一写入权
 
@@ -147,12 +147,12 @@ selector 与 validator 是派发 guard，不负责启动 provider 模型。调�
 
 Standard / Automated 的会话不变量：
 
-1. PM/Leader 与 Worker 使用不同、真实可读取的 task/thread ID；逻辑岗位、subagent、同任务人格切换或单独 worktree 均不构成独立岗位任务。
+1. PM/Leader 始终使用唯一真实 Codex task/thread。Codex-backed Worker 必须使用不同且可读取的 task/thread；external-backed Worker 必须使用 verified endpoint、冻结 provider identity、durable handoff 和 PM-return receipt。逻辑岗位、subagent、同任务人格切换或单独 worktree 均不构成 Worker execution。
 2. 新建 Codex 可见任务必须有用户对具体岗位或明确批次的显式授权；“初始化/开始开发/使用 Skill”不隐含此授权。授权缺失时停在 `Ready` 并询问，禁止静默降级。
 3. gitignored runtime route 必须同时证明 `role_no`、`role_name`、expected/actual title、transport、host、真实 thread ID、worktree、状态和验证时间。只有 `status: verified` 可用于派发。
 4. PM callback route 也必须 verified；派发消息携带运行时 delegation `source_thread_id`，Worker 完成前优先向该来源回调，并与 PM route 核对。
 5. 派发与 callback 都必须由真实 transport 执行并产生本机 receipt。最终答复、报告文件、outbox 意图或 heartbeat 观察都不是主动回调 receipt。
-6. runtime adapter/thread tools 不可用时，只能明确使用 Lite/manual 或阻塞；不得宣称 Standard / Automated 闭环。
+6. Codex-backed Worker 缺 thread tools，或 external-backed Worker 缺 provider/handoff/return receipt 时，只能明确使用 Lite/manual 或阻塞；不得宣称 Standard / Automated 闭环。
 
 Codex 的确定性工具顺序见 [Codex 任务运行时适配器](codex-runtime-adapter.md)。
 
@@ -482,7 +482,7 @@ implementation_commit
 11. 每个活动或已有 report 的历史派发都有首次状态 commit 中的匹配 event/outbox；其十字段 model snapshot 与账本或 report 完全一致，event/outbox ID 分别唯一，outbox 原始字节摘要匹配。
 12. `require_pm_approval` 的降级派发有同 commit 或更早、未过期且派发前/时未撤销的结构化批准 event；approval ID 本身不构成证据。
 13. 每个 Active role 都有唯一 `role_no + role_id + role_name`，规范标题可确定且无冲突。
-14. Standard / Automated 的每个活动 dispatch 都绑定 distinct、真实、`verified` 的 PM/Worker route；actual/expected title 严格匹配，host/worktree 可达且 worktree 没有复用。
+14. Standard / Automated 的每个活动 dispatch 都绑定唯一 verified PM route，以及 distinct verified Codex Worker route 或 external Worker endpoint；Codex 标题严格匹配，外部 endpoint 的 provider/binding/executable 严格匹配，worktree 可达且没有复用。
 15. 每个真实 dispatch transport 都有以 `dispatch_id` 为键、与 `message_id + role_id + source_thread_id + destination_thread_id` 匹配的本机 receipt；receipt 缺失时不能宣称已送达或进入闭环运行。outbox `payload_digest` 仍由仓库 event/outbox 证据独立校验。
 16. 每个 Worker 完成声明都有以 `callback_id` 为键、与 `dispatch_id + source/destination role + source/destination thread` 匹配且 `status: received` 的 callback receipt，目标等于 delegation source 与 verified PM route；只有 report 没有 receipt 属于漏回调恢复场景。
 17. heartbeat 只纠正/告警 transport 差异，不替代 Worker 主动 callback，也不直接验收、实现、合并或新建 attempt。

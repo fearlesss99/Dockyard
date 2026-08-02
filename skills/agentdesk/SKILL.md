@@ -9,7 +9,7 @@ description: "Initialize, operate, validate, and recover task-card-driven multi-
 
 Turn a software repository into a controlled multi-session development system:
 
-> Versioned task cards, PM-owned canonical state, real independently visible role tasks, role-bound execution, proactive callbacks, immutable Git evidence, explicit acceptance, and recoverable handoff.
+> Versioned task cards, PM-owned canonical state, one verified PM task, role-bound Codex or external Worker execution, durable PM return receipts, immutable Git evidence, explicit acceptance, and recoverable handoff.
 
 The observable loop is non-negotiable:
 
@@ -39,7 +39,7 @@ Choose one mode from the request and repository state:
 5. **Validate** — check project structure and state without changing business code.
 6. **Recover** — reconcile conflicting state, lost callbacks, stale revisions, expired leases, or invisible Git evidence.
 
-Do not silently combine PM and worker authority. In `standard` and `automated`, a worker must run in a real task distinct from the PM/Leader task. Never satisfy this requirement by changing personas in the PM task, by creating only a worktree, or by recording a placeholder thread ID.
+Do not silently combine PM and worker authority. In `standard` and `automated`, a Worker must use either a real task distinct from the PM/Leader task or a verified external provider endpoint. Never satisfy this requirement by changing personas in the PM task, by creating only a worktree, or by recording a placeholder task/endpoint ID.
 
 Creating a Codex task makes a new user-visible task. If no verified role task exists, require explicit user authorization to create that visible task. A general request such as “start development” or “use this Skill” is not that authorization. Keep the card at `Ready`, explain which `role_no . role_name` task(s) will be created, and ask. Do not silently fall back to a same-task role switch. Lite may use an explicitly authorized manual baton or same-task role switch, but must label that run Lite and must not claim the multi-task closed loop.
 
@@ -70,8 +70,8 @@ Do not load all references by default. The repository and current task card rema
 - Persist PM acceptance in the repository; do not treat chat, callbacks, or self-reported tests as acceptance.
 - Keep thread IDs, local worktree paths, cursors, tokens, and timed lease details under gitignored `.agentdesk/runtime/`.
 - Let the Project Leader own vendor-neutral role policy in `docs/pm/ROLE-POLICIES.yaml`; task and risk requirements may raise its floor, never lower it.
-- Give every Active role one stable `role_no`, `role_id`, and `role_name`; require the real task title to equal `<role_no> . <role_name>` byte-for-byte.
-- In Standard and Automated, bind every active dispatch to a verified, independently visible role task and dedicated worktree. A route is usable only when the real thread exists, its actual title matches the expected title, its host/worktree are reachable, and the PM callback route is independently verified.
+- Give every Active role one stable `role_no`, `role_id`, and `role_name`; Codex-backed roles require the real task title to equal `<role_no> . <role_name>` byte-for-byte.
+- In Standard and Automated, bind every active dispatch to either a verified independent Codex role task or a verified external Worker endpoint and dedicated worktree. External execution must use the frozen provider/binding/executable and return durable handoff and PM-return receipts; it must not create a second PM.
 - Treat explicit authorization for creating a new user-visible task as a precondition, not something implied by project initialization or development approval.
 - Require the worker to proactively callback the delegation `source_thread_id`, cross-check it against the verified PM route, and persist a transport receipt before claiming its task lifecycle complete. Heartbeat is only the fallback for a failed or lost primary callback.
 - Freeze role policy at `task_card_commit`; freeze the selected provider/model snapshot in dispatch and delivery evidence.
@@ -92,7 +92,7 @@ Reuse equivalent files. Do not create a parallel workflow beside an established 
 Choose an adoption level:
 
 - `lite`: one PM and one or two roles; manual baton and manual dispatch; no claim of automatic multi-task closure.
-- `standard`: real independently visible PM/role tasks, exact role titles, dedicated worktrees, schema validation, explicit dependencies and integration gates, outbox/inbox, proactive cross-task callbacks with receipts, and heartbeat reconciliation.
+- `standard`: one verified PM task; Workers backed by verified Codex tasks or external provider endpoints; dedicated worktrees, schema validation, explicit dependencies and integration gates, durable handoff/return receipts, and heartbeat reconciliation.
 - `automated`: all Standard guarantees plus timed lease renewal, automatic receipt/ack retry and dead-letter handling, orphan detection, stronger sandboxing, metrics, and recovery automation.
 
 Start new projects at `standard` unless their size clearly calls for `lite`. Do not select `automated` before Standard has run successfully.

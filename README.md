@@ -10,7 +10,7 @@ A Codex Skill for turning medium or large Git repositories into controlled, task
 
 | Mode | What it means |
 | --- | --- |
-| **Standard** | Every active role uses a real, independently visible Codex task with the exact configured title, a dedicated Git worktree, verified runtime routes, proactive callbacks, and transport receipts. |
+| **Standard** | The PM uses one verified Codex task. Each Worker uses either an independently visible Codex task or a verified external provider endpoint, plus a dedicated Git worktree, durable handoff evidence, PM-return receipt, and fail-closed acceptance gates. |
 | **Lite** | Uses a manual baton or an explicitly authorized same-task role switch. It must not claim an independent multi-task closed loop, enforced model routing, or automated transport guarantees. |
 | **Automated** | Adds lease renewal, retry/dead-letter handling, orphan detection, metrics, and recovery automation after Standard has been proven in the target environment. |
 
@@ -60,7 +60,7 @@ Versioned task cards, logical role IDs, decisions, events, and acceptance eviden
 
 | 模式 | 含义 |
 | --- | --- |
-| **Standard** | 每个活跃岗位都使用真实、独立可见且精确命名的 Codex 任务，配合独立 Git worktree、已验证路由、主动回调和传输回执。 |
+| **Standard** | PM 使用唯一且已验证的 Codex 任务；Worker 可使用独立 Codex 任务或已验证的外部 provider endpoint，并配合独立 Git worktree、durable handoff、PM 返回回执和 fail-closed 验收门。 |
 | **Lite** | 使用人工接力或经明确授权的同任务切换。不得声称实现了独立多任务闭环、强制模型路由或自动传输保障。 |
 | **Automated** | 在 Standard 已经跑通后，再增加租约续期、重试/死信、孤儿检测、指标和恢复自动化。 |
 

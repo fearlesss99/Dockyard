@@ -1,6 +1,6 @@
 # Codex 任务运行时适配器
 
-本参考是 Codex 上执行 Standard / Automated 多岗位闭环的低自由度适配器。它规定真实任务的创建、命名、核验、派发、主动回调和 receipt 记录顺序。仓库 event/outbox 证明“意图已提交”；本适配器证明“真实任务存在且消息已发送”。两者缺一不可。
+本参考只适用于 Codex-backed 岗位任务。它规定真实 Codex 任务的创建、命名、核验、派发、主动回调和 receipt 记录顺序。外部 Worker 不创建 Codex 岗位任务，而由 `external-workers.yaml`、scheduler handoff runtime 和 PM-return receipt 验证；唯一 PM 仍必须是 verified Codex task。仓库 event/outbox 证明“意图已提交”；对应 runtime adapter 证明“真实执行存在且结果已返回”。两者缺一不可。
 
 ## 目录
 
@@ -16,7 +16,7 @@
 ## 1. 强制边界
 
 1. Codex UI 中用户看到的是“任务”；工具和运行时字段使用 `thread` / `thread_id`。二者在本参考中指同一对象。
-2. Standard / Automated 的 PM/Leader 与 Worker 必须是两个真实、可读取、彼此不同的 Codex 任务。子 Agent、逻辑角色切换、单独 Git worktree 或占位字符串都不等于岗位任务。
+2. 本适配器管理的 Codex-backed PM/Leader 与 Worker 必须是两个真实、可读取、彼此不同的 Codex 任务。External-backed Worker 不适用本条，但必须通过 verified provider endpoint、durable handoff 和 PM-return receipt 满足独立执行边界。
 3. 每个 Active 岗位必须从 `ROLES.md` 取得唯一的 `role_no`、`role_id`、`role_name` 和派生 `expected_thread_title`。任务标题必须逐字等于：
 
    ```text
