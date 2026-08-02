@@ -14294,9 +14294,9 @@ class TC1326aSchedulerWorkerHandoffRuntimeContractTests(unittest.TestCase):
     def test_status_is_contract_current_runtime_target(self) -> None:
         n = self._normalized(self.text + "\n" + self.adr)
         self.assertIn("Handoff Runtime Contract: **Contract Current — TC-13.26a**", n)
-        self.assertIn("Handoff Runtime: **Target — TC-13.26b**", n)
-        self.assertIn("Handoff E2E verification: **Target — TC-13.26c**", n)
-        self.assertIn("| 38 | Scheduler-to-Worker Handoff Runtime | **Contract Current — TC-13.26a**", n)
+        self.assertIn("Handoff Runtime: **Current — TC-13.26b**", n)
+        self.assertIn("Handoff E2E verification: **Verified — TC-13.26c**", n)
+        self.assertIn("| 38 | Scheduler-to-Worker Handoff Runtime | **Contract + Runtime Current; E2E Verified — TC-13.26c**", n)
 
 
 class TC1325aWorktreeLifecycleContractFreezeTests(unittest.TestCase):

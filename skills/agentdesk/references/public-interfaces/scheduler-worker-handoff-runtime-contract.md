@@ -1,7 +1,7 @@
 # Scheduler-to-Worker Handoff Runtime Contract
 
 Status: **Contract Current — TC-13.26a**. Production runtime is
-**Target — TC-13.26b** and end-to-end verification is **Target — TC-13.26c**.
+**Current — TC-13.26b** and end-to-end verification is **Verified — TC-13.26c**.
 
 ## 1. Boundary
 
@@ -130,8 +130,8 @@ owned by their frozen lifecycle components.
 ## 6. Status boundary
 
 - Handoff Runtime Contract: **Contract Current — TC-13.26a**.
-- Handoff Runtime: **Target — TC-13.26b**.
-- Handoff E2E verification: **Target — TC-13.26c**.
+- Handoff Runtime: **Current — TC-13.26b**.
+- Handoff E2E verification: **Verified — TC-13.26c**.
 - Interface #22 is unchanged and remains the canonical cancellation,
   supersession, ACK, delivery, and finalization owner.
 - Interface #36 gains only this contract; complete Scheduler runtime remains
