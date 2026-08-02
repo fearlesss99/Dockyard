@@ -18,6 +18,7 @@ import portfolio_scheduler_worker_handoff_runtime as runtime
 from core_types import WorkerKind
 from portfolio_scheduler_store import QueuePhase, ReceiptPhase
 from portfolio_scheduler_worker_handoff_store import ScheduledDispatchHandoffPhase
+from dispatch_supervisor_evidence import ProcessLiveness
 from workflow_orchestrator import DispatchCycleRequest, WorkflowOrchestrator
 from worktree_lifecycle_store import WorktreePhase
 
@@ -78,6 +79,112 @@ class HandoffRuntimeTypeTests(unittest.TestCase):
 
 
 class HandoffRuntimeFlowTests(unittest.IsolatedAsyncioTestCase):
+    def _existing_generation_context(self, request):
+        plan = SimpleNamespace(
+            receipt_id=request.receipt_id, task_id=request.task_id,
+            revision=request.revision, dispatch_id=request.dispatch_id,
+            event_id=request.dispatch_event_id,
+            outbox_message_id=request.outbox_message_id,
+            selection_generation=request.selection_generation,
+            content_digest=request.plan_digest,
+        )
+        scheduler = MagicMock()
+        scheduler.read_admission_plan.return_value = plan
+        scheduler.read_queue_entry.return_value = SimpleNamespace(state=QueuePhase.DISPATCHED)
+        scheduler.read_schedule_receipt.return_value = SimpleNamespace(phase=ReceiptPhase.DISPATCHED)
+        workspace = str(request.dispatch_cycle_request.dispatch_request.workspace)
+        worktrees = MagicMock()
+        worktrees.read_record.return_value = SimpleNamespace(
+            phase=WorktreePhase.READY, worktree_path=workspace,
+            dispatch_id=request.dispatch_id,
+        )
+        event = SimpleNamespace(
+            event_id=request.dispatch_event_id, event_type="TASK_DISPATCHED",
+            dispatch_id=request.dispatch_id, from_state="ready",
+            to_state="dispatched", occurred_at=request.requested_at,
+        )
+        snapshot = SimpleNamespace(
+            events=(event,),
+            outbox=(SimpleNamespace(message_id=request.outbox_message_id, event_id=event.event_id),),
+            tasks=(SimpleNamespace(task_id=request.task_id, current_dispatch=request.dispatch_id),),
+        )
+        return scheduler, worktrees, snapshot, workspace
+
+    async def test_existing_alive_or_dead_generation_requires_recovery_without_write(self) -> None:
+        for liveness in (ProcessLiveness.ALIVE, ProcessLiveness.DEAD):
+            with self.subTest(liveness=liveness), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                request = _request(root)
+                orchestrator = WorkflowOrchestrator(root, _Clock())
+                scheduler, worktrees, snapshot, workspace = self._existing_generation_context(request)
+                process = SimpleNamespace(generation_id="GEN-EXISTING", phase="SUPERVISOR_READY")
+                handoffs = MagicMock()
+                handoffs.read_handoff.return_value = SimpleNamespace(
+                    dispatch_id=request.dispatch_id, handoff_id=request.handoff_id,
+                    plan_digest=request.plan_digest,
+                    phase=ScheduledDispatchHandoffPhase.HANDOFF_RESERVED,
+                )
+                start = AsyncMock()
+                with (
+                    patch.object(runtime, "resolve_invocation"),
+                    patch.object(runtime, "PortfolioSchedulerStore", return_value=scheduler),
+                    patch.object(runtime, "_lease", return_value=SimpleNamespace(canonical_worktree=workspace)),
+                    patch.object(runtime, "WorktreeLifecycleStore", return_value=worktrees),
+                    patch.object(runtime, "StateProvider", return_value=SimpleNamespace(snapshot=lambda: snapshot)),
+                    patch.object(runtime.dse, "read_dispatch_receipt", return_value=process),
+                    patch.object(runtime.dse, "probe_dispatch_process_tree", return_value=liveness),
+                    patch.object(runtime, "PortfolioSchedulerWorkerHandoffStore", return_value=handoffs),
+                    patch.object(WorkflowOrchestrator, "start_admitted_dispatch_execution", start),
+                ):
+                    result = await runtime.start_admitted_dispatch(request, {"claude": object()}, orchestrator)
+                self.assertEqual(result.outcome, runtime.AdmittedDispatchStartOutcome.RECOVERY_REQUIRED)
+                handoffs.reserve_handoff.assert_not_called()
+                start.assert_not_awaited()
+
+    async def test_existing_unknown_generation_fails_closed_without_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            request = _request(root)
+            orchestrator = WorkflowOrchestrator(root, _Clock())
+            scheduler, worktrees, snapshot, workspace = self._existing_generation_context(request)
+            process = SimpleNamespace(generation_id="GEN-EXISTING", phase="SUPERVISOR_READY")
+            handoffs = MagicMock()
+            handoffs.read_handoff.return_value = SimpleNamespace(dispatch_id=request.dispatch_id, handoff_id=request.handoff_id, plan_digest=request.plan_digest, phase=ScheduledDispatchHandoffPhase.HANDOFF_RESERVED)
+            with (
+                patch.object(runtime, "resolve_invocation"), patch.object(runtime, "PortfolioSchedulerStore", return_value=scheduler),
+                patch.object(runtime, "_lease", return_value=SimpleNamespace(canonical_worktree=workspace)), patch.object(runtime, "WorktreeLifecycleStore", return_value=worktrees),
+                patch.object(runtime, "StateProvider", return_value=SimpleNamespace(snapshot=lambda: snapshot)), patch.object(runtime.dse, "read_dispatch_receipt", return_value=process),
+                patch.object(runtime.dse, "probe_dispatch_process_tree", return_value=ProcessLiveness.UNKNOWN), patch.object(runtime, "PortfolioSchedulerWorkerHandoffStore", return_value=handoffs),
+            ):
+                with self.assertRaises(runtime.AdmittedDispatchConflictError):
+                    await runtime.start_admitted_dispatch(request, {"claude": object()}, orchestrator)
+            handoffs.reserve_handoff.assert_not_called()
+
+    async def test_finalized_generation_replays_without_probe_or_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            request = _request(root)
+            orchestrator = WorkflowOrchestrator(root, _Clock())
+            scheduler, worktrees, snapshot, workspace = self._existing_generation_context(request)
+            process = SimpleNamespace(generation_id="GEN-FINAL", phase="FINALIZING")
+            handoffs = MagicMock()
+            handoffs.read_handoff.return_value = SimpleNamespace(
+                dispatch_id=request.dispatch_id, handoff_id=request.handoff_id,
+                plan_digest=request.plan_digest,
+                phase=ScheduledDispatchHandoffPhase.FINALIZED,
+            )
+            probe = MagicMock()
+            with (
+                patch.object(runtime, "resolve_invocation"), patch.object(runtime, "PortfolioSchedulerStore", return_value=scheduler),
+                patch.object(runtime, "_lease", return_value=SimpleNamespace(canonical_worktree=workspace)), patch.object(runtime, "WorktreeLifecycleStore", return_value=worktrees),
+                patch.object(runtime, "StateProvider", return_value=SimpleNamespace(snapshot=lambda: snapshot)), patch.object(runtime.dse, "read_dispatch_receipt", return_value=process),
+                patch.object(runtime.dse, "read_dispatch_tombstone", return_value=SimpleNamespace(generation_id="GEN-FINAL")), patch.object(runtime.dse, "probe_dispatch_process_tree", probe),
+                patch.object(runtime, "PortfolioSchedulerWorkerHandoffStore", return_value=handoffs),
+            ):
+                result = await runtime.start_admitted_dispatch(request, {"claude": object()}, orchestrator)
+            self.assertEqual(result.outcome, runtime.AdmittedDispatchStartOutcome.REPLAYED)
+            probe.assert_not_called()
+            handoffs.reserve_handoff.assert_not_called()
     async def test_provider_failure_precedes_all_durable_reads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -116,6 +223,7 @@ class HandoffRuntimeFlowTests(unittest.IsolatedAsyncioTestCase):
             )
             event = SimpleNamespace(event_id="EVT-26", event_type="TASK_DISPATCHED", dispatch_id="DSP-26", from_state="ready", to_state="dispatched", occurred_at="2026-08-02T03:00:00.000000Z")
             snapshot = SimpleNamespace(events=(event,), outbox=(SimpleNamespace(message_id="MSG-26", event_id="EVT-26"),), tasks=(SimpleNamespace(task_id="TC-026", current_dispatch="DSP-26"),))
+            reserved_process = SimpleNamespace(generation_id="GEN-1", written_at="2026-08-02T03:00:00.500000Z", phase="RESERVED")
             process = SimpleNamespace(generation_id="GEN-1", written_at="2026-08-02T03:00:01.000000Z", phase="WORKER_STARTED")
             final_process = SimpleNamespace(generation_id="GEN-1", written_at="2026-08-02T03:00:02.000000Z", phase="FINALIZING")
             execution = SimpleNamespace(wait=AsyncMock(return_value=object()))
@@ -130,7 +238,7 @@ class HandoffRuntimeFlowTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(runtime, "_lease", return_value=lease),
                 patch.object(runtime, "WorktreeLifecycleStore", return_value=worktrees),
                 patch.object(runtime, "StateProvider", return_value=SimpleNamespace(snapshot=lambda: snapshot)),
-                patch.object(runtime.dse, "read_dispatch_receipt", side_effect=[process, process, final_process]),
+                patch.object(runtime.dse, "read_dispatch_receipt", side_effect=[reserved_process, process, final_process]),
                 patch.object(runtime.dse, "read_dispatch_tombstone", return_value=SimpleNamespace(generation_id="GEN-1", finalized_at="2026-08-02T03:00:03.000000Z")),
                 patch.object(runtime, "PortfolioSchedulerWorkerHandoffStore", return_value=handoffs),
                 patch.object(WorkflowOrchestrator, "start_admitted_dispatch_execution", start_execution),

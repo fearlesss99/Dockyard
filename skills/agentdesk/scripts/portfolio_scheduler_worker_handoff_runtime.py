@@ -14,6 +14,7 @@ from dispatcher_gateway import AgentCliProvider, resolve_invocation
 from portfolio_scheduler_store import PortfolioSchedulerStore, QueuePhase, ReceiptPhase
 from portfolio_scheduler_worker_handoff_store import (
     HANDOFF_SCHEMA_VERSION,
+    PortfolioSchedulerWorkerHandoffNotFoundError,
     PortfolioSchedulerWorkerHandoffStore,
     ScheduledDispatchHandoff,
     ScheduledDispatchHandoffPhase,
@@ -176,6 +177,41 @@ async def start_admitted_dispatch(request: AdmittedDispatchStartRequest, provide
         _fail(AdmittedDispatchConflictError, "canonical_dispatch")
 
     existing = dse.read_dispatch_receipt(root, request.dispatch_id)
+    handoff_store = PortfolioSchedulerWorkerHandoffStore(root)
+    existing_handoff = None
+    try:
+        existing_handoff = handoff_store.read_handoff(request.dispatch_id)
+    except PortfolioSchedulerWorkerHandoffNotFoundError:
+        pass
+    if existing is not None and existing.phase != dse.DispatchReceiptPhase.RESERVED.value:
+        if existing.generation_id == "":
+            _fail(AdmittedDispatchConflictError, "process_generation")
+        if existing_handoff is not None:
+            if (
+                existing_handoff.dispatch_id != request.dispatch_id
+                or existing_handoff.handoff_id != request.handoff_id
+                or existing_handoff.plan_digest != request.plan_digest
+            ):
+                _fail(AdmittedDispatchConflictError, "handoff_replay_identity")
+            if existing_handoff.phase is ScheduledDispatchHandoffPhase.FINALIZED:
+                tombstone = dse.read_dispatch_tombstone(root, request.dispatch_id)
+                if tombstone is None or tombstone.generation_id != existing.generation_id:
+                    _fail(AdmittedDispatchConflictError, "finalized_tombstone")
+                return _result(
+                    request, existing.generation_id, existing_handoff.phase,
+                    AdmittedDispatchStartOutcome.REPLAYED, existing.phase,
+                )
+        liveness = dse.probe_dispatch_process_tree(existing)
+        if liveness is dse.ProcessLiveness.UNKNOWN:
+            _fail(AdmittedDispatchConflictError, "process_liveness_unknown")
+        phase = (
+            existing_handoff.phase if existing_handoff is not None
+            else ScheduledDispatchHandoffPhase.ADMISSION_COMMITTED
+        )
+        return _result(
+            request, existing.generation_id, phase,
+            AdmittedDispatchStartOutcome.RECOVERY_REQUIRED, existing.phase,
+        )
     if existing is None:
         creator_pid, creator_creation = dse.get_current_process_identity()
         if not creator_creation:
@@ -184,7 +220,6 @@ async def start_admitted_dispatch(request: AdmittedDispatchStartRequest, provide
         existing = dse.reserve_receipt(root, task_id=request.task_id, revision=request.revision, attempt=request.attempt, dispatch_id=request.dispatch_id, lease_epoch=request.lease_epoch, holder_instance_id=request.holder_instance_id, generation_id=generation, creator_pid=creator_pid, creator_creation_time=creator_creation, boot_id=dse.get_boot_id())
     generation = existing.generation_id
     handoff = ScheduledDispatchHandoff(HANDOFF_SCHEMA_VERSION, request.handoff_id, request.queue_id, request.plan_digest, request.receipt_id, request.task_id, request.revision, request.attempt, request.dispatch_id, request.dispatch_event_id, request.outbox_message_id, request.lease_id, request.lease_epoch, request.holder_instance_id, plan.worker_kind, plan.assessment_id, plan.expected_snapshot_commit, plan.model_selection.model_binding_id, ScheduledDispatchHandoffPhase.ADMISSION_COMMITTED, request.requested_at, None, None, None, None, "sha256:" + "0" * 64)
-    handoff_store = PortfolioSchedulerWorkerHandoffStore(root)
     reserved, _ = handoff_store.reserve_handoff(handoff, existing, request.requested_at)
     dispatch_transition = TransitionResult(request.task_id, event.event_id, event.from_state, event.to_state, event.occurred_at, request.outbox_message_id)
     execution = await orchestrator.start_admitted_dispatch_execution(cycle, providers, lease, generation, dispatch_transition)
