@@ -7,7 +7,7 @@
 | role_no | role_id | role_name | expected_thread_title | Responsibilities | Forbidden | Common paths | Acceptance focus | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | PM | PM | 项目经理 | `PM . 项目经理` | Requirements, task decomposition, state, review, acceptance | Worker implementation and unreviewed business changes | `docs/pm/**` | Scope, evidence, dependencies, risk | Active |
-| R1 | DEV | 开发工程师 | `R1 . 开发工程师` | Project implementation and tests | PM acceptance, unapproved contract changes | `<configure>` | Behavior, errors, tests | Paused |
+| R1 | DEV | 开发工程师 | `R1 . 开发工程师` | Project implementation and tests | PM acceptance, unapproved contract changes | `<configure>` | Behavior, errors, tests | Active |
 | R2 | QA | QA 工程师 | `R2 . QA 工程师` | Independent test design and evidence | Final PM acceptance | `<configure>` | E2E, regression, residual risk | Proposed |
 
 `expected_thread_title` is derived exactly as `<role_no> . <role_name>` with one ASCII space on each side of the period. It is the required visible title, not a suggestion.
