@@ -22,7 +22,11 @@ from portfolio_scheduler_worker_handoff_store import (
 )
 from state_provider import StateProvider
 from worker_slot_lease import WorkerSlotLease, read_worker_slot_leases
-from workflow_orchestrator import DispatchCycleRequest, WorkflowOrchestrator
+from workflow_orchestrator import (
+    DispatchCycleRequest,
+    DispatchCycleResult,
+    WorkflowOrchestrator,
+)
 from worktree_lifecycle_store import WorktreeLifecycleStore, WorktreePhase
 
 SCHEMA_VERSION = "agentdesk.scheduler-worker-handoff-runtime/v1"
@@ -116,6 +120,14 @@ class AdmittedDispatchStartResult:
     content_digest: str
 
 
+@dataclass(frozen=True, slots=True)
+class AdmittedDispatchCompletionResult:
+    """Handoff result plus fresh delivery evidence when this call starts it."""
+
+    start_result: AdmittedDispatchStartResult
+    dispatch_cycle_result: DispatchCycleResult | None
+
+
 def _result(request: AdmittedDispatchStartRequest, generation: str, phase: ScheduledDispatchHandoffPhase, outcome: AdmittedDispatchStartOutcome, receipt_phase: str) -> AdmittedDispatchStartResult:
     body = "\0".join((request.operation_id, request.dispatch_id, request.handoff_id, generation, phase.value, outcome.value, receipt_phase))
     return AdmittedDispatchStartResult(SCHEMA_VERSION, request.operation_id, request.task_id, request.revision, request.attempt, request.dispatch_id, request.handoff_id, generation, phase, outcome, receipt_phase, "sha256:" + hashlib.sha256(body.encode()).hexdigest())
@@ -164,7 +176,12 @@ def _verify_git_worktree(path: Path, expected_head: str, expected_branch: str) -
         _fail(AdmittedDispatchConflictError, "git_worktree_identity")
 
 
-async def start_admitted_dispatch(request: AdmittedDispatchStartRequest, providers: Mapping[str, AgentCliProvider], orchestrator: WorkflowOrchestrator) -> AdmittedDispatchStartResult:
+async def _start_admitted_dispatch(
+    request: AdmittedDispatchStartRequest,
+    providers: Mapping[str, AgentCliProvider],
+    orchestrator: WorkflowOrchestrator,
+    completion: list[DispatchCycleResult] | None,
+) -> AdmittedDispatchStartResult:
     if type(request) is not AdmittedDispatchStartRequest:
         _fail(AdmittedDispatchInputError, "request")
     if not isinstance(providers, Mapping) or not providers:
@@ -289,7 +306,9 @@ async def start_admitted_dispatch(request: AdmittedDispatchStartRequest, provide
     handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.SUPERVISOR_STARTED, current_receipt.written_at, current_receipt)
     handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.WORKER_STARTED, current_receipt.written_at, current_receipt)
     handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.ACKNOWLEDGED, request.requested_at, current_receipt)
-    await execution.wait()
+    dispatch_cycle_result = await execution.wait()
+    if completion is not None:
+        completion.append(dispatch_cycle_result)
     final_receipt = dse.read_dispatch_receipt(root, request.dispatch_id)
     tombstone = dse.read_dispatch_tombstone(root, request.dispatch_id)
     if final_receipt is None or tombstone is None or tombstone.generation_id != generation:
@@ -297,3 +316,30 @@ async def start_admitted_dispatch(request: AdmittedDispatchStartRequest, provide
     handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.FINALIZING, final_receipt.written_at, final_receipt)
     finalized, _ = handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.FINALIZED, tombstone.finalized_at, final_receipt)
     return _result(request, generation, finalized.phase, AdmittedDispatchStartOutcome.STARTED, final_receipt.phase)
+
+
+async def start_admitted_dispatch(
+    request: AdmittedDispatchStartRequest,
+    providers: Mapping[str, AgentCliProvider],
+    orchestrator: WorkflowOrchestrator,
+) -> AdmittedDispatchStartResult:
+    """Preserve the existing start-only API."""
+    return await _start_admitted_dispatch(request, providers, orchestrator, None)
+
+
+async def start_admitted_dispatch_completion(
+    request: AdmittedDispatchStartRequest,
+    providers: Mapping[str, AgentCliProvider],
+    orchestrator: WorkflowOrchestrator,
+) -> AdmittedDispatchCompletionResult:
+    """Return fresh delivery evidence without changing replay behavior."""
+    completion: list[DispatchCycleResult] = []
+    start_result = await _start_admitted_dispatch(
+        request, providers, orchestrator, completion
+    )
+    if len(completion) > 1:
+        _fail(AdmittedDispatchConflictError, "completion_count")
+    return AdmittedDispatchCompletionResult(
+        start_result=start_result,
+        dispatch_cycle_result=completion[0] if completion else None,
+    )
