@@ -4,18 +4,21 @@
 
 - Project ID: `AgentDeskSkill-0.1.0-beta-standard-validation`
 - Adoption level: `standard`
-- Purpose: `<fill before dispatching work>`
+- Purpose: Validate and operate the AgentDesk Standard protocol in this repository without treating repository evidence as a substitute for real role-to-role transport.
 
 ## Repository Map
 
-- `<path>`: `<responsibility>`
+- `skills/agentdesk/`: AgentDesk protocol, references, assets, and validation scripts.
+- `tests/`: regression and release-smoke coverage for the protocol.
+- `docs/pm/`: PM-owned control-plane state, immutable cards, events, outbox, reports, and generated views.
+- `.agentdesk/runtime/`: gitignored local routes, model bindings, leases, and transport receipts.
 
 ## Commands
 
-- Build: `<trusted command or check ID>`
-- Test: `<trusted command or check ID>`
-- Typecheck: `<trusted command or check ID>`
-- Lint: `<trusted command or check ID>`
+- Build: `agentdesk.build`
+- Test: `agentdesk.test`
+- Typecheck: `agentdesk.typecheck`
+- Lint: `agentdesk.lint`
 
 ## Iron Rules
 

@@ -1,10 +1,22 @@
 schema_version: agentdesk.check-catalog/v1
-checks: {}
-
-# Add trusted checks as argv arrays. Example:
-# checks:
-#   project.test:
-#     argv: ["python3", "-m", "pytest"]
-#     workdir: "."
-#     network: false
-#     timeout_seconds: 1200
+checks:
+  agentdesk.build:
+    argv: ["C:/Users/lc/anaconda3/python.exe", "-m", "compileall", "-q", "skills/agentdesk/scripts"]
+    workdir: "."
+    network: false
+    timeout_seconds: 120
+  agentdesk.test:
+    argv: ["C:/Users/lc/anaconda3/python.exe", "-m", "unittest", "tests.test_release_smoke"]
+    workdir: "."
+    network: false
+    timeout_seconds: 1200
+  agentdesk.typecheck:
+    argv: ["C:/Users/lc/anaconda3/python.exe", "-m", "mypy", "skills/agentdesk/scripts"]
+    workdir: "."
+    network: false
+    timeout_seconds: 600
+  agentdesk.lint:
+    argv: ["C:/Users/lc/anaconda3/python.exe", "-m", "ruff", "check", "skills/agentdesk/scripts"]
+    workdir: "."
+    network: false
+    timeout_seconds: 600
