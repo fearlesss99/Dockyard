@@ -14233,6 +14233,180 @@ class TC1322b3aAndTC1324b1IntegrationStatusTests(unittest.TestCase):
         )
 
 
+class TC1325aWorktreeLifecycleContractFreezeTests(unittest.TestCase):
+    """TC-13.25a WorktreeLifecycleManager durable contract freeze."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        references = root / "skills" / "agentdesk" / "references"
+        cls.contract = (
+            references / "public-interfaces" / "worktree-lifecycle-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.workflow = (
+            references / "public-interfaces" / "workflow-orchestrator-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.portfolio = (
+            references / "public-interfaces" / "portfolio-scheduler-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr = (
+            references / "adr" / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        return " ".join(text.split())
+
+    def _fields(self, start_heading: str, end_heading: str) -> list[str]:
+        start = self.contract.index(start_heading)
+        end = self.contract.index(end_heading, start)
+        return re.findall(
+            r"^\|\s*\d+\s*\|\s*`([^`]+)`\s*\|",
+            self.contract[start:end],
+            re.MULTILINE,
+        )
+
+    def test_public_type_names_and_frozen_shape_are_exact(self) -> None:
+        for type_name in (
+            "WorktreePhase",
+            "WorktreeLifecycleAction",
+            "WorktreeLifecycleOutcome",
+            "WorktreeReconciliationAction",
+            "WorktreeInventoryEntry",
+            "WorktreeReservation",
+            "WorktreeRecord",
+            "WorktreeLifecycleRequest",
+            "WorktreeLifecycleResult",
+            "WorktreeReconciliationDecision",
+        ):
+            self.assertIn(type_name, self.contract)
+        normalized = self._normalize(self.contract)
+        self.assertIn("@dataclass(frozen=True, slots=True)", normalized)
+        self.assertIn("no `Any`, bare `dict`, `Mapping`, `list`, `set`", normalized)
+
+    def test_inventory_entry_fields_are_exact(self) -> None:
+        self.assertEqual(
+            self._fields("### 2.3 WorktreeInventoryEntry", "### 2.4 WorktreeReservation"),
+            ["repository_common_dir", "worktree_path", "head_commit", "branch",
+             "is_bare", "is_detached", "is_locked", "is_prunable"],
+        )
+
+    def test_reservation_fields_are_exact(self) -> None:
+        self.assertEqual(
+            self._fields("### 2.4 WorktreeReservation", "### 2.5 WorktreeRecord"),
+            ["schema_version", "reservation_id", "worktree_id",
+             "repository_common_dir", "repository_root", "worktree_path", "branch",
+             "base_commit", "task_id", "revision", "attempt", "dispatch_id",
+             "phase", "reserved_at", "content_digest"],
+        )
+
+    def test_record_fields_are_exact(self) -> None:
+        self.assertEqual(
+            self._fields("### 2.5 WorktreeRecord", "### 2.6 WorktreeLifecycleRequest"),
+            ["schema_version", "worktree_id", "reservation_id",
+             "repository_common_dir", "repository_root", "worktree_path", "branch",
+             "base_commit", "head_commit", "task_id", "revision", "attempt",
+             "dispatch_id", "phase", "created_at", "release_requested_at",
+             "released_at", "inventory_digest", "content_digest"],
+        )
+
+    def test_request_result_and_decision_fields_are_exact(self) -> None:
+        self.assertEqual(
+            self._fields("### 2.6 WorktreeLifecycleRequest", "### 2.7 WorktreeLifecycleResult"),
+            ["schema_version", "operation_id", "action", "repository_common_dir",
+             "repository_root", "worktree_path", "branch", "base_commit", "task_id",
+             "revision", "attempt", "dispatch_id", "expected_worktree_id",
+             "requested_at"],
+        )
+        self.assertEqual(
+            self._fields("### 2.7 WorktreeLifecycleResult", "### 2.8 WorktreeReconciliationDecision"),
+            ["schema_version", "operation_id", "action", "outcome", "worktree_id",
+             "phase", "worktree_path", "head_commit", "decision"],
+        )
+        self.assertEqual(
+            self._fields("### 2.8 WorktreeReconciliationDecision", "## 3. Schema"),
+            ["schema_version", "worktree_id", "action", "reason", "expected_phase",
+             "observed_present", "observed_head", "observed_branch", "observed_clean",
+             "content_digest"],
+        )
+
+    def test_phase_action_and_outcome_values_are_frozen(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("RESERVED CREATING READY RELEASING RELEASED", normalized)
+        self.assertIn("exactly `CREATE`, `RELEASE`, and `RECONCILE`", normalized)
+        self.assertIn("exactly `READY`, `RELEASED`, `REPLAYED`, `REFUSED`, and `RECOVERY_REQUIRED`", normalized)
+        for action in ("NO_OP", "RESUME_CREATE", "ADOPT_READY", "RESUME_RELEASE", "REJECT", "FAIL_CLOSED"):
+            self.assertIn(f"`{action}`", normalized)
+
+    def test_schema_identity_branch_and_paths_are_exact(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("agentdesk.worktree-lifecycle/v1", normalized)
+        self.assertIn("agentdesk/<task_id>/r<revision>/a<attempt>/<dispatch_id>", normalized)
+        self.assertIn("<repository_root.name>-agentdesk-worktrees/<worktree_id>", normalized)
+        self.assertIn("docs/pm/worktree-lifecycle/reservations/<worktree_id>.yaml", normalized)
+        self.assertIn("docs/pm/worktree-lifecycle/records/<worktree_id>.yaml", normalized)
+        self.assertIn("Attempt 4 is rejected before reservation or any Git side effect", normalized)
+
+    def test_porcelain_inventory_is_the_only_source(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("git worktree list --porcelain -z", normalized)
+        self.assertIn("only authoritative Git worktree inventory", normalized)
+        self.assertIn("never scans directories to invent an entry", normalized)
+        self.assertIn("rejects duplicate fields", normalized)
+
+    def test_path_and_windows_security_are_fail_closed(self) -> None:
+        normalized = self._normalize(self.contract)
+        for boundary in ("Windows case-fold normalization", "UNC path", "symlink",
+                         "junction", "reparse-point", "device/reserved name"):
+            self.assertIn(boundary, normalized)
+        self.assertIn("`UNKNOWN` and fails closed", normalized)
+
+    def test_reservation_precedes_git_and_lock_is_released(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("CAS-write `RESERVED` evidence", normalized)
+        self.assertIn("release the Store lock", normalized)
+        self.assertIn("git worktree add --no-checkout -b <branch> <path> <base_commit>", normalized)
+        self.assertIn("Durable reservation always precedes `git worktree add`", normalized)
+        self.assertIn("No Store lock is held while Git", normalized)
+
+    def test_release_refusal_and_ownership_are_frozen(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("Only an exact `READY` record created by this Manager", normalized)
+        for refusal in ("dirty or untracked content", "detached or divergent HEAD",
+                        "live process/lease evidence", "permission failure", "UNKNOWN"):
+            self.assertIn(refusal, normalized)
+        for forbidden in ("`--force`", "recursive filesystem deletion", "path globbing"):
+            self.assertIn(forbidden, normalized)
+
+    def test_replay_conflict_concurrency_and_crash_matrix_are_frozen(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("Identical canonical bytes are byte-exact replay", normalized)
+        self.assertIn("same worktree identity with different binding bytes is a typed conflict", normalized)
+        self.assertIn("exactly one durable reservation winner", normalized)
+        for window in ("Before durable reservation", "before `git worktree add`",
+                       "record still `RESERVED/CREATING`", "READY record but inventory missing/divergent",
+                       "RELEASING record", "Dirty worktree"):
+            self.assertIn(window, normalized)
+
+    def test_reconciliation_is_pure_and_does_not_guess_liveness(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("performs no Git or filesystem mutation", normalized)
+        self.assertIn("No decision is based on PID disappearance", normalized)
+        self.assertIn("lease expiry alone", normalized)
+        self.assertIn("exception text", normalized)
+
+    def test_status_and_interface_boundaries_are_exact(self) -> None:
+        normalized = self._normalize(
+            self.contract + "\n" + self.workflow + "\n" + self.portfolio + "\n" + self.adr
+        )
+        self.assertIn("WorktreeLifecycleManager Contract: **Contract Current — TC-13.25a**", normalized)
+        self.assertIn("Durable Store and pure reconciliation: **Target — TC-13.25b**", normalized)
+        self.assertIn("Create/Release Runtime: **Target — TC-13.25c**", normalized)
+        self.assertIn("Interface #22 is unchanged", normalized)
+        self.assertIn("Interface #36 remains unchanged", normalized)
+        self.assertNotIn("WorktreeLifecycleManager Runtime Current", normalized)
+
+
 class TC1324b2b4d1SchedulerRecoveryHandoffIntegrationSealTests(unittest.TestCase):
     """TC-13.24b.2b.4d.1 merged ancestry and status boundaries."""
 

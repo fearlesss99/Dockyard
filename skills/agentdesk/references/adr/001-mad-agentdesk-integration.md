@@ -47,6 +47,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 34 | AgentDesk Provider Doctor and gateway.yaml template | **Current** — TC-13.21e.1 | TC-13.21e.1 | Read-only pre-start diagnostics (D001-D012, `scripts/doctor.py`) plus safe `agentdesk.gateway-config/v1` project template; zero writes/subprocess/network/model calls, no API-key handling; real provider execution remains Target, Codex decoder remains Target/deferred (TC-13.9c.2), provider rate-limit detection remains Target (TC-13.14c) |
 | 35 | PM TaskDifficulty Assessment | **Current — TC-13.22a** | TC-13.22a | Frozen seven-dimension PM assessment contract; deterministic assessor Current — TC-13.22b.1; canonical evidence codec Current — TC-13.22b.2a; evidence filesystem/ancestry store Current — TC-13.22b.2b; dispatch enforcement Current — TC-13.22b.3a; Interface #22 status unchanged |
 | 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core + Recovery Action Executor Runtime + Worker Handoff Contract + Worker Handoff Store Current** | TC-13.24a / TC-13.24b.1 / TC-13.24b.2a / TC-13.24b.2b.1 / TC-13.24b.2b.2 / TC-13.24b.2b.4a.2 / TC-13.24b.2b.4a.3 / TC-13.24b.2b.4a.4 / TC-13.24b.2b.2c / TC-13.24b.2b.4b.2 / TC-13.24b.2b.4c.1 / TC-13.24b.2b.4c.2 | Frozen BusinessPriority, QueueEntry, ScheduleReceipt, durable evidence, deterministic v1 selection, conflict-key, lock-order, crash-recovery, durable plan binding, plan persistence, selection-to-admission runtime, Scheduler-local Recovery Action Executor, and durable Worker Handoff evidence Store; Recovery Executor adversarial verification is Verified — TC-13.24b.2b.4b.2a; Worker Handoff adversarial verification is Verified — TC-13.24b.2b.4c.1a.i; Worker Handoff execution runtime and complete Scheduler runtime remain Target; Interface #22 unchanged |
+| 37 | WorktreeLifecycleManager | **Contract Current — TC-13.25a** | TC-13.25a | Frozen independent managed-worktree identity, durable reservation, porcelain inventory, path/reparse/UNC/case-fold security, forward-only lifecycle, crash reconciliation, concurrency, and fail-closed release contract; Store/runtime remain Target; Interfaces #22 and #36 unchanged |
 
 ---
 
@@ -7935,6 +7936,35 @@ Handoff adversarial verification is **Verified — TC-13.24b.2b.4c.1a.i**;
 Worker Handoff Store is **Current — TC-13.24b.2b.4c.2**; Worker Handoff
 execution runtime is **Target**.  Interface #22 is unchanged, and Interface
 #36 does not claim complete runtime Current.
+
+#### 2.26 WorktreeLifecycleManager — Durable Contract (Contract Current — TC-13.25a)
+
+The independent WorktreeLifecycleManager contract is frozen in
+`skills/agentdesk/references/public-interfaces/worktree-lifecycle-contract.md`.
+It reserves, creates, reconciles, and releases only worktrees whose durable
+identity it owns.  WorkflowOrchestrator remains a pure orchestration facade
+and never creates, switches, removes, prunes, or scans Git worktrees.
+
+The public frozen/slotted values are `WorktreeInventoryEntry`,
+`WorktreeReservation`, `WorktreeRecord`, `WorktreeLifecycleRequest`,
+`WorktreeLifecycleResult`, and `WorktreeReconciliationDecision`.  The exact
+forward-only lifecycle is `RESERVED -> CREATING -> READY -> RELEASING ->
+RELEASED`.  Durable reservation precedes every `git worktree add`; the Store
+lock is released before Git or any Worker-facing call.
+
+`git worktree list --porcelain -z` is the sole Git inventory source.  The
+contract rejects relative paths, traversal, UNC paths, Windows device names,
+case-fold collisions, symlinks, junctions and other reparse points, divergent
+common-directory/root/base/branch/HEAD identities, dirty or untracked content,
+live process/lease ownership, permissions that cannot be proved, and all
+UNKNOWN states.  It never uses recursive deletion, `--force`, `reset`,
+`clean`, implicit `prune`, directory guessing, or path globs.
+
+WorktreeLifecycleManager Contract is **Contract Current — TC-13.25a**;
+Durable Store and pure reconciliation are **Target — TC-13.25b**;
+Create/Release Runtime is **Target — TC-13.25c**; adversarial verification is
+**Target — TC-13.25d**.  Interface #22 is unchanged.  Interface #36 remains
+unchanged and does not claim complete Scheduler runtime Current.
 
 ---
 

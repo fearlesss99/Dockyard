@@ -473,7 +473,9 @@ Worker startup/complete Scheduler runtime: **Target**.
 - Admission orchestration/runtime wiring beyond this boundary: **Target**.
 - Complete PortfolioScheduler runtime and Worker startup/dispatch integration:
   **Target**.
-- WorktreeLifecycleManager: **Target** and independent.
+- WorktreeLifecycleManager Contract: **Contract Current — TC-13.25a**.
+- WorktreeLifecycleManager Store/reconciliation: **Target — TC-13.25b**.
+- WorktreeLifecycleManager Create/Release Runtime: **Target — TC-13.25c**.
 - TaskDifficulty dispatch/lifecycle wiring: **Current — TC-13.22b.3a**.
 - Interface #22 core orchestration: unchanged, **Current — TC-13.18d.13b**;
   Codex/provider-429 extensions remain deferred.
@@ -481,3 +483,9 @@ Worker startup/complete Scheduler runtime: **Target**.
 This document stops before Worker Handoff execution, Worker startup, complete
 Scheduler runtime, model/provider/API calls, network access, and any change to
 the existing Orchestrator or ControlPlane production modules.
+
+WorktreeLifecycleManager remains independent of PortfolioScheduler.  A future
+Scheduler integration may consume only a validated `WorktreeLifecycleResult`;
+PortfolioScheduler never runs Git worktree commands, parses worktree
+inventory, or deletes a path.  Interface #36 is unchanged and does not claim
+WorktreeLifecycleManager or complete Scheduler runtime Current.

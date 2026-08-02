@@ -2132,3 +2132,25 @@ performs no retry start and no canonical state mutation.
 | Interface #22 | **Current — TC-13.18d.13b** (core orchestration); Codex / Provider 429 deferred |
 
 This contract's retry runtime is Current — TC-13.18d.12c.2.
+
+## 19. WorktreeLifecycleManager Delegation Boundary (TC-13.25a)
+
+WorktreeLifecycleManager Contract is **Contract Current — TC-13.25a**;
+Store/reconciliation and create/release runtime remain **Target —
+TC-13.25b/TC-13.25c**.
+
+WorkflowOrchestrator does not create, switch, remove, prune, scan, or reconcile
+Git worktrees.  It never invokes `git worktree add`, `git worktree remove`,
+`git worktree list`, `git checkout`, `git reset`, or `git clean`.  A future
+integration may consume only a frozen validated `WorktreeLifecycleResult`
+from the independent Manager.
+
+The Manager's durable reservation must precede any Git worktree side effect.
+Its Store lock is released before Git, Worker, heartbeat, provider, model,
+API, or network calls.  `git worktree list --porcelain -z` is the sole Git
+worktree inventory source.  Dirty, divergent, reparse/symlink, permission
+UNKNOWN, live process/lease, or identity-mismatched worktrees are never
+released.
+
+Interface #22 remains **Current — TC-13.18d.13b** with unchanged ownership;
+TC-13.25a adds no WorkflowOrchestrator production method or state field.
