@@ -2594,6 +2594,108 @@ class WorkflowOrchestrator:
             # The shared completion future is the public error channel.
             return
 
+    async def start_admitted_dispatch_execution(
+        self,
+        request: DispatchCycleRequest,
+        providers: Mapping[str, AgentCliProvider],
+        lease: WorkerSlotLease,
+        generation_id: str,
+        dispatch_transition: TransitionResult,
+    ) -> ActiveDispatchExecution:
+        """Adopt an already committed scheduler dispatch without re-admission.
+
+        This entry never acquires a slot and never applies TASK_DISPATCHED.
+        The caller must have validated durable scheduler evidence and reserved
+        the exact DispatchProcessReceipt generation before entry.
+        """
+        if type(request) is not DispatchCycleRequest:
+            raise WorkflowInputError("admitted request must be DispatchCycleRequest")
+        if not isinstance(providers, Mapping) or not providers:
+            raise WorkflowInputError("providers must be a non-empty Mapping")
+        if type(lease) is not WorkerSlotLease:
+            raise WorkflowInputError("lease must be WorkerSlotLease")
+        if type(generation_id) is not str or not generation_id:
+            raise WorkflowInputError("generation_id must be non-empty str")
+        if type(dispatch_transition) is not TransitionResult:
+            raise WorkflowInputError("dispatch_transition must be TransitionResult")
+        dr = request.dispatch_request
+        if (
+            lease.holder_dispatch_id != dr.identity.dispatch_id
+            or lease.holder_instance_id != request.holder_instance_id
+            or lease.canonical_worktree != str(dr.workspace)
+        ):
+            raise WorkflowInvariantError("admitted lease identity mismatch")
+        receipt = _dse.read_dispatch_receipt(self.project_root, dr.identity.dispatch_id)
+        if (
+            receipt is None
+            or receipt.task_id != dr.identity.task_id
+            or receipt.revision != dr.identity.revision
+            or receipt.attempt != dr.identity.attempt
+            or receipt.dispatch_id != dr.identity.dispatch_id
+            or receipt.lease_epoch != lease.lease_epoch
+            or receipt.holder_instance_id != lease.holder_instance_id
+            or receipt.generation_id != generation_id
+            or receipt.phase != _dse.DispatchReceiptPhase.RESERVED.value
+        ):
+            raise WorkflowInvariantError("admitted process receipt mismatch")
+
+        start_mono = self.clock.monotonic()
+        snapshot = dr.model_selection
+        observer = _AckObserver(
+            self.project_root, request.acknowledge_transition_request, lease,
+            self.clock, dr, snapshot.selected_model_provider,
+            snapshot.selected_model_id, generation_id,
+        )
+        worker_task = asyncio.ensure_future(
+            run_worker_observed(
+                dr, request.worker_kind, request.task_difficulty, providers, observer,
+            )
+        )
+        ack_wait = asyncio.ensure_future(observer.acknowledged.wait())
+        try:
+            done, _ = await asyncio.wait(
+                (worker_task, ack_wait), return_when=asyncio.FIRST_COMPLETED,
+            )
+            if ack_wait not in done:
+                worker_task.result()
+            await ack_wait
+        finally:
+            if not ack_wait.done():
+                ack_wait.cancel()
+            try:
+                await ack_wait
+            except asyncio.CancelledError:
+                pass
+        if observer.ack_result is None:
+            raise WorkflowInvariantError("admitted ACK was not committed")
+
+        heartbeat_started = asyncio.Event()
+        async def _heartbeat_loop() -> None:
+            heartbeat_started.set()
+            while True:
+                await self.clock.sleep(self.heartbeat_interval_seconds)
+                renew_worker_slot(self.project_root, lease, self.clock.now())
+
+        heartbeat_task = asyncio.ensure_future(_heartbeat_loop())
+        await heartbeat_started.wait()
+        handle = ActiveDispatchHandle(
+            task_id=dr.identity.task_id, revision=dr.identity.revision,
+            attempt=dr.identity.attempt, dispatch_id=dr.identity.dispatch_id,
+            holder_instance_id=lease.holder_instance_id,
+            lease_epoch=lease.lease_epoch, lease=lease,
+        )
+        execution = ActiveDispatchExecution(
+            owner=self, handle=handle, request=request,
+            worker_task=worker_task, heartbeat_task=heartbeat_task,
+            dispatch_transition=dispatch_transition,
+            acknowledge_transition=observer.ack_result,
+            start_monotonic=start_mono,
+        )
+        execution._generation_id = generation_id
+        execution._runner_task = asyncio.ensure_future(self._run_active_dispatch(execution))
+        execution._ready = True
+        return execution
+
     async def _abort_active_dispatch(
         self,
         execution: ActiveDispatchExecution,
