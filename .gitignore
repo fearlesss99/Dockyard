@@ -26,3 +26,4 @@ dist/
 # Runtime-only orchestration state at this repository root. Keep the bundled
 # project template under skills/**/assets/project-template tracked.
 /.agentdesk/runtime/
+.agentdesk/runtime/
