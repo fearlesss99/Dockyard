@@ -46,7 +46,7 @@ marked **Current** exist and are callable today; interfaces marked
 | 33 | AgentDesk WorkerOutput Decoder — Claude 2.1.214 | **Current** | TC-13.9c.1 | §2.20; version-locked, fail-closed; decode_worker_result(WorkerResult, version) → WorkerOutput; require_delivery_receipt(WorkerOutput) → DeliveryReceipt; claude + claudecode only; codex unsupported |
 | 34 | AgentDesk Provider Doctor and gateway.yaml template | **Current** — TC-13.21e.1 | TC-13.21e.1 | Read-only pre-start diagnostics (D001-D012, `scripts/doctor.py`) plus safe `agentdesk.gateway-config/v1` project template; zero writes/subprocess/network/model calls, no API-key handling; real provider execution remains Target, Codex decoder remains Target/deferred (TC-13.9c.2), provider rate-limit detection remains Target (TC-13.14c) |
 | 35 | PM TaskDifficulty Assessment | **Current — TC-13.22a** | TC-13.22a | Frozen seven-dimension PM assessment contract; deterministic assessor Current — TC-13.22b.1; canonical evidence codec Current — TC-13.22b.2a; evidence filesystem/ancestry store Current — TC-13.22b.2b; dispatch enforcement Current — TC-13.22b.3a; Interface #22 status unchanged |
-| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core + Recovery Action Executor Contract Current** | TC-13.24a / TC-13.24b.1 / TC-13.24b.2a / TC-13.24b.2b.1 / TC-13.24b.2b.2 / TC-13.24b.2b.4a.2 / TC-13.24b.2b.4a.3 / TC-13.24b.2b.4a.4 / TC-13.24b.2b.2c / TC-13.24b.2b.4b.1 | Frozen BusinessPriority, QueueEntry, ScheduleReceipt, durable evidence, deterministic v1 selection, conflict-key, lock-order, crash-recovery, durable plan binding, plan persistence, selection-to-admission runtime, and Scheduler-local Recovery Action Executor contract; Recovery adversarial verification is Verified — TC-13.24b.2b.2d; Recovery Action Executor Runtime and Worker startup/complete Scheduler runtime remain Target; Interface #22 unchanged |
+| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core + Recovery Action Executor Runtime + Worker Handoff Contract + Worker Handoff Store Current** | TC-13.24a / TC-13.24b.1 / TC-13.24b.2a / TC-13.24b.2b.1 / TC-13.24b.2b.2 / TC-13.24b.2b.4a.2 / TC-13.24b.2b.4a.3 / TC-13.24b.2b.4a.4 / TC-13.24b.2b.2c / TC-13.24b.2b.4b.2 / TC-13.24b.2b.4c.1 / TC-13.24b.2b.4c.2 | Frozen BusinessPriority, QueueEntry, ScheduleReceipt, durable evidence, deterministic v1 selection, conflict-key, lock-order, crash-recovery, durable plan binding, plan persistence, selection-to-admission runtime, Scheduler-local Recovery Action Executor, and durable Worker Handoff evidence Store; Recovery Executor adversarial verification is Verified — TC-13.24b.2b.4b.2a; Worker Handoff adversarial verification is Verified — TC-13.24b.2b.4c.1a.i; Worker Handoff execution runtime and complete Scheduler runtime remain Target; Interface #22 unchanged |
 
 ---
 
@@ -7818,9 +7818,9 @@ The deterministic selection policy is implemented as a pure, tested function
 over verified queue/store values.  The durable plan Store/runtime and
 selection-to-admission runtime now bind that plan, acquire the WorkerSlot, and
 reach the existing `TASK_DISPATCHED` boundary.  Recovery remains a read-only
-decision core; the Recovery Action Executor contract is Current, while the
-Recovery Action Executor Runtime and Worker startup/complete Scheduler runtime
-remain Target.
+decision core; the Scheduler-local Recovery Action Executor runtime and
+durable Worker Handoff Store are Current.  Worker Handoff execution and
+Worker startup/complete Scheduler runtime remain Target.
 
 Status: PortfolioScheduler durable admission contract **Contract Current —
 TC-13.24a**; PortfolioScheduler durable evidence store **Current —
@@ -7833,8 +7833,13 @@ TC-13.24b.2b.1**; PortfolioScheduler crash reconciliation decision core
 TC-13.24b.2b.4a.4**; Recovery canonical event identity **Current —
 TC-13.24b.2b.2c**; Recovery adversarial verification **Verified —
 TC-13.24b.2b.2d**; Recovery Action Executor contract **Contract Current —
-TC-13.24b.2b.4b.1**; Recovery Action Executor Runtime **Target —
-TC-13.24b.2b.4b.2**; Worker startup/complete Scheduler runtime **Target**;
+TC-13.24b.2b.4b.1**; Recovery Action Executor Runtime **Current —
+TC-13.24b.2b.4b.2**; Recovery Executor adversarial verification **Verified —
+TC-13.24b.2b.4b.2a**; Worker Handoff Contract **Contract Current —
+TC-13.24b.2b.4c.1**; Worker Handoff adversarial verification **Verified —
+TC-13.24b.2b.4c.1a.i**; Worker Handoff Store **Current —
+TC-13.24b.2b.4c.2**; Worker Handoff execution runtime **Target**;
+Worker startup/complete Scheduler runtime **Target**;
 WorktreeLifecycleManager
 **Target**; TaskDifficulty dispatch/lifecycle wiring **Current — TC-13.22b.3a**;
 Interface #22 is unchanged.
@@ -7880,7 +7885,8 @@ lease acquisition.  ApprovalGate is not a plan-identity validator.
 Durable plan Store/runtime is **Current - TC-13.24b.2b.4a.3** and
 Selection-to-Admission runtime is **Current - TC-13.24b.2b.4a.4**.  Recovery
 canonical event identity is **Current - TC-13.24b.2b.2c** and adversarial
-verification is **Verified - TC-13.24b.2b.2d**.  Recovery action execution and
+verification is **Verified - TC-13.24b.2b.2d**.  Recovery Action Executor
+Runtime is **Current — TC-13.24b.2b.4b.2**; Worker Handoff execution and
 complete Scheduler runtime remain **Target**.  Interface #22 remains
 unchanged, and Interface #36 must not be described as complete runtime
 Current.
@@ -7906,9 +7912,29 @@ The executor never acquires or cleans a WorkerSlotLease, starts a Worker,
 calls WorkflowOrchestrator, Admission, Policy, model, API, network, or
 provider code.  It never writes canonical task, event, or outbox files.
 Recovery Action Executor Contract is **Current — TC-13.24b.2b.4b.1**;
-Recovery Action Executor Runtime is **Target — TC-13.24b.2b.4b.2**; Worker
-startup/complete Scheduler runtime remains **Target**; Interface #22 is
-unchanged; Interface #36 does not claim complete runtime Current.
+Recovery Action Executor Runtime is **Current — TC-13.24b.2b.4b.2**;
+Recovery Executor adversarial verification is **Verified —
+TC-13.24b.2b.4b.2a**; Worker startup/complete Scheduler runtime remains
+**Target**; Interface #22 is unchanged; Interface #36 does not claim complete
+runtime Current.
+
+#### 2.25.3 Worker Handoff Evidence (Contract/Store Current; Execution Runtime Target)
+
+The frozen Worker Handoff contract is implemented by the durable evidence
+Store without starting a supervisor or Worker.  It binds the exact
+AdmissionPlan, ScheduleReceipt, canonical `EventEntry.event_id`,
+WorkerSlotLease identity, and `DispatchProcessReceipt` generation.  Canonical
+UTF-8 YAML, SHA-256 digests, byte-exact replay, typed divergent conflict,
+forward-only phases, attempt 1..3 enforcement, and scheduler-store locking are
+required.  Neither the Recovery Executor nor the Handoff Store writes a
+canonical task, event, or outbox transition, and the modules do not import one
+another.
+
+Worker Handoff Contract is **Contract Current — TC-13.24b.2b.4c.1**; Worker
+Handoff adversarial verification is **Verified — TC-13.24b.2b.4c.1a.i**;
+Worker Handoff Store is **Current — TC-13.24b.2b.4c.2**; Worker Handoff
+execution runtime is **Target**.  Interface #22 is unchanged, and Interface
+#36 does not claim complete runtime Current.
 
 ---
 

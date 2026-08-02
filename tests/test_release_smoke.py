@@ -14233,6 +14233,104 @@ class TC1322b3aAndTC1324b1IntegrationStatusTests(unittest.TestCase):
         )
 
 
+class TC1324b2b4d1SchedulerRecoveryHandoffIntegrationSealTests(unittest.TestCase):
+    """TC-13.24b.2b.4d.1 merged ancestry and status boundaries."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        cls.scripts = root / "skills" / "agentdesk" / "scripts"
+        references = root / "skills" / "agentdesk" / "references"
+        cls.adr = (
+            references / "adr" / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+        cls.contract = (
+            references / "public-interfaces" / "portfolio-scheduler-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.recovery_source = (
+            cls.scripts / "portfolio_scheduler_recovery_executor.py"
+        ).read_text(encoding="utf-8")
+        cls.handoff_source = (
+            cls.scripts / "portfolio_scheduler_worker_handoff_store.py"
+        ).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        return " ".join(text.split())
+
+    def test_integrated_statuses_are_exact(self) -> None:
+        normalized = self._normalize(self.adr + "\n" + self.contract)
+        for status in (
+            "Recovery Action Executor Runtime **Current — TC-13.24b.2b.4b.2**",
+            "Recovery Executor adversarial verification **Verified — TC-13.24b.2b.4b.2a**",
+            "Worker Handoff Contract **Contract Current — TC-13.24b.2b.4c.1**",
+            "Worker Handoff adversarial verification **Verified — TC-13.24b.2b.4c.1a.i**",
+            "Worker Handoff Store **Current — TC-13.24b.2b.4c.2**",
+            "Worker Handoff execution runtime **Target**",
+        ):
+            self.assertIn(status, normalized)
+
+    def test_interface_22_and_36_boundaries_are_preserved(self) -> None:
+        normalized = self._normalize(self.adr)
+        self.assertIn("Interface #22 is unchanged", normalized)
+        self.assertIn(
+            "Recovery Action Executor Runtime + Worker Handoff Contract + Worker Handoff Store Current",
+            normalized,
+        )
+        self.assertIn(
+            "Worker Handoff execution runtime and complete Scheduler runtime remain Target",
+            normalized,
+        )
+        self.assertNotIn(
+            "| 36 | PortfolioScheduler durable admission | **Complete Runtime Current**",
+            normalized,
+        )
+
+    def test_recovery_and_handoff_public_values_construct_together(self) -> None:
+        if str(self.scripts) not in sys.path:
+            sys.path.insert(0, str(self.scripts))
+        import portfolio_scheduler_recovery_executor as recovery
+        import portfolio_scheduler_worker_handoff_store as handoff
+
+        outcome = recovery.RecoveryExecutionOutcome(
+            schema_version=recovery.RECOVERY_EXECUTION_SCHEMA_VERSION,
+            execution_id="EXEC-1",
+            phase=recovery.RecoveryExecutionPhase.RESERVED,
+            result="NO_OP",
+            recovery_action=recovery.RecoveryAction.NO_OP,
+            receipt=None,
+        )
+        receipt = handoff.ScheduledDispatchHandoffReceipt(
+            schema_version=handoff.HANDOFF_RECEIPT_SCHEMA_VERSION,
+            handoff_id="HNDF-1",
+            dispatch_id="DSP-1",
+            generation_id="GEN-1",
+            task_id="TC-001",
+            revision=1,
+            attempt=1,
+            phase=handoff.ScheduledDispatchHandoffPhase.HANDOFF_RESERVED,
+            binding_digest="sha256:" + "0" * 64,
+            written_at="2026-08-02T00:00:00.000000Z",
+            content_digest="sha256:" + "1" * 64,
+        )
+        self.assertEqual(outcome.execution_id, "EXEC-1")
+        self.assertEqual(receipt.dispatch_id, "DSP-1")
+
+    def test_import_and_canonical_writer_boundaries_are_preserved(self) -> None:
+        recovery_code = _python_code_without_comments_and_docstrings(
+            self.recovery_source
+        )
+        handoff_code = _python_code_without_comments_and_docstrings(
+            self.handoff_source
+        )
+        self.assertNotIn("portfolio_scheduler_worker_handoff_store", recovery_code)
+        self.assertNotIn("portfolio_scheduler_recovery_executor", handoff_code)
+        for source in (recovery_code, handoff_code):
+            self.assertNotIn("control_plane_transition", source)
+            self.assertNotIn("ControlPlaneTransitionService", source)
+            self.assertNotIn("apply_transition(", source)
+
+
 class TC1324b4b1RecoveryActionExecutorContractFreezeTests(unittest.TestCase):
     """TC-13.24b.2b.4b.1 Recovery Action Executor contract freeze."""
 
@@ -14511,7 +14609,7 @@ class TC1324b4a5RuntimeRecoveryIntegrationStatusTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "Recovery Action Executor runtime: **Target — TC-13.24b.2b.4b.2**",
+            "Recovery Action Executor runtime: **Current — TC-13.24b.2b.4b.2**",
             normalized,
         )
         self.assertIn("Worker startup/complete Scheduler runtime: **Target**", normalized)
@@ -14521,11 +14619,11 @@ class TC1324b4a5RuntimeRecoveryIntegrationStatusTests(unittest.TestCase):
         normalized = " ".join(self.adr.split())
         self.assertIn("Interface #22 is unchanged", normalized)
         self.assertIn(
-            "Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core + Recovery Action Executor Contract Current",
+            "Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core + Recovery Action Executor Runtime + Worker Handoff Contract + Worker Handoff Store Current",
             normalized,
         )
         self.assertIn(
-            "Recovery Action Executor Runtime and Worker startup/complete Scheduler runtime remain Target",
+            "Worker Handoff execution runtime and complete Scheduler runtime remain Target",
             normalized,
         )
         self.assertNotIn(

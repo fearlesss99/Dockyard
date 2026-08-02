@@ -441,7 +441,12 @@ Durable plan Store/runtime: **Current - TC-13.24b.2b.4a.3**.
 Recovery canonical event identity: **Current - TC-13.24b.2b.2c**.
 Recovery adversarial verification: **Verified - TC-13.24b.2b.2d**.
 Recovery Action Executor contract: **Contract Current — TC-13.24b.2b.4b.1**.
-Recovery Action Executor runtime: **Target — TC-13.24b.2b.4b.2**.
+Recovery Action Executor runtime: **Current — TC-13.24b.2b.4b.2**.
+Recovery Executor adversarial verification: **Verified — TC-13.24b.2b.4b.2a**.
+Worker Handoff Contract: **Contract Current — TC-13.24b.2b.4c.1**.
+Worker Handoff adversarial verification: **Verified — TC-13.24b.2b.4c.1a.i**.
+Worker Handoff Store: **Current — TC-13.24b.2b.4c.2**.
+Worker Handoff execution runtime: **Target**.
 Worker startup/complete Scheduler runtime: **Target**.
 
 ## 10. Status and task split
@@ -459,7 +464,12 @@ Worker startup/complete Scheduler runtime: **Target**.
 - Recovery canonical event identity: **Current - TC-13.24b.2b.2c**.
 - Recovery adversarial verification: **Verified - TC-13.24b.2b.2d**.
 - Recovery Action Executor contract: **Contract Current — TC-13.24b.2b.4b.1**.
-- Recovery Action Executor runtime: **Target — TC-13.24b.2b.4b.2**.
+- Recovery Action Executor runtime: **Current — TC-13.24b.2b.4b.2**.
+- Recovery Executor adversarial verification: **Verified — TC-13.24b.2b.4b.2a**.
+- Worker Handoff Contract: **Contract Current — TC-13.24b.2b.4c.1**.
+- Worker Handoff adversarial verification: **Verified — TC-13.24b.2b.4c.1a.i**.
+- Worker Handoff Store: **Current — TC-13.24b.2b.4c.2**.
+- Worker Handoff execution runtime: **Target**.
 - Admission orchestration/runtime wiring beyond this boundary: **Target**.
 - Complete PortfolioScheduler runtime and Worker startup/dispatch integration:
   **Target**.
@@ -468,6 +478,6 @@ Worker startup/complete Scheduler runtime: **Target**.
 - Interface #22 core orchestration: unchanged, **Current — TC-13.18d.13b**;
   Codex/provider-429 extensions remain deferred.
 
-This document stops before Recovery action execution, Worker startup,
-complete Scheduler runtime, model/provider/API calls, network access, and any
-change to the existing Orchestrator or ControlPlane production modules.
+This document stops before Worker Handoff execution, Worker startup, complete
+Scheduler runtime, model/provider/API calls, network access, and any change to
+the existing Orchestrator or ControlPlane production modules.
