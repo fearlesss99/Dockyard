@@ -201,6 +201,29 @@ async def start_admitted_dispatch(request: AdmittedDispatchStartRequest, provide
                     request, existing.generation_id, existing_handoff.phase,
                     AdmittedDispatchStartOutcome.REPLAYED, existing.phase,
                 )
+            tombstone = dse.read_dispatch_tombstone(root, request.dispatch_id)
+            if tombstone is not None:
+                if tombstone.generation_id != existing.generation_id:
+                    _fail(AdmittedDispatchConflictError, "tombstone_generation")
+                resumed = existing_handoff
+                if resumed.phase is ScheduledDispatchHandoffPhase.ACKNOWLEDGED:
+                    resumed, _ = handoff_store.advance_phase(
+                        request.dispatch_id,
+                        ScheduledDispatchHandoffPhase.FINALIZING,
+                        existing.written_at,
+                        existing,
+                    )
+                if resumed.phase is ScheduledDispatchHandoffPhase.FINALIZING:
+                    resumed, _ = handoff_store.advance_phase(
+                        request.dispatch_id,
+                        ScheduledDispatchHandoffPhase.FINALIZED,
+                        tombstone.finalized_at,
+                        existing,
+                    )
+                    return _result(
+                        request, existing.generation_id, resumed.phase,
+                        AdmittedDispatchStartOutcome.REPLAYED, existing.phase,
+                    )
         liveness = dse.probe_dispatch_process_tree(existing)
         if liveness is dse.ProcessLiveness.UNKNOWN:
             _fail(AdmittedDispatchConflictError, "process_liveness_unknown")

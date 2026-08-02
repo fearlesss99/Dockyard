@@ -185,6 +185,31 @@ class HandoffRuntimeFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.outcome, runtime.AdmittedDispatchStartOutcome.REPLAYED)
             probe.assert_not_called()
             handoffs.reserve_handoff.assert_not_called()
+
+    async def test_tombstone_resumes_finalizing_without_worker_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            request = _request(root)
+            orchestrator = WorkflowOrchestrator(root, _Clock())
+            scheduler, worktrees, snapshot, workspace = self._existing_generation_context(request)
+            process = SimpleNamespace(generation_id="GEN-FINAL", phase="FINALIZING", written_at="2026-08-02T03:00:02.000000Z")
+            handoffs = MagicMock()
+            handoffs.read_handoff.return_value = SimpleNamespace(dispatch_id=request.dispatch_id, handoff_id=request.handoff_id, plan_digest=request.plan_digest, phase=ScheduledDispatchHandoffPhase.ACKNOWLEDGED)
+            final = SimpleNamespace(phase=ScheduledDispatchHandoffPhase.FINALIZED)
+            handoffs.advance_phase.side_effect = [(SimpleNamespace(phase=ScheduledDispatchHandoffPhase.FINALIZING), SimpleNamespace()), (final, SimpleNamespace())]
+            start = AsyncMock()
+            with (
+                patch.object(runtime, "resolve_invocation"), patch.object(runtime, "PortfolioSchedulerStore", return_value=scheduler),
+                patch.object(runtime, "_lease", return_value=SimpleNamespace(canonical_worktree=workspace)), patch.object(runtime, "WorktreeLifecycleStore", return_value=worktrees),
+                patch.object(runtime, "StateProvider", return_value=SimpleNamespace(snapshot=lambda: snapshot)), patch.object(runtime.dse, "read_dispatch_receipt", return_value=process),
+                patch.object(runtime.dse, "read_dispatch_tombstone", return_value=SimpleNamespace(generation_id="GEN-FINAL", finalized_at="2026-08-02T03:00:03.000000Z")),
+                patch.object(runtime, "PortfolioSchedulerWorkerHandoffStore", return_value=handoffs), patch.object(WorkflowOrchestrator, "start_admitted_dispatch_execution", start),
+            ):
+                result = await runtime.start_admitted_dispatch(request, {"claude": object()}, orchestrator)
+            self.assertEqual(result.outcome, runtime.AdmittedDispatchStartOutcome.REPLAYED)
+            self.assertEqual(result.phase, ScheduledDispatchHandoffPhase.FINALIZED)
+            self.assertEqual(handoffs.advance_phase.call_count, 2)
+            start.assert_not_awaited()
     async def test_provider_failure_precedes_all_durable_reads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
