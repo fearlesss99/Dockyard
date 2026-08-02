@@ -161,10 +161,12 @@ or regressed.  A repeated phase is legal only as byte-exact replay.
 The exact schema is `agentdesk.worktree-lifecycle/v1`.
 
 - `worktree_id` is `WT-` plus a stable lowercase SHA-256 identity derived
-  from the canonical common directory, repository root, worktree path,
-  branch, base commit, task ID, revision, attempt, and dispatch ID.
+  from the canonical common directory, repository root, branch, base commit,
+  task ID, revision, attempt, and dispatch ID.
+- The worktree path is derived only after `worktree_id` exists and is not part
+  of the `worktree_id` preimage; this prevents circular identity derivation.
 - `reservation_id` is `WTR-` plus a stable lowercase SHA-256 identity over
-  the same binding.
+  `worktree_id` and the same non-path binding.
 - `operation_id` is an `OP-` stable caller identity.
 - revision is a non-bool positive integer; attempt is a non-bool integer in
   1..3.  Attempt 4 is rejected before reservation or any Git side effect.

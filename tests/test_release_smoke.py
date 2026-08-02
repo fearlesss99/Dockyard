@@ -14343,6 +14343,8 @@ class TC1325aWorktreeLifecycleContractFreezeTests(unittest.TestCase):
         self.assertIn("agentdesk.worktree-lifecycle/v1", normalized)
         self.assertIn("agentdesk/<task_id>/r<revision>/a<attempt>/<dispatch_id>", normalized)
         self.assertIn("<repository_root.name>-agentdesk-worktrees/<worktree_id>", normalized)
+        self.assertIn("worktree path is derived only after `worktree_id` exists", normalized)
+        self.assertIn("not part of the `worktree_id` preimage", normalized)
         self.assertIn("docs/pm/worktree-lifecycle/reservations/<worktree_id>.yaml", normalized)
         self.assertIn("docs/pm/worktree-lifecycle/records/<worktree_id>.yaml", normalized)
         self.assertIn("Attempt 4 is rejected before reservation or any Git side effect", normalized)
