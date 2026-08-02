@@ -14233,6 +14233,255 @@ class TC1322b3aAndTC1324b1IntegrationStatusTests(unittest.TestCase):
         )
 
 
+class TC1324b4b1RecoveryActionExecutorContractFreezeTests(unittest.TestCase):
+    """TC-13.24b.2b.4b.1 Recovery Action Executor contract freeze."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        references = root / "skills" / "agentdesk" / "references"
+        cls.contract = (
+            references
+            / "public-interfaces"
+            / "portfolio-scheduler-recovery-executor-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.portfolio_contract = (
+            references
+            / "public-interfaces"
+            / "portfolio-scheduler-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.adr = (
+            references / "adr" / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        return " ".join(text.split())
+
+    def test_public_types_and_exact_receipt_field_order(self) -> None:
+        for type_name in (
+            "RecoveryExecutionRequest",
+            "RecoveryExecutionReceipt",
+            "RecoveryExecutionPhase",
+            "RecoveryExecutionOutcome",
+        ):
+            self.assertIn(type_name, self.contract)
+        start = self.contract.index("### 2.3 RecoveryExecutionReceipt")
+        end = self.contract.index("### 2.4 RecoveryExecutionOutcome", start)
+        block = self.contract[start:end]
+        fields = re.findall(
+            r"^\|\s*\d+\s*\|\s*`([^`]+)`\s*\|",
+            block,
+            re.MULTILINE,
+        )
+        self.assertEqual(
+            fields,
+            [
+                "schema_version",
+                "execution_id",
+                "queue_id",
+                "receipt_id",
+                "task_id",
+                "revision",
+                "selection_generation",
+                "recovery_generation",
+                "recovery_action",
+                "recovery_reason",
+                "canonical_dispatch_event_id",
+                "decision_replay_digest",
+                "phase",
+                "reserved_at",
+                "applied_at",
+                "finalized_at",
+                "content_digest",
+            ],
+        )
+        self.assertIn("frozen/slotted", self.contract)
+        self.assertIn("must not contain `Any`, `dict`, `Mapping`", self.contract)
+
+    def test_schema_path_and_identity_bindings_are_exact(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn(
+            "agentdesk.portfolio-scheduler.recovery-execution/v1",
+            normalized,
+        )
+        self.assertIn(
+            "docs/pm/portfolio-scheduler/recovery-actions/<queue_id>/g<recovery_generation>.yaml",
+            normalized,
+        )
+        for identity in (
+            "execution ID",
+            "selection-generation",
+            "recovery-generation",
+            "receipt identity",
+            "canonical event identity",
+            "replay digest",
+        ):
+            self.assertIn(identity, normalized)
+
+    def test_phase_values_are_forward_only(self) -> None:
+        for phase in ("RESERVED", "VALIDATED", "APPLYING", "APPLIED", "FINALIZED"):
+            self.assertIn(phase, self.contract)
+        normalized = self._normalize(self.contract)
+        self.assertIn(
+            "RESERVED -> VALIDATED -> APPLYING -> APPLIED -> FINALIZED",
+            normalized,
+        )
+        self.assertIn("Only the adjacent transitions", normalized)
+        self.assertIn("cannot be skipped, regressed, overwritten", normalized)
+
+    def test_action_mapping_is_complete(self) -> None:
+        for action in (
+            "NO_OP",
+            "WAIT_FOR_EXECUTION_OWNER",
+            "FAIL_CLOSED",
+            "REJECT",
+            "RESUME",
+            "REQUEUE_SELECTED",
+            "INVALIDATE_SELECTION",
+            "ADOPT_CANONICAL_DISPATCH",
+            "RETIRE_QUEUE_ENTRY",
+        ):
+            self.assertIn(f"`{action}`", self.contract)
+        normalized = self._normalize(self.contract)
+        for rule in (
+            "Zero canonical and Scheduler evidence writes",
+            "allow only later re-selection",
+            "existing selected-recovery operation",
+            "without fabricated evidence",
+            "exact canonical `event_id`",
+            "canonical dispatch evidence",
+        ):
+            self.assertIn(rule, normalized)
+
+    def test_forbidden_side_effect_boundaries_are_frozen(self) -> None:
+        normalized = self._normalize(self.contract)
+        for boundary in (
+            "never write canonical task, event, or outbox files",
+            "acquire or clean a `WorkerSlotLease`",
+            "start a Worker",
+            "call Admission or Policy",
+            "call owner-loss recovery",
+            "classify by exception text, provider, PID, or lease expiry",
+        ):
+            self.assertIn(boundary, normalized)
+        self.assertIn("does not call WorkflowOrchestrator", normalized)
+
+    def test_lock_sequence_and_worker_lock_boundary_are_frozen(self) -> None:
+        normalized = self._normalize(self.contract)
+        for step in (
+            "Read a validated canonical snapshot without a lock",
+            "Read the frozen `RecoveryRequest` and `RecoveryDecision`",
+            "Recompute the decision and verify the byte-exact replay digest",
+            "Acquire the queue-store lock and re-read queue, receipt, and execution receipt",
+            "CAS-reserve the execution identity",
+            "Apply exactly one Scheduler-local action",
+            "Advance the execution receipt",
+            "Release the queue-store lock",
+        ):
+            self.assertIn(step, normalized)
+        self.assertIn(
+            "WorkflowOrchestrator, Worker, model, API, network, and provider calls are forbidden while the queue-store lock is held",
+            normalized,
+        )
+
+    def test_crash_matrix_covers_all_required_windows(self) -> None:
+        normalized = self._normalize(self.contract)
+        for window in (
+            "Decision created before executor reservation",
+            "Reservation write interrupted",
+            "`RESERVED` before action",
+            "Receipt advanced while queue is not advanced",
+            "Queue advanced while execution receipt is not `APPLIED`",
+            "`APPLIED` before `FINALIZED`",
+            "Finalized replay",
+            "Canonical event changed",
+            "Stale generation",
+            "Concurrent executor",
+            "Attempt 4",
+            "Missing or divergent evidence",
+        ):
+            self.assertIn(window, normalized)
+        self.assertIn("only one permitted class of result", normalized)
+
+    def test_byte_exact_and_divergent_replay_rules_are_frozen(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("Same generation and same content must replay byte exactly", normalized)
+        for divergent in (
+            "changed action",
+            "reason",
+            "digest",
+            "event identity",
+            "queue identity",
+            "task identity",
+            "generation",
+        ):
+            self.assertIn(divergent, normalized)
+        self.assertIn("typed conflict", normalized)
+        self.assertIn("never overwrite divergent bytes", normalized)
+
+    def test_canonical_event_and_cas_requirements_are_explicit(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("canonical `EventEntry.event_id`", normalized)
+        self.assertIn("canonical event identity", normalized)
+        self.assertIn("queue/receipt/generation CAS evidence", normalized)
+        self.assertIn("exact canonical `event_id`", normalized)
+        self.assertIn("then compare the canonical event identity", normalized)
+
+    def test_concurrency_and_attempt_four_are_fail_closed(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("Exactly one durable execution winner", normalized)
+        self.assertIn("other callers receive typed conflict or byte-exact replay", normalized)
+        self.assertIn("Attempt 4", normalized)
+        self.assertIn(
+            "Reject before reservation with zero plan, lease, event, or executor mutation",
+            normalized,
+        )
+
+    def test_zero_canonical_write_and_zero_lease_rules_are_explicit(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn(
+            "The executor must never write canonical task, event, or outbox files",
+            normalized,
+        )
+        self.assertIn(
+            "The executor must never acquire or clean a `WorkerSlotLease`",
+            normalized,
+        )
+        self.assertIn("does not implement a production executor", normalized)
+        self.assertIn("does not call WorkflowOrchestrator, Worker", normalized)
+
+    def test_status_is_current_only_for_contract(self) -> None:
+        normalized = self._normalize(
+            self.contract + "\n" + self.portfolio_contract + "\n" + self.adr
+        )
+        self.assertIn(
+            "Recovery Action Executor Contract: **Contract Current — TC-13.24b.2b.4b.1**",
+            normalized,
+        )
+        self.assertIn(
+            "Recovery Action Executor Runtime: **Target — TC-13.24b.2b.4b.2**",
+            normalized,
+        )
+        self.assertIn("Worker startup/complete Scheduler runtime: **Target**", normalized)
+
+    def test_interface_22_and_interface_36_boundaries_are_preserved(self) -> None:
+        normalized = self._normalize(self.adr)
+        self.assertIn("Interface #22 is unchanged", normalized)
+        self.assertIn(
+            "Recovery Action Executor Contract Current",
+            normalized,
+        )
+        self.assertIn(
+            "Recovery Action Executor Runtime and Worker startup/complete Scheduler runtime remain Target",
+            normalized,
+        )
+        self.assertIn(
+            "Interface #36: contract and previously verified Scheduler cores remain Current",
+            self._normalize(self.contract),
+        )
+
+
 class TC1324b4a5RuntimeRecoveryIntegrationStatusTests(unittest.TestCase):
     """TC-13.24b.2b.4a.5 direct runtime/recovery status assertions."""
 
@@ -14257,7 +14506,14 @@ class TC1324b4a5RuntimeRecoveryIntegrationStatusTests(unittest.TestCase):
             "Recovery adversarial verification: **Verified - TC-13.24b.2b.2d**",
         ):
             self.assertIn(status, normalized)
-        self.assertIn("Recovery action executor: **Target**", normalized)
+        self.assertIn(
+            "Recovery Action Executor contract: **Contract Current — TC-13.24b.2b.4b.1**",
+            normalized,
+        )
+        self.assertIn(
+            "Recovery Action Executor runtime: **Target — TC-13.24b.2b.4b.2**",
+            normalized,
+        )
         self.assertIn("Worker startup/complete Scheduler runtime: **Target**", normalized)
         self.assertNotIn("defect open", normalized)
 
@@ -14265,10 +14521,13 @@ class TC1324b4a5RuntimeRecoveryIntegrationStatusTests(unittest.TestCase):
         normalized = " ".join(self.adr.split())
         self.assertIn("Interface #22 is unchanged", normalized)
         self.assertIn(
-            "Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core Current",
+            "Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core + Recovery Action Executor Contract Current",
             normalized,
         )
-        self.assertIn("Recovery action executor and Worker startup/complete Scheduler runtime remain Target", normalized)
+        self.assertIn(
+            "Recovery Action Executor Runtime and Worker startup/complete Scheduler runtime remain Target",
+            normalized,
+        )
         self.assertNotIn(
             "| 36 | PortfolioScheduler durable admission | **Admission Runtime Current**",
             normalized,
@@ -14716,7 +14975,8 @@ class TC1324b4a2AdmissionPlanBindingContractFreezeTests(unittest.TestCase):
             "Durable plan Store/runtime: **Current - TC-13.24b.2b.4a.3**",
             "Recovery canonical event identity: **Current - TC-13.24b.2b.2c**",
             "Recovery adversarial verification: **Verified - TC-13.24b.2b.2d**",
-            "Recovery action executor: **Target**",
+            "Recovery Action Executor contract: **Contract Current — TC-13.24b.2b.4b.1**",
+            "Recovery Action Executor runtime: **Target — TC-13.24b.2b.4b.2**",
             "Worker startup/complete Scheduler runtime: **Target**",
         ):
             self.assertIn(status, normalized)
