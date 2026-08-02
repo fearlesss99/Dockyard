@@ -231,8 +231,9 @@ The exact create order is:
 3. acquire the independent worktree-lifecycle Store lock;
 4. re-read reservation/record evidence and CAS-write `RESERVED` evidence;
 5. release the Store lock;
-6. run non-interactive `git worktree add --no-checkout -b <branch> <path>
-   <base_commit>` using an argv array, explicit cwd, timeout, and no shell;
+6. run non-interactive `git worktree add -b <branch> <path> <base_commit>`
+   using an argv array, explicit cwd, timeout, and no shell; this single
+   command must materialize the usable worktree before it may become `READY`;
 7. verify inventory, branch, HEAD, common directory, and path;
 8. acquire the Store lock, advance `CREATING -> READY`, and release it.
 

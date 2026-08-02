@@ -14367,7 +14367,8 @@ class TC1325aWorktreeLifecycleContractFreezeTests(unittest.TestCase):
         normalized = self._normalize(self.contract)
         self.assertIn("CAS-write `RESERVED` evidence", normalized)
         self.assertIn("release the Store lock", normalized)
-        self.assertIn("git worktree add --no-checkout -b <branch> <path> <base_commit>", normalized)
+        self.assertIn("git worktree add -b <branch> <path> <base_commit>", normalized)
+        self.assertIn("materialize the usable worktree before it may become `READY`", normalized)
         self.assertIn("Durable reservation always precedes `git worktree add`", normalized)
         self.assertIn("No Store lock is held while Git", normalized)
 
