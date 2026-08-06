@@ -58,6 +58,7 @@ from dispatcher_gateway import (
     DispatchIdentity,
     DispatchRequest,
 )
+from worker_adapter import run_dispatch_observed
 from worker_output_decoder import (
     WorkerCompletionStatus,
 )
@@ -938,6 +939,11 @@ class WorkflowEscalationE2ETests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 head_sha = _git_add_all_and_commit(project_root, "approval grants")
+                from tests.test_workflow_orchestrator import _write_difficulty_assessment
+                _write_difficulty_assessment(
+                    project_root, task_id=task_id, revision=revision,
+                    difficulty="basic",
+                )
 
                 # ── 8. Create attempt-2 implementation (Standard) and report ─
                 impl_file_v2 = project_root / "src" / "impl.py"
@@ -1219,9 +1225,15 @@ class WorkflowEscalationE2ETests(unittest.IsolatedAsyncioTestCase):
                 # Execute all phases
                 # ═══════════════════════════════════════════════════════════
 
-                with mock.patch(
-                    "asyncio.create_subprocess_exec",
-                    side_effect=subprocess_router,
+                with (
+                    mock.patch(
+                        "worker_adapter.run_supervised_dispatch",
+                        new=run_dispatch_observed,
+                    ),
+                    mock.patch(
+                        "asyncio.create_subprocess_exec",
+                        side_effect=subprocess_router,
+                    ),
                 ):
                     # ── Phase A.1: Attempt-1 Basic dispatch ───────────────
                     dispatch_result_a1 = await orch.run_dispatch_cycle(

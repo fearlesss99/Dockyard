@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import subprocess
 import sys
 import tempfile
@@ -54,6 +55,11 @@ def _request(root: Path, attempt: int = 1) -> runtime.AdmittedDispatchStartReque
 
 
 class HandoffRuntimeTypeTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows canonical path rule")
+    def test_windows_worktree_identity_is_case_insensitive_but_path_exact(self) -> None:
+        self.assertTrue(runtime._same_worktree(r"C:\\Repo\\WT-1", r"c:\\repo\\WT-1"))
+        self.assertFalse(runtime._same_worktree(r"C:\\Repo\\WT-1", r"c:\\repo\\WT-2"))
+
     def test_public_field_order_and_frozen_slots(self) -> None:
         self.assertEqual(tuple(runtime.AdmittedDispatchStartRequest.__dataclass_fields__), (
             "schema_version", "operation_id", "project_root", "queue_id", "receipt_id",
@@ -133,7 +139,7 @@ class HandoffRuntimeFlowTests(unittest.IsolatedAsyncioTestCase):
         snapshot = SimpleNamespace(
             events=(event,),
             outbox=(SimpleNamespace(message_id=request.outbox_message_id, event_id=event.event_id),),
-            tasks=(SimpleNamespace(task_id=request.task_id, current_dispatch=request.dispatch_id),),
+            tasks=(SimpleNamespace(task_id=request.task_id, current_dispatch=SimpleNamespace(dispatch_id=request.dispatch_id)),),
         )
         return scheduler, worktrees, snapshot, workspace
 
@@ -277,7 +283,7 @@ class HandoffRuntimeFlowTests(unittest.IsolatedAsyncioTestCase):
                 branch="agentdesk/TC-026/r1/a1/DSP-26",
             )
             event = SimpleNamespace(event_id="EVT-26", event_type="TASK_DISPATCHED", dispatch_id="DSP-26", from_state="ready", to_state="dispatched", occurred_at="2026-08-02T03:00:00.000000Z")
-            snapshot = SimpleNamespace(events=(event,), outbox=(SimpleNamespace(message_id="MSG-26", event_id="EVT-26"),), tasks=(SimpleNamespace(task_id="TC-026", current_dispatch="DSP-26"),))
+            snapshot = SimpleNamespace(events=(event,), outbox=(SimpleNamespace(message_id="MSG-26", event_id="EVT-26"),), tasks=(SimpleNamespace(task_id="TC-026", current_dispatch=SimpleNamespace(dispatch_id="DSP-26")),))
             reserved_process = SimpleNamespace(generation_id="GEN-1", written_at="2026-08-02T03:00:00.500000Z", phase="RESERVED")
             process = SimpleNamespace(generation_id="GEN-1", written_at="2026-08-02T03:00:01.000000Z", phase="WORKER_STARTED")
             final_process = SimpleNamespace(generation_id="GEN-1", written_at="2026-08-02T03:00:02.000000Z", phase="FINALIZING")

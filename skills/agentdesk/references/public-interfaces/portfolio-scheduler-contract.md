@@ -495,3 +495,26 @@ The Scheduler-to-Worker Handoff Runtime Contract is **Contract Current —
 TC-13.26a**. Its production runtime is **Current — TC-13.26b** and E2E
 verification is **Verified — TC-13.26c**. It may only adopt an already admitted
 dispatch and does not make the complete PortfolioScheduler runtime Current.
+
+## 11. PM materialization admission handoff boundary (TC-13.29l.5a)
+
+The PM materialization-to-Scheduler handoff contract is **Contract Current —
+TC-13.29l.5a.1**; its runtime is **Current — TC-13.29l.5d.4**. The complete contract
+is in `pm-materialization-admission-handoff-contract.md`.
+
+PortfolioScheduler does not discover PM task-card files, run Git commands,
+register canonical tasks, or infer QueueEntry identity from a materialized
+plan. It accepts only an exact, validated canonical task and then owns the
+durable `queue_id`, `enqueue_sequence`, QueueEntry, selection, and admission
+evidence. The materialization handoff owner must release its receipt, Git, and
+canonical locks before calling the Scheduler store/runtime.
+
+No handoff receipt may manufacture a QueueEntry, ScheduleReceipt,
+AdmissionPlan, `dispatch_id`, or `dispatch_event_id`. Attempt four is rejected
+before queue reservation or admission. Interface #36 ownership is unchanged;
+this contract does not make complete PortfolioScheduler runtime Current.
+
+TC-13.29l.5a.1 additionally requires an immutable typed admission template and
+a durable exact `PortfolioAdmissionPlan` before `ADMISSION_READY`. The receipt
+binds both digests. Scheduler selection may not consume a caller-supplied or
+in-memory-only replacement plan.

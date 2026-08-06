@@ -14,6 +14,12 @@ Out of scope (unchanged by this contract):
 - Codex worker-output decoder: **Target/deferred — TC-13.9c.2**.
 - Provider rate-limit detection: **Target — TC-13.14c**.
 - Owner-loss contract and Interface #22: **unchanged**.
+- Reasonix Basic Provider: **Contract Current — TC-13.28a.2 Phase A** (contract + adapter +
+  decoder implemented; permission policy evidence-current via loopback stub
+  (`acceptEdits` + `Bash,Read,Write,Edit`); API probe and end-to-end runtime
+  remain Target — TC-13.28a.2 Phase B).
+  D009 does not yet include `reasonix`; it will be extended when the adapter
+  is production-ready.
 
 ---
 
@@ -221,3 +227,4 @@ Rules:
 | Date | Revision | Changes |
 |------|----------|---------|
 | 2026-07-30 | 1 (Current) | TC-13.21e.1: initial freeze — D001–D012, CLI, JSON schema, gateway template. |
+| 2026-08-02 | 2 (Current) | TC-13.28a.1: Reasonix Basic Provider contract freeze noted in out-of-scope; D009 extension deferred to adapter card. |

@@ -20,6 +20,7 @@ These are contract-freeze tests only — no production module is imported or cal
 from __future__ import annotations
 
 import re
+import ast
 import unittest
 from pathlib import Path
 
@@ -859,13 +860,17 @@ class RuntimeTargetStatusTests(unittest.TestCase):
 
     def test_no_production_module_imported_in_tests(self) -> None:
         """This test file must not import production portfolio scheduler modules."""
-        import sys
-        for mod_name in list(sys.modules):
-            if "portfolio_scheduler" in mod_name:
-                if "test_portfolio_scheduler_worker_handoff_contract" not in mod_name:
-                    self.fail(
-                        f"Test file must not import production module '{mod_name}'"
-                    )
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        imported: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                imported.append(node.module)
+        self.assertFalse(
+            any(name.startswith("portfolio_scheduler") for name in imported),
+            f"Test file must not import production portfolio scheduler modules: {imported}",
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

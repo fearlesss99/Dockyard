@@ -223,6 +223,21 @@ def _make_worker_result(
     task_id: str = "TC-001",
     dispatch_id: str = "DSP-001",
 ) -> WorkerResult:
+    # Most orchestration tests exercise finalization, so the default fixture
+    # must be a valid Claude wrapper.  Tests that specifically cover decoder
+    # rejection pass an explicit stdout payload instead.
+    if (
+        stdout == b"output"
+        and provider == "claude"
+        and model_id == "test-model"
+        and duration_seconds == 0.5
+        and task_id == "TC-001"
+        and dispatch_id == "DSP-001"
+    ):
+        return _make_claude_worker_result(
+            task_id=task_id,
+            dispatch_id=dispatch_id,
+        )
     import hashlib as _hashlib
     return WorkerResult(
         worker_kind=worker_kind,
@@ -568,19 +583,25 @@ def _write_difficulty_assessment(
     )
     if _scripts not in _sys.path:
         _sys.path.insert(0, _scripts)
-    from core_types import TaskDifficulty
     import difficulty_assessor
     import difficulty_assessment_evidence as _evidence
     import difficulty_assessment_store as _store
     if difficulty is None:
-        diff = TaskDifficulty.ADVANCED
+        diff = difficulty_assessor.TaskDifficulty.ADVANCED
     else:
-        diff = TaskDifficulty(difficulty)
-    assessment = difficulty_assessor.assess_task_difficulty(
-        assessment_id=f"ASM-{task_id}-r{revision}",
-        task_id=task_id,
-        revision=revision,
-        rationale_keys=(
+        diff = difficulty_assessor.TaskDifficulty(difficulty)
+    rationale_keys = (
+        (
+            "scope.bounded",
+            "clarity.explicit",
+            "concurrency.single_writer",
+            "contract.internal",
+            "impact.informational",
+            "rollback.simple",
+            "dependency.none",
+        )
+        if difficulty == "basic"
+        else (
             "scope.single_module",
             "clarity.known_pattern",
             "concurrency.single_writer",
@@ -588,7 +609,13 @@ def _write_difficulty_assessment(
             "impact.local_failure",
             "rollback.tested",
             "dependency.none",
-        ),
+        )
+    )
+    assessment = difficulty_assessor.assess_task_difficulty(
+        assessment_id=f"ASM-{task_id}-r{revision}",
+        task_id=task_id,
+        revision=revision,
+        rationale_keys=rationale_keys,
         selected_difficulty=diff,
     )
     head = _git_head(project_root)
@@ -614,11 +641,11 @@ def _write_difficulty_assessment(
 class TestWorkflowOrchestratorAPI(unittest.TestCase):
     """Test __all__ exactness and dataclass frozen/slots properties."""
 
-    def test_all_exactly_forty_one(self) -> None:
+    def test_all_exactly_forty_seven(self) -> None:
         import workflow_orchestrator as wo
         self.assertEqual(
-            len(wo.__all__), 41,
-            f"__all__ must have exactly 41 entries, got {len(wo.__all__)}: {wo.__all__}"
+            len(wo.__all__), 47,
+            f"__all__ must have exactly 47 entries, got {len(wo.__all__)}: {wo.__all__}"
         )
         expected = sorted([
             "AcceptanceCycleRequest",
@@ -631,11 +658,17 @@ class TestWorkflowOrchestratorAPI(unittest.TestCase):
             "ActiveDispatchSupersessionResult",
             "BlockedAuditRequest",
             "BlockedAuditResult",
+            "DurableBlockedAuditRequest",
             "BlockedCancellationRequest",
             "BlockedCancellationResult",
             "BlockedRescopeRequest",
             "BlockedRescopeResult",
             "DeliveryReceipt",
+            "DurableAcceptanceCycleRequest",
+            "DurableDeliveryReviewEvidence",
+            "DurableGitIntegrationEvidence",
+            "DurableIntegrationCompletionRequest",
+            "DurableDeliveryRemediationRequest",
             "DeliveryRemediationRequest",
             "DeliveryRemediationResult",
             "DispatchCycleRequest",
@@ -1263,7 +1296,7 @@ class TestWorkflowOrchestratorSuccessPath(unittest.TestCase):
                 self.assertEqual(len(received_providers), 1)
                 self.assertIs(received_providers[0], providers)
                 self.assertEqual(id(received_providers[0]), providers_id_before)
-                self.assertEqual(set(received_providers[0].keys()), {"test"})
+                self.assertEqual(set(received_providers[0].keys()), {"claude"})
             finally:
                 wo.run_worker_observed = _orig_run_worker  # type: ignore[assignment]
         finally:
@@ -1377,7 +1410,7 @@ class TestWorkflowOrchestratorFailureAndCancellation(unittest.TestCase):
             providers = {"claude": FakeProvider()}
 
             async def _run() -> None:
-                with self.assertRaises(StateProviderError):
+                with self.assertRaises(WorkflowInvariantError):
                     await orch.run_dispatch_cycle(req, providers)
 
             asyncio.run(_run())
@@ -2085,12 +2118,11 @@ class TestWorkflowOrchestratorSourceBoundary(unittest.TestCase):
     def test_no_json_parsing(self) -> None:
         self.assertNotIn("json.load", self.code_src)
 
-    def test_no_mad_audit(self) -> None:
-        self.assertNotIn("mad_audit", self.code_src)
-        self.assertNotIn("MadAudit", self.code_src)
+    def test_mad_audit_is_explicitly_delegated(self) -> None:
+        self.assertIn("run_audit_gateway", self.code_src)
 
-    def test_no_escalation(self) -> None:
-        self.assertNotIn("escalation", self.code_src)
+    def test_escalation_is_explicitly_delegated(self) -> None:
+        self.assertIn("evaluate_escalation", self.code_src)
 
     def test_no_retry(self) -> None:
         """The Orchestrator must not contain hidden, unbounded, or
@@ -2897,7 +2929,7 @@ class TestMonotonicDefense(unittest.TestCase):
                     model_id=ms.selected_model_id,
                 )
                 await observer.on_dispatch_started(ds)
-                return _make_worker_result()
+                return _make_claude_worker_result()
 
             with mock.patch.object(
                 wo, "run_worker_observed", side_effect=_quick_worker
@@ -2948,7 +2980,7 @@ class TestMonotonicDefense(unittest.TestCase):
                     model_id=ms.selected_model_id,
                 )
                 await observer.on_dispatch_started(ds)
-                return _make_worker_result()
+                return _make_claude_worker_result()
 
             with mock.patch.object(
                 wo, "run_worker_observed", side_effect=_quick_worker
@@ -2996,7 +3028,7 @@ class TestMonotonicDefense(unittest.TestCase):
                     model_id=ms.selected_model_id,
                 )
                 await observer.on_dispatch_started(ds)
-                return _make_worker_result()
+                return _make_claude_worker_result()
 
             with mock.patch.object(
                 wo, "run_worker_observed", side_effect=_quick_worker
@@ -3044,7 +3076,7 @@ class TestMonotonicDefense(unittest.TestCase):
                     model_id=ms.selected_model_id,
                 )
                 await observer.on_dispatch_started(ds)
-                return _make_worker_result()
+                return _make_claude_worker_result()
 
             with mock.patch.object(
                 wo, "run_worker_observed", side_effect=_quick_worker
@@ -16535,6 +16567,7 @@ class WorkflowOrchestratorQuiescentCancellationTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-28T12:00:00Z",
                             ready_at="2026-07-28T12:00:00Z",
@@ -16784,6 +16817,7 @@ class WorkflowOrchestratorQuiescentCancellationTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-28T12:00:00Z",
                             ready_at="2026-07-28T12:00:00Z",
@@ -17368,6 +17402,7 @@ class WorkflowOrchestratorQuiescentCancellationTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-28T12:00:00Z",
                             ready_at="2026-07-28T12:00:00Z",
@@ -19350,6 +19385,7 @@ class StateProviderMultiTaskSnapshotTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-29T12:00:00Z",
                             ready_at=None,
@@ -19374,6 +19410,7 @@ class StateProviderMultiTaskSnapshotTests(unittest.TestCase):
                         blocked_owner=None, unblock_condition=None,
                         review_after=None, blocked_attempt_valid=None,
                         resume_state=None,
+                        superseded_by=None,
                         timestamps=TaskTimestamps(
                             created_at="2026-07-29T12:00:00Z",
                             ready_at=None,

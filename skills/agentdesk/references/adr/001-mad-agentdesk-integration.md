@@ -49,6 +49,15 @@ marked **Current** exist and are callable today; interfaces marked
 | 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core + Recovery Action Executor Runtime + Worker Handoff Contract + Worker Handoff Store Current** | TC-13.24a / TC-13.24b.1 / TC-13.24b.2a / TC-13.24b.2b.1 / TC-13.24b.2b.2 / TC-13.24b.2b.4a.2 / TC-13.24b.2b.4a.3 / TC-13.24b.2b.4a.4 / TC-13.24b.2b.2c / TC-13.24b.2b.4b.2 / TC-13.24b.2b.4c.1 / TC-13.24b.2b.4c.2 | Frozen BusinessPriority, QueueEntry, ScheduleReceipt, durable evidence, deterministic v1 selection, conflict-key, lock-order, crash-recovery, durable plan binding, plan persistence, selection-to-admission runtime, Scheduler-local Recovery Action Executor, and durable Worker Handoff evidence Store; Recovery Executor adversarial verification is Verified — TC-13.24b.2b.4b.2a; Worker Handoff adversarial verification is Verified — TC-13.24b.2b.4c.1a.i; Worker Handoff execution runtime and complete Scheduler runtime remain Target; Interface #22 unchanged |
 | 37 | WorktreeLifecycleManager | **Contract + Store + Runtime Current; Verified — TC-13.25d** | TC-13.25a / TC-13.25b / TC-13.25c / TC-13.25d | Frozen independent managed-worktree identity, durable reservation, porcelain inventory, path/reparse/UNC/case-fold security, forward-only lifecycle, crash reconciliation, concurrency, generation-aware process evidence, and fail-closed release; Interfaces #22 and #36 unchanged |
 | 38 | Scheduler-to-Worker Handoff Runtime | **Contract + Runtime Current; E2E Verified — TC-13.26c** | TC-13.26a / TC-13.26b / TC-13.26c | Adoption of an already admitted dispatch, exact plan/event/lease/worktree/handoff/process binding, provider-before-write validation, seven forward-only phases, three-state restart fencing, tombstone replay, and adversarial local process/Git verification; Interface #22 unchanged; complete Scheduler runtime remains Target |
+| 39 | AgentDesk Reasonix Basic Provider | **Contract Current — TC-13.28a.2 Phase A** / Permission Policy Evidence Current (`acceptEdits` + `Bash,Read,Write,Edit`) / Adapter Implemented-Unselectable / Decoder Fixture Verified | TC-13.28a.2 | Frozen provider identity (`"reasonix"`), model (`"deepseek-v4-flash"`), profile (`economy`), max 12 tool rounds; one-shot `reasonix run` via stdin with `--output-format json`; `--permission-mode acceptEdits --allowed-tools Bash,Read,Write,Edit` frozen by loopback-stub evidence; ACP, TUI, MCP, web, subagent, Yolo, auto, bypassPermissions, manual forbidden; API key managed exclusively by Reasonix user directory; Reasonix JSON wrapper parsed through fail-closed decoder gate (`reasonix_output_decoder.py`) via `object.__new__` to bypass Claude/Codex provider gate in `WorkerOutput`; adapter (`reasonix_cli_provider.py`) implemented but unselectable pending Phase B real API probe; Runtime + API Probe are Target — TC-13.28a.2 Phase B; Interface #22 unchanged |
+| 40 | Dockyard local visual control surface | **Contract + local runtime Current; Supported Local Closed Loop E2E Verified — TC-13.29n; Extended Adversarial Verified — TC-13.29m.1b** | TC-13.29b / TC-13.29l.10 / TC-13.29l.12e / TC-13.29l.13c / TC-13.29l.14c / TC-13.29l.14d / TC-13.29l.15a / TC-13.29l.15b / TC-13.29m / TC-13.29m.1b / TC-13.29n | Chinese dark-mode Web control surface with a real loopback path from requirement input through deterministic PM planning, explicit approval, Scheduler/worktree/handoff, Worker delivery, MAD pass/fail, explicit acceptance or returned-delivery redispatch, Git integration, active terminate, failure retry, and owner-loss recovery. Pairing, repository identity, SSE, hostile output, concurrent commands, and attempt-four boundaries are adversarially verified. Versioned task-spec revision editing, adaptive model PM, Automated execution, remote relay, GitHub publication, and deployment remain Target. Interface #22 remains the canonical lifecycle owner; Interface #24 remains the separate read-only HTML Dashboard. |
+| 41 | PM materialization-to-Scheduler admission handoff | **Contract Current — TC-13.29l.5a.1; Runtime Current — TC-13.29l.5d.4** | TC-13.29l.5a / TC-13.29l.5a.1 / TC-13.29l.5d.4 | Frozen PM task-card/assessment/Git/canonical-task/QueueEntry/admission identity binding, confirmed-plan dispatch grant projection, durable pre-admission plan template and exact PortfolioAdmissionPlan, seven forward-only phases, owner-separated lock order, crash matrix, byte-exact replay, concurrent single-winner, and attempt-four rejection; Dockyard, Interface #22, and Interface #36 ownership unchanged; full local closed-loop E2E remains Target |
+| 42 | PM Task Admission Preparation | **Contract Current — TC-13.29l.5c.1b; Runtime Current — TC-13.29l.5c.2** | TC-13.29l.5c.1 / TC-13.29l.5c.1a / TC-13.29l.5c.1b / TC-13.29l.5c.2 | Explicit BusinessPriority and attempt pair, seven-key TaskDifficulty assessment, committed role policy, validated local model bindings, exact select_model snapshot, deterministic handoff template/request construction, durable typed handoff-input document, five forward-only phases, replay/concurrency/crash fencing; Dockyard composition Contract Current — TC-13.29l.5d.3 / Runtime Current — TC-13.29l.5d.4; Interfaces #22/#36/#40/#41 unchanged |
+| 43 | Dockyard task admission composition | **Contract Current — TC-13.29l.5d.3; Runtime Current — TC-13.29l.5d.4** | TC-13.29l.5d.3 / TC-13.29l.5d.4 | Read-only Scheduler/slot/canonical context projection, durable per-task admission progress, confirmed-plan dispatch authorization binding, integrated-only dependency gate, six forward-only phases, byte-exact replay, crash/concurrency fencing, and owner-separated lock order; Interfaces #22/#36/#38/#40/#41/#42 unchanged; full local E2E remains Target |
+| 44 | Dockyard post-admission Worker composition | **Current — TC-13.29l.5e** | TC-13.29l.5e | Exact finalized admission, managed-worktree, Scheduler plan/event/outbox/lease, model binding, and dispatch identity are projected into existing Interface #38 and PM external Worker owners; real loopback deterministic Worker reaches ACK, delivery, finalizer, and byte-exact replay; no second worktree/process/event/Worker; MAD, acceptance, remediation, integration, and full TC-13.29l E2E remain Target |
+| 45 | Dockyard post-delivery review evidence | **Contract Current — TC-13.29l.5f; Owner Input Contract Current — TC-13.29l.5f.1; Fail/Blocked Owner Input Contract Current — TC-13.29l.5f.2; WorkerKind Evidence Repair Current — TC-13.29l.5f.2a; Owner Plan Projection Contract + Runtime Current — TC-13.29l.5g.2c.1; Store Current — TC-13.29l.5g.1; Interface #22 Acceptance Owner Runtime Current — TC-13.29l.5g.2a; Fail/Blocked Owner Runtime Current — TC-13.29l.5g.2b; Dockyard Normal-Path Composition Current — TC-13.29l.5g.2c.2; Mid-Flight Crash Resume Target** | TC-13.29l.5f / TC-13.29l.5f.1 / TC-13.29l.5f.2 / TC-13.29l.5f.2a / TC-13.29l.5f.3 / TC-13.29l.5g.1 / TC-13.29l.5g.2a / TC-13.29l.5g.2b / TC-13.29l.5g.2c.1 / TC-13.29l.5g.2c.2 | Frozen durable delivery/event/worktree/commit/WorkerKind/MAD/acceptance/remediation/integration identity binding, deterministic typed owner-plan reconstruction with a canonical Git request instead of a predicted integrated commit, seven forward-only phases, pass/fail/blocked routing, local-runner-only secret-free evidence, canonical atomic request/receipt Store, owner-neutral durable acceptance/remediation/blocked inputs, and normal-path composition through the existing MAD, lifecycle and Git owners; mid-flight non-final receipt re-entry is typed `RECOVERY_REQUIRED` with zero blind replay; Interfaces #20/#22 remain sole MAD and lifecycle owners; full TC-13.29l E2E remains Blocked |
+| 46 | AgentDesk Git Integration owner | **Contract Current — TC-13.29l.5h.1; Runtime Current — TC-13.29l.5h.2; Durable Integration Completion Owner Current — TC-13.29l.5h.3** | TC-13.29l.5h.1 / TC-13.29l.5h.2 / TC-13.29l.5h.3 | Dedicated local Git owner for deterministic fast-forward or tree-only merge, durable replay, conflict evidence, checked-out-target rejection, and old-value target-ref CAS; the owner-neutral finalized-receipt projection lets Interface #22 publish one lease-free `CHANGE_INTEGRATED` without rerunning MAD or acceptance; the Git owner never mutates the user's checkout or writes canonical task state; Dockyard composition and TC-13.29l E2E remain Target/Blocked |
+| 47 | Dockyard user retry command contract | **Failure retry Contract/Runtime/E2E/Adversarial Current; Returned-delivery redispatch Contract Current — TC-13.29l.14b / Runtime Current — TC-13.29l.14c / Review Handoff Current — TC-13.29l.14d** | TC-13.29l.13a / TC-13.29l.13b / TC-13.29l.13c / TC-13.29m / TC-13.29l.14b / TC-13.29l.14c / TC-13.29l.14d | The failure route retains exact DISPATCH_FAILED evidence. The mutually exclusive returned-delivery route binds fail-review, delivery, DELIVERY_RETURNED, TASK_REQUEUED, finalizer, handoff, admission, outbox, worktree and provider/model evidence before any new write, then hands the completed next attempt back to the durable review owner. Unchanged specifications retain revision and increment only attempt; a future versioned task-spec revision editor remains Target. Both routes reuse WorkflowOrchestrator/Interface #22. |
 
 ---
 
@@ -7983,6 +7992,114 @@ runtime is **Current — TC-13.26b**; E2E verification is **Verified — TC-13.2
 Interface #22 remains the canonical cancellation, supersession, ACK, delivery,
 and finalization owner. Interface #36 does not claim complete runtime Current.
 
+### 2.28 Dockyard Local Visual Control Surface (Contract Current — TC-13.29b)
+
+Dockyard is the Chinese, dark-mode visual control surface for the existing
+AgentDesk closed loop. Its frozen contracts are
+`skills/agentdesk/references/public-interfaces/dockyard-control-api-contract.md`
+and `skills/agentdesk/references/public-interfaces/dockyard-web-contract.md`.
+Dockyard projects validated evidence and delegates typed commands to existing
+owners. It is not a second PM, state machine, Scheduler, approval service, Git
+facade, shell, provider launcher, or secret store.
+
+The local API namespace is `/api/dockyard/v1`; the first runtime is loopback
+only and uses HTTP plus SSE. The Web product freezes nine navigation areas:
+工作台, 需求与方案, 任务, 运行, 审议与验收, Worker 与模型, 项目, 系统诊断,
+and 设置. The default is `Standard + balanced`. Policy may raise but never
+lower the required execution or deliberation level. API keys remain in the
+local Runner/provider user directory and are never projected to the browser.
+
+Project removal is soft and can never delete a Git repository. Plan approval,
+active manual retry, model/strategy escalation, dispatch termination, and
+project removal require a second confirmation. Automatic recovery retains its
+existing policy. Mobile is limited to viewing, approval, manual retry, and
+termination; dynamic task graphs, accounts, notifications, repository deletion,
+cloud relay, and deployment are excluded from the first runtime.
+
+Dockyard Contract is **Contract Current — TC-13.29b**. The loopback Web shell
+runtime is **Current — TC-13.29l.6**: it serves the built Web assets and an
+in-memory, no-store browser bootstrap before the application entry without
+writing device credentials to disk. Local requirement-to-plan composition is
+**Current — TC-13.29l.7**: one deterministic PM-owned starter task is created
+without a provider call, safely projected for editing, and advanced to
+approval-pending before the existing explicit approval gate. Loopback Control
+API/SSE runtime is **Current — TC-13.29f**. User retry owner composition is
+**Current — TC-13.29l.13b**, retry closed-loop E2E is **Verified —
+TC-13.29l.13c**. Returned-delivery redispatch runtime and review handoff are
+**Current — TC-13.29l.14c / TC-13.29l.14d**. Owner-loss automatic recovery is
+**Runtime + local E2E Current — TC-13.29l.15a**, and its honest reconnect UX is
+**Current — TC-13.29l.15b**. The local adversarial boundary suite is
+**Verified — TC-13.29m / Extended TC-13.29m.1b**. The supported Dockyard local
+closed loop is **E2E Verified — TC-13.29n**. Versioned task-spec revision
+editing, adaptive model-based PM decomposition, and Automated execution remain
+Target. Remote relay, GitHub publication, and deployment remain **Target**.
+Interface #22 remains the canonical lifecycle owner.
+Interface #24 remains the separate read-only HTML Dashboard. Interface #36
+retains its recorded Scheduler boundary.
+
+TC-13.29l.14b freezes the returned-delivery extension of the existing
+confirmation-bound `task.retry` command. A bare `ready` task is insufficient.
+Before any approval, lease, transition, outbox, or Worker action, the gateway
+must bind one finalized MAD `fail` review and its delivery receipt to exact
+`DELIVERY_RETURNED` and `TASK_REQUEUED` events, finalized dispatch evidence,
+handoff, admission plan, original outbox, managed worktree, and a READY
+provider/model. This route and the existing `DISPATCH_FAILED` route are
+mutually exclusive.
+
+The normal remediation path keeps the task revision unchanged and advances
+only `attempt`; the new Worker receives the immutable task card plus the
+durable MAD fail report and issue summaries. Any change to task goals,
+acceptance criteria, dependencies, allowed paths, base, or safety constraints
+requires a separate versioned task-spec flow and cannot be smuggled through
+redispatch. Attempt four, stale/divergent evidence, and missing/UNKNOWN owner
+evidence are pre-write rejects. Interface #22 stays the only lifecycle owner.
+Contract is **Current — TC-13.29l.14b**; runtime is **Current —
+TC-13.29l.14c**; completed redispatch review handoff is **Current —
+TC-13.29l.14d**. The unchanged-specification return/redispatch route is closed;
+a future versioned task-spec revision editor remains Target.
+
+TC-13.29l.15a adds the local background owner-loss composition. ALIVE is
+zero-write, UNKNOWN is fail-closed, and only DEAD may enter the existing
+WorkflowOrchestrator recovery entry after exact canonical, process, approval,
+Scheduler, handoff, worktree, provider, and model evidence agrees. The final
+liveness check and DISPATCH_FAILED transition retain the Interface #22 lock
+boundary; retry remains outside the lock and attempt four is forbidden.
+TC-13.29l.15b presents those states honestly and retains the last validated
+projection during SSE reconnect.
+
+### 2.29 PM Materialization-to-Scheduler Admission Handoff (Contract Current — TC-13.29l.5a)
+
+The frozen contract is
+`skills/agentdesk/references/public-interfaces/pm-materialization-admission-handoff-contract.md`.
+It closes the specification gap between PM plan `MATERIALIZED` and the first
+durable PortfolioScheduler QueueEntry without moving ownership into Dockyard,
+WorkflowOrchestrator, or PM.
+
+PM owns approved plan and task-card bytes. A dedicated handoff owner binds the
+exact relative path, SHA-256, Git commit/ancestry, canonical task registration,
+and handoff receipt. The canonical task-state service owns registration and
+generation. PortfolioScheduler Store alone owns `queue_id` and
+`enqueue_sequence`; PortfolioScheduler Runtime alone owns selection/admission.
+
+The forward-only phases are `MATERIALIZED`, `GIT_EVIDENCE_COMMITTED`,
+`CANONICAL_TASK_REGISTERED`, `QUEUE_RESERVED`, `ADMISSION_READY`,
+`ADMISSION_SUBMITTED`, and `FINALIZED`. Identical replay is byte-exact;
+divergent plan/card/repository/canonical/queue/admission evidence fails closed.
+All owner locks are released before entering another owner or starting any
+Scheduler admission, lease, Worker, provider, model, API, or network action.
+
+The handoff contract is **Contract Current — TC-13.29l.5a**. Runtime is
+**Target — TC-13.29l.5b** and Dockyard local closed-loop E2E remains
+**Blocked — TC-13.29l**. Interfaces #22 and #36 retain their existing owners
+and status.
+
+TC-13.29l.5a.1 repairs the pre-admission binding: an immutable typed template
+contains every Scheduler plan input available before queue allocation. After
+the queue and Git/canonical identities are known, the handoff owner persists
+one exact `PortfolioAdmissionPlan` and binds its digest before
+`ADMISSION_READY`. Contract status is therefore **Contract Current —
+TC-13.29l.5a.1**; runtime remains Target.
+
 ---
 
 ## 3. Ownership Boundaries
@@ -8003,6 +8120,7 @@ and finalization owner. Interface #36 does not claim complete runtime Current.
 | Escalation | **AgentDesk** | Difficulty tier progression |
 | Double-commit delivery | **AgentDesk** | `implementation_commit` 鈫?`report_commit` 鈫?acceptance 鈫?integration |
 | HTML Dashboard | **AgentDesk** | Read-only views via StateProvider |
+| PM materialization admission handoff | **Dedicated handoff owner** | Binds PM task-card bytes to Git evidence, canonical registration, and one Scheduler queue identity without owning selection or execution |
 
 **Hard boundary rule**: Neither side directly reads or writes the other's
 internal state files.  AgentDesk never opens `MAD_HOME/deliberations/*/state.json`
@@ -8072,6 +8190,31 @@ use opaque foreign keys, not embedded schema objects.
 | TC-13.22b.3 | Dispatch/approval/lifecycle enforcement | TC-13.22b.2b |
 | TC-13.24a | PortfolioScheduler durable admission contract | TC-13.22b.2b |
 | TC-13.24b | PortfolioScheduler durable store/runtime | TC-13.24a |
+| TC-13.28a.1 | Reasonix Basic Worker contract freeze + CLI preflight (this card) | This ADR |
+| TC-13.28a.2 | Reasonix Basic CLI adapter + decoder evidence gate + real API probe | TC-13.28a.1, real Reasonix API evidence |
+| TC-13.28a.3 | Reasonix Standard / Advanced / Expert tiers | TC-13.28a.2 |
+| TC-13.28a.4 | Reasonix ACP / Desktop UI integration | TC-13.28a.3 |
+| TC-13.29b | Dockyard Product, Control API, and Security contract freeze | TC-13.29a |
+| TC-13.29c-f | Dockyard read projection, registry, pairing, and loopback Control API runtime | TC-13.29b |
+| TC-13.29h-k | Dockyard Web foundation, operational pages, PM plans, commands, and mobile | TC-13.29b-f |
+| TC-13.29l-n | Dockyard local E2E, adversarial verification, and status seal | TC-13.29k |
+| TC-13.29l.5a | PM materialization-to-Scheduler handoff contract freeze | TC-13.29l fail-fast evidence |
+| TC-13.29l.5a.1 | Admission plan pre-binding contract repair | TC-13.29l.5a |
+| TC-13.29l.5b | PM materialization-to-Scheduler handoff runtime | TC-13.29l.5a |
+| TC-13.29l.5c.1 | PM Task Admission Preparation contract freeze | TC-13.29l.5b |
+| TC-13.29l.5c.1a | Admission Preparation handoff-input Store repair | TC-13.29l.5c.1 |
+| TC-13.29l.5c.1b | Admission Preparation attempt identity binding repair | TC-13.29l.5c.1a |
+| TC-13.29l.5c.2 | PM Task Admission Preparation runtime | TC-13.29l.5c.1 |
+| TC-13.29l.5d | Dockyard preparation-to-handoff composition | TC-13.29l.5c.2 |
+| TC-13.29l.14b | Dockyard returned-delivery redispatch contract freeze | TC-13.29l.14a |
+| TC-13.29l.14c | Dockyard returned-delivery redispatch runtime | TC-13.29l.14b |
+| TC-13.29l.14d | Dockyard redispatch review handoff | TC-13.29l.14c |
+| TC-13.29l.15a | Dockyard owner-loss automatic recovery composition | TC-13.29l.14d |
+| TC-13.29l.15b | Dockyard recovery and reconnect UX | TC-13.29l.15a |
+| TC-13.29m.1a | Dockyard repository identity fencing repair | TC-13.29l.15b |
+| TC-13.29m.1b | Dockyard extended adversarial verification | TC-13.29m.1a |
+| TC-13.29n | Dockyard supported local closed-loop status seal | TC-13.29m.1b |
+| TC-13.29o | GitHub publication preparation | TC-13.29n, user-provided remote decision |
 
 ---
 
@@ -8084,3 +8227,17 @@ use opaque foreign keys, not embedded schema objects.
 - This ADR does **not** change the MAD TypeScript migration roadmap
   (ADR-0012, ADR-0013, ADR-0014).
 - The HTML Dashboard is read-only; it will **not** drive state transitions.
+- Reasonix Basic Provider is contract-frozen only at TC-13.28a.1; it does **not**
+  yet have a production adapter, decoder, or real API probe — those are Target
+  until TC-13.28a.2.
+- Reasonix Basic will **not** auto-upgrade `deepseek-v4-flash` to `deepseek-v4-pro`.
+- Reasonix will **not** use ACP, Desktop, TUI, MCP, web, subagent, Yolo, or
+  auto-approval modes in the Basic tier.
+- Reasonix API key is **never** read, logged, or written by AgentDesk — it is
+  managed exclusively by the Reasonix user directory.
+- Dockyard does **not** add a second PM or a second task state machine; it
+  delegates typed commands to existing AgentDesk owners.
+- Dockyard does **not** expose API keys, raw prompts, stdout/stderr, runtime
+  routes, arbitrary shell/Git/provider commands, or repository deletion.
+- Dockyard cloud relay and deployment remain Target until the user supplies a
+  GitHub remote and separately approves a hosting design.

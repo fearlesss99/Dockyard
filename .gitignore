@@ -18,6 +18,11 @@ venv/
 build/
 dist/
 
+# Dockyard Web build and package-manager cache
+apps/dockyard-web/node_modules/
+apps/dockyard-web/.vite/
+apps/dockyard-web/coverage/
+
 # Local configuration and secrets
 .env
 .env.*

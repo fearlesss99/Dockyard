@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from context_budget import BudgetResult, compute_budget
 from core_types import TaskDifficulty, WorkerKind
@@ -189,9 +190,12 @@ async def run_worker_observed(
     #       receipts before ACK may be applied.  All process launch, pipe
     #       communication, and output forwarding live in the supervisor
     #       runner module behind this typed API.
+    generation_id = getattr(observer, "generation_id", None)
+    project_root = getattr(observer, "project_root", None)
     if (
-        getattr(observer, "generation_id", "")
-        and getattr(observer, "project_root", None) is not None
+        type(generation_id) is str
+        and bool(generation_id)
+        and isinstance(project_root, Path)
     ):
         dispatch_result = await run_supervised_dispatch(request, providers, observer)
     else:

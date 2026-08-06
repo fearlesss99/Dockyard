@@ -253,6 +253,16 @@ class PortfolioSchedulerCodecTests(StoreTestCase):
 
 
 class PortfolioSchedulerSequenceTests(StoreTestCase):
+    def test_initialize_is_idempotent_and_reserves_no_identity(self) -> None:
+        self.store.initialize()
+        self.store.initialize()
+        store_root = self.root / "docs" / "pm" / "portfolio-scheduler"
+        self.assertTrue(store_root.is_dir())
+        self.assertEqual(self.store.enumerate_queue_snapshot(), ())
+        self.assertFalse((store_root / "sequence.yaml").exists())
+        self.assertFalse((store_root / "queue.yaml").exists())
+        self.assertEqual(self.store.reserve_enqueue_sequence(), 1)
+
     def test_initial_contiguous_and_restart_reservation(self) -> None:
         self.assertEqual(self.store.reserve_enqueue_sequence(), 1)
         self.assertEqual(self.store.reserve_enqueue_sequence(), 2)

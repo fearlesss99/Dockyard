@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import math
+import os
 import re
 import secrets
 from collections.abc import Mapping
@@ -129,11 +130,17 @@ __all__ = [
     "ActiveDispatchSupersessionResult",
     "BlockedAuditRequest",
     "BlockedAuditResult",
+    "DurableBlockedAuditRequest",
     "BlockedCancellationRequest",
     "BlockedCancellationResult",
     "BlockedRescopeRequest",
     "BlockedRescopeResult",
     "DeliveryReceipt",
+    "DurableAcceptanceCycleRequest",
+    "DurableDeliveryReviewEvidence",
+    "DurableGitIntegrationEvidence",
+    "DurableIntegrationCompletionRequest",
+    "DurableDeliveryRemediationRequest",
     "DeliveryRemediationRequest",
     "DeliveryRemediationResult",
     "BoundedDispatchRetryRequest",
@@ -917,6 +924,42 @@ class AcceptanceCycleRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class DurableDeliveryReviewEvidence:
+    """Owner-neutral durable delivery projection -- exactly twelve fields."""
+
+    delivery_receipt: DeliveryReceipt
+    dispatch_generation_id: str
+    external_worker_receipt_digest: str
+    dispatch_event_id: str
+    acknowledge_event_id: str
+    delivery_event_id: str
+    delivery_event_digest: str
+    worktree_id: str
+    workspace: Path
+    implementation_commit: str
+    report_commit: str
+    worker_kind: WorkerKind
+
+    def __post_init__(self) -> None:
+        _validate_durable_delivery_review_evidence(self)
+
+
+@dataclass(frozen=True, slots=True)
+class DurableAcceptanceCycleRequest:
+    """Crash-safe Interface #22 input -- exactly six fields."""
+
+    delivery_evidence: DurableDeliveryReviewEvidence
+    audit_input: MadAuditGatewayInput
+    acceptance_transition_request: TransitionRequest
+    integration_transition_request: TransitionRequest | None
+    worker_kind: WorkerKind
+    holder_instance_id: str
+
+    def __post_init__(self) -> None:
+        _validate_durable_acceptance_cycle_request(self)
+
+
+@dataclass(frozen=True, slots=True)
 class AcceptanceCycleResult:
     """Immutable result of an acceptance cycle — exactly four fields.
 
@@ -931,6 +974,43 @@ class AcceptanceCycleResult:
     audit_result: MadAuditGatewayResult
     accept_transition: TransitionResult | None
     integrate_transition: TransitionResult | None
+
+
+@dataclass(frozen=True, slots=True)
+class DurableGitIntegrationEvidence:
+    """Owner-neutral projection of one finalized Git integration receipt."""
+
+    operation_id: str
+    request_content_digest: str
+    task_id: str
+    revision: int
+    attempt: int
+    dispatch_id: str
+    report_commit: str
+    target_branch: str
+    target_head_before: str
+    phase: str
+    method: str
+    outcome: str
+    integrated_commit: str
+    integrated_tree: str
+    receipt_content_digest: str
+
+    def __post_init__(self) -> None:
+        _validate_durable_git_integration_evidence(self)
+
+
+@dataclass(frozen=True, slots=True)
+class DurableIntegrationCompletionRequest:
+    """Record a real Git result after acceptance without rerunning MAD."""
+
+    acceptance_cycle_result: AcceptanceCycleResult
+    delivery_evidence: DurableDeliveryReviewEvidence
+    integration_evidence: DurableGitIntegrationEvidence
+    integration_transition_request: TransitionRequest
+
+    def __post_init__(self) -> None:
+        _validate_durable_integration_completion_request(self)
 
 
 # -- DeliveryRemediation types (TC-13.18d.1) ----------------------------------
@@ -949,6 +1029,21 @@ class DeliveryRemediationRequest:
     requeue_transition_request: TransitionRequest
     worker_kind: WorkerKind
     holder_instance_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DurableDeliveryRemediationRequest:
+    """Owner-neutral durable fail remediation input -- exactly six fields."""
+
+    acceptance_cycle_result: AcceptanceCycleResult
+    delivery_evidence: DurableDeliveryReviewEvidence
+    return_transition_request: TransitionRequest
+    requeue_transition_request: TransitionRequest
+    worker_kind: WorkerKind
+    holder_instance_id: str
+
+    def __post_init__(self) -> None:
+        _validate_durable_delivery_remediation_request(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -975,6 +1070,19 @@ class BlockedAuditRequest:
     dispatch_cycle_result: DispatchCycleResult
     block_transition_request: TransitionRequest
     current_worker_kind: WorkerKind
+
+
+@dataclass(frozen=True, slots=True)
+class DurableBlockedAuditRequest:
+    """Owner-neutral durable blocked-audit input -- exactly four fields."""
+
+    acceptance_cycle_result: AcceptanceCycleResult
+    delivery_evidence: DurableDeliveryReviewEvidence
+    block_transition_request: TransitionRequest
+    current_worker_kind: WorkerKind
+
+    def __post_init__(self) -> None:
+        _validate_durable_blocked_audit_request(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1966,6 +2074,367 @@ def _validate_acceptance_cycle_request(
             )
 
 
+def _require_durable_text(value: str, field_name: str) -> None:
+    if type(value) is not str or not value:
+        raise TypeError(f"{field_name} must be a non-empty str")
+    if value != value.strip() or any(ord(character) < 32 for character in value):
+        raise ValueError(f"{field_name} contains forbidden characters")
+
+
+def _require_durable_digest(value: str, field_name: str) -> None:
+    if type(value) is not str:
+        raise TypeError(f"{field_name} must be str")
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError(f"{field_name} must be 64 lowercase hex characters")
+
+
+def _require_durable_sha(value: str, field_name: str) -> None:
+    if type(value) is not str:
+        raise TypeError(f"{field_name} must be str")
+    if len(value) != 40 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError(f"{field_name} must be 40 lowercase hex characters")
+
+
+def _validate_durable_delivery_review_evidence(
+    evidence: DurableDeliveryReviewEvidence,
+) -> None:
+    if type(evidence.delivery_receipt) is not DeliveryReceipt:
+        raise TypeError("delivery_receipt must be DeliveryReceipt")
+    for field_name in (
+        "dispatch_generation_id",
+        "dispatch_event_id",
+        "acknowledge_event_id",
+        "delivery_event_id",
+        "worktree_id",
+    ):
+        _require_durable_text(getattr(evidence, field_name), field_name)
+    for field_name in (
+        "external_worker_receipt_digest",
+        "delivery_event_digest",
+    ):
+        _require_durable_digest(getattr(evidence, field_name), field_name)
+    if not isinstance(evidence.workspace, Path):
+        raise TypeError("workspace must be Path")
+    if not evidence.workspace.is_absolute():
+        raise ValueError("workspace must be an absolute path")
+    receipt = evidence.delivery_receipt
+    if evidence.implementation_commit != receipt.implementation_commit:
+        raise ValueError("implementation_commit must match delivery_receipt")
+    if evidence.report_commit != receipt.report_commit:
+        raise ValueError("report_commit must match delivery_receipt")
+    if evidence.implementation_commit == evidence.report_commit:
+        raise ValueError("implementation_commit and report_commit must differ")
+    if type(evidence.worker_kind) is not WorkerKind:
+        raise TypeError("worker_kind must be WorkerKind")
+    event_ids = (
+        evidence.dispatch_event_id,
+        evidence.acknowledge_event_id,
+        evidence.delivery_event_id,
+    )
+    if len(set(event_ids)) != len(event_ids):
+        raise ValueError("dispatch, acknowledge, and delivery event_ids must differ")
+
+
+def _validate_durable_acceptance_cycle_request(
+    request: DurableAcceptanceCycleRequest,
+) -> None:
+    if type(request.delivery_evidence) is not DurableDeliveryReviewEvidence:
+        raise TypeError("delivery_evidence must be DurableDeliveryReviewEvidence")
+    if type(request.audit_input) is not MadAuditGatewayInput:
+        raise TypeError("audit_input must be MadAuditGatewayInput")
+    if type(request.acceptance_transition_request) is not TransitionRequest:
+        raise TypeError("acceptance_transition_request must be TransitionRequest")
+    if (
+        request.integration_transition_request is not None
+        and type(request.integration_transition_request) is not TransitionRequest
+    ):
+        raise TypeError("integration_transition_request must be TransitionRequest or None")
+    if type(request.worker_kind) is not WorkerKind:
+        raise TypeError("worker_kind must be WorkerKind")
+    if request.worker_kind is not request.delivery_evidence.worker_kind:
+        raise ValueError("worker_kind must match delivery evidence")
+    _require_durable_text(request.holder_instance_id, "holder_instance_id")
+
+    evidence = request.delivery_evidence
+    receipt = evidence.delivery_receipt
+    identity = receipt.identity
+    audit_input = request.audit_input
+    if audit_input.task_id != identity.task_id:
+        raise ValueError("audit_input task_id must match delivery receipt")
+    if audit_input.dispatch_id != identity.dispatch_id:
+        raise ValueError("audit_input dispatch_id must match delivery receipt")
+    if audit_input.implementation_commit != evidence.implementation_commit:
+        raise ValueError("audit_input implementation_commit must match delivery evidence")
+    if audit_input.report_commit != evidence.report_commit:
+        raise ValueError("audit_input report_commit must match delivery evidence")
+    if audit_input.workspace != evidence.workspace:
+        raise ValueError("audit_input workspace must match delivery evidence")
+
+    acceptance = request.acceptance_transition_request
+    if acceptance.event_type != "DELIVERY_ACCEPTED":
+        raise ValueError("acceptance event_type must be DELIVERY_ACCEPTED")
+    if type(acceptance.payload) is not DeliveryAcceptedPayload:
+        raise TypeError("acceptance payload must be DeliveryAcceptedPayload")
+    if acceptance.cas.task_id != identity.task_id:
+        raise ValueError("acceptance task_id must match delivery receipt")
+    if acceptance.cas.expected_revision != identity.revision:
+        raise ValueError("acceptance revision must match delivery receipt")
+    if acceptance.cas.expected_state != "review_ready":
+        raise ValueError("acceptance expected_state must be review_ready")
+    if acceptance.dispatch_cas is None:
+        raise ValueError("acceptance dispatch_cas is required")
+    if acceptance.dispatch_cas.expected_dispatch_id != identity.dispatch_id:
+        raise ValueError("acceptance dispatch_id must match delivery receipt")
+    if acceptance.dispatch_cas.expected_attempt != identity.attempt:
+        raise ValueError("acceptance attempt must match delivery receipt")
+    if acceptance.payload.accepted_commit != evidence.implementation_commit:
+        raise ValueError("acceptance accepted_commit must match delivery evidence")
+
+    all_event_ids = {
+        evidence.dispatch_event_id,
+        evidence.acknowledge_event_id,
+        evidence.delivery_event_id,
+    }
+    if acceptance.event_id in all_event_ids:
+        raise ValueError("acceptance event_id must differ from delivery lifecycle events")
+    all_event_ids.add(acceptance.event_id)
+
+    integration = request.integration_transition_request
+    if integration is not None:
+        if integration.event_type != "CHANGE_INTEGRATED":
+            raise ValueError("integration event_type must be CHANGE_INTEGRATED")
+        if type(integration.payload) is not IntegrationPayload:
+            raise TypeError("integration payload must be IntegrationPayload")
+        if integration.cas.task_id != identity.task_id:
+            raise ValueError("integration task_id must match delivery receipt")
+        if integration.cas.expected_revision != identity.revision:
+            raise ValueError("integration revision must match delivery receipt")
+        if integration.cas.expected_state != "accepted":
+            raise ValueError("integration expected_state must be accepted")
+        if integration.dispatch_cas is not None:
+            raise ValueError("integration dispatch_cas must be None")
+        if integration.event_id in all_event_ids:
+            raise ValueError("integration event_id must differ from prior lifecycle events")
+
+
+def _validate_durable_git_integration_evidence(
+    evidence: DurableGitIntegrationEvidence,
+) -> None:
+    for field_name in ("operation_id", "task_id", "dispatch_id", "target_branch"):
+        _require_durable_text(getattr(evidence, field_name), field_name)
+    for field_name in ("revision", "attempt"):
+        value = getattr(evidence, field_name)
+        if type(value) is not int or value < 1:
+            raise TypeError(f"{field_name} must be a positive int")
+    if evidence.attempt > 3:
+        raise ValueError("attempt must not exceed 3")
+    for field_name in (
+        "report_commit",
+        "target_head_before",
+        "integrated_commit",
+        "integrated_tree",
+    ):
+        _require_durable_sha(getattr(evidence, field_name), field_name)
+    for field_name in ("request_content_digest", "receipt_content_digest"):
+        _require_durable_digest(getattr(evidence, field_name), field_name)
+    if evidence.phase != "FINALIZED":
+        raise ValueError("integration receipt phase must be FINALIZED")
+    if evidence.method not in ("FAST_FORWARD", "MERGE_TREE"):
+        raise ValueError("integration method is not supported")
+    if evidence.outcome != "FINALIZED":
+        raise ValueError("integration receipt outcome must be FINALIZED")
+
+
+def _validate_durable_integration_completion_request(
+    request: DurableIntegrationCompletionRequest,
+) -> None:
+    if type(request.acceptance_cycle_result) is not AcceptanceCycleResult:
+        raise TypeError("acceptance_cycle_result must be AcceptanceCycleResult")
+    if type(request.delivery_evidence) is not DurableDeliveryReviewEvidence:
+        raise TypeError("delivery_evidence must be DurableDeliveryReviewEvidence")
+    if type(request.integration_evidence) is not DurableGitIntegrationEvidence:
+        raise TypeError("integration_evidence must be DurableGitIntegrationEvidence")
+    if type(request.integration_transition_request) is not TransitionRequest:
+        raise TypeError("integration_transition_request must be TransitionRequest")
+
+    result = request.acceptance_cycle_result
+    delivery = request.delivery_evidence
+    integration = request.integration_evidence
+    transition = request.integration_transition_request
+    receipt = delivery.delivery_receipt
+    identity = receipt.identity
+
+    if type(result.audit_result) is not MadAuditGatewayResult:
+        raise TypeError("audit_result must be MadAuditGatewayResult")
+    if result.audit_result.verdict != "pass":
+        raise ValueError("integration completion requires a pass verdict")
+    if result.accept_transition is None:
+        raise ValueError("integration completion requires an accepted transition")
+    if result.integrate_transition is not None:
+        raise ValueError("integration completion must not reopen an integrated result")
+    if result.task_id != identity.task_id:
+        raise ValueError("acceptance task_id must match delivery evidence")
+    if result.accept_transition.task_id != identity.task_id:
+        raise ValueError("accepted transition task_id must match delivery evidence")
+    if result.accept_transition.to_state != "accepted":
+        raise ValueError("accepted transition must end in accepted")
+
+    identity_pairs = (
+        (integration.task_id, identity.task_id, "task_id"),
+        (integration.revision, identity.revision, "revision"),
+        (integration.attempt, identity.attempt, "attempt"),
+        (integration.dispatch_id, identity.dispatch_id, "dispatch_id"),
+        (integration.report_commit, delivery.report_commit, "report_commit"),
+    )
+    for actual, expected, field_name in identity_pairs:
+        if actual != expected:
+            raise ValueError(f"integration {field_name} must match delivery evidence")
+
+    if transition.event_type != "CHANGE_INTEGRATED":
+        raise ValueError("integration event_type must be CHANGE_INTEGRATED")
+    if type(transition.payload) is not IntegrationPayload:
+        raise TypeError("integration payload must be IntegrationPayload")
+    if transition.cas.task_id != identity.task_id:
+        raise ValueError("integration transition task_id must match delivery evidence")
+    if transition.cas.expected_revision != identity.revision:
+        raise ValueError("integration transition revision must match delivery evidence")
+    if transition.cas.expected_state != "accepted":
+        raise ValueError("integration transition expected_state must be accepted")
+    if transition.dispatch_cas is not None:
+        raise ValueError("integration transition dispatch_cas must be None")
+    if transition.payload.integrated_commit != integration.integrated_commit:
+        raise ValueError("integrated_commit must match finalized Git evidence")
+
+    prior_event_ids = {
+        delivery.dispatch_event_id,
+        delivery.acknowledge_event_id,
+        delivery.delivery_event_id,
+        result.accept_transition.event_id,
+    }
+    if transition.event_id in prior_event_ids:
+        raise ValueError("integration event_id must differ from prior lifecycle events")
+    if integration.receipt_content_digest not in transition.event_context.evidence_refs:
+        raise ValueError("integration transition must bind the Git receipt digest")
+
+
+def _validate_durable_owner_result(
+    result: AcceptanceCycleResult,
+    evidence: DurableDeliveryReviewEvidence,
+    verdict: str,
+) -> None:
+    if type(result) is not AcceptanceCycleResult:
+        raise TypeError("acceptance_cycle_result must be AcceptanceCycleResult")
+    if type(evidence) is not DurableDeliveryReviewEvidence:
+        raise TypeError("delivery_evidence must be DurableDeliveryReviewEvidence")
+    if type(result.audit_result) is not MadAuditGatewayResult:
+        raise TypeError("audit_result must be MadAuditGatewayResult")
+    if result.audit_result.verdict != verdict:
+        raise ValueError("audit verdict does not match durable owner route")
+    if result.accept_transition is not None or result.integrate_transition is not None:
+        raise ValueError("non-pass durable owner route requires null transitions")
+    if result.task_id != evidence.delivery_receipt.identity.task_id:
+        raise ValueError("acceptance task_id must match delivery evidence")
+
+
+def _validate_durable_delivery_remediation_request(
+    request: DurableDeliveryRemediationRequest,
+) -> None:
+    _validate_durable_owner_result(
+        request.acceptance_cycle_result,
+        request.delivery_evidence,
+        "fail",
+    )
+    if type(request.return_transition_request) is not TransitionRequest:
+        raise TypeError("return_transition_request must be TransitionRequest")
+    if type(request.requeue_transition_request) is not TransitionRequest:
+        raise TypeError("requeue_transition_request must be TransitionRequest")
+    if type(request.worker_kind) is not WorkerKind:
+        raise TypeError("worker_kind must be WorkerKind")
+    if request.worker_kind is not request.delivery_evidence.worker_kind:
+        raise ValueError("worker_kind must match delivery evidence")
+    _require_durable_text(request.holder_instance_id, "holder_instance_id")
+
+    identity = request.delivery_evidence.delivery_receipt.identity
+    returned = request.return_transition_request
+    requeued = request.requeue_transition_request
+    if returned.event_type != "DELIVERY_RETURNED":
+        raise ValueError("return event_type must be DELIVERY_RETURNED")
+    if type(returned.payload) is not DeliveryReturnedPayload:
+        raise TypeError("return payload must be DeliveryReturnedPayload")
+    if returned.cas.task_id != identity.task_id:
+        raise ValueError("return task_id must match delivery evidence")
+    if returned.cas.expected_revision != identity.revision:
+        raise ValueError("return revision must match delivery evidence")
+    if returned.cas.expected_state != "review_ready":
+        raise ValueError("return expected_state must be review_ready")
+    if returned.dispatch_cas is None:
+        raise ValueError("return dispatch_cas is required")
+    if returned.dispatch_cas.expected_dispatch_id != identity.dispatch_id:
+        raise ValueError("return dispatch_id must match delivery evidence")
+    if returned.dispatch_cas.expected_attempt != identity.attempt:
+        raise ValueError("return attempt must match delivery evidence")
+
+    if requeued.event_type != "TASK_REQUEUED":
+        raise ValueError("requeue event_type must be TASK_REQUEUED")
+    if type(requeued.payload) is not RequeuePayload:
+        raise TypeError("requeue payload must be RequeuePayload")
+    if requeued.cas.task_id != identity.task_id:
+        raise ValueError("requeue task_id must match delivery evidence")
+    if requeued.cas.expected_revision != identity.revision:
+        raise ValueError("requeue revision must match delivery evidence")
+    if requeued.cas.expected_state != "returned":
+        raise ValueError("requeue expected_state must be returned")
+    if requeued.dispatch_cas is not None:
+        raise ValueError("requeue dispatch_cas must be None")
+
+    event_ids = {
+        request.delivery_evidence.dispatch_event_id,
+        request.delivery_evidence.acknowledge_event_id,
+        request.delivery_evidence.delivery_event_id,
+    }
+    if returned.event_id in event_ids or requeued.event_id in event_ids:
+        raise ValueError("remediation event_ids must differ from delivery lifecycle")
+    if returned.event_id == requeued.event_id:
+        raise ValueError("return and requeue event_ids must differ")
+
+
+def _validate_durable_blocked_audit_request(
+    request: DurableBlockedAuditRequest,
+) -> None:
+    _validate_durable_owner_result(
+        request.acceptance_cycle_result,
+        request.delivery_evidence,
+        "blocked",
+    )
+    if type(request.block_transition_request) is not TransitionRequest:
+        raise TypeError("block_transition_request must be TransitionRequest")
+    if type(request.current_worker_kind) is not WorkerKind:
+        raise TypeError("current_worker_kind must be WorkerKind")
+    if request.current_worker_kind is not request.delivery_evidence.worker_kind:
+        raise ValueError("current_worker_kind must match delivery evidence")
+
+    identity = request.delivery_evidence.delivery_receipt.identity
+    blocked = request.block_transition_request
+    if blocked.event_type != "TASK_BLOCKED":
+        raise ValueError("block event_type must be TASK_BLOCKED")
+    if type(blocked.payload) is not BlockedPayload:
+        raise TypeError("block payload must be BlockedPayload")
+    if blocked.cas.task_id != identity.task_id:
+        raise ValueError("block task_id must match delivery evidence")
+    if blocked.cas.expected_revision != identity.revision:
+        raise ValueError("block revision must match delivery evidence")
+    if blocked.cas.expected_state != "review_ready":
+        raise ValueError("block expected_state must be review_ready")
+    if blocked.dispatch_cas is not None:
+        raise ValueError("block dispatch_cas must be None")
+    if blocked.event_id in {
+        request.delivery_evidence.dispatch_event_id,
+        request.delivery_evidence.acknowledge_event_id,
+        request.delivery_evidence.delivery_event_id,
+    }:
+        raise ValueError("block event_id must differ from delivery lifecycle")
+
+
 @dataclass(frozen=True, slots=True)
 class WorkflowOrchestrator:
     """Pure orchestration facade -- delegates all authoritative operations.
@@ -2622,7 +3091,8 @@ class WorkflowOrchestrator:
         if (
             lease.holder_dispatch_id != dr.identity.dispatch_id
             or lease.holder_instance_id != request.holder_instance_id
-            or lease.canonical_worktree != str(dr.workspace)
+            or os.path.normcase(os.path.normpath(lease.canonical_worktree))
+            != os.path.normcase(os.path.normpath(str(dr.workspace)))
         ):
             raise WorkflowInvariantError("admitted lease identity mismatch")
         receipt = _dse.read_dispatch_receipt(self.project_root, dr.identity.dispatch_id)
@@ -3366,20 +3836,140 @@ class WorkflowOrchestrator:
                 f"got {type(audit_config).__name__}"
             )
 
+        return await self._run_acceptance_owner(
+            audit_input=request.audit_input,
+            acceptance_transition_request=request.acceptance_transition_request,
+            integration_transition_request=request.integration_transition_request,
+            worker_kind=request.worker_kind,
+            holder_instance_id=request.holder_instance_id,
+            delivery_receipt=request.dispatch_cycle_result.delivery_receipt,
+            audit_config=audit_config,
+        )
+
+    async def run_durable_acceptance_cycle(
+        self,
+        request: DurableAcceptanceCycleRequest,
+        audit_config: MadGatewayConfig,
+    ) -> AcceptanceCycleResult:
+        """Continue Interface #22 from validated durable delivery evidence."""
+        if type(request) is not DurableAcceptanceCycleRequest:
+            raise WorkflowInputError("request must be DurableAcceptanceCycleRequest")
+        if type(audit_config) is not MadGatewayConfig:
+            raise WorkflowInputError("audit_config must be MadGatewayConfig")
+        return await self._run_acceptance_owner(
+            audit_input=request.audit_input,
+            acceptance_transition_request=request.acceptance_transition_request,
+            integration_transition_request=request.integration_transition_request,
+            worker_kind=request.worker_kind,
+            holder_instance_id=request.holder_instance_id,
+            delivery_receipt=request.delivery_evidence.delivery_receipt,
+            audit_config=audit_config,
+        )
+
+    async def run_durable_audit_cycle(
+        self,
+        request: DurableAcceptanceCycleRequest,
+        audit_config: MadGatewayConfig,
+    ) -> MadAuditGatewayResult:
+        """Run only the MAD owner so a UI decision can happen afterwards."""
+        if type(request) is not DurableAcceptanceCycleRequest:
+            raise WorkflowInputError("request must be DurableAcceptanceCycleRequest")
+        if type(audit_config) is not MadGatewayConfig:
+            raise WorkflowInputError("audit_config must be MadGatewayConfig")
+        return await run_audit_gateway(audit_config, request.audit_input)
+
+    async def resume_durable_acceptance_cycle(
+        self,
+        request: DurableAcceptanceCycleRequest,
+        audit_result: MadAuditGatewayResult,
+    ) -> AcceptanceCycleResult:
+        """Apply a previously persisted typed MAD result without rerunning MAD."""
+        if type(request) is not DurableAcceptanceCycleRequest:
+            raise WorkflowInputError("request must be DurableAcceptanceCycleRequest")
+        if type(audit_result) is not MadAuditGatewayResult:
+            raise WorkflowInputError("audit_result must be MadAuditGatewayResult")
+        return await self._resume_acceptance_owner(
+            audit_input=request.audit_input,
+            acceptance_transition_request=request.acceptance_transition_request,
+            integration_transition_request=request.integration_transition_request,
+            worker_kind=request.worker_kind,
+            holder_instance_id=request.holder_instance_id,
+            delivery_receipt=request.delivery_evidence.delivery_receipt,
+            audit_result=audit_result,
+        )
+
+    async def run_durable_integration_completion(
+        self,
+        request: DurableIntegrationCompletionRequest,
+    ) -> AcceptanceCycleResult:
+        """Publish one finalized Git result without rerunning audit or acceptance."""
+        if type(request) is not DurableIntegrationCompletionRequest:
+            raise WorkflowInputError(
+                "request must be DurableIntegrationCompletionRequest"
+            )
+
+        transition = ControlPlaneTransitionService(
+            self.project_root
+        ).apply_transition(
+            request.integration_transition_request,
+            lease=None,
+            now=self.clock.now(),
+        )
+        accepted = request.acceptance_cycle_result
+        return AcceptanceCycleResult(
+            task_id=accepted.task_id,
+            audit_result=accepted.audit_result,
+            accept_transition=accepted.accept_transition,
+            integrate_transition=transition,
+        )
+
+    async def _run_acceptance_owner(
+        self,
+        *,
+        audit_input: MadAuditGatewayInput,
+        acceptance_transition_request: TransitionRequest,
+        integration_transition_request: TransitionRequest | None,
+        worker_kind: WorkerKind,
+        holder_instance_id: str,
+        delivery_receipt: DeliveryReceipt,
+        audit_config: MadGatewayConfig,
+    ) -> AcceptanceCycleResult:
+        """Shared owner implementation for live and durable acceptance inputs."""
         # -- 2. Run MAD audit gateway exactly once --------------------------
         audit_result = await run_audit_gateway(
             audit_config,
-            request.audit_input,
+            audit_input,
         )
 
-        dcr = request.dispatch_cycle_result
+        return await self._resume_acceptance_owner(
+            audit_input=audit_input,
+            acceptance_transition_request=acceptance_transition_request,
+            integration_transition_request=integration_transition_request,
+            worker_kind=worker_kind,
+            holder_instance_id=holder_instance_id,
+            delivery_receipt=delivery_receipt,
+            audit_result=audit_result,
+        )
+
+    async def _resume_acceptance_owner(
+        self,
+        *,
+        audit_input: MadAuditGatewayInput,
+        acceptance_transition_request: TransitionRequest,
+        integration_transition_request: TransitionRequest | None,
+        worker_kind: WorkerKind,
+        holder_instance_id: str,
+        delivery_receipt: DeliveryReceipt,
+        audit_result: MadAuditGatewayResult,
+    ) -> AcceptanceCycleResult:
+        """Apply one exact typed audit result through the existing lease boundary."""
 
         # -- 3. Verdict routing ---------------------------------------------
         verdict = audit_result.verdict
 
         if verdict in ("fail", "blocked"):
             return AcceptanceCycleResult(
-                task_id=dcr.delivery_receipt.identity.task_id,
+                task_id=delivery_receipt.identity.task_id,
                 audit_result=audit_result,
                 accept_transition=None,
                 integrate_transition=None,
@@ -3403,10 +3993,10 @@ class WorkflowOrchestrator:
             now_review_acquire = self.clock.now()
             review_lease = acquire_worker_slot(
                 self.project_root,
-                request.worker_kind,
-                dcr.delivery_receipt.identity.dispatch_id,
-                request.holder_instance_id,
-                request.audit_input.workspace,
+                worker_kind,
+                delivery_receipt.identity.dispatch_id,
+                holder_instance_id,
+                audit_input.workspace,
                 now_review_acquire,
             )
             review_acquired = True
@@ -3416,7 +4006,7 @@ class WorkflowOrchestrator:
             accept_result = ControlPlaneTransitionService(
                 self.project_root
             ).apply_transition(
-                request.acceptance_transition_request,
+                acceptance_transition_request,
                 review_lease,
                 now_accept,
             )
@@ -3438,7 +4028,7 @@ class WorkflowOrchestrator:
                     raise body_error from release_exc
 
         # -- 7. Optional CHANGE_INTEGRATED ----------------------------------
-        itr = request.integration_transition_request
+        itr = integration_transition_request
         if itr is not None:
             now_integrate = self.clock.now()
             integrate_result = ControlPlaneTransitionService(
@@ -3451,7 +4041,7 @@ class WorkflowOrchestrator:
 
         # -- 8. Return result -----------------------------------------------
         return AcceptanceCycleResult(
-            task_id=dcr.delivery_receipt.identity.task_id,
+            task_id=delivery_receipt.identity.task_id,
             audit_result=audit_result,
             accept_transition=accept_result,
             integrate_transition=integrate_result,
@@ -3692,6 +4282,67 @@ class WorkflowOrchestrator:
             requeue_transition=requeue_result,
         )
 
+    async def run_durable_delivery_remediation(
+        self,
+        request: DurableDeliveryRemediationRequest,
+    ) -> DeliveryRemediationResult:
+        """Run fail remediation from validated durable delivery evidence."""
+        if type(request) is not DurableDeliveryRemediationRequest:
+            raise WorkflowInputError(
+                "request must be DurableDeliveryRemediationRequest"
+            )
+        receipt = request.delivery_evidence.delivery_receipt
+        remediation_lease = None
+        remediation_acquired = False
+        body_error: BaseException | None = None
+        return_result: TransitionResult | None = None
+        try:
+            remediation_lease = acquire_worker_slot(
+                self.project_root,
+                request.worker_kind,
+                receipt.identity.dispatch_id,
+                request.holder_instance_id,
+                self.project_root,
+                self.clock.now(),
+            )
+            remediation_acquired = True
+            return_result = ControlPlaneTransitionService(
+                self.project_root
+            ).apply_transition(
+                request.return_transition_request,
+                remediation_lease,
+                self.clock.now(),
+            )
+        except BaseException as exc:
+            body_error = exc
+            raise
+        finally:
+            if remediation_acquired:
+                try:
+                    release_worker_slot(
+                        self.project_root,
+                        remediation_lease,
+                        self.clock.now(),
+                    )
+                except BaseException as release_exc:
+                    if body_error is None:
+                        raise
+                    raise body_error from release_exc
+
+        requeue_result = ControlPlaneTransitionService(
+            self.project_root
+        ).apply_transition(
+            request.requeue_transition_request,
+            lease=None,
+            now=self.clock.now(),
+        )
+        return DeliveryRemediationResult(
+            task_id=receipt.identity.task_id,
+            audit_result=request.acceptance_cycle_result.audit_result,
+            return_transition=return_result,
+            requeue_transition=requeue_result,
+        )
+
     async def run_blocked_audit_cycle(
         self,
         request: BlockedAuditRequest,
@@ -3835,6 +4486,30 @@ class WorkflowOrchestrator:
         return BlockedAuditResult(
             task_id=task_id,
             audit_result=acr.audit_result,
+            escalation_decision=escalation_decision,
+            block_transition=block_transition,
+        )
+
+    async def run_durable_blocked_audit(
+        self,
+        request: DurableBlockedAuditRequest,
+    ) -> BlockedAuditResult:
+        """Run blocked-audit owner logic from durable delivery evidence."""
+        if type(request) is not DurableBlockedAuditRequest:
+            raise WorkflowInputError("request must be DurableBlockedAuditRequest")
+        escalation_decision = evaluate_escalation(
+            EscalationRequest(current_worker_kind=request.current_worker_kind)
+        )
+        block_transition = ControlPlaneTransitionService(
+            self.project_root
+        ).apply_transition(
+            request.block_transition_request,
+            lease=None,
+            now=self.clock.now(),
+        )
+        return BlockedAuditResult(
+            task_id=request.delivery_evidence.delivery_receipt.identity.task_id,
+            audit_result=request.acceptance_cycle_result.audit_result,
             escalation_decision=escalation_decision,
             block_transition=block_transition,
         )

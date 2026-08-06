@@ -3171,7 +3171,6 @@ def _read_committed_task_card_frontmatter(
         result = subprocess.run(
             ["git", "-C", str(project_root), "cat-file", "blob", blob_path],
             capture_output=True,
-            text=True,
             timeout=10,
         )
     except Exception as exc:
@@ -3182,7 +3181,12 @@ def _read_committed_task_card_frontmatter(
         raise TransitionSchemaError(
             "committed task-card blob not found in Git"
         )
-    content = result.stdout
+    try:
+        content = result.stdout.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise TransitionSchemaError(
+            "committed task-card is not valid UTF-8"
+        ) from exc
     if not content:
         raise TransitionSchemaError(
             "committed task-card is empty"
@@ -4129,13 +4133,21 @@ def _build_approval_subject(
                 "acceptance attempt does not match task ledger"
             )
 
-        accepted_commit_from_payload = request.payload.integrated_commit
+        integrated_commit_from_payload = request.payload.integrated_commit
         acceptance_accepted_commit = acceptance_fm.get("accepted_commit")
-        if acceptance_accepted_commit != accepted_commit_from_payload:
+        if (
+            acceptance_accepted_commit != integrated_commit_from_payload
+            and (
+                request.payload.equivalence_method is None
+                or request.payload.equivalence_evidence_ref is None
+            )
+        ):
             raise TransitionSchemaError(
                 "acceptance accepted_commit does not match "
-                "integration payload"
+                "integration payload without equivalence evidence"
             )
+        if not isinstance(acceptance_accepted_commit, str):
+            raise TransitionSchemaError("acceptance accepted_commit is invalid")
 
         reviewed_dispatch_id = acceptance_fm.get("reviewed_dispatch_id")
         if not isinstance(reviewed_dispatch_id, str) or not reviewed_dispatch_id:
@@ -4148,7 +4160,7 @@ def _build_approval_subject(
             revision=revision,
             attempt=ledger_attempt,
             dispatch_id=reviewed_dispatch_id,
-            accepted_commit=accepted_commit_from_payload,
+            accepted_commit=acceptance_accepted_commit,
         )
 
     raise TransitionSchemaError(

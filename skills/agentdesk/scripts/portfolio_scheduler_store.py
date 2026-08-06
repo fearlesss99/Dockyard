@@ -1844,6 +1844,16 @@ class PortfolioSchedulerStore:
             _raise(PortfolioSchedulerInputError, "project_root_missing")
         return _validate_project_root(root)
 
+    def initialize(self, project_root: Path | None = None) -> None:
+        """Create only the validated empty Store directory structure.
+
+        This cold-start operation reserves no enqueue sequence and writes no
+        queue, receipt, plan, reservation, or tombstone evidence.
+        """
+        root = self._root(project_root)
+        with _store_lock(root):
+            _prepare_store(root, True)
+
     @contextmanager
     def _locked(self, project_root: Path | None = None) -> Iterator[Path]:
         root = self._root(project_root)

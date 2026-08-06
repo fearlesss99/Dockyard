@@ -56,7 +56,7 @@ from dispatcher_gateway import (
     DispatchStarted,
     DispatchStartedObserver,
 )
-from worker_adapter import WorkerResult
+from worker_adapter import WorkerResult, run_dispatch_observed
 from worker_output_decoder import (
     DeliveryReceipt,
     WorkerCompletionStatus,
@@ -833,6 +833,11 @@ class WorkflowHappyPathE2ETests(unittest.IsolatedAsyncioTestCase):
 
                 # Commit grant files (write_grant writes files, we need them in git)
                 head_sha = _git_add_all_and_commit(project_root, "approval grants")
+                from tests.test_workflow_orchestrator import _write_difficulty_assessment
+                _write_difficulty_assessment(
+                    project_root, task_id=task_id, revision=revision,
+                    difficulty="advanced",
+                )
 
                 # ── 9. Build orchestrator and providers ────────────────────────
                 clock = FakeClock()
@@ -1001,9 +1006,15 @@ class WorkflowHappyPathE2ETests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 # ── 14. Execute — patch subprocess, run both cycles ─────────
-                with mock.patch(
-                    "asyncio.create_subprocess_exec",
-                    side_effect=subprocess_router,
+                with (
+                    mock.patch(
+                        "worker_adapter.run_supervised_dispatch",
+                        new=run_dispatch_observed,
+                    ),
+                    mock.patch(
+                        "asyncio.create_subprocess_exec",
+                        side_effect=subprocess_router,
+                    ),
                 ):
                     # Phase A: Dispatch
                     dispatch_result = await orch.run_dispatch_cycle(

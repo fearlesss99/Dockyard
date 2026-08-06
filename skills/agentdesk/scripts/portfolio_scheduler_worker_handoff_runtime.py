@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
+import os
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
 import dispatch_supervisor_evidence as dse
-from control_plane_transition import TransitionResult
+from control_plane_transition import (
+    CancelledPayload,
+    TransitionCAS,
+    TransitionEventContext,
+    TransitionRequest,
+    TransitionResult,
+)
 from dispatcher_gateway import AgentCliProvider, resolve_invocation
 from portfolio_scheduler_store import PortfolioSchedulerStore, QueuePhase, ReceiptPhase
 from portfolio_scheduler_worker_handoff_store import (
@@ -23,9 +32,17 @@ from portfolio_scheduler_worker_handoff_store import (
 from state_provider import StateProvider
 from worker_slot_lease import WorkerSlotLease, read_worker_slot_leases
 from workflow_orchestrator import (
+    ActiveDispatchCancellationRequest,
+    ActiveDispatchCancellationResult,
     DispatchCycleRequest,
     DispatchCycleResult,
     WorkflowOrchestrator,
+)
+from dockyard_active_execution import (
+    DockyardActiveCancellationCommand,
+    DockyardActiveCancellationOutcome,
+    DockyardActiveExecutionRegistry,
+    make_active_execution_identity,
 )
 from worktree_lifecycle_store import WorktreeLifecycleStore, WorktreePhase
 
@@ -152,6 +169,14 @@ def _lease(project_root: Path, request: AdmittedDispatchStartRequest) -> WorkerS
     return lease
 
 
+def _same_worktree(left: str, right: str) -> bool:
+    return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(right))
+
+
+def _handoff_timestamp(value: str) -> str:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
 def _verify_git_worktree(path: Path, expected_head: str, expected_branch: str) -> None:
     if not path.is_absolute() or not path.is_dir():
         _fail(AdmittedDispatchConflictError, "git_worktree_path")
@@ -181,6 +206,7 @@ async def _start_admitted_dispatch(
     providers: Mapping[str, AgentCliProvider],
     orchestrator: WorkflowOrchestrator,
     completion: list[DispatchCycleResult] | None,
+    active_registry: DockyardActiveExecutionRegistry | None = None,
 ) -> AdmittedDispatchStartResult:
     if type(request) is not AdmittedDispatchStartRequest:
         _fail(AdmittedDispatchInputError, "request")
@@ -188,6 +214,8 @@ async def _start_admitted_dispatch(
         _fail(AdmittedDispatchInputError, "providers")
     if type(orchestrator) is not WorkflowOrchestrator:
         _fail(AdmittedDispatchInputError, "orchestrator")
+    if active_registry is not None and type(active_registry) is not DockyardActiveExecutionRegistry:
+        _fail(AdmittedDispatchInputError, "active_registry")
     root = Path(request.project_root)
     if not root.is_absolute() or root != orchestrator.project_root:
         _fail(AdmittedDispatchInputError, "project_root")
@@ -206,7 +234,7 @@ async def _start_admitted_dispatch(
     if (plan.receipt_id, plan.task_id, plan.revision, plan.dispatch_id, plan.event_id, plan.outbox_message_id, plan.selection_generation, plan.content_digest) != (request.receipt_id, request.task_id, request.revision, request.dispatch_id, request.dispatch_event_id, request.outbox_message_id, request.selection_generation, request.plan_digest):
         _fail(AdmittedDispatchConflictError, "plan_identity")
     lease = _lease(root, request)
-    if lease.canonical_worktree != str(dr.workspace):
+    if not _same_worktree(lease.canonical_worktree, str(dr.workspace)):
         _fail(AdmittedDispatchConflictError, "worktree_lease")
     record = WorktreeLifecycleStore(root).read_record(request.worktree_id, missing_ok=False)
     if (
@@ -227,7 +255,7 @@ async def _start_admitted_dispatch(
     event = next((e for e in snapshot.events if e.event_id == request.dispatch_event_id), None)
     outbox = next((o for o in snapshot.outbox if o.message_id == request.outbox_message_id), None)
     task = next((t for t in snapshot.tasks if t.task_id == request.task_id), None)
-    if event is None or event.event_type != "TASK_DISPATCHED" or event.dispatch_id != request.dispatch_id or outbox is None or outbox.event_id != event.event_id or task is None or task.current_dispatch != request.dispatch_id:
+    if event is None or event.event_type != "TASK_DISPATCHED" or event.dispatch_id != request.dispatch_id or outbox is None or outbox.event_id != event.event_id or task is None or task.current_dispatch is None or task.current_dispatch.dispatch_id != request.dispatch_id:
         _fail(AdmittedDispatchConflictError, "canonical_dispatch")
 
     existing = dse.read_dispatch_receipt(root, request.dispatch_id)
@@ -264,14 +292,14 @@ async def _start_admitted_dispatch(
                     resumed, _ = handoff_store.advance_phase(
                         request.dispatch_id,
                         ScheduledDispatchHandoffPhase.FINALIZING,
-                        existing.written_at,
+                        _handoff_timestamp(existing.written_at),
                         existing,
                     )
                 if resumed.phase is ScheduledDispatchHandoffPhase.FINALIZING:
                     resumed, _ = handoff_store.advance_phase(
                         request.dispatch_id,
                         ScheduledDispatchHandoffPhase.FINALIZED,
-                        tombstone.finalized_at,
+                        _handoff_timestamp(tombstone.finalized_at),
                         existing,
                     )
                     return _result(
@@ -303,18 +331,73 @@ async def _start_admitted_dispatch(
     current_receipt = dse.read_dispatch_receipt(root, request.dispatch_id)
     if current_receipt is None:
         _fail(AdmittedDispatchConflictError, "process_receipt_missing")
-    handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.SUPERVISOR_STARTED, current_receipt.written_at, current_receipt)
-    handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.WORKER_STARTED, current_receipt.written_at, current_receipt)
+    handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.SUPERVISOR_STARTED, _handoff_timestamp(current_receipt.written_at), current_receipt)
+    handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.WORKER_STARTED, _handoff_timestamp(current_receipt.written_at), current_receipt)
     handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.ACKNOWLEDGED, request.requested_at, current_receipt)
-    dispatch_cycle_result = await execution.wait()
+    if active_registry is not None:
+        owner_loop = asyncio.get_running_loop()
+
+        def cancel_callback(
+            command: DockyardActiveCancellationCommand,
+        ) -> DockyardActiveCancellationOutcome:
+            if owner_loop.is_closed():
+                raise RuntimeError("owner event loop is closed")
+            cancellation_request = ActiveDispatchCancellationRequest(
+                execution.handle,
+                TransitionRequest(
+                    TransitionCAS(
+                        command.task_id,
+                        command.revision,
+                        "in_progress",
+                        command.expected_snapshot_commit,
+                    ),
+                    None,
+                    command.event_id,
+                    "TASK_CANCELLED",
+                    CancelledPayload(),
+                    TransitionEventContext(None, (), ()),
+                ),
+            )
+            future = asyncio.run_coroutine_threadsafe(
+                orchestrator.cancel_active_dispatch(execution, cancellation_request),
+                owner_loop,
+            )
+            try:
+                result = future.result(timeout=120)
+            except BaseException:
+                future.cancel()
+                raise
+            if type(result) is not ActiveDispatchCancellationResult:
+                raise RuntimeError("active cancellation returned an invalid result")
+            return DockyardActiveCancellationOutcome(
+                command.task_id,
+                command.dispatch_id,
+                result.cancellation_transition.event_id,
+                result.cancellation_transition.occurred_at,
+            )
+
+        identity = make_active_execution_identity(
+            request.task_id,
+            request.revision,
+            request.attempt,
+            request.dispatch_id,
+            generation,
+            request.requested_at,
+        )
+        active_registry.register(identity, cancel_callback)
+    try:
+        dispatch_cycle_result = await execution.wait()
+    finally:
+        if active_registry is not None:
+            active_registry.complete(request.dispatch_id, generation)
     if completion is not None:
         completion.append(dispatch_cycle_result)
     final_receipt = dse.read_dispatch_receipt(root, request.dispatch_id)
     tombstone = dse.read_dispatch_tombstone(root, request.dispatch_id)
     if final_receipt is None or tombstone is None or tombstone.generation_id != generation:
         _fail(AdmittedDispatchConflictError, "final_evidence")
-    handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.FINALIZING, final_receipt.written_at, final_receipt)
-    finalized, _ = handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.FINALIZED, tombstone.finalized_at, final_receipt)
+    handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.FINALIZING, _handoff_timestamp(final_receipt.written_at), final_receipt)
+    finalized, _ = handoff_store.advance_phase(request.dispatch_id, ScheduledDispatchHandoffPhase.FINALIZED, _handoff_timestamp(tombstone.finalized_at), final_receipt)
     return _result(request, generation, finalized.phase, AdmittedDispatchStartOutcome.STARTED, final_receipt.phase)
 
 
@@ -331,11 +414,13 @@ async def start_admitted_dispatch_completion(
     request: AdmittedDispatchStartRequest,
     providers: Mapping[str, AgentCliProvider],
     orchestrator: WorkflowOrchestrator,
+    *,
+    active_registry: DockyardActiveExecutionRegistry | None = None,
 ) -> AdmittedDispatchCompletionResult:
     """Return fresh delivery evidence without changing replay behavior."""
     completion: list[DispatchCycleResult] = []
     start_result = await _start_admitted_dispatch(
-        request, providers, orchestrator, completion
+        request, providers, orchestrator, completion, active_registry
     )
     if len(completion) > 1:
         _fail(AdmittedDispatchConflictError, "completion_count")

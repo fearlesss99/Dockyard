@@ -58,6 +58,7 @@ from dispatcher_gateway import (
     DispatchIdentity,
     DispatchRequest,
 )
+from worker_adapter import run_dispatch_observed
 from worker_output_decoder import (
     WorkerCompletionStatus,
 )
@@ -1068,6 +1069,11 @@ class WorkflowExpertEscalationE2ETests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 head_sha = _git_add_all_and_commit(project_root, "all approval grants")
+                from tests.test_workflow_orchestrator import _write_difficulty_assessment
+                _write_difficulty_assessment(
+                    project_root, task_id=task_id, revision=revision,
+                    difficulty="basic",
+                )
 
                 # ── 11. Build orchestrator and providers ────────────────────
                 clock = FakeClock()
@@ -1511,9 +1517,15 @@ class WorkflowExpertEscalationE2ETests(unittest.IsolatedAsyncioTestCase):
                 # Execute all phases
                 # ═══════════════════════════════════════════════════════════
 
-                with mock.patch(
-                    "asyncio.create_subprocess_exec",
-                    side_effect=subprocess_router,
+                with (
+                    mock.patch(
+                        "worker_adapter.run_supervised_dispatch",
+                        new=run_dispatch_observed,
+                    ),
+                    mock.patch(
+                        "asyncio.create_subprocess_exec",
+                        side_effect=subprocess_router,
+                    ),
                 ):
                     # ───────────────────────────────────────────────────────
                     # Phase A: Attempt 1 — Basic dispatch → MAD blocked

@@ -60,6 +60,13 @@ Owner-loss automatic retry is Current.
 Codex decoding,
 Codex rate-limit classification, and provider rate-limit wiring remain Target
 (optional Provider extensions; do not block Interface #22 core orchestration).
+Reasonix Basic Provider contract is Contract Current — TC-13.28a.2 Phase A (frozen
+identity, CLI invocation surface, sandbox boundaries, decoder gate, API key
+isolation; permission-mode is `acceptEdits` + `--allowed-tools Bash,Read,Write,Edit`
+frozen by loopback-stub evidence); adapter is Implemented/Unselectable, decoder is
+Fixture Verified; Reasonix Basic runtime (end-to-end), decoder live evidence,
+and real API probe remain Target — TC-13.28a.2 Phase B.
+Interface #22 is unchanged by Reasonix.
 Active-dispatch cancellation
 contract is repaired and frozen as of TC-13.18d.9a.1 (execution-based
 model); production implementation is Current — TC-13.18d.9b.  See
@@ -1344,7 +1351,10 @@ and `run_dispatch_cycle()` retains its signature and compatibility behavior.
   **Target/deferred — TC-13.9c.2**. Provider 429 detection remains
   **Evidence-dependent Target — TC-13.14c**. RateLimit → Orchestrator
   wiring remains **Target**, depending on real detection evidence.
-  Interface #24 (HTML Dashboard) is **Current — TC-13.20b**.
+  Reasonix Basic Provider contract is **Contract Freeze Needs Repair — TC-13.28a.1**;
+  Reasonix Basic runtime (adapter), permission-mode evidence, and decoder remain
+  **Target — TC-13.28a.2**. Interface #24 (HTML Dashboard) is
+  **Current — TC-13.20b**.
 - TC-13.19 and TC-13.20 statuses are unchanged.
 - TaskDifficulty dispatch runtime wiring is **Current — TC-13.22b.3a**.
 
@@ -1621,11 +1631,14 @@ The following remain unchanged:
 - quiescent cancellation/supersession and single escalated redispatch;
 - Interface #22 core orchestration status: Current — TC-13.18d.13b;
   Codex / Provider 429 deferred (see §15.7);
+  Reasonix Basic Provider contract is Contract Freeze Needs Repair — TC-13.28a.1;
+  Reasonix Basic runtime (end-to-end) + decoder live evidence + API probe Target — TC-13.28a.2 Phase B;
 - TC-13.19 status unchanged; TC-13.20 (Interface #24) is Current — TC-13.20b.
 
 Non-goals are owner-loss cleanup, retry after fencing/release uncertainty,
 unbounded retry, automatic replacement-task dispatch, provider rate-limit
-wiring, Codex enablement, and changes to DispatcherGateway termination.
+wiring, Codex enablement, Reasonix runtime/decoder/API-probe (Target),
+and changes to DispatcherGateway termination.
 
 ### 16.11 Production Split and Status
 
@@ -2165,3 +2178,197 @@ dispatch, lease, and handoff identity. It must not acquire a second lease,
 apply `TASK_DISPATCHED`, change attempt, or call the private dispatch cycle.
 Interface #22 ownership of ACK, cancellation, supersession, delivery, and
 finalization remains unchanged.
+
+## 21. PM materialization admission handoff boundary (TC-13.29l.5a)
+
+The PM materialization-to-Scheduler handoff contract is **Contract Current —
+TC-13.29l.5a.1**; runtime is **Current — TC-13.29l.5d.4**. WorkflowOrchestrator is
+not the handoff owner. It does not commit PM task cards, register canonical
+tasks for the handoff, allocate `queue_id` or `enqueue_sequence`, or invoke
+Scheduler selection on behalf of Dockyard.
+
+WorkflowOrchestrator receives control only through its existing typed boundary
+after canonical `TASK_DISPATCHED` admission evidence exists. Its ownership of
+ACK, cancellation, supersession, delivery, acceptance, integration, retry, and
+owner-loss recovery is unchanged. TC-13.29l.5a adds no new
+WorkflowOrchestrator method, field, lock, or state transition.
+
+## 22. Durable post-delivery acceptance input boundary (TC-13.29l.5f.1)
+
+Status: **Contract Current — TC-13.29l.5f.1; Runtime Current — TC-13.29l.5g.2a**.
+
+The existing `AcceptanceCycleRequest` remains unchanged and continues to serve
+the same-coroutine path carrying a real `DispatchCycleResult`. A separate
+owner-neutral runtime input is frozen for crash-safe continuation after the
+delivery owner has published durable evidence. WorkflowOrchestrator must not
+import Dockyard or reconstruct a `DispatchCycleResult`.
+
+### 22.1 `DurableDeliveryReviewEvidence` — exactly 12 fields
+
+| # | Field | Type |
+|---:|---|---|
+| 1 | `delivery_receipt` | `DeliveryReceipt` |
+| 2 | `dispatch_generation_id` | `str` |
+| 3 | `external_worker_receipt_digest` | `str` |
+| 4 | `dispatch_event_id` | `str` |
+| 5 | `acknowledge_event_id` | `str` |
+| 6 | `delivery_event_id` | `str` |
+| 7 | `delivery_event_digest` | `str` |
+| 8 | `worktree_id` | `str` |
+| 9 | `workspace` | `Path` |
+| 10 | `implementation_commit` | `str` |
+| 11 | `report_commit` | `str` |
+| 12 | `worker_kind` | `WorkerKind` |
+
+The type is `frozen=True, slots=True`. `workspace` is an in-memory runtime
+`Path` loaded from a validated READY WorktreeLifecycle record; it is never
+serialized into the Dockyard durable review document. The two commit fields
+must equal the typed `DeliveryReceipt`, be distinct, exist in the validated
+workspace, and satisfy the double-commit ancestry rule. Dispatch, ACK, and
+delivery event IDs are pairwise distinct and bind the exact canonical delivery
+event digest. `worker_kind` is projected from the validated admission,
+handoff, and external-Worker evidence chain. Every durable owner request must
+match it exactly before MAD, lease, escalation, or canonical write.
+
+### 22.2 `DurableAcceptanceCycleRequest` — exactly 6 fields
+
+| # | Field | Type |
+|---:|---|---|
+| 1 | `delivery_evidence` | `DurableDeliveryReviewEvidence` |
+| 2 | `audit_input` | `MadAuditGatewayInput` |
+| 3 | `acceptance_transition_request` | `TransitionRequest` |
+| 4 | `integration_transition_request` | `TransitionRequest | None` |
+| 5 | `worker_kind` | `WorkerKind` |
+| 6 | `holder_instance_id` | `str` |
+
+The type is `frozen=True, slots=True`. Public annotations contain no `Any`,
+`object`, `dict`, `Mapping`, mutable collection, callback, provider/model
+client, process handle, stdout/stderr, prompt, report body, or credential.
+
+### 22.3 Validation and future runtime method
+
+The `run_durable_acceptance_cycle(request, audit_config)` method
+reuses the existing `run_acceptance_cycle` audit, review-lease,
+`DELIVERY_ACCEPTED`, and optional `CHANGE_INTEGRATED` semantics without
+fabricating the missing dispatch result. Before MAD it must validate:
+
+1. exact concrete types and all identity fields;
+2. delivery receipt task/revision/attempt/dispatch and commit binding;
+3. audit task/dispatch/commits/workspace binding;
+4. pairwise-distinct dispatch/ACK/delivery/acceptance/integration event IDs;
+5. acceptance CAS `review_ready`, exact DispatchCAS, and accepted commit;
+6. optional integration CAS `accepted`, null DispatchCAS, and integrated
+   commit binding;
+7. exact canonical events and durable review request/receipt digest supplied
+   by the caller's validated local evidence boundary.
+
+Validation failure occurs before MAD, lease acquisition, or canonical writes.
+MAD and every Interface #22 transition run outside the caller's evidence-store
+lock. Same durable request replay adopts canonical events; it never runs a
+second acceptance or integration transition. Divergent replay fails closed.
+
+TC-13.29l.5g.2a implements the owner-neutral input and reuses the existing
+Interface #22 audit, review-lease, acceptance, and optional integration owner
+semantics. It does not read the Dockyard review Store or perform fail/blocked
+routing. That caller-side composition remains **Target — TC-13.29l.5g.2c.2**.
+Interface #22 core status remains **Current — TC-13.18d.13b**.
+
+### 22.4 Durable fail/blocked owner inputs (TC-13.29l.5f.2)
+
+Status: **Contract Current — TC-13.29l.5f.2; Runtime Current —
+TC-13.29l.5g.2b**.
+
+The existing `DeliveryRemediationRequest` and `BlockedAuditRequest` remain
+unchanged for same-coroutine execution. Crash-safe callers use separate
+owner-neutral types and never construct a substitute `DispatchCycleResult`.
+
+`DurableDeliveryRemediationRequest` has exactly six fields:
+
+| # | Field | Type |
+|---:|---|---|
+| 1 | `acceptance_cycle_result` | `AcceptanceCycleResult` |
+| 2 | `delivery_evidence` | `DurableDeliveryReviewEvidence` |
+| 3 | `return_transition_request` | `TransitionRequest` |
+| 4 | `requeue_transition_request` | `TransitionRequest` |
+| 5 | `worker_kind` | `WorkerKind` |
+| 6 | `holder_instance_id` | `str` |
+
+`DurableBlockedAuditRequest` has exactly four fields:
+
+| # | Field | Type |
+|---:|---|---|
+| 1 | `acceptance_cycle_result` | `AcceptanceCycleResult` |
+| 2 | `delivery_evidence` | `DurableDeliveryReviewEvidence` |
+| 3 | `block_transition_request` | `TransitionRequest` |
+| 4 | `current_worker_kind` | `WorkerKind` |
+
+Both are `frozen=True, slots=True`. Public annotations contain no `Any`,
+`object`, `dict`, `Mapping`, mutable collection, callback, provider/model
+client, process handle, stdout/stderr, prompt, report body, or credential.
+
+`run_durable_delivery_remediation(request)` reuses the exact
+remediation lease, `DELIVERY_RETURNED`, release, and lease-free
+`TASK_REQUEUED` semantics. `run_durable_blocked_audit(request)`
+reuses `evaluate_escalation` and the lease-free `TASK_BLOCKED` owner semantics.
+Before lease or canonical write, both methods validate the audit verdict plus
+task/revision/attempt/dispatch/commit/CAS/event identity against
+`DurableDeliveryReviewEvidence`. Same canonical event replay is adopted;
+divergent replay fails closed. WorkflowOrchestrator never imports Dockyard or
+reads the review Store.
+
+Dockyard Store-to-owner normal-path composition is **Current —
+TC-13.29l.5g.2c.2**; mid-flight crash resume remains Target.
+
+The Dockyard-owned plan projection contract is repaired and its runtime is
+**Current — TC-13.29l.5g.2c.1**. The plan carries a typed
+`DockyardGitIntegrationIntent` containing the durable event identity and typed
+`GitIntegrationRequest`, never a pre-Git integration transition.
+WorkflowOrchestrator does not import or construct that Dockyard plan; it
+continues to accept only the owner-neutral typed requests frozen in this
+section.
+
+## 23. Git Integration owner boundary (TC-13.29l.5h.1)
+
+The dedicated Git Integration owner contract is **Contract Current —
+TC-13.29l.5h.1**; runtime is **Current — TC-13.29l.5h.2**. It produces a real
+typed `integrated_commit` and never writes canonical task state.
+WorkflowOrchestrator remains the sole owner of `CHANGE_INTEGRATED` and accepts
+that commit only through the existing typed `IntegrationPayload`. It does not
+run merge, update a Git ref, read the integration evidence Store, or import
+Dockyard.
+
+TC-13.29l.5g.2b implements both owner-neutral methods. They do not read the
+Dockyard Store and do not change the existing same-coroutine owner types.
+
+TC-13.29l.5f.2a repairs the shared evidence type by adding its exact twelfth
+field, `worker_kind: WorkerKind`. The repair is **Current —
+TC-13.29l.5f.2a**; runtime status is otherwise unchanged.
+
+## 24. Durable integration completion owner (TC-13.29l.5h.3)
+
+Status: **Current — TC-13.29l.5h.3**.
+
+`DurableGitIntegrationEvidence` is a `frozen=True, slots=True` owner-neutral
+projection with exactly fifteen fields: `operation_id`,
+`request_content_digest`, `task_id`, `revision`, `attempt`, `dispatch_id`,
+`report_commit`, `target_branch`, `target_head_before`, `phase`, `method`,
+`outcome`, `integrated_commit`, `integrated_tree`, and
+`receipt_content_digest`. It imports no Git integration runtime type.
+
+`DurableIntegrationCompletionRequest` has exactly four fields:
+`acceptance_cycle_result`, `delivery_evidence`, `integration_evidence`, and
+`integration_transition_request`.
+
+Before any canonical write, the request binds the successful acceptance,
+delivery task/revision/attempt/dispatch/report identity, finalized Git receipt,
+real integrated commit, receipt digest, unique lifecycle event, accepted-state
+CAS, and null `DispatchCAS`. `run_durable_integration_completion()` applies
+exactly one lease-free `CHANGE_INTEGRATED` through Interface #22 and preserves
+the original audit and acceptance results. It never reruns MAD, acceptance,
+Worker, provider, lease, Git, API, or network activity. Byte-exact canonical
+event replay is delegated unchanged to `ControlPlaneTransitionService`;
+divergent evidence fails before the owner call.
+
+Dockyard Store-to-owner normal-path composition is **Current —
+TC-13.29l.5g.2c.2**. Mid-flight crash resume remains a fail-closed
+`RECOVERY_REQUIRED` target, and the full TC-13.29l E2E remains **Blocked**.

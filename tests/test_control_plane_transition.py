@@ -14898,5 +14898,75 @@ class TC1318d12cAtomicOwnerLossTransitionTests(unittest.TestCase):
         self.assertEqual(tasks["tasks"][0]["attempt"], 2)
 
 
+class TestCommittedTaskCardUtf8Boundary(TestControlPlaneTransitionBase):
+    """Committed task cards are UTF-8 regardless of the Windows code page."""
+
+    def test_chinese_task_card_decodes_as_utf8_and_invalid_bytes_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            subprocess.run(("git", "init", "--quiet", str(root)), check=True)
+            subprocess.run(
+                ("git", "-C", str(root), "config", "user.email", "dockyard@example.invalid"),
+                check=True,
+            )
+            subprocess.run(
+                ("git", "-C", str(root), "config", "user.name", "Dockyard Test"),
+                check=True,
+            )
+            task_path = root / "docs/pm/tasks/TC-001.md"
+            task_path.parent.mkdir(parents=True)
+            task_path.write_text(
+                "---\n"
+                "type: implementation\n"
+                "role_id: R1\n"
+                f"base_commit: {'a' * 40}\n"
+                "owner_approval:\n"
+                "  gate: none\n"
+                "  approval_ids: []\n"
+                "---\n"
+                "# 中文需求与验收标准\n",
+                encoding="utf-8",
+            )
+            subprocess.run(("git", "-C", str(root), "add", "-A"), check=True)
+            subprocess.run(
+                ("git", "-C", str(root), "commit", "--quiet", "-m", "utf8 task card"),
+                check=True,
+            )
+            commit = subprocess.run(
+                ("git", "-C", str(root), "rev-parse", "HEAD"),
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            ).stdout.strip()
+            frontmatter = self.cpt._read_committed_task_card_frontmatter(
+                root,
+                "docs/pm/tasks/TC-001.md",
+                commit,
+            )
+            self.assertEqual(frontmatter["role_id"], "R1")
+            self.assertEqual(frontmatter["base_commit"], "a" * 40)
+
+            task_path.write_bytes(task_path.read_bytes() + b"\xff\n")
+            subprocess.run(("git", "-C", str(root), "add", "-A"), check=True)
+            subprocess.run(
+                ("git", "-C", str(root), "commit", "--quiet", "-m", "invalid task card"),
+                check=True,
+            )
+            invalid_commit = subprocess.run(
+                ("git", "-C", str(root), "rev-parse", "HEAD"),
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            ).stdout.strip()
+            with self.assertRaises(self.cpt.TransitionSchemaError):
+                self.cpt._read_committed_task_card_frontmatter(
+                    root,
+                    "docs/pm/tasks/TC-001.md",
+                    invalid_commit,
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

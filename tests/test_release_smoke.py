@@ -15354,3 +15354,2035 @@ class TC1324b4a2AdmissionPlanBindingContractFreezeTests(unittest.TestCase):
             "| 36 | PortfolioScheduler durable admission | **Admission Runtime Current**",
             normalized,
         )
+
+
+class TC1328a1ReasonixBasicProviderContractFreezeTests(unittest.TestCase):
+    """TC-13.28a.1 — Reasonix Basic Worker contract freeze + CLI preflight.
+
+    Covers: provider identity, model, profile, one-shot JSON,
+    stdin/stdout/stderr separation, 12-step ceiling, ACP exclusion,
+    forbidden flags, API key isolation, decoder gate, Interface #22,
+    Runtime/Decoder/API Probe Target status, and CLI preflight precision.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parents[1]
+        references = root / "skills" / "agentdesk" / "references"
+        cls.contract_path = (
+            references
+            / "public-interfaces"
+            / "reasonix-basic-provider-contract.md"
+        )
+        cls.contract = cls.contract_path.read_text(encoding="utf-8")
+        cls.adr = (
+            references / "adr" / "001-mad-agentdesk-integration.md"
+        ).read_text(encoding="utf-8")
+        cls.wfo_contract = (
+            references
+            / "public-interfaces"
+            / "workflow-orchestrator-contract.md"
+        ).read_text(encoding="utf-8")
+        cls.doctor_contract = (
+            references
+            / "public-interfaces"
+            / "provider-doctor-contract.md"
+        ).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        return " ".join(text.split())
+
+    # -- 1. Contract file exists --
+
+    def test_contract_file_exists(self) -> None:
+        self.assertTrue(self.contract_path.is_file())
+
+    def test_contract_status_is_current_phase_a(self) -> None:
+        self.assertIn(
+            "Phase A Complete",
+            self.contract,
+        )
+        normalized = self._normalize(self.contract)
+        self.assertIn(
+            "Reasonix Basic Provider Contract | **Contract Current**",
+            normalized,
+        )
+
+    # -- 2. Provider identity exact values --
+
+    def test_provider_id_is_exact_reasonix(self) -> None:
+        self.assertIn('`"reasonix"`', self.contract)
+
+    def test_model_is_exact_deepseek_v4_flash(self) -> None:
+        self.assertIn('"deepseek-v4-flash"', self.contract)
+
+    def test_profile_is_exact_economy(self) -> None:
+        self.assertIn('"economy"', self.contract)
+
+    def test_max_tool_rounds_12(self) -> None:
+        self.assertIn("12", self.contract)
+        self.assertIn("max_tool_rounds", self.contract)
+
+    # -- 3. No auto-upgrade to Pro --
+
+    def test_basic_must_not_upgrade_to_pro(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("deepseek-v4-flash", normalized)
+        self.assertIn("deepseek-v4-pro", normalized)
+        self.assertIn("never auto-upgraded", normalized)
+
+    # -- 4. One-shot JSON output --
+
+    def test_one_shot_json_output(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("--output-format json", normalized)
+        self.assertIn("one-shot", normalized)
+        self.assertIn("reasonix run", normalized)
+
+    # -- 5. stdin / stdout / stderr separation --
+
+    def test_stdin_prompt_not_shell_string(self) -> None:
+        self.assertIn("via **stdin**", self.contract)
+        normalized = self._normalize(self.contract)
+        # Must not be inlined in shell string
+        self.assertIn("stdin", normalized)
+
+    def test_stdout_stderr_independent(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("stdout", normalized)
+        self.assertIn("stderr", normalized)
+        self.assertIn("machine output only", normalized)
+        # Must be captured independently
+        self.assertIn("captured independently", normalized)
+
+    # -- 6. 12-step ceiling --
+
+    def test_max_steps_12(self) -> None:
+        self.assertIn("--max-steps 12", self.contract)
+        self.assertIn("Hard ceiling per dispatch", self.contract)
+
+    # -- 7. ACP not in Basic --
+
+    def test_acp_not_in_basic(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("separate UI phase", normalized)
+        self.assertIn("ACP", normalized)
+
+    # -- 8. Permission-mode is evidence-dependent, manual/auto/bypass are not target --
+
+    def test_permission_mode_is_evidence_current(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("Evidence Current", normalized)
+        self.assertIn("acceptEdits", normalized)
+        self.assertIn("Bash,Read,Write,Edit", normalized)
+
+    def test_manual_auto_bypass_explicitly_not_target(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("explicitly not the target", normalized)
+        self.assertIn("`manual`", normalized)
+        self.assertIn("`auto`", normalized)
+        self.assertIn("`bypassPermissions`", normalized)
+
+    def test_allowed_tools_conditionally_permitted(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("conditionally permitted", normalized)
+        self.assertIn("acceptEdits", normalized)
+
+    # -- 9. Forbidden flags --
+
+    def test_yolo_auto_bypass_forbidden(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("--auto", normalized)
+        self.assertIn("bypassPermissions", normalized)
+
+    def test_mcp_web_subagent_forbidden(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("MCP", normalized)
+        self.assertIn("web", normalized)
+        self.assertIn("subagent", normalized)
+
+    def test_no_desktop_tui(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("Desktop", normalized)
+        self.assertIn("TUI", normalized)
+
+    # -- 9. API key isolation --
+
+    def test_api_key_not_in_argv_or_doc_field(self) -> None:
+        # The contract documents that --api-key is NOT a Reasonix CLI flag
+        # and that AgentDesk must contain no api_key field.
+        self.assertIn("does not expose", self.contract)
+        self.assertIn("no `api_key` field", self.contract)
+        self.assertIn("**exclusively** by the Reasonix user", self.contract)
+
+    # -- 10. Reasonix wrapper ≠ WorkerOutput; future decoder gate --
+
+    def test_reasonix_wrapper_is_not_worker_output(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("agentdesk.worker-output/v1", normalized)
+        self.assertIn("not `agentdesk.worker-output/v1`", normalized)
+
+    def test_future_fail_closed_decoder_gate(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("fail-closed", normalized)
+        self.assertIn("decoder gate", normalized)
+
+    def test_no_guessing_success(self) -> None:
+        self.assertIn("must never", self.contract)
+        # "No Guessing Rules" section
+        self.assertIn("No Guessing", self.contract)
+
+    # -- 11. Interface #22 unchanged --
+
+    def test_interface_22_unchanged(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("Interface #22", normalized)
+        self.assertIn("**unchanged**", self.contract)
+        self.assertIn("No new orchestrator method", self.contract)
+
+    # -- 12. Adapter + Decoder Implemented / Unselectable (pending Phase B) --
+
+    def test_adapter_is_implemented_unselectable(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("Implemented / Unselectable", normalized)
+        self.assertIn("Reasonix Basic CLI Adapter", normalized)
+
+    def test_decoder_is_fixture_verified(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("Fixture Verified", normalized)
+        self.assertIn("Reasonix Decoder", normalized)
+
+    def test_runtime_and_api_probe_still_target(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("Reasonix Runtime (end-to-end)", normalized)
+        self.assertIn("Reasonix Real API Probe", normalized)
+        self.assertIn("**Target**", normalized)
+
+    # -- 13. CLI preflight commands are precise --
+
+    def test_cli_preflight_version_recorded(self) -> None:
+        self.assertIn("reasonix v1.19.1", self.contract)
+        self.assertIn("--version", self.contract)
+        self.assertIn("run --help", self.contract)
+
+    def test_cli_preflight_no_model_call(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertNotIn("reasonix run TC-", normalized)
+        # Non-normative section label
+        self.assertIn("Non-Normative Snapshot", self.contract)
+
+    # -- 14. Existing providers not modified or genericized --
+
+    def test_existing_providers_not_genericized(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("are **not** modified", normalized)
+        self.assertIn("refactored, or genericized", normalized)
+
+    # -- 15. ADR Reasonix interface entry exists --
+
+    def test_adr_interface_39_exists(self) -> None:
+        normalized = self._normalize(self.adr)
+        self.assertIn(
+            "| 39 | AgentDesk Reasonix Basic Provider |",
+            normalized,
+        )
+        self.assertIn("Contract Current — TC-13.28a.2 Phase A", normalized)
+        self.assertIn("Adapter Implemented-Unselectable", normalized)
+
+    # -- 16. WorkflowOrchestrator contract mentions Reasonix --
+
+    def test_wfo_contract_mentions_reasonix(self) -> None:
+        normalized = self._normalize(self.wfo_contract)
+        self.assertIn(
+            "Reasonix Basic Provider contract is Contract Current",
+            normalized,
+        )
+        self.assertIn(
+            "and real API probe remain Target",
+            normalized,
+        )
+
+    # -- 17. Provider Doctor contract mentions Reasonix --
+
+    def test_doctor_contract_mentions_reasonix(self) -> None:
+        normalized = self._normalize(self.doctor_contract)
+        self.assertIn("Reasonix Basic Provider", normalized)
+        self.assertIn("Contract Current — TC-13.28a.2 Phase A", normalized)
+        self.assertIn("D009 does not yet include `reasonix`", normalized)
+
+    # -- 18. No production modules modified --
+
+    def test_no_production_module_references(self) -> None:
+        # Each production module filename appears in the out-of-scope list
+        # and the non-goals list (exactly 2 times) — or once per file if
+        # it appears in different sections.
+        counts = {term: self.contract.count(term) for term in (
+            "worker_adapter.py",
+            "dispatcher_gateway.py",
+            "workflow_orchestrator.py",
+        )}
+        for term, count in counts.items():
+            self.assertGreaterEqual(count, 1,
+                f"{term} must appear at least once")
+            self.assertLessEqual(count, 2,
+                f"{term} appears {count} times, max 2 expected")
+
+    # -- 19. No absolute path to reasonix executable in contract --
+    # Generic drive-absolute Windows regex covers all drives and separators.
+
+    _DRIVE_ABSOLUTE_WINDOWS = re.compile(
+        r"""[A-Za-z]:[\\/]""",
+    )
+
+    _DRIVE_ABSOLUTE_UNIX = re.compile(
+        r"""(?:^|\s)(?!/)(?:/[^\s:*?"<>|]+)+/reasonix(?:\.exe)?(?:\s|$)""",
+    )
+
+    def test_no_drive_absolute_path_in_contract(self) -> None:
+        # The contract text (outside the non-normative CLI preflight fenced
+        # block) must not contain a drive-absolute path.
+        lines = self.contract.splitlines()
+        in_fence = False
+        for line in lines:
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            self.assertIsNone(
+                self._DRIVE_ABSOLUTE_WINDOWS.search(line),
+                f"drive-absolute path found in normative contract line: {line!r}",
+            )
+
+    def test_contract_forbids_absolute_path_in_tracked_docs(self) -> None:
+        normalized = self._normalize(self.contract)
+        self.assertIn("must **never** appear in", normalized)
+
+
+class TC1329bDockyardContractFreezeTests(unittest.TestCase):
+    """TC-13.29b — Dockyard product/control/security contract freeze."""
+
+    CONTROL_PATH = (
+        SKILL_ROOT
+        / "references"
+        / "public-interfaces"
+        / "dockyard-control-api-contract.md"
+    )
+    WEB_PATH = (
+        SKILL_ROOT
+        / "references"
+        / "public-interfaces"
+        / "dockyard-web-contract.md"
+    )
+    ADR_PATH = SKILL_ROOT / "references" / "adr" / "001-mad-agentdesk-integration.md"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.control = cls.CONTROL_PATH.read_text(encoding="utf-8")
+        cls.web = cls.WEB_PATH.read_text(encoding="utf-8")
+        cls.adr = cls.ADR_PATH.read_text(encoding="utf-8")
+
+    def assertOrdered(self, source: str, values: tuple[str, ...]) -> None:
+        positions = [source.index(value) for value in values]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_contract_files_exist(self) -> None:
+        self.assertTrue(self.CONTROL_PATH.is_file())
+        self.assertTrue(self.WEB_PATH.is_file())
+
+    def test_contract_status_is_current_runtime_target(self) -> None:
+        self.assertIn("Contract Current — TC-13.29b", self.control)
+        self.assertIn("Runtime: **Current — TC-13.29f**", self.control)
+
+    def test_api_namespace_is_exact(self) -> None:
+        self.assertIn("`/api/dockyard/v1`", self.control)
+        self.assertNotIn("/api/v2", self.control)
+
+    def test_transport_is_loopback_only(self) -> None:
+        for value in ("`127.0.0.1`", "`::1`", "non-loopback peer"):
+            self.assertIn(value, self.control)
+
+    def test_sse_is_frozen_and_websocket_not_required(self) -> None:
+        normalized = " ".join(self.control.split())
+        self.assertIn("Server-Sent Events (SSE)", normalized)
+        self.assertIn("WebSocket is not required", normalized)
+
+    def test_command_envelope_fields_are_exact_and_ordered(self) -> None:
+        self.assertOrdered(self.control, (
+            "1. `schema_version`",
+            "2. `command_id`",
+            "3. `project_id`",
+            "4. `command_type`",
+            "5. `idempotency_key`",
+            "6. `expected_snapshot_commit`",
+            "7. `expected_revision`",
+            "8. `confirmation_id`",
+            "9. `payload_digest`",
+        ))
+
+    def test_command_receipt_fields_are_exact_and_ordered(self) -> None:
+        start = self.control.index("### `DockyardCommandReceipt`")
+        end = self.control.index("### `DockyardErrorEnvelope`")
+        receipt = self.control[start:end]
+        self.assertOrdered(receipt, (
+            "1. `schema_version`", "2. `command_id`", "3. `project_id`",
+            "4. `command_type`", "5. `outcome`", "6. `canonical_event_id`",
+            "7. `snapshot_commit`", "8. `replayed`", "9. `completed_at`",
+            "10. `content_digest`",
+        ))
+
+    def test_error_envelope_fields_are_exact_and_ordered(self) -> None:
+        start = self.control.index("### `DockyardErrorEnvelope`")
+        end = self.control.index("### `DockyardSseEvent`")
+        error = self.control[start:end]
+        self.assertOrdered(error, (
+            "1. `schema_version`", "2. `request_id`", "3. `error_code`",
+            "4. `category`", "5. `retryable`", "6. `safe_message`",
+            "7. `correlation_digest`",
+        ))
+
+    def test_sse_event_fields_are_exact_and_ordered(self) -> None:
+        start = self.control.index("### `DockyardSseEvent`")
+        end = self.control.index("## 4. Read endpoints")
+        event = self.control[start:end]
+        self.assertOrdered(event, (
+            "1. `schema_version`", "2. `event_cursor`", "3. `project_id`",
+            "4. `event_type`", "5. `snapshot_commit`", "6. `resource_id`",
+            "7. `occurred_at`", "8. `content_digest`",
+        ))
+
+    def test_sse_event_types_are_exact(self) -> None:
+        for value in (
+            "snapshot.changed", "task.changed", "run.changed",
+            "approval.changed", "provider.changed", "project.changed",
+            "health.changed",
+        ):
+            self.assertIn(f"`{value}`", self.control)
+
+    def test_read_endpoints_are_frozen(self) -> None:
+        for value in (
+            "/health`", "/projects`", "/overview`", "/tasks`", "/runs`",
+            "/approvals`", "/providers`", "/events`",
+        ):
+            self.assertIn(value, self.control)
+
+    def test_command_endpoints_are_frozen(self) -> None:
+        for value in (
+            "/plans`", "/approve`", "/retry`", "/cancel`", "/terminate`",
+            "/accept`", "/return`", "/binding`", "/remove`",
+        ):
+            self.assertIn(value, self.control)
+
+    def test_no_generic_execution_endpoint(self) -> None:
+        self.assertIn("There is no generic transition", self.control)
+        for value in ("shell", "argv", "provider", "Python execution endpoint"):
+            self.assertIn(value, self.control)
+
+    def test_confirmation_matrix_covers_all_user_gates(self) -> None:
+        for value in (
+            "approve plan", "active manual retry", "model or strategy escalation",
+            "terminate dispatch", "remove project",
+        ):
+            self.assertIn(f"| {value} |", self.control)
+
+    def test_automatic_recovery_keeps_existing_policy(self) -> None:
+        self.assertIn("Automatic bounded retry and owner-loss recovery", self.control)
+        self.assertIn("without a new Dockyard confirmation", self.control)
+
+    def test_attempt_four_is_forbidden(self) -> None:
+        self.assertIn("Attempt 4 is forbidden", self.control)
+
+    def test_project_removal_is_soft_and_preserves_git(self) -> None:
+        self.assertIn("Project removal is a soft operation", self.control)
+        self.assertIn("must not remove, recursively delete", self.control)
+
+    def test_provider_states_are_exact(self) -> None:
+        for value in ("`READY`", "`DEGRADED`", "`NOT_READY`", "`UNKNOWN`"):
+            self.assertIn(value, self.control)
+
+    def test_provider_state_does_not_parse_untyped_text(self) -> None:
+        self.assertIn("never infers provider state from an exception string", self.control)
+        self.assertIn("stdout/stderr", self.control)
+
+    def test_pairing_scopes_are_exact(self) -> None:
+        for value in ("`READ`", "`APPROVE`", "`RETRY`", "`TERMINATE`"):
+            self.assertIn(value, self.control)
+
+    def test_pairing_remains_target(self) -> None:
+        self.assertIn("Device pairing is Contract Target until TC-13.29e", self.control)
+
+    def test_public_types_forbid_dynamic_mutable_annotations(self) -> None:
+        for value in (
+            "`Any`", "`object`", "`dict`", "`Mapping`", "`list`", "`set`",
+        ):
+            self.assertIn(value, self.control)
+
+    def test_sensitive_values_are_never_projected(self) -> None:
+        for value in (
+            "API key", "stdout", "stderr", "prompt", "absolute path",
+            "route/thread/session/host ID",
+        ):
+            self.assertIn(value, self.control)
+
+    def test_navigation_is_exact_and_ordered(self) -> None:
+        self.assertOrdered(self.web, (
+            "1. 工作台", "2. 需求与方案", "3. 任务", "4. 运行",
+            "5. 审议与验收", "6. Worker 与模型", "7. 项目",
+            "8. 系统诊断", "9. 设置",
+        ))
+
+    def test_reference_images_are_style_only(self) -> None:
+        normalized = " ".join(self.web.split())
+        self.assertIn("influence only", normalized)
+        self.assertIn("must not copy another product's brand", normalized)
+
+    def test_workbench_has_five_primary_summaries(self) -> None:
+        for value in (
+            "requirement input", "current tasks", "pending approvals",
+            "active Worker/Runner/provider health", "recent delivery",
+        ):
+            self.assertIn(value, self.web)
+
+    def test_default_mode_is_standard_balanced(self) -> None:
+        self.assertIn("default selection is `Standard + balanced`", self.web)
+
+    def test_execution_modes_are_exact(self) -> None:
+        for value in ("`Lite`", "`Standard`", "`Automated`"):
+            self.assertIn(value, self.web)
+
+    def test_deliberation_depths_are_exact(self) -> None:
+        for value in ("`fast`", "`balanced`", "`deep`"):
+            self.assertIn(value, self.web)
+
+    def test_policy_can_raise_but_never_lower(self) -> None:
+        self.assertIn("may raise a minimum", self.web)
+        self.assertIn("never lower", self.web)
+
+    def test_target_capability_has_no_dispatch_button(self) -> None:
+        self.assertIn("Target capability is visibly labeled `未就绪`", self.web)
+        self.assertIn("has no enabled dispatch button", self.web)
+
+    def test_mobile_operations_are_limited(self) -> None:
+        normalized = " ".join(self.web.split())
+        for value in ("state viewing", "plan approval", "manual retry", "dispatch termination"):
+            self.assertIn(value, normalized)
+
+    def test_no_dynamic_task_graph(self) -> None:
+        self.assertIn("no dynamic task relationship graph", self.web)
+
+    def test_web_exclusions_are_frozen(self) -> None:
+        for value in (
+            "multi-user accounts", "public registration", "billing", "email",
+            "browser notifications", "light theme", "repository deletion",
+            "cloud relay",
+        ):
+            self.assertIn(value, self.web)
+
+    def test_adr_interface_40_is_exact(self) -> None:
+        self.assertIn("| 40 | Dockyard local visual control surface |", self.adr)
+        self.assertIn("Supported Local Closed Loop E2E Verified — TC-13.29n", self.adr)
+        self.assertIn("Extended Adversarial Verified — TC-13.29m.1b", self.adr)
+
+    def test_prior_interface_36_and_39_statuses_remain_present(self) -> None:
+        self.assertIn("| 36 | PortfolioScheduler durable admission |", self.adr)
+        self.assertIn("| 39 | AgentDesk Reasonix Basic Provider |", self.adr)
+        self.assertIn("Adapter Implemented-Unselectable", self.adr)
+
+    def test_interface_22_remains_lifecycle_owner(self) -> None:
+        self.assertIn("Interface #22 remains the canonical lifecycle owner", self.control)
+        self.assertIn("Interface #22 remains the canonical lifecycle owner", self.adr)
+
+    def test_interface_24_remains_separate_read_only_dashboard(self) -> None:
+        self.assertIn("Interface #24 remains the existing read-only HTML", self.control)
+        self.assertIn("Interface #24 HTML Dashboard remains read-only and separate", self.web)
+
+    def test_remote_relay_and_cloud_deployment_remain_target(self) -> None:
+        self.assertIn("Remote relay/cloud deployment", self.control)
+        self.assertIn("**Target — not in TC-13.29 local runtime**", self.control)
+
+
+class TC1329l5aMaterializationAdmissionHandoffContractFreezeTests(unittest.TestCase):
+    """TC-13.29l.5a — PM materialization admission handoff contract freeze."""
+
+    CONTRACT_PATH = (
+        SKILL_ROOT
+        / "references"
+        / "public-interfaces"
+        / "pm-materialization-admission-handoff-contract.md"
+    )
+    PORTFOLIO_PATH = (
+        SKILL_ROOT
+        / "references"
+        / "public-interfaces"
+        / "portfolio-scheduler-contract.md"
+    )
+    WORKFLOW_PATH = (
+        SKILL_ROOT
+        / "references"
+        / "public-interfaces"
+        / "workflow-orchestrator-contract.md"
+    )
+    ADR_PATH = SKILL_ROOT / "references" / "adr" / "001-mad-agentdesk-integration.md"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.contract = cls.CONTRACT_PATH.read_text(encoding="utf-8")
+        cls.portfolio = cls.PORTFOLIO_PATH.read_text(encoding="utf-8")
+        cls.workflow = cls.WORKFLOW_PATH.read_text(encoding="utf-8")
+        cls.adr = cls.ADR_PATH.read_text(encoding="utf-8")
+
+    def _between(self, start: str, end: str) -> str:
+        start_at = self.contract.index(start)
+        end_at = self.contract.index(end, start_at)
+        return self.contract[start_at:end_at]
+
+    def _fields(self, start: str, end: str) -> list[str]:
+        return re.findall(
+            r"^\|\s*\d+\s*\|\s*`([^`]+)`\s*\|",
+            self._between(start, end),
+            re.MULTILINE,
+        )
+
+    def test_contract_exists_and_status_is_split(self) -> None:
+        self.assertTrue(self.CONTRACT_PATH.is_file())
+        self.assertIn("Contract Current — TC-13.29l.5a.1", self.contract)
+        self.assertIn("Runtime: **Current — TC-13.29l.5d.4**", self.contract)
+        self.assertIn("agentdesk.pm-materialization-admission-handoff/v1", self.contract)
+
+    def test_materialized_task_evidence_has_exact_fields(self) -> None:
+        self.assertEqual(
+            self._fields(
+                "### 2.1 `MaterializedTaskEvidence`",
+                "### 2.2 `MaterializationAdmissionPlanTemplate`",
+            ),
+            [
+                "schema_version", "project_id", "plan_id", "plan_revision",
+                "plan_content_digest", "materialization_operation_id",
+                "task_id", "revision", "task_card_relative_path",
+                "task_card_content_digest", "pm_owner_id", "materialized_at",
+                "content_digest",
+            ],
+        )
+
+    def test_admission_plan_template_has_exact_fields(self) -> None:
+        self.assertEqual(
+            self._fields(
+                "### 2.2 `MaterializationAdmissionPlanTemplate`",
+                "### 2.3 `MaterializationAdmissionRequest`",
+            ),
+            [
+                "schema_version", "template_id", "task_id", "revision",
+                "worker_kind", "assessment_id", "dispatch_id", "event_id",
+                "outbox_message_id", "role_id", "report_path",
+                "model_selection", "expected_task_state",
+                "expected_task_attempt", "new_attempt", "policy_version",
+                "holder_instance_id", "canonical_worktree_identity",
+                "created_at", "content_digest",
+            ],
+        )
+
+    def test_request_has_exact_fields(self) -> None:
+        self.assertEqual(
+            self._fields(
+                "### 2.3 `MaterializationAdmissionRequest`",
+                "### 2.4 Enums",
+            ),
+            [
+                "schema_version", "handoff_id", "project_id", "plan_id",
+                "task_id", "revision", "materialized_task_content_digest",
+                "admission_plan_template_id", "admission_plan_template_digest",
+                "expected_plan_revision", "expected_plan_content_digest",
+                "expected_task_card_relative_path",
+                "expected_task_card_content_digest",
+                "expected_assessment_relative_path",
+                "expected_assessment_content_digest", "repository_identity",
+                "expected_head_commit", "expected_base_commit",
+                "expected_branch", "expected_canonical_generation",
+                "business_priority", "worker_kind_request", "assessment_id",
+                "policy_version", "requested_at", "content_digest",
+            ],
+        )
+
+    def test_receipt_has_exact_fields(self) -> None:
+        self.assertEqual(
+            self._fields(
+                "### 2.5 `MaterializationAdmissionReceipt`",
+                "## 3. Durable format",
+            ),
+            [
+                "schema_version", "receipt_id", "handoff_id", "project_id",
+                "plan_id", "plan_revision", "plan_content_digest",
+                "materialization_operation_id", "materialized_task_content_digest",
+                "admission_plan_template_id", "admission_plan_template_digest",
+                "pm_owner_id", "task_id", "revision",
+                "task_card_relative_path", "task_card_content_digest",
+                "assessment_relative_path", "assessment_content_digest",
+                "repository_identity", "base_commit", "branch",
+                "task_card_git_commit", "canonical_task_state",
+                "canonical_task_generation", "queue_id", "enqueue_sequence",
+                "policy_version", "business_priority", "worker_kind_request",
+                "assessment_id", "admission_plan_content_digest", "schedule_receipt_id",
+                "admission_plan_receipt_id", "dispatch_id", "dispatch_event_id",
+                "phase", "outcome", "reserved_at",
+                "git_evidence_committed_at", "canonical_registered_at",
+                "queue_reserved_at", "admission_submitted_at", "finalized_at",
+                "content_digest",
+            ],
+        )
+
+    def test_public_types_are_frozen_slotted_and_typed(self) -> None:
+        block = self._between("## 2. Frozen public types", "## 3. Durable format")
+        self.assertIn("`frozen=True, slots=True`", block)
+        for forbidden in ("`Any`", "`object`", "`dict`", "`Mapping`", "`list`", "`set`"):
+            self.assertIn(forbidden, block)
+        self.assertIn("Public annotations contain no", block)
+
+    def test_phases_and_outcomes_are_exact(self) -> None:
+        phase_block = self._between("### 2.4 Enums", "### 2.5")
+        phase_values = phase_block.split("```text", 1)[1].split("```", 1)[0]
+        phases = [line for line in phase_values.splitlines() if line]
+        self.assertEqual(phases, [
+            "MATERIALIZED", "GIT_EVIDENCE_COMMITTED",
+            "CANONICAL_TASK_REGISTERED", "QUEUE_RESERVED", "ADMISSION_READY",
+            "ADMISSION_SUBMITTED", "FINALIZED",
+        ])
+        for outcome in ("RESERVED", "REPLAYED", "FINALIZED", "RECOVERY_REQUIRED", "REJECTED"):
+            self.assertIn(f"\n{outcome}\n", phase_block)
+
+    def test_owner_boundaries_are_exact(self) -> None:
+        owners = self._between("## 1. Ownership", "## 2. Frozen public types")
+        for value in (
+            "PM plan runtime", "materialization-admission handoff owner",
+            "canonical task-state service", "PortfolioScheduler store",
+            "PortfolioScheduler runtime", "WorkflowOrchestrator", "Dockyard",
+        ):
+            self.assertIn(value, owners)
+        self.assertIn("PM does not enqueue", owners)
+        self.assertIn("handoff owner does not select, admit, acquire a lease", owners)
+
+    def test_git_card_canonical_and_queue_identity_are_bound(self) -> None:
+        binding = self._between("## 4. Identity", "## 5. Forward-only")
+        normalized = " ".join(binding.split())
+        for value in (
+            "task_card_git_commit", "task ID/revision", "SHA-256 digest",
+            "canonical task ID/revision/state/generation",
+            "QueueEntry task/revision/assessment/priority/WorkerKind/policy identity",
+            "dispatch/event identity",
+        ):
+            self.assertIn(value, normalized)
+
+    def test_operation_and_lock_order_are_frozen(self) -> None:
+        block = self._between("## 5. Forward-only", "## 6. Crash")
+        self.assertIn(
+            "handoff receipt lock -> canonical\nstate-transition lock -> PortfolioScheduler sequence/queue-store lock",
+            block,
+        )
+        self.assertIn("locks are not nested across owner calls", block)
+        self.assertIn("outside the handoff, Git, canonical, and queue locks", block)
+        self.assertIn("invoke the typed\n   PortfolioScheduler selection/admission boundary", block)
+
+    def test_crash_matrix_is_complete_and_unambiguous(self) -> None:
+        matrix = self._between("## 6. Crash", "## 7. Replay")
+        rows = [
+            row for row in re.findall(
+                r"^\| (?!---)(.+?) \| (.+?) \|$", matrix, re.MULTILINE
+            )
+            if row[0] != "Crash/race window"
+        ]
+        self.assertEqual(len(rows), 23)
+        for value in (
+            "Git commit exists, receipt still `MATERIALIZED`",
+            "canonical task exists, receipt lags",
+            "sequence advanced but QueueEntry missing",
+            "Scheduler admission committed, receipt lags",
+            "two owners race with identical bytes",
+            "attempt 4 requested or inferred",
+            "template exists, receipt missing",
+            "constructed admission plan write interrupted/divergent",
+        ):
+            self.assertIn(value, matrix)
+
+    def test_replay_concurrency_and_attempt_four_are_frozen(self) -> None:
+        block = self._between("## 7. Replay", "## 8. Status")
+        self.assertIn("at most one winning `handoff_id`", block)
+        self.assertIn("same receipt and downstream IDs", block)
+        self.assertIn("cannot be reopened", block)
+        self.assertIn("Attempt three may be admitted; attempt four is forbidden", block)
+
+    def test_canonical_yaml_path_and_digest_are_frozen(self) -> None:
+        block = self._between("## 3. Durable format", "## 4. Identity")
+        self.assertIn(
+            ".agentdesk/runtime/materialization-admission/receipts/<receipt_id>.yaml",
+            block,
+        )
+        self.assertIn("canonical UTF-8 YAML", block)
+        self.assertIn("sha256:` plus 64 lowercase hexadecimal", block)
+        self.assertIn("byte-exact replay", block)
+        self.assertIn("divergent replay", block)
+        self.assertIn("templates/<template_id>.yaml", block)
+        self.assertIn("admission-plans/<handoff_id>.yaml", block)
+
+    def test_portfolio_and_workflow_boundaries_are_synchronized(self) -> None:
+        self.assertIn("Contract Current —\nTC-13.29l.5a.1", self.portfolio)
+        self.assertIn("Current — TC-13.29l.5d.4", self.portfolio)
+        self.assertIn("Interface #36 ownership is unchanged", self.portfolio)
+        self.assertIn("not the handoff owner", self.workflow)
+        self.assertIn("TC-13.29l.5a adds no new\nWorkflowOrchestrator method", self.workflow)
+
+    def test_adr_status_and_interface_are_synchronized(self) -> None:
+        normalized = " ".join(self.adr.split())
+        self.assertIn("| 41 | PM materialization-to-Scheduler admission handoff |", normalized)
+        self.assertIn("Contract Current — TC-13.29l.5a.1; Runtime Current — TC-13.29l.5d.4", normalized)
+        self.assertIn("full local closed-loop E2E remains Target", normalized)
+        self.assertIn("Interfaces #22 and #36 retain their existing owners", normalized)
+
+    def test_contract_card_changes_no_production_runtime(self) -> None:
+        runtime_path = SKILL_ROOT / "scripts" / "pm_materialization_admission_handoff.py"
+        self.assertTrue(runtime_path.is_file())
+        status = self._between("## 8. Status", "The contract-only TC-13.29l.5a.1")
+        self.assertIn(
+            "PM materialization-to-Scheduler handoff runtime | **Current — TC-13.29l.5d.4**",
+            status,
+        )
+        self.assertIn("Dockyard local closed-loop E2E | **Blocked — TC-13.29l**", status)
+
+
+class TC1329l5c1AdmissionPreparationContractFreezeTests(unittest.TestCase):
+    """TC-13.29l.5c.1 — PM Task Admission Preparation contract freeze."""
+
+    CONTRACT_PATH = (
+        SKILL_ROOT / "references" / "public-interfaces"
+        / "pm-task-admission-preparation-contract.md"
+    )
+    HANDOFF_PATH = (
+        SKILL_ROOT / "references" / "public-interfaces"
+        / "pm-materialization-admission-handoff-contract.md"
+    )
+    ADR_PATH = SKILL_ROOT / "references" / "adr" / "001-mad-agentdesk-integration.md"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.contract = cls.CONTRACT_PATH.read_text(encoding="utf-8")
+        cls.handoff = cls.HANDOFF_PATH.read_text(encoding="utf-8")
+        cls.adr = cls.ADR_PATH.read_text(encoding="utf-8")
+
+    def _between(self, start: str, end: str) -> str:
+        begin = self.contract.index(start)
+        return self.contract[begin:self.contract.index(end, begin)]
+
+    def _fields(self, start: str, end: str) -> list[str]:
+        return re.findall(
+            r"^\|\s*\d+\s*\|\s*`([^`]+)`\s*\|",
+            self._between(start, end), re.MULTILINE,
+        )
+
+    def test_contract_exists_and_status_is_split(self) -> None:
+        self.assertTrue(self.CONTRACT_PATH.is_file())
+        self.assertIn("Contract Current — TC-13.29l.5c.1b", self.contract)
+        self.assertIn("Runtime: **Current — TC-13.29l.5c.2**", self.contract)
+        self.assertIn("Dockyard composition: **Contract Current — TC-13.29l.5d.3; Runtime Current — TC-13.29l.5d.4**", self.contract)
+
+    def test_profile_has_exact_nineteen_fields(self) -> None:
+        self.assertEqual(self._fields("### 2.1 `PmTaskAdmissionProfile`", "### 2.2"), [
+            "schema_version", "profile_id", "project_id", "plan_id",
+            "plan_revision", "task_id", "revision", "business_priority",
+            "difficulty_rationale_keys", "selected_difficulty",
+            "difficulty_override_reason", "difficulty_approval_id", "risk",
+            "task_capabilities", "degradation_approval_id",
+            "expected_task_attempt", "new_attempt", "prepared_at", "content_digest",
+        ])
+
+    def test_request_has_exact_twenty_fields(self) -> None:
+        self.assertEqual(self._fields("### 2.2 `AdmissionPreparationRequest`", "### 2.3"), [
+            "schema_version", "preparation_id", "profile_id",
+            "profile_content_digest", "materialized_task_content_digest",
+            "repository_identity", "materialization_base_commit", "role_policy_path",
+            "role_policy_commit", "role_policy_content_digest",
+            "model_bindings_path", "model_bindings_content_digest",
+            "expected_binding_schema", "expected_handoff_generation",
+            "canonical_worktree_identity", "holder_instance_id", "report_path",
+            "expected_head_commit", "expected_branch", "content_digest",
+        ])
+
+    def test_receipt_has_exact_twenty_eight_fields(self) -> None:
+        self.assertEqual(self._fields("### 2.4 `AdmissionPreparationReceipt`", "### 2.5"), [
+            "schema_version", "receipt_id", "preparation_id", "profile_id",
+            "profile_content_digest", "materialized_task_content_digest",
+            "expected_task_attempt", "new_attempt", "assessment_id",
+            "assessment_content_digest", "selected_difficulty",
+            "worker_kind", "business_priority", "role_policy_commit",
+            "role_policy_content_digest", "model_bindings_content_digest",
+            "model_binding_id", "model_selection", "admission_plan_template_id",
+            "admission_plan_template_digest", "handoff_request_content_digest",
+            "phase", "outcome", "created_at", "assessed_at",
+            "model_selected_at", "finalized_at", "content_digest",
+        ])
+
+    def test_handoff_inputs_has_exact_eleven_typed_fields(self) -> None:
+        self.assertEqual(self._fields("### 2.5 `AdmissionPreparationHandoffInputs`", "## 3."), [
+            "schema_version", "preparation_id", "receipt_id",
+            "profile_content_digest", "materialized_task_content_digest",
+            "expected_task_attempt", "new_attempt",
+            "admission_plan_template", "materialization_admission_request",
+            "created_at", "content_digest",
+        ])
+        block = self._between("### 2.5 `AdmissionPreparationHandoffInputs`", "## 3.")
+        self.assertIn("`MaterializationAdmissionPlanTemplate`", block)
+        self.assertIn("`MaterializationAdmissionRequest`", block)
+        self.assertIn("not\nconverted to mappings", block)
+        self.assertIn("attempt fields must equal the nested template fields", block)
+
+    def test_attempt_pair_is_explicit_bounded_and_not_inferred(self) -> None:
+        normalized = " ".join(self.contract.split())
+        self.assertIn("new_attempt == expected_task_attempt + 1", normalized)
+        self.assertIn("0 <= expected_task_attempt <= 2", normalized)
+        self.assertIn("1 <= new_attempt <= 3", normalized)
+        self.assertIn("Attempt four is invalid before any profile", normalized)
+        self.assertIn("never inferred from handoff generation", normalized)
+        self.assertIn("copied unchanged into the receipt", normalized)
+
+    def test_types_are_frozen_slotted_and_have_no_dynamic_public_fields(self) -> None:
+        block = self._between("## 2. Frozen", "## 3. Durable")
+        self.assertIn("`frozen=True, slots=True`", block)
+        for value in ("`Any`", "`object`", "`dict`", "`Mapping`", "`list`", "`set`"):
+            self.assertIn(value, block)
+        self.assertIn("Ordered collections\nare tuples", block)
+
+    def test_business_priority_is_explicit_and_independent(self) -> None:
+        owners = self._between("## 1. Independent", "## 2. Frozen")
+        self.assertIn("explicit PM decision", owners)
+        self.assertIn("`BusinessPriority` is never derived from `TaskDifficulty`", owners)
+        for value in ("WorkerKind", "tier", "risk", "provider", "model", "cost"):
+            self.assertIn(value, owners)
+
+    def test_difficulty_uses_only_seven_key_assessor_and_existing_store(self) -> None:
+        normalized = " ".join(self.contract.split())
+        self.assertIn("exactly seven entries in `AssessmentDimension` order", normalized)
+        self.assertIn("call `assess_task_difficulty()` with exactly seven rationale keys", normalized)
+        self.assertIn("existing Difficulty Assessment Store", normalized)
+        self.assertIn("must not create a second assessment format", normalized)
+
+    def test_model_selection_uses_committed_policy_and_validated_bindings(self) -> None:
+        normalized = " ".join(self.contract.split())
+        self.assertIn("`select_model.select_binding()`", normalized)
+        self.assertIn("`agentdesk.role-policies/v1`", normalized)
+        self.assertIn("`agentdesk.model-bindings/v2`", normalized)
+        self.assertIn("never copies the provider/model/tier strings", normalized)
+        self.assertIn("converted field-for-field into `ModelSelectionSnapshot`", normalized)
+
+    def test_paths_and_secret_boundary_are_exact(self) -> None:
+        for value in (
+            ".agentdesk/runtime/admission-preparation/profiles/<profile_id>.yaml",
+            ".agentdesk/runtime/admission-preparation/receipts/<receipt_id>.yaml",
+            ".agentdesk/runtime/admission-preparation/model-selections/<preparation_id>.yaml",
+            ".agentdesk/runtime/admission-preparation/handoff-inputs/<preparation_id>.yaml",
+            "docs/pm/ROLE-POLICIES.yaml",
+            ".agentdesk/runtime/model-bindings.yaml",
+        ):
+            self.assertIn(value, self.contract)
+        self.assertIn("contains no API key", self.contract)
+
+    def test_phases_and_outcomes_are_exact(self) -> None:
+        block = self._between("### 2.3 Enums", "### 2.4")
+        fences = block.split("```text")
+        phases = [line for line in fences[1].split("```", 1)[0].splitlines() if line]
+        outcomes = [line for line in fences[2].split("```", 1)[0].splitlines() if line]
+        self.assertEqual(phases, [
+            "PROFILE_BOUND", "ASSESSMENT_COMMITTED", "MODEL_SELECTION_COMMITTED",
+            "HANDOFF_INPUTS_BOUND", "FINALIZED",
+        ])
+        self.assertEqual(outcomes, [
+            "PREPARED", "REPLAYED", "FINALIZED", "RECOVERY_REQUIRED", "REJECTED",
+        ])
+
+    def test_operation_order_releases_locks_before_owner_calls(self) -> None:
+        block = self._between("## 4. Validation", "## 5. Exact")
+        for value in (
+            "persist/replay `PROFILE_BOUND`", "assess_task_difficulty()",
+            "select_model.select_binding()", "MODEL_SELECTION_COMMITTED",
+            "HANDOFF_INPUTS_BOUND",
+        ):
+            self.assertIn(value, block)
+        self.assertIn("No preparation, assessment, or binding-store lock may be nested", block)
+        self.assertIn("outside every store\nlock", block)
+
+    def test_mapping_does_not_guess_priority_difficulty_or_model(self) -> None:
+        block = self._between("## 5. Exact", "## 6. Crash")
+        self.assertIn("never changes BusinessPriority", block)
+        self.assertIn("task_min_tier", block)
+        self.assertIn("not inferred from prose", block)
+        self.assertIn("no output field is filled from Dockyard provider", block)
+        self.assertIn("Attempt three is allowed; attempt four is rejected", block)
+
+    def test_crash_matrix_has_twenty_two_exact_windows(self) -> None:
+        block = self._between("## 6. Crash", "## 7. Status")
+        rows = [row for row in re.findall(r"^\| (?!---)(.+?) \| (.+?) \|$", block, re.MULTILINE) if row[0] != "Window"]
+        self.assertEqual(len(rows), 22)
+        for value in (
+            "profile exists, receipt missing", "assessment exists, receipt lags",
+            "local binding bytes/schema changed", "model selection exists, receipt lags",
+            "handoff-input document write interrupted/noncanonical",
+            "nested template/request or document digest divergent",
+            "`FINALIZED`, before downstream handoff consumes output",
+            "same preparation identity with changed attempt values",
+            "two identical preparers race", "attempt 4",
+        ):
+            self.assertIn(value, block)
+
+    def test_handoff_dependency_and_adr_status_are_synchronized(self) -> None:
+        self.assertIn("Admission Preparation Contract is **Contract Current — TC-13.29l.5c.1b**", self.handoff)
+        self.assertIn("only legal preparation output", self.handoff)
+        self.assertIn("must not default\nBusinessPriority", self.handoff)
+        normalized = " ".join(self.adr.split())
+        self.assertIn("| 42 | PM Task Admission Preparation |", normalized)
+        self.assertIn("Contract Current — TC-13.29l.5c.1b; Runtime Current — TC-13.29l.5c.2", normalized)
+        self.assertIn("Dockyard composition Contract Current — TC-13.29l.5d.3 / Runtime Current — TC-13.29l.5d.4", normalized)
+
+    def test_runtime_exists_without_downstream_owner_calls(self) -> None:
+        runtime = SKILL_ROOT / "scripts" / "pm_task_admission_preparation.py"
+        self.assertTrue(runtime.is_file())
+        source = runtime.read_text(encoding="utf-8").lower()
+        for forbidden in (
+            "workflow_orchestrator", "portfolio_scheduler_runtime",
+            "worker_adapter", "reasonix_cli_provider", "socket", "requests",
+        ):
+            self.assertNotIn(forbidden, source)
+        self.assertIn("does not implement preparation", self.contract)
+        self.assertIn("Dockyard local closed-loop E2E | **Blocked — TC-13.29l**", self.contract)
+
+
+class TC1329l5d3DockyardTaskAdmissionCompositionContractTests(unittest.TestCase):
+    """TC-13.29l.5d.3 contract-only composition freeze."""
+
+    CONTRACT = SKILL_ROOT / "references" / "public-interfaces" / "dockyard-task-admission-composition-contract.md"
+    PREPARATION = SKILL_ROOT / "references" / "public-interfaces" / "pm-task-admission-preparation-contract.md"
+    HANDOFF = SKILL_ROOT / "references" / "public-interfaces" / "pm-materialization-admission-handoff-contract.md"
+    ADR = SKILL_ROOT / "references" / "adr" / "001-mad-agentdesk-integration.md"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.text = cls.CONTRACT.read_text(encoding="utf-8")
+        cls.preparation = cls.PREPARATION.read_text(encoding="utf-8")
+        cls.handoff = cls.HANDOFF.read_text(encoding="utf-8")
+        cls.adr = cls.ADR.read_text(encoding="utf-8")
+
+    def _between(self, start: str, end: str) -> str:
+        begin = self.text.index(start)
+        return self.text[begin:self.text.index(end, begin)]
+
+    def _fields(self, start: str, end: str) -> list[str]:
+        return re.findall(r"^\|\s*\d+\s*\|\s*`([^`]+)`\s*\|", self._between(start, end), re.MULTILINE)
+
+    def test_contract_and_split_status_are_exact(self) -> None:
+        self.assertTrue(self.CONTRACT.is_file())
+        self.assertIn("Contract Current — TC-13.29l.5d.3", self.text)
+        self.assertIn("Runtime: **Current — TC-13.29l.5d.4**", self.text)
+        self.assertIn("Dockyard local closed-loop E2E | **Blocked — TC-13.29l**", self.text)
+
+    def test_context_snapshot_has_exact_fifteen_fields(self) -> None:
+        self.assertEqual(self._fields("### 2.1", "### 2.2"), [
+            "schema_version", "snapshot_id", "project_id", "plan_id", "plan_revision",
+            "canonical_snapshot_commit", "scheduler_policy_version", "evaluated_at",
+            "active_hard_conflict_keys", "advisory_conflict_keys",
+            "advisory_authorizations", "available_worker_kinds",
+            "worker_slot_evidence_digest", "scheduler_evidence_digest", "content_digest",
+        ])
+
+    def test_progress_has_exact_twenty_five_fields(self) -> None:
+        self.assertEqual(self._fields("### 2.2", "### 2.3"), [
+            "schema_version", "progress_id", "project_id", "plan_id", "plan_revision",
+            "plan_content_digest", "dispatch_authorization_content_digest",
+            "task_id", "revision", "dependency_task_ids",
+            "dependency_evidence_digest", "context_snapshot_id",
+            "context_snapshot_content_digest", "preparation_id",
+            "preparation_receipt_id", "handoff_id", "handoff_receipt_id",
+            "expected_task_attempt", "new_attempt", "phase", "outcome", "created_at",
+            "updated_at", "finalized_at", "content_digest",
+        ])
+
+    def test_public_type_boundary_is_frozen_and_typed(self) -> None:
+        block = self._between("## 2. Frozen", "## 3. Durable")
+        self.assertIn("`frozen=True, slots=True`", block)
+        for value in ("`Any`", "`object`", "`dict`", "`Mapping`", "`list`", "`set`"):
+            self.assertIn(value, block)
+        self.assertIn("`tuple[AdvisoryAuthorization, ...]`", block)
+        self.assertIn("`tuple[WorkerKind, ...]`", block)
+
+    def test_phases_and_outcomes_are_exact(self) -> None:
+        block = self._between("### 2.3", "## 3. Durable")
+        fences = block.split("```text")
+        phases = [line for line in fences[1].split("```", 1)[0].splitlines() if line]
+        outcomes = [line for line in fences[2].split("```", 1)[0].splitlines() if line]
+        self.assertEqual(phases, ["MATERIALIZED", "DEPENDENCIES_READY", "PREPARED", "HANDOFF_STARTED", "ADMITTED", "FINALIZED"])
+        self.assertEqual(outcomes, ["RESERVED", "WAITING_DEPENDENCIES", "READY", "PREPARED", "ADMITTED", "FINALIZED", "RECOVERY_REQUIRED", "REJECTED"])
+        self.assertIn("Phases are forward-only", block)
+
+    def test_context_never_defaults_conflict_or_capacity(self) -> None:
+        block = self._between("### 2.1", "### 2.2")
+        self.assertIn("authoritative source proved no active\nconflict", block)
+        self.assertIn("fails closed", block)
+        self.assertIn("never the enum's full set by\ndefault", block)
+
+    def test_dependency_gate_requires_canonical_integration(self) -> None:
+        block = self._between("## 4. Dependency", "## 5. Operation")
+        for value in ("canonical state `integrated`", "`CHANGE_INTEGRATED`", "matching dispatch identity", "matching `integrated_commit`", "accepted-only", "stale-revision", "never dispatches"):
+            self.assertIn(value, block)
+        self.assertIn("Task-card prose", block)
+
+    def test_durable_paths_digest_and_replay_are_exact(self) -> None:
+        block = self._between("## 3. Durable", "## 4. Dependency")
+        self.assertIn(".agentdesk/runtime/dockyard-admission/context/<snapshot_id>.yaml", block)
+        self.assertIn(".agentdesk/runtime/dockyard-admission/progress/<progress_id>.yaml", block)
+        self.assertIn("canonical UTF-8 YAML", block)
+        self.assertIn("byte-exact replay", block)
+        self.assertIn("one winner", block)
+
+    def test_attempt_pair_and_attempt_four_are_frozen(self) -> None:
+        normalized = " ".join(self.text.split())
+        self.assertIn("new_attempt == expected_task_attempt + 1", normalized)
+        self.assertIn("0 <= expected_task_attempt <= 2", normalized)
+        self.assertIn("1 <= new_attempt <= 3", normalized)
+        self.assertIn("Attempt four is rejected before context/progress persistence", normalized)
+
+    def test_owner_calls_are_outside_progress_locks(self) -> None:
+        block = self._between("## 5. Operation", "## 6. Crash")
+        self.assertIn("release every owner lock", block)
+        self.assertIn("call Admission Preparation outside all locks", block)
+        self.assertIn("materialization-admission handoff outside all locks", " ".join(block.split()))
+        self.assertIn("Owner locks are never nested", block)
+
+    def test_crash_matrix_has_twenty_two_rows(self) -> None:
+        block = self._between("## 6. Crash", "## 7. Status")
+        rows = [row for row in re.findall(r"^\| (?!---)(.+?) \| (.+?) \|$", block, re.MULTILINE) if row[0] != "Window"]
+        self.assertEqual(len(rows), 22)
+        for value in ("dependency accepted but not integrated", "context source UNKNOWN", "`HANDOFF_STARTED`, handoff receipt absent", "two identical callers", "divergent generation/context/attempt", "ALIVE/UNKNOWN/DEAD"):
+            self.assertIn(value, block)
+
+    def test_existing_owners_are_not_reimplemented(self) -> None:
+        ownership = self._between("## 1. Ownership", "## 2. Frozen")
+        for value in ("StateProvider", "PortfolioScheduler", "WorkerSlotLease", "Admission Preparation", "MaterializationAdmissionRuntime", "WorkflowOrchestrator Interface #22"):
+            self.assertIn(value, ownership)
+        self.assertIn("never invents capacity", ownership)
+
+    def test_interface_and_dependency_status_are_synchronized(self) -> None:
+        normalized = " ".join(self.adr.split())
+        self.assertIn("| 43 | Dockyard task admission composition |", normalized)
+        self.assertIn("Contract Current — TC-13.29l.5d.3; Runtime Current — TC-13.29l.5d.4", normalized)
+        self.assertIn("Interfaces #22/#36/#38/#40/#41/#42 unchanged", normalized)
+        self.assertIn("Contract Current — TC-13.29l.5d.3; Runtime Current — TC-13.29l.5d.4", self.preparation)
+        self.assertIn("Contract Current — TC-13.29l.5d.3; Runtime Current — TC-13.29l.5d.4", self.handoff)
+
+    def test_contract_card_creates_no_runtime(self) -> None:
+        runtime = SKILL_ROOT / "scripts" / "dockyard_task_admission_composition.py"
+        self.assertTrue(runtime.is_file())
+        self.assertIn("does not implement dispatch", self.text)
+
+
+class TC1329l5d4DockyardAdmissionCompositionRuntimeStatusTests(unittest.TestCase):
+    """TC-13.29l.5d.4 runtime and dispatch-authorization status seal."""
+
+    def test_runtime_and_handoff_are_current(self) -> None:
+        composition = (SKILL_ROOT / "references/public-interfaces/dockyard-task-admission-composition-contract.md").read_text(encoding="utf-8")
+        handoff = (SKILL_ROOT / "references/public-interfaces/pm-materialization-admission-handoff-contract.md").read_text(encoding="utf-8")
+        self.assertIn("Runtime: **Current — TC-13.29l.5d.4**", composition)
+        self.assertIn("Runtime: **Current — TC-13.29l.5d.4**", handoff)
+
+    def test_progress_binds_dispatch_authorization(self) -> None:
+        composition = (SKILL_ROOT / "references/public-interfaces/dockyard-task-admission-composition-contract.md").read_text(encoding="utf-8")
+        self.assertIn("exactly 25 fields", composition)
+        self.assertIn("`dispatch_authorization_content_digest`", composition)
+        self.assertIn("divergent replay", composition)
+
+    def test_handoff_binds_assessment_and_existing_approval_gate(self) -> None:
+        handoff = (SKILL_ROOT / "references/public-interfaces/pm-materialization-admission-handoff-contract.md").read_text(encoding="utf-8")
+        for value in ("`DispatchApprovalAuthorization`", "exactly 8 fields", "`expected_assessment_relative_path`", "`assessment_content_digest`", "`ApprovalScope.DISPATCH`", "`ApprovalGate`"):
+            self.assertIn(value, handoff)
+
+    def test_interfaces_41_42_43_are_synchronized(self) -> None:
+        adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+        self.assertIn("| 41 | PM materialization-to-Scheduler admission handoff |", adr)
+        self.assertIn("| 42 | PM Task Admission Preparation |", adr)
+        self.assertIn("| 43 | Dockyard task admission composition |", adr)
+        self.assertIn("Runtime Current — TC-13.29l.5d.4", adr)
+
+    def test_full_local_e2e_remains_target(self) -> None:
+        composition = (SKILL_ROOT / "references/public-interfaces/dockyard-task-admission-composition-contract.md").read_text(encoding="utf-8")
+        self.assertIn("Dockyard local closed-loop E2E | **Blocked — TC-13.29l**", composition)
+
+
+class TC1329l5eDockyardPostAdmissionWorkerStatusTests(unittest.TestCase):
+    """TC-13.29l.5e post-admission Worker composition status seal."""
+
+    def test_segment_is_current_without_closing_full_e2e(self) -> None:
+        composition = (SKILL_ROOT / "references/public-interfaces/dockyard-task-admission-composition-contract.md").read_text(encoding="utf-8")
+        self.assertIn("Dockyard post-admission Worker composition", composition)
+        self.assertIn("Current — TC-13.29l.5e", composition)
+        self.assertIn("Dockyard local closed-loop E2E | **Blocked — TC-13.29l**", composition)
+
+    def test_existing_owners_and_managed_worktree_order_are_explicit(self) -> None:
+        composition = (SKILL_ROOT / "references/public-interfaces/dockyard-task-admission-composition-contract.md").read_text(encoding="utf-8")
+        handoff = (SKILL_ROOT / "references/public-interfaces/pm-materialization-admission-handoff-contract.md").read_text(encoding="utf-8")
+        preparation = (SKILL_ROOT / "references/public-interfaces/pm-task-admission-preparation-contract.md").read_text(encoding="utf-8")
+        for value in ("WorktreeLifecycleManager", "Scheduler-to-Worker Handoff Runtime", "PM External Worker Runtime"):
+            self.assertIn(value, composition)
+        self.assertIn("called before canonical registration and\nScheduler lease acquisition", handoff)
+        self.assertIn("exact future managed-worktree identity", preparation)
+
+    def test_interface_44_keeps_later_owners_target(self) -> None:
+        adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+        self.assertIn("| 44 | Dockyard post-admission Worker composition |", adr)
+        self.assertIn("Current — TC-13.29l.5e", adr)
+        self.assertIn("existing Interface #38 and PM external Worker owners", adr)
+        self.assertIn("MAD, acceptance, remediation, integration", adr)
+
+
+class TC1329l5fDockyardPostDeliveryReviewContractTests(unittest.TestCase):
+    """TC-13.29l.5f durable post-delivery review contract freeze."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.contract = (SKILL_ROOT / "references/public-interfaces/dockyard-post-delivery-review-contract.md").read_text(encoding="utf-8")
+        cls.adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+
+    def _section(self, start: str, end: str) -> str:
+        return self.contract.split(start, 1)[1].split(end, 1)[0]
+
+    def _fields(self, start: str, end: str) -> list[tuple[str, str]]:
+        block = self._section(start, end)
+        return re.findall(r"^\| \d+ \| `([^`]+)` \| `([^`]+)` \|$", block, re.MULTILINE)
+
+    def test_status_is_contract_only(self) -> None:
+        self.assertIn("Contract Current — TC-13.29l.5f", self.contract)
+        self.assertIn("Store: **Current — TC-13.29l.5g.1**", self.contract)
+        self.assertIn("Owner Interface #22 runtime: **Current — TC-13.29l.5g.2a**", self.contract)
+        self.assertIn("Dockyard composition runtime: **Normal-path Current — TC-13.29l.5g.2c.2", self.contract)
+        self.assertIn("Dockyard local closed-loop E2E | **Blocked — TC-13.29l**", self.contract)
+
+    def test_request_has_exact_38_fields(self) -> None:
+        expected = [
+            "schema_version", "operation_id", "project_id", "task_id",
+            "revision", "attempt", "dispatch_id", "dispatch_generation_id",
+            "queue_id", "schedule_receipt_id", "admission_plan_digest",
+            "handoff_id", "external_worker_receipt_digest",
+            "dispatch_event_id", "dispatch_event_digest",
+            "acknowledge_event_id", "acknowledge_event_digest",
+            "delivery_event_id", "delivery_event_digest",
+            "delivery_receipt_digest", "implementation_commit",
+            "report_commit", "worktree_id", "worktree_identity_digest",
+            "branch", "base_commit", "audit_input_digest", "audit_config_id",
+            "acceptance_event_id", "acceptance_request_digest",
+            "integration_event_id", "integration_request_digest",
+            "return_event_id", "requeue_event_id", "block_event_id",
+            "routing_digest", "reserved_at", "content_digest",
+        ]
+        fields = self._fields("### 2.1", "### 2.2")
+        self.assertEqual([name for name, _ in fields], expected)
+        self.assertEqual(len(fields), 38)
+
+    def test_receipt_has_exact_27_fields(self) -> None:
+        expected = [
+            "schema_version", "review_id", "operation_id",
+            "request_content_digest", "task_id", "revision", "attempt",
+            "dispatch_id", "dispatch_generation_id", "phase", "outcome",
+            "audit_result_id", "audit_result_digest", "audit_verdict",
+            "acceptance_event_id", "integration_event_id", "return_event_id",
+            "requeue_event_id", "block_event_id", "reserved_at",
+            "mad_started_at", "mad_completed_at", "review_applied_at",
+            "integration_applied_at", "finalized_at", "updated_at",
+            "content_digest",
+        ]
+        fields = self._fields("### 2.2", "### 2.3")
+        self.assertEqual([name for name, _ in fields], expected)
+        self.assertEqual(len(fields), 27)
+
+    def test_public_types_exclude_mutable_and_runtime_objects(self) -> None:
+        types = self._section("## 2. Frozen public types", "## 3. Durable path")
+        for value in ("`Any`", "`dict`", "`Mapping`", "provider/model client", "process handle"):
+            self.assertIn(value, types)
+        for forbidden in ("DispatchCycleResult` |", "WorkerResult` |", "WorkerOutput` |"):
+            self.assertNotIn(forbidden, types)
+        self.assertIn("not a\nserialized `DispatchCycleResult`", types)
+
+    def test_phases_are_exact_and_forward_only(self) -> None:
+        phases = self._section("### 2.3 Exact forward-only phase enum", "### 2.4")
+        expected = ["DELIVERY_BOUND", "REVIEW_RESERVED", "MAD_STARTED", "MAD_COMPLETED", "REVIEW_APPLIED", "INTEGRATION_APPLIED", "FINALIZED"]
+        self.assertEqual([value for value in expected if value in phases], expected)
+        self.assertIn("advance by at most one position", phases)
+        self.assertIn("never moves backward", phases)
+
+    def test_crash_matrix_has_24_unambiguous_windows(self) -> None:
+        matrix = self._section("## 6. Crash and replay matrix", "## 7. Verdict routing")
+        rows = re.findall(r"^\| (?!Window|---)(.+?) \| (.+?) \|$", matrix, re.MULTILINE)
+        self.assertEqual(len(rows), 24)
+        for value in ("MAD process ALIVE", "MAD process UNKNOWN", "MAD process DEAD", "valid `FINALIZED` receipt", "attempt 4"):
+            self.assertIn(value, matrix)
+        self.assertIn("UNKNOWN is never treated as DEAD", matrix)
+
+    def test_verdict_routing_is_complete(self) -> None:
+        routing = self._section("## 7. Verdict routing", "## 8. Status")
+        for value in ("`pass`, no integration identity", "`pass`, integration identity present", "`fail`", "`blocked`", "missing/unknown/divergent"):
+            self.assertIn(value, routing)
+        self.assertIn("MadAuditGatewayResult", routing)
+
+    def test_lock_boundary_keeps_mad_and_lifecycle_outside(self) -> None:
+        lock = self._section("## 5. Lock and execution boundary", "## 6. Crash")
+        self.assertIn("never nested", lock)
+        for value in ("MAD", "WorkflowOrchestrator", "Git commands", "provider/model/API calls"):
+            self.assertIn(value, lock)
+        self.assertIn("forbidden while the review-store lock is held", lock)
+
+    def test_attempt_four_and_secret_bans_are_prewrite(self) -> None:
+        self.assertIn("attempt four is rejected before reservation", self.contract)
+        for value in ("API keys", "credentials", "absolute worktree paths", "stdout/stderr"):
+            self.assertIn(value, self.contract)
+
+    def test_interfaces_20_22_and_45_are_synchronized(self) -> None:
+        self.assertIn("Interface #20 MadAuditGateway ownership | **Unchanged**", self.contract)
+        self.assertIn("Interface #22 WorkflowOrchestrator ownership | **Unchanged**", self.contract)
+        self.assertIn("| 45 | Dockyard post-delivery review evidence |", self.adr)
+        self.assertIn("Contract Current — TC-13.29l.5f", self.adr)
+        self.assertIn("Store Current — TC-13.29l.5g.1", self.adr)
+        self.assertIn("Interface #22 Acceptance Owner Runtime Current", self.adr)
+        self.assertIn("Dockyard Composition Target — TC-13.29l.5g.2c.2", self.adr)
+
+
+class TC1329l5f1DurableAcceptanceOwnerInputContractTests(unittest.TestCase):
+    """TC-13.29l.5f.1 owner-neutral Interface #22 input repair."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.workflow = (SKILL_ROOT / "references/public-interfaces/workflow-orchestrator-contract.md").read_text(encoding="utf-8")
+        cls.review = (SKILL_ROOT / "references/public-interfaces/dockyard-post-delivery-review-contract.md").read_text(encoding="utf-8")
+        cls.adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+
+    def _workflow_section(self) -> str:
+        return self.workflow.split("## 22. Durable post-delivery", 1)[1]
+
+    def _fields(self, start: str, end: str) -> list[tuple[str, str]]:
+        block = self._workflow_section().split(start, 1)[1].split(end, 1)[0]
+        return re.findall(r"^\| \d+ \| `([^`]+)` \| `([^`]+)` \|$", block, re.MULTILINE)
+
+    def test_durable_delivery_evidence_has_exact_12_fields(self) -> None:
+        fields = self._fields("### 22.1", "### 22.2")
+        self.assertEqual([name for name, _ in fields], [
+            "delivery_receipt", "dispatch_generation_id",
+            "external_worker_receipt_digest", "dispatch_event_id",
+            "acknowledge_event_id", "delivery_event_id",
+            "delivery_event_digest", "worktree_id", "workspace",
+            "implementation_commit", "report_commit", "worker_kind",
+        ])
+        self.assertEqual([kind for _, kind in fields], [
+            "DeliveryReceipt", "str", "str", "str", "str", "str", "str",
+            "str", "Path", "str", "str", "WorkerKind",
+        ])
+
+    def test_durable_acceptance_request_has_exact_6_fields(self) -> None:
+        fields = self._fields("### 22.2", "### 22.3")
+        self.assertEqual(fields, [
+            ("delivery_evidence", "DurableDeliveryReviewEvidence"),
+            ("audit_input", "MadAuditGatewayInput"),
+            ("acceptance_transition_request", "TransitionRequest"),
+            ("integration_transition_request", "TransitionRequest | None"),
+            ("worker_kind", "WorkerKind"),
+            ("holder_instance_id", "str"),
+        ])
+
+    def test_types_are_frozen_slotted_and_runtime_only(self) -> None:
+        section = self._workflow_section()
+        self.assertGreaterEqual(section.count("`frozen=True, slots=True`"), 2)
+        self.assertIn("in-memory runtime\n`Path`", section)
+        self.assertIn("never\nserialized into the Dockyard durable review document", section)
+
+    def test_no_dispatch_result_fabrication_or_reverse_dependency(self) -> None:
+        self.assertIn("must not\nimport Dockyard or reconstruct a `DispatchCycleResult`", self._workflow_section())
+        self.assertIn("WorkflowOrchestrator never imports this\nDockyard contract", self.review)
+        self.assertIn("does\nnot carry or fabricate `DispatchCycleResult`", self.review)
+
+    def test_future_method_reuses_existing_owner_semantics(self) -> None:
+        section = self._workflow_section()
+        self.assertIn("run_durable_acceptance_cycle(request, audit_config)", section)
+        for value in ("run_acceptance_cycle", "review-lease", "`DELIVERY_ACCEPTED`", "`CHANGE_INTEGRATED`"):
+            self.assertIn(value, section)
+        self.assertIn("before MAD, lease acquisition, or canonical writes", section)
+
+    def test_existing_acceptance_type_and_interface_status_are_unchanged(self) -> None:
+        section = self._workflow_section()
+        self.assertIn("existing `AcceptanceCycleRequest` remains unchanged", section)
+        self.assertIn("Interface #22 core status remains **Current — TC-13.18d.13b**", section)
+        self.assertIn("Runtime Current — TC-13.29l.5g.2a", section)
+
+    def test_interface_45_and_full_e2e_status_are_truthful(self) -> None:
+        self.assertIn("Owner Input Contract Current — TC-13.29l.5f.1", self.adr)
+        self.assertIn("Store Current — TC-13.29l.5g.1", self.adr)
+        self.assertIn("Interface #22 Acceptance Owner Runtime Current", self.adr)
+        self.assertIn("Dockyard Composition Target — TC-13.29l.5g.2c.2", self.adr)
+        self.assertIn("full TC-13.29l E2E remains Blocked", self.adr)
+
+    def test_public_input_bans_mutable_clients_and_secrets(self) -> None:
+        section = self._workflow_section()
+        for value in ("`Any`", "`dict`", "`Mapping`", "mutable collection", "provider/model\nclient", "process handle", "stdout/stderr", "credential"):
+            self.assertIn(value, section)
+
+
+class TC1329l5g1DockyardPostDeliveryReviewStoreStatusTests(unittest.TestCase):
+    """TC-13.29l.5g.1 Store status without owner-runtime overclaim."""
+
+    def test_store_and_owner_runtime_are_current_without_composition_overclaim(self) -> None:
+        contract = (SKILL_ROOT / "references/public-interfaces/dockyard-post-delivery-review-contract.md").read_text(encoding="utf-8")
+        self.assertIn("Store: **Current — TC-13.29l.5g.1**", contract)
+        self.assertIn("Owner Interface #22 runtime: **Current — TC-13.29l.5g.2a**", contract)
+        self.assertIn("Dockyard composition runtime: **Normal-path Current — TC-13.29l.5g.2c.2", contract)
+        self.assertIn("Dockyard local closed-loop E2E | **Blocked — TC-13.29l**", contract)
+
+    def test_interface_45_status_is_synchronized(self) -> None:
+        adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+        self.assertIn("Store Current — TC-13.29l.5g.1", adr)
+        self.assertIn("Interface #22 Acceptance Owner Runtime Current", adr)
+        self.assertIn("Dockyard Composition Target — TC-13.29l.5g.2c.2", adr)
+        self.assertIn("Interfaces #20/#22 remain sole MAD and lifecycle owners", adr)
+
+    def test_store_module_exists_without_owner_imports(self) -> None:
+        source = (SKILL_ROOT / "scripts/dockyard_post_delivery_review_store.py").read_text(encoding="utf-8").lower()
+        self.assertIn("class dockyardpostdeliveryreviewstore", source)
+        for forbidden in ("workflow_orchestrator", "control_plane_transition", "worker_slot_lease", "import mad", "from mad"):
+            self.assertNotIn(forbidden, source)
+
+
+class TC1329l5g2aDurableAcceptanceOwnerRuntimeStatusTests(unittest.TestCase):
+    """TC-13.29l.5g.2a status: owner runtime Current, composition Target."""
+
+    def test_workflow_contract_status_is_current(self) -> None:
+        contract = (SKILL_ROOT / "references/public-interfaces/workflow-orchestrator-contract.md").read_text(encoding="utf-8")
+        section = contract.split("## 22. Durable post-delivery", 1)[1]
+        self.assertIn("Runtime Current — TC-13.29l.5g.2a", section)
+        self.assertIn("Dockyard Store-to-owner normal-path composition is", section)
+        self.assertIn("TC-13.29l.5g.2c", section)
+        self.assertIn("does not read the Dockyard review Store", section)
+
+    def test_review_contract_and_adr_do_not_claim_closed_loop(self) -> None:
+        review = (SKILL_ROOT / "references/public-interfaces/dockyard-post-delivery-review-contract.md").read_text(encoding="utf-8")
+        adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+        self.assertIn("Owner Interface #22 runtime: **Current — TC-13.29l.5g.2a**", review)
+        self.assertIn("Dockyard composition runtime: **Normal-path Current — TC-13.29l.5g.2c.2", review)
+        self.assertIn("full TC-13.29l E2E remains Blocked", adr)
+
+
+class TC1329l5f2DurableFailBlockedOwnerInputContractTests(unittest.TestCase):
+    """TC-13.29l.5f.2 owner-neutral fail/blocked input freeze."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.workflow = (SKILL_ROOT / "references/public-interfaces/workflow-orchestrator-contract.md").read_text(encoding="utf-8")
+        cls.review = (SKILL_ROOT / "references/public-interfaces/dockyard-post-delivery-review-contract.md").read_text(encoding="utf-8")
+        cls.adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+        cls.section = cls.workflow.split("### 22.4 Durable fail/blocked", 1)[1]
+
+    def _fields(self, name: str, next_name: str | None) -> list[tuple[str, str]]:
+        block = self.section.split(name, 1)[1]
+        if next_name is not None:
+            block = block.split(next_name, 1)[0]
+        return re.findall(r"^\| \d+ \| `([^`]+)` \| `([^`]+)` \|$", block, re.MULTILINE)
+
+    def test_remediation_request_has_exact_six_fields(self) -> None:
+        self.assertEqual(self._fields("`DurableDeliveryRemediationRequest`", "`DurableBlockedAuditRequest`"), [
+            ("acceptance_cycle_result", "AcceptanceCycleResult"),
+            ("delivery_evidence", "DurableDeliveryReviewEvidence"),
+            ("return_transition_request", "TransitionRequest"),
+            ("requeue_transition_request", "TransitionRequest"),
+            ("worker_kind", "WorkerKind"),
+            ("holder_instance_id", "str"),
+        ])
+
+    def test_blocked_request_has_exact_four_fields(self) -> None:
+        self.assertEqual(self._fields("`DurableBlockedAuditRequest`", None), [
+            ("acceptance_cycle_result", "AcceptanceCycleResult"),
+            ("delivery_evidence", "DurableDeliveryReviewEvidence"),
+            ("block_transition_request", "TransitionRequest"),
+            ("current_worker_kind", "WorkerKind"),
+        ])
+
+    def test_no_dispatch_result_fabrication(self) -> None:
+        self.assertIn("never construct a substitute `DispatchCycleResult`", self.section)
+        self.assertIn("replace only the unavailable in-memory `DispatchCycleResult`", self.review)
+
+    def test_existing_owner_semantics_are_reused(self) -> None:
+        for value in (
+            "run_durable_delivery_remediation(request)",
+            "`DELIVERY_RETURNED`",
+            "`TASK_REQUEUED`",
+            "run_durable_blocked_audit(request)",
+            "`TASK_BLOCKED`",
+        ):
+            self.assertIn(value, self.section)
+
+    def test_public_type_and_dependency_bans_are_explicit(self) -> None:
+        self.assertIn("`frozen=True, slots=True`", self.section)
+        for value in ("`Any`", "`dict`", "`Mapping`", "provider/model\nclient", "process handle", "credential"):
+            self.assertIn(value, self.section)
+        self.assertIn("never imports Dockyard", self.section)
+
+    def test_status_split_is_truthful(self) -> None:
+        self.assertIn("Contract Current", self.section)
+        self.assertIn("TC-13.29l.5f.2", self.section)
+        self.assertIn("Runtime Current", self.section)
+        self.assertIn("TC-13.29l.5g.2b", self.section)
+        self.assertIn("Dockyard composition runtime:", self.review)
+        self.assertIn("TC-13.29l.5g.2c", self.review)
+        self.assertIn("Fail/Blocked Owner Input Contract Current", self.adr)
+        self.assertIn("full TC-13.29l E2E remains Blocked", self.adr)
+
+
+class TC1329l5f2aDurableWorkerKindEvidenceRepairTests(unittest.TestCase):
+    """TC-13.29l.5f.2a WorkerKind evidence repair."""
+
+    def test_workflow_contract_freezes_exact_twelfth_field(self) -> None:
+        contract = (SKILL_ROOT / "references/public-interfaces/workflow-orchestrator-contract.md").read_text(encoding="utf-8")
+        section = contract.split("### 22.1", 1)[1].split("### 22.2", 1)[0]
+        fields = re.findall(r"^\| \d+ \| `([^`]+)` \| `([^`]+)` \|$", section, re.MULTILINE)
+        self.assertEqual(len(fields), 12)
+        self.assertEqual(fields[-1], ("worker_kind", "WorkerKind"))
+
+    def test_worker_kind_source_and_prewrite_binding_are_explicit(self) -> None:
+        workflow = (SKILL_ROOT / "references/public-interfaces/workflow-orchestrator-contract.md").read_text(encoding="utf-8")
+        self.assertIn("projected from the validated admission", workflow)
+        self.assertIn("match it exactly before MAD, lease, escalation, or canonical write", workflow)
+
+    def test_status_is_current_without_runtime_overclaim(self) -> None:
+        review = (SKILL_ROOT / "references/public-interfaces/dockyard-post-delivery-review-contract.md").read_text(encoding="utf-8")
+        adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+        self.assertIn("WorkerKind evidence binding is **Current", review)
+        self.assertIn("TC-13.29l.5f.2a", review)
+        self.assertIn("WorkerKind Evidence Repair Current", adr)
+        self.assertIn("Fail/Blocked Owner Runtime Current", adr)
+
+
+class TC1329l5g2bDurableFailBlockedOwnerRuntimeStatusTests(unittest.TestCase):
+    """TC-13.29l.5g.2b runtime Current without composition overclaim."""
+
+    def test_owner_runtime_is_current(self) -> None:
+        workflow = (SKILL_ROOT / "references/public-interfaces/workflow-orchestrator-contract.md").read_text(encoding="utf-8")
+        review = (SKILL_ROOT / "references/public-interfaces/dockyard-post-delivery-review-contract.md").read_text(encoding="utf-8")
+        section = workflow.split("### 22.4 Durable fail/blocked", 1)[1]
+        self.assertIn("Runtime Current", section)
+        self.assertIn("TC-13.29l.5g.2b", section)
+        self.assertIn("Durable fail/blocked owner runtime: **Current", review)
+
+    def test_composition_and_e2e_remain_unclaimed(self) -> None:
+        review = (SKILL_ROOT / "references/public-interfaces/dockyard-post-delivery-review-contract.md").read_text(encoding="utf-8")
+        adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+        self.assertIn("Dockyard composition runtime: **Normal-path Current", review)
+        self.assertIn("TC-13.29l.5g.2c", review)
+        self.assertIn("full TC-13.29l E2E remains Blocked", adr)
+
+
+class TC1329l5f3DockyardOwnerPlanProjectionContractTests(unittest.TestCase):
+    """TC-13.29l.5f.3 deterministic owner-plan projection freeze."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.review = (SKILL_ROOT / "references/public-interfaces/dockyard-post-delivery-review-contract.md").read_text(encoding="utf-8")
+        cls.workflow = (SKILL_ROOT / "references/public-interfaces/workflow-orchestrator-contract.md").read_text(encoding="utf-8")
+        cls.adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+        cls.section = cls.review.split("## 11. Deterministic owner plan projection", 1)[1]
+
+    def test_plan_has_exact_twelve_fields(self) -> None:
+        fields = re.findall(r"^\| \d+ \| `([^`]+)` \| `([^`]+)` \|$", self.section, re.MULTILINE)
+        self.assertEqual(fields, [
+            ("review_id", "str"),
+            ("delivery_evidence", "DurableDeliveryReviewEvidence"),
+            ("audit_input", "MadAuditGatewayInput"),
+            ("acceptance_transition_request", "TransitionRequest"),
+            ("git_integration_intent", "DockyardGitIntegrationIntent | None"),
+            ("return_transition_request", "TransitionRequest | None"),
+            ("requeue_transition_request", "TransitionRequest | None"),
+            ("block_transition_request", "TransitionRequest | None"),
+            ("worker_kind", "WorkerKind"),
+            ("holder_instance_id", "str"),
+            ("audit_config_id", "str"),
+            ("content_digest", "str"),
+        ])
+
+    def test_projection_sources_are_complete(self) -> None:
+        for value in (
+            "admission plan", "handoff receipts", "external-Worker receipt",
+            "canonical dispatch/ACK/delivery", "READY managed-worktree",
+            "double commits",
+        ):
+            self.assertIn(value, self.section)
+
+    def test_typed_reconstruction_and_digest_check_are_mandatory(self) -> None:
+        for value in (
+            "`DeliveryReceipt`", "`MadAuditGatewayInput`",
+            "every verdict-route\n`TransitionRequest`",
+            "recomputes every digest", "No digest is trusted",
+        ):
+            self.assertIn(value, self.section)
+
+    def test_local_config_and_secret_boundary_are_frozen(self) -> None:
+        self.assertIn("typed local-runner configuration\nregistry", self.section)
+        for value in ("config body", "credential", "API key"):
+            self.assertIn(value, self.section)
+        self.assertIn("review Store and browser never receive", self.section)
+
+    def test_projection_is_side_effect_free(self) -> None:
+        for value in ("no MAD", "owner call", "lease", "transition", "Worker", "network action"):
+            self.assertIn(value, self.section)
+        self.assertIn("holds no Store/state/Git/lease lock", self.section)
+
+    def test_status_and_owner_boundary_are_truthful(self) -> None:
+        self.assertIn("projection runtime is **Current", self.section)
+        self.assertIn("TC-13.29l.5f.3", self.section)
+        self.assertIn("TC-13.29l.5g.2c.1", self.section)
+        self.assertIn("TC-13.29l.5g.2c.2", self.section)
+        self.assertIn("WorkflowOrchestrator does not import or construct", self.workflow)
+        self.assertIn("Owner Plan Projection Contract + Runtime Current", self.adr)
+        self.assertIn("full TC-13.29l E2E remains Blocked", self.adr)
+
+    def test_runtime_exists_without_owner_side_effects(self) -> None:
+        source = (SKILL_ROOT / "scripts/dockyard_post_delivery_owner_projection.py").read_text(encoding="utf-8")
+        self.assertIn("class DockyardPostDeliveryOwnerPlan", source)
+        self.assertIn("def project_post_delivery_owner_plan", source)
+        self.assertIn("class DockyardGitIntegrationIntent", source)
+        self.assertIn("git_integration_intent", source)
+        for forbidden in ("run_audit_gateway(", "apply_transition(", "run_worker_observed(", "subprocess.run("):
+            self.assertNotIn(forbidden, source)
+
+
+class TC1329l5h1GitIntegrationOwnerContractTests(unittest.TestCase):
+    """TC-13.29l.5h.1 dedicated Git Integration owner freeze."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.contract = (SKILL_ROOT / "references/public-interfaces/git-integration-owner-contract.md").read_text(encoding="utf-8")
+        cls.workflow = (SKILL_ROOT / "references/public-interfaces/workflow-orchestrator-contract.md").read_text(encoding="utf-8")
+        cls.adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+
+    def _fields(self, start: str, end: str) -> list[tuple[str, str]]:
+        block = self.contract.split(start, 1)[1].split(end, 1)[0]
+        return re.findall(r"^\| \d+ \| `([^`]+)` \| `([^`]+)` \|$", block, re.MULTILINE)
+
+    def test_request_has_exact_eighteen_fields(self) -> None:
+        fields = self._fields("### 2.4", "### 2.5")
+        self.assertEqual(len(fields), 18)
+        self.assertEqual([name for name, _ in fields], [
+            "schema_version", "operation_id", "project_root", "task_id",
+            "revision", "attempt", "dispatch_id", "source_worktree",
+            "source_branch", "base_commit", "implementation_commit",
+            "report_commit", "target_branch", "expected_target_head",
+            "method", "commit_message", "requested_at", "content_digest",
+        ])
+
+    def test_receipt_has_exact_twenty_two_fields(self) -> None:
+        fields = self._fields("### 2.5", "## 3.")
+        self.assertEqual(len(fields), 22)
+        self.assertEqual(fields[-8:], [
+            ("integrated_commit", "str | None"),
+            ("integrated_tree", "str | None"),
+            ("conflict_digest", "str | None"),
+            ("reserved_at", "str"),
+            ("ref_updated_at", "str | None"),
+            ("finalized_at", "str | None"),
+            ("updated_at", "str"),
+            ("content_digest", "str"),
+        ])
+
+    def test_enums_and_forward_only_phases_are_exact(self) -> None:
+        for value in ("FAST_FORWARD", "MERGE_TREE", "RESERVED", "VALIDATED", "TREE_PREPARED", "REF_UPDATED", "FINALIZED", "ALREADY_INTEGRATED", "CONFLICT", "RECOVERY_REQUIRED", "REJECTED"):
+            self.assertIn(value, self.contract)
+        self.assertIn("advance by exactly one position", self.contract)
+        self.assertIn("never reopens", self.contract)
+
+    def test_git_algorithm_uses_tree_only_and_ref_cas(self) -> None:
+        for value in ("tree-only Git merge", "deterministic two-parent commit", "old-value CAS", "do not modify an index or checkout"):
+            self.assertIn(value, self.contract)
+
+    def test_forbidden_git_and_external_actions_are_explicit(self) -> None:
+        for value in ("reset", "restore", "clean", "stash", "rebase", "amend", "push", "MAD", "Worker", "provider", "network"):
+            self.assertIn(value, self.contract)
+        self.assertIn("never executes Git directly", self.contract)
+
+    def test_crash_matrix_has_fifteen_windows(self) -> None:
+        block = self.contract.split("## 5. Crash and replay matrix", 1)[1].split("## 6.", 1)[0]
+        rows = re.findall(r"^\| (?!Window|---)(.+?) \| (.+?) \|$", block, re.MULTILINE)
+        self.assertEqual(len(rows), 15)
+        for value in ("ref update succeeds, receipt lags", "ref update state unknown", "attempt 4"):
+            self.assertIn(value, block)
+
+    def test_public_types_and_durable_store_are_safe(self) -> None:
+        for value in ("`frozen=True, slots=True`", "`Any`", "`dict`", "mutable collection", "process\nhandle", "credential"):
+            self.assertIn(value, self.contract)
+        self.assertIn("canonical UTF-8 YAML", self.contract)
+        self.assertIn("byte-exact replay", self.contract)
+
+    def test_status_and_interface_22_ownership_are_truthful(self) -> None:
+        self.assertIn("Contract Current", self.contract)
+        self.assertIn("Runtime: **Current", self.contract)
+        self.assertIn("Interface #22 remains the sole canonical lifecycle owner", self.contract)
+        self.assertIn("## 23. Git Integration owner boundary", self.workflow)
+        self.assertIn("sole owner of `CHANGE_INTEGRATED`", self.workflow)
+        self.assertIn("| 46 | AgentDesk Git Integration owner |", self.adr)
+        self.assertIn("full TC-13.29l E2E remains Blocked", self.adr)
+
+
+class TC1329l5h2GitIntegrationOwnerRuntimeStatusTests(unittest.TestCase):
+    """TC-13.29l.5h.2 runtime Current without composition overclaim."""
+
+    def test_contract_and_adr_mark_runtime_current(self) -> None:
+        contract = (SKILL_ROOT / "references/public-interfaces/git-integration-owner-contract.md").read_text(encoding="utf-8")
+        workflow = (SKILL_ROOT / "references/public-interfaces/workflow-orchestrator-contract.md").read_text(encoding="utf-8")
+        adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+        self.assertIn("Runtime: **Current", contract)
+        self.assertIn("TC-13.29l.5h.2", contract)
+        self.assertIn("runtime is **Current", workflow)
+        self.assertIn("Runtime Current", adr)
+
+    def test_implementation_boundaries_are_truthful(self) -> None:
+        source = (SKILL_ROOT / "scripts/git_integration_owner.py").read_text(encoding="utf-8")
+        for value in ("merge-tree", "commit-tree", "update-ref"):
+            self.assertIn(value, source)
+        for forbidden in ('"reset"', '"restore"', '"clean"', '"stash"', '"rebase"', '"amend"', '"push"'):
+            self.assertNotIn(forbidden, source)
+        self.assertNotIn("workflow_orchestrator", source)
+        self.assertNotIn("dockyard", source.lower())
+
+    def test_composition_and_e2e_remain_target(self) -> None:
+        contract = (SKILL_ROOT / "references/public-interfaces/git-integration-owner-contract.md").read_text(encoding="utf-8")
+        self.assertIn("Dockyard normal-path composition: **Current", contract)
+        self.assertIn("Dockyard local closed-loop E2E: **Blocked", contract)
+
+
+class TC1329l5h3DurableIntegrationCompletionStatusTests(unittest.TestCase):
+    """TC-13.29l.5h.3 publishes Git evidence without acceptance re-entry."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.workflow = (SKILL_ROOT / "references/public-interfaces/workflow-orchestrator-contract.md").read_text(encoding="utf-8")
+        cls.git_contract = (SKILL_ROOT / "references/public-interfaces/git-integration-owner-contract.md").read_text(encoding="utf-8")
+        cls.review = (SKILL_ROOT / "references/public-interfaces/dockyard-post-delivery-review-contract.md").read_text(encoding="utf-8")
+        cls.adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+
+    def test_owner_types_and_runtime_are_current(self) -> None:
+        section = self.workflow.split("## 24. Durable integration completion owner", 1)[1]
+        for value in (
+            "DurableGitIntegrationEvidence",
+            "exactly fifteen fields",
+            "DurableIntegrationCompletionRequest",
+            "exactly four fields",
+            "run_durable_integration_completion",
+            "Current — TC-13.29l.5h.3",
+        ):
+            self.assertIn(value, section)
+
+    def test_no_mad_acceptance_or_git_reentry(self) -> None:
+        section = self.workflow.split("## 24. Durable integration completion owner", 1)[1]
+        for value in ("never reruns MAD", "acceptance", "Worker", "lease", "Git", "network"):
+            self.assertIn(value, section)
+        self.assertIn("without rerunning MAD or `DELIVERY_ACCEPTED`", self.git_contract)
+        self.assertIn("Post-Git durable integration completion", self.review)
+
+    def test_status_is_truthful(self) -> None:
+        self.assertIn("Durable Integration Completion Owner Current — TC-13.29l.5h.3", self.adr)
+        self.assertIn("Store-to-owner normal-path composition is **Current", self.workflow)
+        self.assertIn("full TC-13.29l E2E remains **Blocked**", self.workflow)
+
+
+class TC1329l5g2c2DockyardPostDeliveryCompositionStatusTests(unittest.TestCase):
+    """Normal route Current; unsupported crash re-entry remains explicit."""
+
+    def test_status_split_and_e2e_are_truthful(self) -> None:
+        review = (SKILL_ROOT / "references/public-interfaces/dockyard-post-delivery-review-contract.md").read_text(encoding="utf-8")
+        adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+        self.assertIn("normal path is **Current — TC-13.29l.5g.2c.2**", review)
+        self.assertIn("mid-flight resume remains a bounded", review)
+        self.assertIn("Dockyard Normal-Path Composition Current — TC-13.29l.5g.2c.2", adr)
+        self.assertIn("full TC-13.29l E2E remains Blocked", adr)
+
+    def test_composition_uses_existing_owners(self) -> None:
+        source = (SKILL_ROOT / "scripts/dockyard_post_delivery_composition.py").read_text(encoding="utf-8")
+        for value in (
+            "run_durable_acceptance_cycle",
+            "run_durable_delivery_remediation",
+            "run_durable_blocked_audit",
+            "git_owner.integrate",
+            "run_durable_integration_completion",
+        ):
+            self.assertIn(value, source)
+        for forbidden in ("run_audit_gateway(", "apply_transition(", "subprocess.run(", "run_worker_observed("):
+            self.assertNotIn(forbidden, source)
+
+    def test_midflight_reentry_is_fail_closed(self) -> None:
+        source = (SKILL_ROOT / "scripts/dockyard_post_delivery_composition.py").read_text(encoding="utf-8")
+        self.assertIn("RECOVERY_REQUIRED", source)
+        self.assertIn("observed.phase is not DockyardPostDeliveryReviewPhase.DELIVERY_BOUND", source)
+
+
+class TC1329l6DockyardLoopbackWebShellStatusTests(unittest.TestCase):
+    """The browser shell is Current without overclaiming the full matrix."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.web = (SKILL_ROOT / "references/public-interfaces/dockyard-web-contract.md").read_text(encoding="utf-8")
+        cls.control = (SKILL_ROOT / "references/public-interfaces/dockyard-control-api-contract.md").read_text(encoding="utf-8")
+        cls.adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+
+    def test_loopback_web_shell_is_current(self) -> None:
+        for text in (self.web, self.control, self.adr):
+            self.assertIn("Current — TC-13.29l.6", text)
+
+    def test_core_e2e_is_verified_and_full_matrix_remains_partial(self) -> None:
+        for text in (self.web, self.control, self.adr):
+            self.assertIn("TC-13.29l.10", text)
+            self.assertIn("Partial", text)
+
+    def test_runtime_is_in_memory_and_no_store(self) -> None:
+        source = (SKILL_ROOT / "scripts/dockyard_web_runtime.py").read_text(encoding="utf-8")
+        self.assertIn('Cache-Control", "no-store"', source)
+        self.assertIn("bootstrap.script_bytes()", source)
+        self.assertNotIn("write_text", source)
+        self.assertNotIn("write_bytes", source)
+
+
+class TC1329l7DockyardRequirementPlanStatusTests(unittest.TestCase):
+    """Requirement planning is real without overclaiming adaptive PM or recovery."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.web = (SKILL_ROOT / "references/public-interfaces/dockyard-web-contract.md").read_text(encoding="utf-8")
+        cls.control = (SKILL_ROOT / "references/public-interfaces/dockyard-control-api-contract.md").read_text(encoding="utf-8")
+        cls.adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+
+    def test_requirement_to_plan_runtime_is_current(self) -> None:
+        for text in (self.web, self.control, self.adr):
+            self.assertIn("Current — TC-13.29l.7", text)
+
+    def test_model_pm_and_full_matrix_are_not_overclaimed(self) -> None:
+        for text in (self.web, self.control, self.adr):
+            self.assertIn("model-based PM decomposition", text)
+            self.assertIn("Target", text)
+            self.assertIn("Partial", text)
+
+    def test_browser_does_not_freeze_hidden_task_evidence(self) -> None:
+        client = (SKILL_ROOT.parents[1] / "apps/dockyard-web/src/client/dockyardClient.ts").read_text(encoding="utf-8")
+        self.assertNotIn("business_priority", client)
+        self.assertNotIn("difficulty_rationale_keys", client)
+        self.assertNotIn("base_commit", client)
+
+
+class TC1329n1DockyardCoreStatusSealTests(unittest.TestCase):
+    """TC-13.29n seals the supported evidence-backed local closed loop."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.control = (SKILL_ROOT / "references/public-interfaces/dockyard-control-api-contract.md").read_text(encoding="utf-8")
+        cls.web = (SKILL_ROOT / "references/public-interfaces/dockyard-web-contract.md").read_text(encoding="utf-8")
+        cls.adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+        root = SKILL_ROOT.parents[1]
+        cls.api_source = (SKILL_ROOT / "scripts/dockyard_control_api.py").read_text(encoding="utf-8")
+        cls.composition_source = (SKILL_ROOT / "scripts/dockyard_composition.py").read_text(encoding="utf-8")
+        cls.client_source = (root / "apps/dockyard-web/src/client/dockyardClient.ts").read_text(encoding="utf-8")
+
+    def test_core_e2e_and_adversarial_evidence_are_current(self) -> None:
+        for text in (self.control, self.web, self.adr):
+            self.assertIn("TC-13.29l.10", text)
+            self.assertIn("TC-13.29m", text)
+            self.assertIn("TC-13.29m.1b", text)
+            self.assertIn("E2E Verified — TC-13.29n", text)
+
+    def test_supported_recovery_and_redispatch_are_current(self) -> None:
+        for text in (self.control, self.web, self.adr):
+            self.assertIn("TC-13.29l.14c", text)
+            self.assertIn("TC-13.29l.14d", text)
+            self.assertIn("TC-13.29l.15a", text)
+            self.assertIn("TC-13.29l.15b", text)
+
+    def test_unproved_optional_matrices_remain_partial_target(self) -> None:
+        for text in (self.control, self.web, self.adr):
+            self.assertIn("versioned task-spec revision", text)
+            self.assertIn("Automated", text)
+            self.assertIn("Target", text)
+
+    def test_remote_and_publication_are_not_promoted(self) -> None:
+        self.assertIn("Remote relay/cloud deployment: **Target", self.control)
+        self.assertIn("GitHub publication preparation: **Target", self.web)
+        self.assertIn("remote relay", self.adr)
+        self.assertIn("GitHub publication", self.adr)
+
+    def test_existing_owners_remain_explicit(self) -> None:
+        self.assertIn("Interface #22 remains the canonical lifecycle owner", self.control)
+        self.assertIn("Interface #24 remains", self.control)
+        self.assertIn("Interface #24 HTML Dashboard remains read-only and separate", self.web)
+        self.assertIn("Interface #22 remains the canonical lifecycle owner", self.adr)
+
+    def test_python_and_web_command_fields_share_the_frozen_contract(self) -> None:
+        for field in (
+            "schema_version", "command_id", "project_id", "command_type",
+            "idempotency_key", "expected_snapshot_commit", "expected_revision",
+            "confirmation_id", "payload_digest",
+        ):
+            self.assertIn(field, self.api_source)
+            self.assertIn(field, self.client_source)
+
+    def test_projection_and_browser_have_no_provider_secret_surface(self) -> None:
+        for forbidden in (
+            "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "stdout_preview", "stderr_preview",
+        ):
+            self.assertNotIn(forbidden, self.client_source)
+        self.assertIn("Errors never contain", self.control)
+        self.assertIn("API key", self.control)
+        self.assertIn("never projected to the browser", self.adr)
+
+    def test_dockyard_delegates_canonical_writes_to_existing_owners(self) -> None:
+        self.assertNotIn("docs/pm/state/tasks.yaml", self.composition_source)
+        self.assertNotIn(".write_text(", self.composition_source)
+        self.assertNotIn(".write_bytes(", self.composition_source)
+        self.assertIn("ControlPlaneTransitionService", self.composition_source)
+        self.assertIn("WorkflowOrchestrator", self.composition_source)
+
+    def test_default_and_provider_statuses_are_not_overclaimed(self) -> None:
+        self.assertIn("default selection is `Standard + balanced`", self.web)
+        self.assertIn("Automated", self.web)
+        self.assertIn("Target", self.web)
+        self.assertIn("Adapter Implemented-Unselectable", self.adr)
+        self.assertIn("Codex runtime/decoder: Target/deferred", self.adr)
+
+
+class TC1329l12fTerminateStatusSealTests(unittest.TestCase):
+    """TC-13.29l.12f promotes only the verified terminate capability."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.control = (SKILL_ROOT / "references/public-interfaces/dockyard-control-api-contract.md").read_text(encoding="utf-8")
+        cls.web = (SKILL_ROOT / "references/public-interfaces/dockyard-web-contract.md").read_text(encoding="utf-8")
+        cls.adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+
+    def test_terminate_is_verified_without_promoting_retry_or_recovery(self) -> None:
+        for text in (self.control, self.web, self.adr):
+            self.assertIn("TC-13.29l.12e", text)
+            self.assertIn("terminate", text.lower())
+            self.assertIn("retry", text.lower())
+            self.assertIn("Target", text)
+
+    def test_existing_interface_boundaries_remain_unchanged(self) -> None:
+        self.assertIn("Interface #22 remains the canonical lifecycle owner", self.control)
+        self.assertIn("Interface #24 remains", self.control)
+        self.assertIn("Interface #22 remains the canonical lifecycle owner", self.adr)
+
+
+class TC1329l13aRetryCommandContractTests(unittest.TestCase):
+    """TC-13.29l.13a freezes retry input without implementing execution."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.control = (SKILL_ROOT / "references/public-interfaces/dockyard-control-api-contract.md").read_text(encoding="utf-8")
+        cls.web = (SKILL_ROOT / "references/public-interfaces/dockyard-web-contract.md").read_text(encoding="utf-8")
+        cls.adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
+
+    def test_retry_contract_and_runtime_boundary_are_explicit(self) -> None:
+        for text in (self.control, self.web, self.adr):
+            self.assertIn("TC-13.29l.13a", text)
+            self.assertIn("TC-13.29l.13b", text)
+            self.assertIn("attempt", text.lower())
+        self.assertIn("Interface #22", self.control)
+        self.assertIn("Interface #22", self.adr)
+        self.assertIn("generation", self.control.lower())
+        self.assertIn("generation", self.adr.lower())
+
+    def test_retry_is_not_claimed_as_runtime_or_successful_matrix(self) -> None:
+        for text in (self.control, self.web, self.adr):
+            self.assertIn("TC-13.29l.13c", text)
+            self.assertIn("retry", text.lower())
+
+
+class TC1329l14bReturnedDeliveryRedispatchContractTests(unittest.TestCase):
+    """Returned-delivery redispatch contract and supported runtime seal."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.control = (SKILL_ROOT / "references/public-interfaces/dockyard-control-api-contract.md").read_text(encoding="utf-8")
+        cls.web = (SKILL_ROOT / "references/public-interfaces/dockyard-web-contract.md").read_text(encoding="utf-8")
+        cls.adr = (SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8")
+        cls.control_normalized = " ".join(cls.control.split())
+
+    def test_contract_runtime_and_review_handoff_are_current(self) -> None:
+        for text in (self.control, self.web, self.adr):
+            self.assertIn("Contract Current — TC-13.29l.14b", text)
+            self.assertIn("Runtime Current — TC-13.29l.14c", text)
+            self.assertIn("review handoff current", text.lower())
+            self.assertIn("TC-13.29l.14d", text)
+
+    def test_two_retry_evidence_routes_are_mutually_exclusive(self) -> None:
+        self.assertIn("mutually exclusive", self.control)
+        self.assertIn("DISPATCH_FAILED", self.control)
+        self.assertIn("DELIVERY_RETURNED", self.control)
+        self.assertIn("TASK_REQUEUED", self.control)
+
+    def test_returned_route_binds_full_durable_evidence(self) -> None:
+        for value in (
+            "post-delivery review receipt", "dispatch receipt/tombstone",
+            "handoff", "admission plan", "outbox", "managed worktree",
+            "provider", "model",
+        ):
+            self.assertIn(value, self.control)
+        self.assertIn("`fail` MAD result", self.control_normalized)
+
+    def test_same_revision_and_next_attempt_are_frozen(self) -> None:
+        self.assertIn("task revision remains unchanged", self.control)
+        self.assertIn("next attempt is exactly prior plus one", self.control)
+        self.assertIn("attempt four", self.control.lower())
+
+    def test_mad_feedback_extends_prompt_without_overwriting_card(self) -> None:
+        self.assertIn("immutable task-card text", self.control)
+        self.assertIn("durable MAD fail report", self.control_normalized)
+        self.assertIn("task card itself is never overwritten", self.control_normalized)
+
+    def test_prewrite_fail_closed_and_owner_boundary_are_frozen(self) -> None:
+        self.assertIn("before any new write", self.control)
+        self.assertIn("zero approval, lease, transition, outbox, or Worker", self.control)
+        self.assertIn("Interface #22 remains the sole dispatch lifecycle owner", self.control)
+
+    def test_ui_uses_server_cause_and_is_desktop_only(self) -> None:
+        self.assertIn("retry cause is `delivery_returned`", self.web)
+        self.assertIn("desktop-only", self.web)
+        self.assertIn("Attempt four is never rendered", self.web)
+        self.assertIn("Stale/divergent evidence closes the dialog", self.web)
+
+    def test_task_spec_revision_editor_remains_target(self) -> None:
+        for text in (self.control, self.web, self.adr):
+            self.assertIn("versioned task-spec revision", text)
+            self.assertIn("Target", text)
+
+
+class TC1329mDockyardAdversarialStatusTests(unittest.TestCase):
+    """TC-13.29m extended evidence is sealed without future overclaim."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = SKILL_ROOT.parents[1]
+        cls.control = (SKILL_ROOT / "references/public-interfaces/dockyard-control-api-contract.md").read_text(encoding="utf-8")
+        cls.web = (SKILL_ROOT / "references/public-interfaces/dockyard-web-contract.md").read_text(encoding="utf-8")
+        cls.adr = (SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8")
+        cls.test_path = root / "tests/test_dockyard_adversarial.py"
+        cls.report_path = root / "reports/tc-13.29m-dockyard-adversarial-report.md"
+
+    def test_adversarial_artifacts_and_status_are_present(self) -> None:
+        self.assertTrue(self.test_path.is_file())
+        self.assertTrue(self.report_path.is_file())
+        for text in (self.control, self.web, self.adr):
+            self.assertIn("Verified — TC-13.29m", text)
+            self.assertIn("TC-13.29m.1b", text)
+            self.assertIn("TC-13.29l.13c", text)
+
+    def test_repaired_boundaries_are_current_and_optional_work_is_target(self) -> None:
+        for text in (self.control, self.web, self.adr):
+            lower = text.lower()
+            self.assertIn("automatic recovery", lower)
+            self.assertIn("repository", lower)
+            self.assertIn("versioned task-spec revision", lower)
+            self.assertIn("target", lower)
+
+    def test_owner_and_secret_boundaries_remain_frozen(self) -> None:
+        self.assertIn("Interface #22 remains the canonical lifecycle owner", self.control)
+        self.assertIn("Interface #24 remains the existing read-only HTML", self.control)
+        self.assertIn("API key", self.control)

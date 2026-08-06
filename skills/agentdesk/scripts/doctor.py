@@ -80,7 +80,7 @@ _SUPPORTED_PROVIDER_CLIS = {
     "codex": "codex",
 }
 
-# Providers with a Current worker-output decoder (TC-13.9c.1, version-locked
+# Providers with a worker-output decoder (TC-13.9c.1, version-locked
 # Claude 2.1.214).  Codex remains Target/deferred (TC-13.9c.2).  Pinned by
 # tests against worker_output_decoder._SUPPORTED_PROVIDERS.
 _DECODER_SUPPORTED_PROVIDERS = frozenset({"claude", "claudecode"})

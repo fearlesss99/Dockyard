@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from dispatcher_gateway import AgentCliProvider
+from dockyard_active_execution import DockyardActiveExecutionRegistry
 from mad_audit_gateway import MadAuditGatewayInput
 from mad_gateway import MadGatewayConfig
 from portfolio_scheduler_worker_handoff_runtime import (
@@ -292,6 +293,8 @@ async def run_pm_external_worker(
     request: PmExternalWorkerRequest,
     providers: Mapping[str, AgentCliProvider],
     orchestrator: WorkflowOrchestrator,
+    *,
+    active_registry: DockyardActiveExecutionRegistry | None = None,
 ) -> PmExternalWorkerRunResult:
     """Execute one admitted external Worker and return evidence to the PM."""
     if type(request) is not PmExternalWorkerRequest:
@@ -343,7 +346,8 @@ async def run_pm_external_worker(
         raise PmExternalWorkerConflictError("external_worker:receipt_divergent")
 
     completion = await start_admitted_dispatch_completion(
-        request.handoff_request, providers, orchestrator
+        request.handoff_request, providers, orchestrator,
+        active_registry=active_registry,
     )
     receipt = _make_receipt(
         request,

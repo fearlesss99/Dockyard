@@ -66,7 +66,7 @@ class SchedulerWorkerHandoffE2ETests(unittest.TestCase):
         self.assertNotIn("apply_transition(tr", source)
 
     def test_restart_matrix_has_all_three_liveness_states_and_tombstone_replay(self) -> None:
-        source = inspect.getsource(runtime.start_admitted_dispatch)
+        source = inspect.getsource(runtime._start_admitted_dispatch)
         for value in ("ProcessLiveness.UNKNOWN", "RECOVERY_REQUIRED", "read_dispatch_tombstone", "FINALIZED", "REPLAYED"):
             self.assertIn(value, source)
 

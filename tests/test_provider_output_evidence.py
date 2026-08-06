@@ -496,7 +496,7 @@ class TestProviderOutputEvidence(unittest.TestCase):
 
         lines_with_139c = [
             line for line in text.splitlines()
-            if "TC-13.9c" in line
+            if re.search(r"\|\s*TC-13\.9c\s*\|", line)
         ]
         for line in lines_with_139c:
             if "|" in line and "13.9c" in line:

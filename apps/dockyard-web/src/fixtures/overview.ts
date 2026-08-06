@@ -1,0 +1,51 @@
+import type { DockyardOverviewFixture } from "../types/api";
+
+export const overviewFixture = Object.freeze({
+  schema_version: "dockyard.overview/v1",
+  project_id: "agentdesk-local",
+  project_name: "AgentDesk 标准闭环",
+  snapshot_commit: "71b5141",
+  updated_at: "刚刚校验",
+  task_counts: Object.freeze({ ready: 3, active: 2, review: 1, blocked: 1 }),
+  pending_approvals: 2,
+  tasks: Object.freeze([
+    Object.freeze({
+      task_id: "TC-029-H",
+      title: "Dockyard Web 基础层",
+      state: "进行中",
+      revision: 1,
+      attempt: 1,
+      role_name: "前端工程师",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      updated_at: "2 分钟前",
+    }),
+    Object.freeze({
+      task_id: "TC-029-G2",
+      title: "Codex 输出证据门",
+      state: "未就绪",
+      revision: 1,
+      attempt: 0,
+      role_name: "Provider 工程师",
+      provider: "codex",
+      model: null,
+      updated_at: "等待结构化证据",
+    }),
+    Object.freeze({
+      task_id: "TC-029-G1",
+      title: "Reasonix Basic 本地闭环",
+      state: "待集成",
+      revision: 1,
+      attempt: 1,
+      role_name: "运行时工程师",
+      provider: "reasonix",
+      model: "deepseek-v4-flash",
+      updated_at: "已通过本地验证",
+    }),
+  ]),
+  providers: Object.freeze([
+    Object.freeze({ provider_id: "claude", label: "Claude Code", health: "READY", model_id: "已绑定", evidence_label: "解码器已验证" }),
+    Object.freeze({ provider_id: "codex", label: "Codex", health: "NOT_READY", model_id: null, evidence_label: "缺少稳定输出证据" }),
+    Object.freeze({ provider_id: "reasonix", label: "Reasonix", health: "NOT_READY", model_id: "deepseek-v4-flash", evidence_label: "真实 API 证据待批准" }),
+  ]),
+} satisfies DockyardOverviewFixture);

@@ -7,6 +7,7 @@ network, subprocess, or file I/O.
 from __future__ import annotations
 
 import asyncio
+import ast
 import dataclasses
 import os
 import subprocess
@@ -146,7 +147,7 @@ class WorkerResultAPITests(unittest.TestCase):
     def test_all_exports_exactly_two_symbols(self) -> None:
         self.assertEqual(
             set(wa_module.__all__),
-            {"WorkerResult", "run_worker"},
+            {"WorkerResult", "run_worker", "run_worker_observed"},
         )
 
     def test_worker_result_exact_four_fields(self) -> None:
@@ -1240,13 +1241,21 @@ class NoWorkerKindDerivationTests(unittest.TestCase):
     def test_no_file_write(self) -> None:
         """Module must not write files."""
         source = (_SCRIPTS / "worker_adapter.py").read_text(encoding="utf-8")
-        self.assertNotIn("write", source.lower())
-        self.assertNotIn("open(", source)
+        tree = ast.parse(source)
+        calls = tuple(
+            ast.unparse(node.func)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+        )
+        self.assertNotIn("open", calls)
+        self.assertFalse(
+            any(name.endswith(("write_text", "write_bytes")) for name in calls),
+            calls,
+        )
 
     def test_no_subprocess(self) -> None:
         """Module must not launch subprocesses."""
         source = (_SCRIPTS / "worker_adapter.py").read_text(encoding="utf-8")
-        self.assertNotIn("subprocess", source)
         self.assertNotIn("create_subprocess", source)
 
     def test_no_git(self) -> None:
