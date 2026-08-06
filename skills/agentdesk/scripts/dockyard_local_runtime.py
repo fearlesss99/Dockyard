@@ -41,6 +41,10 @@ from dockyard_sse import DockyardSseHub
 from dockyard_task_admission_composition import DockyardTaskAdmissionCompositionRuntime
 from dockyard_post_admission_worker import DockyardPostAdmissionWorkerRuntime
 from dockyard_owner_loss_recovery import DockyardOwnerLossRecoveryRuntime
+from dockyard_provider_factory import (
+    DockyardConfiguredProviders,
+    build_configured_providers,
+)
 from dockyard_terminal_owner_composition import (
     DockyardTerminalOwnerCompositionRuntime,
 )
@@ -300,6 +304,39 @@ _OWNERS: dict[tuple[str, str], str] = {}
 
 class DockyardLocalRuntime:
     """Own one in-process loopback Control API for one registered project."""
+
+    @classmethod
+    def from_local_configuration(
+        cls,
+        config: DockyardLocalRuntimeConfig,
+        *,
+        executable_overrides: tuple[tuple[str, str], ...] = (),
+        audit_config: MadGatewayConfig | None = None,
+        integration_target_branch: str | None = None,
+        clock: object | None = None,
+    ) -> "DockyardLocalRuntime":
+        """Inject providers from the gitignored local binding file.
+
+        The normal constructor remains explicitly injectable for tests and
+        embedders.  This composition-root entry point is the one-step local
+        bootstrap: it reads non-secret model bindings, creates the immutable
+        CLI provider objects, and passes them into the existing runtime.  No
+        provider process or API call occurs during construction.
+        """
+        if type(config) is not DockyardLocalRuntimeConfig:
+            raise DockyardLocalRuntimeInputError("config has an invalid type")
+        configured: DockyardConfiguredProviders = build_configured_providers(
+            config.project_root,
+            executable_overrides=executable_overrides,
+        )
+        return cls(
+            config,
+            configured.as_mapping(),
+            configured.provider_cli_versions,
+            audit_config=audit_config,
+            integration_target_branch=integration_target_branch,
+            clock=clock,
+        )
 
     def __init__(
         self,
