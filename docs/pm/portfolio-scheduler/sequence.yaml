@@ -1,0 +1,4 @@
+schema_version: "agentdesk.portfolio-scheduler/v1"
+last_issued_enqueue_sequence: 1
+reserved_sequences:
+  - 1

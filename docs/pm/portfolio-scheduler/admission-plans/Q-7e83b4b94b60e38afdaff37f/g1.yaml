@@ -1,0 +1,48 @@
+schema_version: "agentdesk.portfolio-scheduler/v1"
+queue_id: "Q-7e83b4b94b60e38afdaff37f"
+receipt_id: "SR-7e83b4b94b60e38afdaff37f-1-g1"
+task_id: "TC-08827265041816624196"
+revision: 1
+enqueue_sequence: 1
+selection_generation: 1
+worker_kind: "advanced_agent"
+assessment_id: "ASM-eb7d879cbe4b0af2f1c3b9ae"
+dispatch_id: "DSP-74869b0e30a0dfb85f31"
+event_id: "EVT-74869b0e30a0dfb85f31"
+outbox_message_id: "MSG-74869b0e30a0dfb85f31"
+role_id: "R1"
+task_card_path: "docs/pm/tasks/TC-08827265041816624196-r1-dockyard.md"
+task_card_commit: "a6a7cb480488308e9ad6c50a914d01c69364b70e"
+base_commit: "282c500eca057e4372c1072659e8f23012eb31ae"
+branch: "agentdesk/TC-08827265041816624196/r1/a1/DSP-74869b0e30a0dfb85f31"
+report_path: "reports/TC-08827265041816624196.md"
+model_selection:
+  required_model_tier: "advanced"
+  required_model_capabilities:
+    - "coding"
+    - "testing"
+  model_binding_id: "deepseek-v4-pro-via-claude-opus"
+  selected_model_provider: "claude"
+  selected_model_id: "claude-opus-4-8[1M]"
+  selected_model_tier: "expert"
+  selected_deliberation_tier: "deep"
+  selected_context_window_tokens: 1000000
+  selected_model_capabilities:
+    - "adversarial_review"
+    - "architecture"
+    - "code_review"
+    - "coding"
+    - "planning"
+    - "risk_assessment"
+    - "test_design"
+    - "testing"
+  model_degradation_approval_id: null
+expected_task_state: "ready"
+expected_task_attempt: 0
+new_attempt: 1
+expected_snapshot_commit: "a6a7cb480488308e9ad6c50a914d01c69364b70e"
+policy_version: "agentdesk.portfolio-scheduler/v1"
+holder_instance_id: "dockyard-AgentDeskSkill-0.1.0-beta-standard-validation"
+canonical_worktree: "C:\\Users\\lc\\Documents\\Codex\\2026-08-06\\dockyard-unified-integration-agentdesk-worktrees\\WT-80d3af27fadbd703426e6385f8f4ef05197175eaf56a573c386a7b67f2ee1b94"
+reserved_at: "2026-08-06T13:47:15.243550Z"
+content_digest: "sha256:926b6787bb8cc5a95cb82e933e389c5b08776c174203d7baa4fd2b59342c9d04"

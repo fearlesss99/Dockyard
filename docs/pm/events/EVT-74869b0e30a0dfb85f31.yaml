@@ -1,0 +1,23 @@
+actor_role_id: PM
+attempt: 1
+dispatch_id: DSP-74869b0e30a0dfb85f31
+event_id: EVT-74869b0e30a0dfb85f31
+event_type: TASK_DISPATCHED
+evidence_refs: []
+from_state: ready
+guard_results:     checked_at: "2026-08-06T13:47:15Z"
+    evidence_ref: docs/pm/approvals/EVT-APR-3c4e0ed6f5a87fa45985d771ef9811a7.yaml
+    guard: approval_gate
+    inputs:         key: scope
+        value: dispatch
+        key: approval_id
+        value: APR-3c4e0ed6f5a87fa45985d771ef9811a7
+    result: passed
+lease_epoch: 1
+occurred_at: "2026-08-06T13:47:15Z"
+payload_digest: "sha256:3af6b4574e6eaec48758a9e79f0498ef3bc4e2726d67594673b193ab161af8c3"
+revision: 1
+schema_version: agentdesk.state-event/v2
+source_message_id: null
+task_id: TC-08827265041816624196
+to_state: dispatched

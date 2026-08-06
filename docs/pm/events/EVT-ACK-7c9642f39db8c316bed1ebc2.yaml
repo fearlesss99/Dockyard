@@ -1,0 +1,15 @@
+actor_role_id: PM
+attempt: 1
+dispatch_id: DSP-74869b0e30a0dfb85f31
+event_id: EVT-ACK-7c9642f39db8c316bed1ebc2
+event_type: DISPATCH_ACKNOWLEDGED
+evidence_refs: []
+from_state: dispatched
+guard_results: []
+lease_epoch: 1
+occurred_at: "2026-08-06T13:47:20Z"
+revision: 1
+schema_version: agentdesk.state-event/v2
+source_message_id: null
+task_id: TC-08827265041816624196
+to_state: in_progress

@@ -1,0 +1,11 @@
+schema_version: "agentdesk.portfolio-scheduler-worker-handoff/v1"
+handoff_id: "HNDF-daa16e51d279daed08d436560cfb5324"
+dispatch_id: "DSP-74869b0e30a0dfb85f31"
+generation_id: "GEN-d17f3cc65dd9f62b8a0228095ffe53c1"
+task_id: "TC-08827265041816624196"
+revision: 1
+attempt: 1
+phase: "ACKNOWLEDGED"
+binding_digest: "sha256:97556c85ebaa939e6c62df947e6d9f9c4ba665725226024a63ebcb2ba355938d"
+written_at: "2026-08-06T13:47:15.243550Z"
+content_digest: "sha256:17f2a9bf8d14baffdaa623a35736132c20ba76f347d216bf21f5afa75909db22"

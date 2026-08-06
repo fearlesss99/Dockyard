@@ -1,0 +1,18 @@
+schema_version: "agentdesk.portfolio-scheduler/v1"
+entries:
+  - entry:
+    schema_version: "agentdesk.portfolio-scheduler/v1"
+    queue_id: "Q-7e83b4b94b60e38afdaff37f"
+    task_id: "TC-08827265041816624196"
+    revision: 1
+    enqueue_sequence: 1
+    enqueued_at: "2026-08-06T13:47:15.243550Z"
+    business_priority: "P1"
+    aging_basis_at: "2026-08-06T13:47:15.243550Z"
+    worker_kind_request: "advanced_agent"
+    assessment_id: "ASM-eb7d879cbe4b0af2f1c3b9ae"
+    state: "dispatched"
+    conflict_keys:
+    retry_budget_used: 0
+    content_digest: "sha256:7c60dfda9350fc4eb37586306f47a8669f871820cd5b4029e97556a7372ed963"
+    selection_generation: 1

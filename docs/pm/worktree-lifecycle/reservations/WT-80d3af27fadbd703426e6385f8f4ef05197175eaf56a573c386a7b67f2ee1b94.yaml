@@ -1,0 +1,15 @@
+schema_version: "agentdesk.worktree-lifecycle/v1"
+reservation_id: "WTR-9c31a7fb14405f78c3888033afc0fe4a399bc2be8130c06725523a97ad5eff75"
+worktree_id: "WT-80d3af27fadbd703426e6385f8f4ef05197175eaf56a573c386a7b67f2ee1b94"
+repository_common_dir: "C:\\Users\\lc\\dev\\AgentDeskSkill-0.1.0-beta\\.git"
+repository_root: "C:\\Users\\lc\\Documents\\Codex\\2026-08-06\\dockyard-unified-integration"
+worktree_path: "C:\\Users\\lc\\Documents\\Codex\\2026-08-06\\dockyard-unified-integration-agentdesk-worktrees\\WT-80d3af27fadbd703426e6385f8f4ef05197175eaf56a573c386a7b67f2ee1b94"
+branch: "agentdesk/TC-08827265041816624196/r1/a1/DSP-74869b0e30a0dfb85f31"
+base_commit: "282c500eca057e4372c1072659e8f23012eb31ae"
+task_id: "TC-08827265041816624196"
+revision: 1
+attempt: 1
+dispatch_id: "DSP-74869b0e30a0dfb85f31"
+phase: "RESERVED"
+reserved_at: "2026-08-06T13:47:15.243550Z"
+content_digest: "sha256:35a50886ed14a6b0f02df5f70b03df730450882e96bf115da059f6a4e76e7aa3"

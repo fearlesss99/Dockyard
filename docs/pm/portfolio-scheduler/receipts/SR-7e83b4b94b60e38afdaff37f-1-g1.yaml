@@ -1,0 +1,18 @@
+schema_version: "agentdesk.portfolio-scheduler/v1"
+receipt_id: "SR-7e83b4b94b60e38afdaff37f-1-g1"
+queue_id: "Q-7e83b4b94b60e38afdaff37f"
+task_id: "TC-08827265041816624196"
+revision: 1
+enqueue_sequence: 1
+selected_at: "2026-08-06T13:47:15.243550Z"
+order_key:
+  - 1
+  - 0
+  - 1
+  - "Q-7e83b4b94b60e38afdaff37f"
+selection_reason: "priority_P1:oldest_in_band:advisory_authorized:fifo"
+worker_kind: "advanced_agent"
+dispatch_event_id: "EVT-74869b0e30a0dfb85f31"
+phase: "dispatched"
+content_digest: "sha256:e2d01badd6fb46c3b2d2c7da2014832ffd8ac1a8d5f9b298af94661009cfd174"
+selection_generation: 1

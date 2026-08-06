@@ -1,0 +1,18 @@
+{
+  "schema_version": "agentdesk.task-approval/v1",
+  "record_type": "grant",
+  "approval_id": "APR-3c4e0ed6f5a87fa45985d771ef9811a7",
+  "event_id": "EVT-APR-3c4e0ed6f5a87fa45985d771ef9811a7",
+  "scope": "dispatch",
+  "task_id": "TC-08827265041816624196",
+  "revision": 1,
+  "attempt": 1,
+  "dispatch_id": "DSP-74869b0e30a0dfb85f31",
+  "accepted_commit": null,
+  "actor_role_id": "PM",
+  "lease_epoch": 1,
+  "granted_at": "2026-08-06T13:47:15Z",
+  "expires_at": null,
+  "reason": "Dockyard confirmed plan approval",
+  "snapshot_commit": "a6a7cb480488308e9ad6c50a914d01c69364b70e"
+}
