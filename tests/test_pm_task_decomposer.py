@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import re
 import unittest
 from pathlib import Path
 
@@ -37,6 +38,18 @@ def _registry() -> AgentCapabilityRegistry:
 
 
 class PmTaskDecomposerTests(unittest.TestCase):
+    def test_pm_task_identity_matches_worktree_numeric_contract(self) -> None:
+        kwargs = dict(
+            plan_id="PLAN-ID-CONTRACT",
+            requirement="鏌ョ湅 Runner 杩炴帴鐘舵€�",
+            snapshot_commit=SNAPSHOT,
+            registry=_registry(),
+        )
+        first = decompose_requirement(**kwargs).tasks[0].task_id
+        replay = decompose_requirement(**kwargs).tasks[0].task_id
+        self.assertRegex(first, re.compile(r"^TC-[0-9]{20}$"))
+        self.assertEqual(first, replay)
+
     def test_plain_requirement_is_one_automatically_routed_task(self) -> None:
         result = decompose_requirement(
             plan_id="PLAN-1",

@@ -194,6 +194,27 @@ class AdmissionPreparationRuntimeTests(unittest.TestCase):
         self.assertIn(f"?? {self.fx.card_rel}", after.replace("\\", "/"))
         self.assertEqual(git(self.fx.root, "rev-parse", "HEAD"), self.fx.head)
 
+    def test_project_r1_role_uses_dev_policy_without_changing_handoff_identity(self) -> None:
+        card = self.fx.root / self.fx.card_rel
+        card.write_text(
+            card.read_text(encoding="utf-8").replace("role_id: DEV", "role_id: R1"),
+            encoding="utf-8",
+        )
+        card_digest = "sha256:" + hashlib.sha256(card.read_bytes()).hexdigest()
+        self.fx.materialized = with_content_digest(dataclasses.replace(
+            self.fx.materialized,
+            task_card_content_digest=card_digest,
+            content_digest="sha256:" + "0" * 64,
+        ))
+        self.fx.request = with_content_digest(dataclasses.replace(
+            self.fx.request,
+            materialized_task_content_digest=self.fx.materialized.content_digest,
+            content_digest="sha256:" + "0" * 64,
+        ))
+        result = self.run_preparation()
+        self.assertEqual(result.receipt.model_binding_id, "binding-basic")
+        self.assertEqual(result.template.role_id, "R1")
+
     def test_attempt_three_propagates_unchanged(self) -> None:
         self.fx.close()
         self.fx = Fixture(2, 3)

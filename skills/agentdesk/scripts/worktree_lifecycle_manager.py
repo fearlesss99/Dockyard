@@ -80,7 +80,11 @@ def _run_git(cwd: Path, arguments: tuple[str, ...], timeout_seconds: float) -> b
         _fail(WorktreeLifecycleGitError, "timeout")
     try:
         completed = subprocess.run(
-            ["git", *arguments],
+            # The local Runner may execute as a separate OS identity from the
+            # user who owns a freshly-created worktree.  Scope Git's trust
+            # exception to this already-validated cwd instead of weakening
+            # the user's global safe.directory configuration.
+            ["git", "-c", f"safe.directory={cwd}", *arguments],
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,

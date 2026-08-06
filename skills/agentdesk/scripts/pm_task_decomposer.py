@@ -198,11 +198,15 @@ def decompose_requirement(
     segments = _segments(requirement)
     blueprints: list[PmTaskBlueprint] = []
     for index, segment in enumerate(segments, start=1):
-        digest = hashlib.sha256(f"{plan_id}:{index}:{segment}".encode("utf-8")).hexdigest()
-        task_id = f"TC-{digest[:20]}"
+        digest = hashlib.sha256(f"{plan_id}:{index}:{segment}".encode("utf-8")).digest()
+        # WorktreeLifecycleStore deliberately accepts only the canonical
+        # numeric TC identity.  Keep the full deterministic digest for the
+        # assessment identity, but derive the task suffix as a fixed-width
+        # decimal value so PM-created tasks can enter the worktree boundary.
+        task_id = f"TC-{int.from_bytes(digest[:8], 'big'):020d}"
         rationale_keys = _rationale(segment, requirement, repository_inventory)
         assessment = assess_task_difficulty(
-            assessment_id=f"ASM-{digest[:24]}",
+            assessment_id=f"ASM-{digest.hex()[:24]}",
             task_id=task_id,
             revision=1,
             rationale_keys=rationale_keys,

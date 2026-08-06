@@ -381,6 +381,18 @@ _WORKER = {
     TaskDifficulty.EXPERT: WorkerKind.EXPERT_AGENT,
 }
 
+# Task cards use the stable project role identity (R1), while the checked-in
+# model policy names the corresponding capability role (DEV).  Keep the
+# project identity on the handoff, but select against the policy role.
+_POLICY_ROLE_BY_TASK_ROLE = {"R1": "DEV"}
+
+
+def _policy_role_for_selection(policy: dict[str, object], task_role_id: str) -> str:
+    roles = policy.get("roles")
+    if isinstance(roles, dict) and task_role_id in roles:
+        return task_role_id
+    return _POLICY_ROLE_BY_TASK_ROLE.get(task_role_id, task_role_id)
+
 
 class _PreparationStore:
     def __init__(self, root: Path) -> None:
@@ -479,7 +491,15 @@ class PmTaskAdmissionPreparationRuntime:
         )
         stored = self.assessments.write(DifficultyAssessmentStoreRequest(self.root, evidence, request.expected_head_commit))
         receipt = self._advance(receipt, AdmissionPreparationPhase.ASSESSMENT_COMMITTED, assessment_id=assessment_id, assessment_content_digest="sha256:" + stored.content_sha256, selected_difficulty=assessment.selected_difficulty, worker_kind=_WORKER[assessment.selected_difficulty], assessed_at=profile.prepared_at)
-        selected = select_binding(policy, bindings, role_id, profile.risk, assessment.selected_difficulty.value, set(profile.task_capabilities), profile.degradation_approval_id)
+        selected = select_binding(
+            policy,
+            bindings,
+            _policy_role_for_selection(policy, role_id),
+            profile.risk,
+            assessment.selected_difficulty.value,
+            set(profile.task_capabilities),
+            profile.degradation_approval_id,
+        )
         model = _model(selected)
         self.store.model_selection(request.preparation_id, model)
         receipt = self._advance(receipt, AdmissionPreparationPhase.MODEL_SELECTION_COMMITTED, model_binding_id=model.model_binding_id, model_selection=model, model_selected_at=profile.prepared_at)

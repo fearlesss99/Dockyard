@@ -463,6 +463,20 @@ export function CommandWorkflows({
           setPlan(null);
           setTasks([]);
           markProjectionVerified();
+        } else if (error instanceof DockyardClientError && error.status === 409) {
+          // Once approval/materialization advances the plan, the editable
+          // projection is intentionally no longer readable.  Do not report
+          // that as a failed write: the command may already have committed
+          // and the next owner is visible on the Tasks/Runs pages.
+          setPlan(null);
+          setTasks([]);
+          if (terminalFeedbackRef.current) {
+            setState("committed");
+            setMessage(terminalFeedbackRef.current);
+          } else {
+            setState("idle");
+            setMessage("计划已离开编辑阶段，请前往任务或运行页面查看后续状态。");
+          }
         } else {
           setState("failed");
           setMessage("计划投影不可用。未写入任何计划或任务卡。");
