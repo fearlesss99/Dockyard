@@ -1,0 +1,41 @@
+schema_version: "agentdesk.difficulty-assessment/v1"
+assessment_id: "ASM-eb7d879cbe4b0af2f1c3b9ae"
+task_id: "TC-08827265041816624196"
+revision: 1
+minimum_difficulty: "basic"
+recommended_difficulty: "advanced"
+selected_difficulty: "advanced"
+dimension_results:
+  - dimension: "modification_scope"
+    difficulty: "advanced"
+    rationale_key: "scope.cross_module"
+    hard_floor: false
+  - dimension: "requirement_clarity"
+    difficulty: "basic"
+    rationale_key: "clarity.explicit"
+    hard_floor: false
+  - dimension: "state_concurrency"
+    difficulty: "basic"
+    rationale_key: "concurrency.single_writer"
+    hard_floor: false
+  - dimension: "public_contract"
+    difficulty: "standard"
+    rationale_key: "contract.additive"
+    hard_floor: false
+  - dimension: "failure_impact"
+    difficulty: "basic"
+    rationale_key: "impact.informational"
+    hard_floor: false
+  - dimension: "rollback_complexity"
+    difficulty: "advanced"
+    rationale_key: "rollback.multi_step"
+    hard_floor: false
+  - dimension: "dependency_conflict"
+    difficulty: "basic"
+    rationale_key: "dependency.none"
+    hard_floor: false
+override_direction: "none"
+override_reason: null
+approval_id: null
+policy_version: "agentdesk.difficulty-policy/v1"
+snapshot_commit: "282c500eca057e4372c1072659e8f23012eb31ae"
