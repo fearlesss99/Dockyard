@@ -268,7 +268,7 @@ class _ProgressStore:
 
 
 class DockyardTaskAdmissionCompositionRuntime:
-    def __init__(self, project_root: Path, *, preparation: PmTaskAdmissionPreparationRuntime | None = None, handoff: MaterializationAdmissionRuntime | None = None, post_admission: DockyardPostAdmissionWorkerRuntime | None = None) -> None:
+    def __init__(self, project_root: Path, *, preparation: PmTaskAdmissionPreparationRuntime | None = None, handoff: MaterializationAdmissionRuntime | None = None, post_admission: DockyardPostAdmissionWorkerRuntime | None = None, background_post_admission: bool = False) -> None:
         if not isinstance(project_root, Path) or not project_root.is_absolute():
             raise DockyardAdmissionCompositionInputError("composition:project_root")
         self.root = project_root
@@ -276,7 +276,10 @@ class DockyardTaskAdmissionCompositionRuntime:
         self.handoff = handoff or MaterializationAdmissionRuntime(project_root)
         if post_admission is not None and type(post_admission) is not DockyardPostAdmissionWorkerRuntime:
             raise DockyardAdmissionCompositionInputError("composition:post_admission")
+        if type(background_post_admission) is not bool:
+            raise DockyardAdmissionCompositionInputError("composition:background_post_admission")
         self.post_admission = post_admission
+        self.background_post_admission = background_post_admission
         self.scheduler_store = PortfolioSchedulerStore(project_root)
         self.store = _ProgressStore(project_root)
 
@@ -332,8 +335,40 @@ class DockyardTaskAdmissionCompositionRuntime:
         receipt = self.handoff.execute(prepared.handoff_request, evidence, prepared.template, authorization, admission_context, worktree)
         progress = self._advance(progress, DockyardTaskAdmissionPhase.ADMITTED, DockyardTaskAdmissionOutcome.ADMITTED, handoff_receipt_id=receipt.receipt_id)
         if self.post_admission is not None:
-            self.post_admission.execute(receipt)
+            if self.background_post_admission:
+                self._start_post_admission(receipt)
+            else:
+                self.post_admission.execute(receipt)
         return self._advance(progress, DockyardTaskAdmissionPhase.FINALIZED, DockyardTaskAdmissionOutcome.FINALIZED, finalized_at=evidence.materialized_at)
+
+    def _start_post_admission(self, receipt: MaterializationAdmissionReceipt) -> None:
+        worker = self.post_admission
+        if worker is None:
+            raise DockyardAdmissionCompositionInputError("composition:post_admission")
+
+        def run() -> None:
+            try:
+                worker.execute(receipt)
+            except BaseException as exc:
+                # Admission is already durable and visible to the user. Keep a
+                # local typed marker for diagnostics while the supervisor owns
+                # the worker's eventual success/failure evidence.
+                marker = {
+                    "schema_version": "dockyard.post-admission-error/v1",
+                    "dispatch_id": receipt.dispatch_id,
+                    "error_type": type(exc).__name__,
+                    "recorded_at": receipt.reserved_at,
+                }
+                self.store._write(
+                    self.store.root / "worker-errors" / f"{receipt.dispatch_id}.json",
+                    (json.dumps(marker, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"),
+                )
+
+        threading.Thread(
+            target=run,
+            name=f"dockyard-worker-{receipt.dispatch_id or 'unknown'}",
+            daemon=True,
+        ).start()
 
     def _context(self, plan: DockyardPlanRecord, evaluated_at: str):
         scheduler_time = datetime.fromisoformat(

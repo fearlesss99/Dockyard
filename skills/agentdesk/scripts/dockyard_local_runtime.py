@@ -314,6 +314,7 @@ class DockyardLocalRuntime:
         audit_config: MadGatewayConfig | None = None,
         integration_target_branch: str | None = None,
         clock: object | None = None,
+        background_post_admission: bool = True,
     ) -> "DockyardLocalRuntime":
         """Inject providers from the gitignored local binding file.
 
@@ -336,6 +337,7 @@ class DockyardLocalRuntime:
             audit_config=audit_config,
             integration_target_branch=integration_target_branch,
             clock=clock,
+            background_post_admission=background_post_admission,
         )
 
     def __init__(
@@ -347,9 +349,12 @@ class DockyardLocalRuntime:
         audit_config: MadGatewayConfig | None = None,
         integration_target_branch: str | None = None,
         clock: object | None = None,
+        background_post_admission: bool = False,
     ) -> None:
         if type(config) is not DockyardLocalRuntimeConfig:
             raise DockyardLocalRuntimeInputError("config has an invalid type")
+        if type(background_post_admission) is not bool:
+            raise DockyardLocalRuntimeInputError("background_post_admission is invalid")
         self._config = config
         if providers is not None and (not isinstance(providers, Mapping) or not providers):
             raise DockyardLocalRuntimeInputError("providers are invalid")
@@ -370,6 +375,7 @@ class DockyardLocalRuntime:
         self._audit_config = audit_config
         self._integration_target_branch = integration_target_branch
         self._clock = clock
+        self._background_post_admission = background_post_admission
         self._server: DockyardControlServer | None = None
         self._web_server: DockyardWebRuntime | None = None
         self._result: DockyardLocalRuntimeResult | None = None
@@ -459,7 +465,9 @@ class DockyardLocalRuntime:
                 hub,
                 registry,
                 DockyardTaskAdmissionCompositionRuntime(
-                    project_root, post_admission=post_admission
+                    project_root,
+                    post_admission=post_admission,
+                    background_post_admission=self._background_post_admission,
                 ),
                 terminal_owner,
                 plan_id=config.plan_id,
