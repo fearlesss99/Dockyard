@@ -84,7 +84,14 @@ def _run_git(cwd: Path, arguments: tuple[str, ...], timeout_seconds: float) -> b
             # user who owns a freshly-created worktree.  Scope Git's trust
             # exception to this already-validated cwd instead of weakening
             # the user's global safe.directory configuration.
-            ["git", "-c", f"safe.directory={cwd}", *arguments],
+            [
+                "git",
+                "-c",
+                f"safe.directory={cwd}",
+                "-c",
+                "core.longpaths=true",
+                *arguments,
+            ],
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
