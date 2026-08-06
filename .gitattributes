@@ -1,0 +1,2 @@
+/docs/pm/events/*.yaml text eol=lf
+/docs/pm/outbox/*.yaml text eol=lf

@@ -19,4 +19,3 @@ guard_results:
     result: failed
     checked_at: "2026-08-02T10:55:00Z"
     evidence_ref: runtime-route-audit
-reason: Actual executor was a Codex task and did not prove the frozen Claude provider binding.

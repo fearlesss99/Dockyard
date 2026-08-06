@@ -380,6 +380,24 @@ def _parse_canonical_yaml(raw: str, description: str) -> dict[str, object]:
                     guard_list.append(g)
                 i += 1
                 continue
+            if key == "evidence_refs" and not val:
+                # Canonical event YAML emits an empty-list field as a
+                # key-only line followed by its ``- item`` entries.
+                # Seed the list so those entries are retained instead of
+                # being discarded as an absent scalar value.
+                root["evidence_refs"] = []
+                active_nested = None
+                i += 1
+                continue
+            if key in {"model_selection", "payload"} and not val:
+                # Accept the expanded mapping form as well as the
+                # canonical inline-first-field form.  Existing durable
+                # outbox records may use this equivalent YAML shape.
+                nested_mapping: dict[str, object] = {}
+                root[key] = nested_mapping
+                active_nested = nested_mapping
+                i += 1
+                continue
             if val:
                 coerce_val = _coerce_yaml_value(val)
                 if isinstance(coerce_val, str) and _has_inline_field(val):
@@ -563,6 +581,11 @@ def _coerce_yaml_value(val: str) -> object:
         return []
     if v == "{}":
         return {}
+    if v.startswith("[") and v.endswith("]"):
+        inner = v[1:-1].strip()
+        if not inner:
+            return []
+        return [_coerce_yaml_value(item.strip()) for item in inner.split(",")]
     return v
 
 
