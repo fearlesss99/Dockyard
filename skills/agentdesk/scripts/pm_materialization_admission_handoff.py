@@ -616,7 +616,7 @@ class _DefaultSchedulerGateway:
 class _GitOwner:
     def _run(self, root: Path, *args: str) -> bytes:
         try:
-            completed = subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True, timeout=20)
+            completed = subprocess.run(["git", "-c", f"safe.directory={root}", "-C", str(root), *args], check=True, capture_output=True, timeout=20)
         except (OSError, subprocess.SubprocessError) as exc:
             raise MaterializationAdmissionConflictError("handoff:git") from exc
         return completed.stdout

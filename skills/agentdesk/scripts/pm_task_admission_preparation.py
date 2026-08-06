@@ -394,6 +394,10 @@ def _policy_role_for_selection(policy: dict[str, object], task_role_id: str) -> 
     return _POLICY_ROLE_BY_TASK_ROLE.get(task_role_id, task_role_id)
 
 
+def _git_command(project: Path, *arguments: str) -> list[str]:
+    return ["git", "-c", f"safe.directory={project}", "-C", str(project), *arguments]
+
+
 class _PreparationStore:
     def __init__(self, root: Path) -> None:
         self.root = root / ".agentdesk/runtime/admission-preparation"
@@ -528,15 +532,15 @@ class PmTaskAdmissionPreparationRuntime:
             raise AdmissionPreparationConflictError("admission_preparation:identity")
         if repository_identity(self.root) != request.repository_identity:
             raise AdmissionPreparationConflictError("admission_preparation:repository")
-        head = subprocess.run(["git", "-C", str(self.root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True, timeout=20).stdout.strip()
-        branch = subprocess.run(["git", "-C", str(self.root), "branch", "--show-current"], check=True, capture_output=True, text=True, timeout=20).stdout.strip()
+        head = subprocess.run(_git_command(self.root, "rev-parse", "HEAD"), check=True, capture_output=True, text=True, timeout=20).stdout.strip()
+        branch = subprocess.run(_git_command(self.root, "branch", "--show-current"), check=True, capture_output=True, text=True, timeout=20).stdout.strip()
         if (
             head != request.expected_head_commit
             or request.materialization_base_commit != head
             or branch != request.expected_branch
         ):
             raise AdmissionPreparationConflictError("admission_preparation:git_cas")
-        common_raw = Path(subprocess.run(["git", "-C", str(self.root), "rev-parse", "--path-format=absolute", "--git-common-dir"], check=True, capture_output=True, text=True, timeout=20).stdout.strip())
+        common_raw = Path(subprocess.run(_git_command(self.root, "rev-parse", "--path-format=absolute", "--git-common-dir"), check=True, capture_output=True, text=True, timeout=20).stdout.strip())
         common = str((common_raw if common_raw.is_absolute() else self.root / common_raw).resolve())
         generation = request.expected_handoff_generation
         dispatch_stem = hashlib.sha256(f"{request.preparation_id}\0{generation}".encode()).hexdigest()[:20]
@@ -564,7 +568,7 @@ class PmTaskAdmissionPreparationRuntime:
         )
         try:
             policy_bytes = subprocess.run(
-                ["git", "-C", str(self.root), "show", f"{request.role_policy_commit}:{ROLE_POLICY_FILE.as_posix()}"],
+                _git_command(self.root, "show", f"{request.role_policy_commit}:{ROLE_POLICY_FILE.as_posix()}"),
                 check=True, capture_output=True, timeout=20,
             ).stdout
             card_path = self.root / PurePosixPath(

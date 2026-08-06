@@ -155,7 +155,15 @@ def _run_git(project: Path, arguments: Sequence[str]) -> subprocess.CompletedPro
     )
     try:
         return subprocess.run(
-            ["git", "--no-replace-objects", "-C", str(project), *arguments],
+            [
+                "git",
+                "-c",
+                f"safe.directory={project}",
+                "--no-replace-objects",
+                "-C",
+                str(project),
+                *arguments,
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=environment,

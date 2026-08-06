@@ -376,13 +376,14 @@ class DockyardTaskAdmissionCompositionRuntime:
         return True, _digest(evidence)
 
     def _preparation_inputs(self, plan, task, evidence, context, stem):
-        head = subprocess.run(["git", "-C", str(self.root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True, timeout=20).stdout.strip()
-        branch = subprocess.run(["git", "-C", str(self.root), "branch", "--show-current"], check=True, capture_output=True, text=True, timeout=20).stdout.strip()
-        policy = subprocess.run(["git", "-C", str(self.root), "show", f"{head}:{ROLE_POLICY_FILE.as_posix()}"], check=True, capture_output=True, timeout=20).stdout
+        git = ["git", "-c", f"safe.directory={self.root}", "-C", str(self.root)]
+        head = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True, timeout=20).stdout.strip()
+        branch = subprocess.run([*git, "branch", "--show-current"], check=True, capture_output=True, text=True, timeout=20).stdout.strip()
+        policy = subprocess.run([*git, "show", f"{head}:{ROLE_POLICY_FILE.as_posix()}"], check=True, capture_output=True, timeout=20).stdout
         bindings = (self.root / MODEL_BINDINGS_FILE).read_bytes()
         profile = PmTaskAdmissionProfile(PREPARATION_SCHEMA_VERSION, "PROFILE-" + stem, plan.project_id, plan.plan_id, plan.revision, task.task_id, 1, task.business_priority, task.difficulty_rationale_keys, task.selected_difficulty, task.difficulty_override_reason, task.difficulty_approval_id, task.risk, task.task_capabilities, task.degradation_approval_id, task.expected_task_attempt, task.new_attempt, evidence.materialized_at, "sha256:" + "0" * 64)
         profile = with_content_digest(profile)
-        common_raw = Path(subprocess.run(["git", "-C", str(self.root), "rev-parse", "--path-format=absolute", "--git-common-dir"], check=True, capture_output=True, text=True, timeout=20).stdout.strip())
+        common_raw = Path(subprocess.run([*git, "rev-parse", "--path-format=absolute", "--git-common-dir"], check=True, capture_output=True, text=True, timeout=20).stdout.strip())
         common = str((common_raw if common_raw.is_absolute() else self.root / common_raw).resolve())
         dispatch_stem = hashlib.sha256(f"PREP-{stem}\0{1}".encode()).hexdigest()[:20]
         dispatch_id = "DSP-" + dispatch_stem
@@ -393,7 +394,7 @@ class DockyardTaskAdmissionCompositionRuntime:
         return profile, with_content_digest(request)
 
     def _worktree(self, template, handoff_request):
-        common_raw = Path(subprocess.run(["git", "-C", str(self.root), "rev-parse", "--path-format=absolute", "--git-common-dir"], check=True, capture_output=True, text=True, timeout=20).stdout.strip())
+        common_raw = Path(subprocess.run(["git", "-c", f"safe.directory={self.root}", "-C", str(self.root), "rev-parse", "--path-format=absolute", "--git-common-dir"], check=True, capture_output=True, text=True, timeout=20).stdout.strip())
         common = str((common_raw if common_raw.is_absolute() else self.root / common_raw).resolve())
         branch = expected_dispatch_branch(handoff_request.task_id, handoff_request.revision, template.new_attempt, template.dispatch_id)
         worktree_id = derive_worktree_id(common, str(self.root), branch, handoff_request.expected_base_commit, handoff_request.task_id, handoff_request.revision, template.new_attempt, template.dispatch_id)
