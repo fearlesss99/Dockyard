@@ -744,7 +744,7 @@ class EventEntry:
     evidence_refs: tuple[str, ...]
     guard_results: tuple[GuardResult, ...]
     payload_digest: str | None           # TASK_DISPATCHED only
-    extra_fields: tuple[tuple[str, object], ...] | None  # CHANGE_INTEGRATED only
+    extra_fields: tuple[tuple[str, object], ...] | None  # typed event-specific extras
 
 
 @dataclass(frozen=True, slots=True)
@@ -1392,6 +1392,11 @@ def _build_event_from_dict(doc: dict[str, object], filename: str, seen: set[str]
     extra_allowed: frozenset[str] = frozenset()
     if event_type == "TASK_DISPATCHED":
         extra_allowed = frozenset({"payload_digest"})
+    elif event_type == "TASK_CANCELLED":
+        # Compatibility for the v2 cancellation evidence emitted by the
+        # earlier local runner.  Keep this narrow: no other event type may
+        # carry arbitrary keys, and the value is preserved as evidence.
+        extra_allowed = frozenset({"reason"})
     elif event_type == "DISPATCH_FAILED":
         extra_allowed = frozenset({"failure_kind"})
         failure_kind = doc.get("failure_kind")
@@ -1451,6 +1456,17 @@ def _build_event_from_dict(doc: dict[str, object], filename: str, seen: set[str]
         payload_digest = _freeze(pd)
 
     extra_fields: tuple[tuple[str, object], ...] | None = None
+    if event_type == "TASK_CANCELLED" and "reason" in doc:
+        reason = doc.get("reason")
+        if (
+            type(reason) is not str
+            or not reason.strip()
+            or "\x00" in reason
+            or "\r" in reason
+            or "\n" in reason
+        ):
+            raise StateProviderSchemaError("TASK_CANCELLED reason is invalid")
+        extra_fields = (("reason", _freeze(reason)),)
     if event_type == "CHANGE_INTEGRATED":
         pairs: list[tuple[str, object]] = []
         for key in _CHANGE_INTEGRATED_EXTRA_FIELDS:
