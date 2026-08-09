@@ -100,6 +100,36 @@ class DockyardPlanStoreTests(unittest.TestCase):
         self.assertEqual(self.store.read("PLAN-1", 1), saved)
         self.assertEqual(self.store.latest("PLAN-1"), saved)
 
+    def test_current_session_recovers_unique_successor_after_materialized_base(self) -> None:
+        previous = None
+        phases = (
+            DockyardPlanPhase.DRAFTED,
+            DockyardPlanPhase.EDITED,
+            DockyardPlanPhase.APPROVAL_PENDING,
+            DockyardPlanPhase.APPROVED,
+            DockyardPlanPhase.MATERIALIZED,
+        )
+        for revision, phase in enumerate(phases, start=1):
+            saved = self.store.save(replace(
+                _record(revision, previous),
+                phase=phase,
+                approved_at="2026-08-02T00:00:00Z" if revision >= 4 else None,
+                materialized_at="2026-08-02T00:00:00Z" if revision == 5 else None,
+            ))
+            previous = saved.content_digest
+        successor = self.store.save(replace(
+            _record(),
+            plan_id="PLAN-1-r6",
+            phase=DockyardPlanPhase.DRAFTED,
+        ))
+        self.assertEqual(self.store.current_session("PLAN-1"), successor)
+
+    def test_current_session_rejects_ambiguous_active_successors(self) -> None:
+        self.store.save(replace(_record(), plan_id="PLAN-1-r6"))
+        self.store.save(replace(_record(), plan_id="PLAN-1-r7"))
+        with self.assertRaises(DockyardPlanConflictError):
+            self.store.current_session("PLAN-1")
+
     def test_byte_exact_replay_returns_same_record(self) -> None:
         saved = self.store.save(_record())
         self.assertEqual(self.store.save(_record()), saved)

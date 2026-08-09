@@ -496,6 +496,22 @@ class DockyardPlanStore:
             raise DockyardPlanFilesystemError("plan revisions are not contiguous")
         return self.read(plan_id, max(revisions))
 
+    def current_session(self, base_plan_id: str) -> DockyardPlanRecord | None:
+        """Recover the unique non-terminal session descended from a base ID."""
+        base = _identifier(base_plan_id, "plan_id")
+        candidates: list[DockyardPlanRecord] = []
+        for path in self._root.iterdir():
+            if path.name != base and not path.name.startswith(base + "-r"):
+                continue
+            if not path.is_dir() or _reparse(path):
+                raise DockyardPlanFilesystemError("plan session path is not plain")
+            record = self.latest(path.name)
+            if record is not None and record.phase is not DockyardPlanPhase.MATERIALIZED:
+                candidates.append(record)
+        if len(candidates) > 1:
+            raise DockyardPlanConflictError("multiple active plan sessions")
+        return None if not candidates else candidates[0]
+
     def save(self, record: DockyardPlanRecord) -> DockyardPlanRecord:
         if not isinstance(record, DockyardPlanRecord):
             raise DockyardPlanInputError("record has an invalid type")

@@ -447,10 +447,10 @@ class DockyardLocalRuntime:
                     "paired device authentication failed"
                 ) from exc
             hub = DockyardSseHub()
-            pm = DockyardPmService(
-                DockyardPlanStore(config.plan_store_root),
-                config.task_cards_root,
-            )
+            plan_store = DockyardPlanStore(config.plan_store_root)
+            current_plan = plan_store.current_session(config.plan_id)
+            runtime_plan_id = config.plan_id if current_plan is None else current_plan.plan_id
+            pm = DockyardPmService(plan_store, config.task_cards_root)
             snapshot_commit = lambda: _git_head(project_root)
             post_admission = None
             terminal_owner = None
@@ -487,7 +487,7 @@ class DockyardLocalRuntime:
                 registry,
                 pm,
                 config.project_id,
-                config.plan_id,
+                runtime_plan_id,
                 terminal_owner,
                 project_root,
                 _provider_projection_evidence(
@@ -514,7 +514,7 @@ class DockyardLocalRuntime:
                     background_post_admission=self._background_post_admission,
                 ),
                 terminal_owner,
-                plan_id=config.plan_id,
+                plan_id=runtime_plan_id,
                 project_root=project_root,
                 active_registry=active_registry,
                 ready_provider_ids=(
