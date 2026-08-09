@@ -469,6 +469,33 @@ class _PreparationStore:
                 return
             _atomic(path, data)
 
+    def read_handoff_inputs(self, preparation_id: str) -> AdmissionPreparationHandoffInputs:
+        path = self.root / "handoff-inputs" / f"{preparation_id}.yaml"
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            template_raw = raw["admission_plan_template"]
+            request_raw = raw["materialization_admission_request"]
+            template = MaterializationAdmissionPlanTemplate(**{
+                **template_raw,
+                "worker_kind": WorkerKind(template_raw["worker_kind"]),
+                "model_selection": _model(template_raw["model_selection"]),
+            })
+            request = MaterializationAdmissionRequest(**{
+                **request_raw,
+                "business_priority": BusinessPriority(request_raw["business_priority"]),
+                "worker_kind_request": WorkerKind(request_raw["worker_kind_request"]),
+            })
+            value = AdmissionPreparationHandoffInputs(**{
+                **raw,
+                "admission_plan_template": template,
+                "materialization_admission_request": request,
+            })
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+            raise AdmissionPreparationConflictError("admission_preparation:handoff_inputs_read") from exc
+        if value.content_digest != _inputs_digest(value):
+            raise AdmissionPreparationConflictError("admission_preparation:handoff_inputs_digest")
+        return value
+
 
 class PmTaskAdmissionPreparationRuntime:
     def __init__(self, project_root: Path) -> None:
@@ -477,6 +504,9 @@ class PmTaskAdmissionPreparationRuntime:
         self.root = project_root
         self.store = _PreparationStore(project_root)
         self.assessments = DifficultyAssessmentStore()
+
+    def read_handoff_inputs(self, preparation_id: str) -> AdmissionPreparationHandoffInputs:
+        return self.store.read_handoff_inputs(preparation_id)
 
     def prepare(self, profile: PmTaskAdmissionProfile, request: AdmissionPreparationRequest, materialized: MaterializedTaskEvidence) -> AdmissionPreparationResult:
         self._validate(profile, request, materialized)

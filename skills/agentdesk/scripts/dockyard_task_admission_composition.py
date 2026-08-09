@@ -306,7 +306,7 @@ class DockyardTaskAdmissionCompositionRuntime:
         if current is not None and current.phase is DockyardTaskAdmissionPhase.FINALIZED:
             return current
         if current is not None and current.phase is DockyardTaskAdmissionPhase.HANDOFF_STARTED:
-            recovered = self._recover_handoff(current, evidence.materialized_at)
+            recovered = self._recover_handoff(current, evidence, authorization, context)
             if recovered is not None:
                 return recovered
             raise DockyardAdmissionCompositionRecoveryRequired("composition:handoff_recovery_required")
@@ -446,7 +446,7 @@ class DockyardTaskAdmissionCompositionRuntime:
         self.store.save_progress(value)
         return value
 
-    def _recover_handoff(self, progress, now):
+    def _recover_handoff(self, progress, evidence, authorization, context):
         evidence_store = getattr(self.handoff, "evidence_store", None)
         reader = getattr(evidence_store, "read_receipt", None)
         if not callable(reader):
@@ -457,13 +457,43 @@ class DockyardTaskAdmissionCompositionRuntime:
             return None
         if (
             type(receipt) is not MaterializationAdmissionReceipt
-            or receipt.phase is not MaterializationAdmissionPhase.FINALIZED
             or (receipt.handoff_id, receipt.project_id, receipt.plan_id, receipt.task_id, receipt.revision)
             != (progress.handoff_id, progress.project_id, progress.plan_id, progress.task_id, progress.revision)
         ):
             raise DockyardAdmissionCompositionConflictError("composition:handoff_receipt")
+        if receipt.phase is not MaterializationAdmissionPhase.FINALIZED:
+            inputs = self.preparation.read_handoff_inputs(progress.preparation_id)
+            if (
+                inputs.materialized_task_content_digest != evidence.content_digest
+                or inputs.materialization_admission_request.handoff_id != progress.handoff_id
+            ):
+                raise DockyardAdmissionCompositionConflictError("composition:handoff_inputs")
+            admission_context = AdmissionContext(
+                context.scheduler_policy_version,
+                context.evaluated_at,
+                context.active_hard_conflict_keys,
+                context.advisory_conflict_keys,
+                context.advisory_authorizations,
+                context.available_worker_kinds,
+                1,
+            )
+            receipt = self.handoff.execute(
+                inputs.materialization_admission_request,
+                evidence,
+                inputs.admission_plan_template,
+                authorization,
+                admission_context,
+                self._worktree(inputs.admission_plan_template, inputs.materialization_admission_request),
+            )
+            if receipt.phase is not MaterializationAdmissionPhase.FINALIZED:
+                return None
         admitted = self._advance(progress, DockyardTaskAdmissionPhase.ADMITTED, DockyardTaskAdmissionOutcome.ADMITTED, handoff_receipt_id=receipt.receipt_id)
-        return self._advance(admitted, DockyardTaskAdmissionPhase.FINALIZED, DockyardTaskAdmissionOutcome.FINALIZED, finalized_at=now)
+        if self.post_admission is not None:
+            if self.background_post_admission:
+                self._start_post_admission(receipt)
+            else:
+                self.post_admission.execute(receipt)
+        return self._advance(admitted, DockyardTaskAdmissionPhase.FINALIZED, DockyardTaskAdmissionOutcome.FINALIZED, finalized_at=evidence.materialized_at)
 
     def _validate(self, plan, task, evidence):
         if type(plan) is not DockyardPlanRecord or type(task) is not DockyardPlanTask or type(evidence) is not MaterializedTaskEvidence:
