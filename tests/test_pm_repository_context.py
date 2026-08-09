@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 import sys
 
@@ -46,6 +47,18 @@ class PmRepositoryContextTests(unittest.TestCase):
     def test_stale_head_is_rejected_before_decomposition(self) -> None:
         with self.assertRaises(PmRepositoryInspectionError):
             inspect_repository(self.root, "a" * 40)
+
+    def test_inventory_ignores_inherited_git_repository_overrides(self) -> None:
+        poisoned = {
+            "GIT_DIR": str(self.root / "missing-git-dir"),
+            "GIT_WORK_TREE": str(self.root / "missing-work-tree"),
+            "GIT_INDEX_FILE": str(self.root / "missing-index"),
+            "GIT_OBJECT_DIRECTORY": str(self.root / "missing-objects"),
+        }
+        with mock.patch.dict("os.environ", poisoned):
+            inventory = inspect_repository(self.root, self.head)
+        self.assertEqual(inventory.snapshot_commit, self.head)
+        self.assertEqual(inventory.file_count, 2)
 
 
 if __name__ == "__main__":
