@@ -63,6 +63,13 @@ class PmRepositoryContextTests(unittest.TestCase):
         self.assertEqual(inventory.snapshot_commit, self.head)
         self.assertEqual(inventory.file_count, 2)
 
+    def test_git_invocation_scopes_safe_directory_to_the_inspected_root(self) -> None:
+        with mock.patch("pm_repository_context.subprocess.run", wraps=subprocess.run) as run:
+            inspect_repository(self.root, self.head)
+        command = run.call_args_list[0].args[0]
+        self.assertIn("core.longpaths=true", command)
+        self.assertIn(f"safe.directory={self.root.resolve()}", command)
+
 
 if __name__ == "__main__":
     unittest.main()

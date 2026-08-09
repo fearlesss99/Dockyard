@@ -59,7 +59,17 @@ def _git(root: Path, *arguments: str) -> bytes:
     })
     try:
         completed = subprocess.run(
-            ("git", "--no-replace-objects", "-C", str(root), *arguments),
+            (
+                "git",
+                "--no-replace-objects",
+                "-c",
+                "core.longpaths=true",
+                "-c",
+                f"safe.directory={root}",
+                "-C",
+                str(root),
+                *arguments,
+            ),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True,
