@@ -28,7 +28,7 @@ from dockyard_pairing import (
     DockyardPairingError,
     DockyardPairingStore,
 )
-from dockyard_plan_store import DockyardPlanStore
+from dockyard_plan_store import DockyardPlanPhase, DockyardPlanStore
 from dockyard_pm_service import DockyardPmService
 from dockyard_project_registry import DockyardProjectRegistry
 from dockyard_projection import DockyardProviderEvidence, DockyardProviderHealth
@@ -40,6 +40,13 @@ from dockyard_provider_service import (
 )
 from dockyard_sse import DockyardSseHub
 from dockyard_task_admission_composition import DockyardTaskAdmissionCompositionRuntime
+from pm_materialization_admission_handoff import (
+    DISPATCH_AUTHORIZATION_SCHEMA_VERSION,
+    HANDOFF_SCHEMA_VERSION,
+    DispatchApprovalAuthorization,
+    MaterializedTaskEvidence,
+    with_content_digest as with_handoff_digest,
+)
 from dockyard_post_admission_worker import DockyardPostAdmissionWorkerRuntime
 from dockyard_owner_loss_recovery import DockyardOwnerLossRecoveryRuntime
 from dockyard_provider_factory import (
@@ -180,6 +187,55 @@ def _git_head(project_root: Path) -> str:
 def _api_base_url(address: DockyardServerAddress) -> str:
     host = f"[{address.host}]" if ":" in address.host else address.host
     return f"http://{host}:{address.port}"
+
+
+def _resume_current_materialized_plan(
+    plan_store: DockyardPlanStore,
+    task_admission: DockyardTaskAdmissionCompositionRuntime,
+    current_plan: object,
+) -> None:
+    if getattr(current_plan, "phase", None) is not DockyardPlanPhase.MATERIALIZED:
+        return
+    approved = plan_store.read(current_plan.plan_id, current_plan.revision - 1)
+    if approved is None or approved.phase is not DockyardPlanPhase.APPROVED:
+        raise DockyardLocalRuntimePreconditionError("materialized plan approval evidence is unavailable")
+    if current_plan.materialized_at is None or current_plan.approved_at is None:
+        raise DockyardLocalRuntimePreconditionError("materialized plan timestamps are unavailable")
+    authorization = with_handoff_digest(DispatchApprovalAuthorization(
+        DISPATCH_AUTHORIZATION_SCHEMA_VERSION,
+        current_plan.plan_id,
+        current_plan.revision - 1,
+        "sha256:" + current_plan.plan_digest,
+        f"CONF-PLAN-{current_plan.revision - 2}",
+        approved.last_operation_id,
+        current_plan.approved_at,
+        "sha256:" + "0" * 64,
+    ))
+    assert isinstance(authorization, DispatchApprovalAuthorization)
+    for task in current_plan.tasks:
+        relative_path = f"docs/pm/tasks/{task.task_id}-r1-dockyard.md"
+        card = task_admission.root / relative_path
+        try:
+            card_digest = "sha256:" + hashlib.sha256(card.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise DockyardLocalRuntimePreconditionError("materialized task card is unavailable") from exc
+        evidence = with_handoff_digest(MaterializedTaskEvidence(
+            HANDOFF_SCHEMA_VERSION,
+            current_plan.project_id,
+            current_plan.plan_id,
+            current_plan.revision,
+            "sha256:" + current_plan.content_digest,
+            current_plan.last_operation_id,
+            task.task_id,
+            1,
+            relative_path,
+            card_digest,
+            current_plan.pm_owner_id,
+            current_plan.materialized_at,
+            "sha256:" + "0" * 64,
+        ))
+        assert isinstance(evidence, MaterializedTaskEvidence)
+        task_admission.execute(current_plan, task, evidence, authorization)
 
 
 def _provider_projection_evidence(
@@ -503,16 +559,23 @@ class DockyardLocalRuntime:
                     else ()
                 ),
             )
+            task_admission = DockyardTaskAdmissionCompositionRuntime(
+                project_root,
+                post_admission=post_admission,
+                background_post_admission=self._background_post_admission,
+            )
+            if current_plan is not None:
+                _resume_current_materialized_plan(
+                    plan_store,
+                    task_admission,
+                    current_plan,
+                )
             gateway = DockyardCompositionGateway(
                 pm,
                 snapshot_commit,
                 hub,
                 registry,
-                DockyardTaskAdmissionCompositionRuntime(
-                    project_root,
-                    post_admission=post_admission,
-                    background_post_admission=self._background_post_admission,
-                ),
+                task_admission,
                 terminal_owner,
                 plan_id=runtime_plan_id,
                 project_root=project_root,

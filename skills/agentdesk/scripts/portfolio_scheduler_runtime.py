@@ -365,6 +365,19 @@ class PortfolioSchedulerRuntime:
         if not snapshot:
             return self._idle(request)
 
+        # A recovered queued entry may retain an older admission-plan file
+        # after its selection generation was fenced forward.  Such an entry
+        # is not a current reservation, but the pure policy layer cannot see
+        # the Git snapshot binding and would otherwise let stale history block
+        # every newer plan.  Exclude only entries whose historical plans are
+        # provably bound to a different snapshot; leave all durable evidence
+        # untouched so a later recovery pass can inspect it explicitly.
+        snapshot = self._without_stale_historical_plans(
+            snapshot, root, plan.expected_snapshot_commit
+        )
+        if not snapshot:
+            return self._idle(request)
+
         pending = self._pending_selection_ids(snapshot, root)
         if len(pending) > 1:
             raise PortfolioSchedulerRuntimeConflictError(
@@ -464,6 +477,37 @@ class PortfolioSchedulerRuntime:
         return PortfolioSchedulerTickResult(
             outcome=outcome, admission_result=admission_result
         )
+
+    def _without_stale_historical_plans(
+        self,
+        snapshot: tuple[QueueEntry, ...],
+        root: Path,
+        expected_snapshot_commit: str,
+    ) -> tuple[QueueEntry, ...]:
+        try:
+            historical = self._store.enumerate_validated_admission_plans(root)
+        except PortfolioSchedulerNotFoundError:
+            historical = ()
+        by_queue: dict[str, list[AdmissionPlanReservation]] = {}
+        for plan in historical:
+            by_queue.setdefault(plan.queue_id, []).append(plan)
+        result: list[QueueEntry] = []
+        for entry in snapshot:
+            if entry.state is not QueuePhase.QUEUED:
+                result.append(entry)
+                continue
+            current_plan = self._read_plan(root, entry)
+            if current_plan is not None:
+                result.append(entry)
+                continue
+            prior = by_queue.get(entry.queue_id, ())
+            if prior and all(
+                item.expected_snapshot_commit != expected_snapshot_commit
+                for item in prior
+            ):
+                continue
+            result.append(entry)
+        return tuple(result)
 
     def _replay_or_recovery(
         self,

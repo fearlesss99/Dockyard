@@ -2460,12 +2460,27 @@ def _resolve_head_commit(project_root: Path) -> str:
     Uses argv array, shell=False.  Raises TransitionCASConflictError
     on any failure -- the error message never leaks stderr or paths.
     """
+    git_environment = os.environ.copy()
+    for variable in tuple(git_environment):
+        if variable.startswith("GIT_"):
+            git_environment.pop(variable, None)
     try:
         result = subprocess.run(
-            ["git", "-C", str(project_root), "rev-parse", "HEAD"],
+            [
+                "git",
+                "-c",
+                "core.longpaths=true",
+                "-c",
+                f"safe.directory={project_root}",
+                "-C",
+                str(project_root),
+                "rev-parse",
+                "HEAD",
+            ],
             capture_output=True,
             text=True,
             timeout=10,
+            env=git_environment,
         )
     except Exception:
         raise TransitionCASConflictError(
@@ -3167,11 +3182,27 @@ def _read_committed_task_card_frontmatter(
     """
     # Read blob from Git.
     blob_path = f"{task_card_commit}:{task_card_path}"
+    git_environment = os.environ.copy()
+    for variable in tuple(git_environment):
+        if variable.startswith("GIT_"):
+            git_environment.pop(variable, None)
     try:
         result = subprocess.run(
-            ["git", "-C", str(project_root), "cat-file", "blob", blob_path],
+            [
+                "git",
+                "-c",
+                "core.longpaths=true",
+                "-c",
+                f"safe.directory={project_root}",
+                "-C",
+                str(project_root),
+                "cat-file",
+                "blob",
+                blob_path,
+            ],
             capture_output=True,
             timeout=10,
+            env=git_environment,
         )
     except Exception as exc:
         raise TransitionSchemaError(

@@ -834,7 +834,10 @@ class MaterializationAdmissionRuntime:
         checked = gate.check(ApprovalCheckRequest(ApprovalScope.DISPATCH, subject, snapshot_commit), datetime.fromisoformat(request.requested_at.replace("Z", "+00:00")))
         if checked.passed:
             existing = checked.matched_evidence
-            if existing is None or (existing.approval_id, existing.event_id, existing.scope, existing.subject, existing.lease_epoch, existing.granted_at, existing.reason, existing.snapshot_commit) != (approval_id, event_id, ApprovalScope.DISPATCH, subject, request.expected_canonical_generation, authorization.approved_at, reason, snapshot_commit):
+            normalized_granted_at = datetime.fromisoformat(
+                authorization.approved_at.replace("Z", "+00:00")
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if existing is None or (existing.approval_id, existing.event_id, existing.scope, existing.subject, existing.lease_epoch, existing.granted_at, existing.reason, existing.snapshot_commit) != (approval_id, event_id, ApprovalScope.DISPATCH, subject, request.expected_canonical_generation, normalized_granted_at, reason, snapshot_commit):
                 raise MaterializationAdmissionConflictError("handoff:dispatch_approval_divergence")
             return
         if checked.failure_code != "not_found":

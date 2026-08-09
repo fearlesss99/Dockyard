@@ -81,9 +81,26 @@ class _SystemClock:
 
 
 def _git(root: Path, *arguments: str) -> str:
+    git_environment = os.environ.copy()
+    for variable in tuple(git_environment):
+        if variable.startswith("GIT_"):
+            git_environment.pop(variable, None)
     result = subprocess.run(
-        ["git", "-C", str(root), *arguments], check=True,
-        capture_output=True, text=True, timeout=20,
+        [
+            "git",
+            "-c",
+            "core.longpaths=true",
+            "-c",
+            f"safe.directory={root}",
+            "-C",
+            str(root),
+            *arguments,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        env=git_environment,
     )
     return result.stdout.strip()
 
