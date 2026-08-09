@@ -583,7 +583,6 @@ def _write_difficulty_assessment(
     )
     if _scripts not in _sys.path:
         _sys.path.insert(0, _scripts)
-    from core_types import TaskDifficulty
     import difficulty_assessor
     import difficulty_assessment_evidence as _evidence
     import difficulty_assessment_store as _store
@@ -11658,6 +11657,74 @@ class WorkflowOrchestratorDeliverySubmittedTests(unittest.TestCase):
                 asyncio.run(_run())
 
             self.assertEqual(apply_count[0], 3)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_delivery_snapshot_conflict_retries_without_route_mutation(self) -> None:
+        """An independent completion may advance only the global Git CAS."""
+        tmp = _setup_project()
+        try:
+            import workflow_orchestrator as wo
+
+            wr = _make_claude_worker_result()
+
+            async def _worker(request_arg: Any, *a: Any, **kw: Any) -> WorkerResult:
+                observer = a[3] if len(a) > 3 else None
+                ms = request_arg.model_selection
+                await observer.on_dispatch_started(
+                    DispatchStarted(
+                        identity=request_arg.identity,
+                        provider=ms.selected_model_provider,
+                        model_id=ms.selected_model_id,
+                    )
+                )
+                return wr
+
+            from control_plane_transition import (
+                ControlPlaneTransitionService as CTS,
+                TransitionCASConflictError,
+            )
+            orig_apply = CTS.apply_transition
+            delivery_calls: list[TransitionRequest] = []
+
+            def _conflict_once(
+                self_obj: Any,
+                tr: TransitionRequest,
+                lease: Any,
+                now: datetime,
+            ) -> TransitionResult:
+                if tr.event_type == "DELIVERY_SUBMITTED":
+                    delivery_calls.append(tr)
+                    if len(delivery_calls) == 1:
+                        raise TransitionCASConflictError("independent delivery")
+                return orig_apply(self_obj, tr, lease, now)
+
+            with mock.patch.object(wo, "run_worker_observed", side_effect=_worker), \
+                 mock.patch.object(CTS, "apply_transition", new=_conflict_once):
+                orch = WorkflowOrchestrator(
+                    project_root=tmp,
+                    clock=FakeClock(),
+                    heartbeat_interval_seconds=10.0,
+                )
+                result = asyncio.run(
+                    orch.run_dispatch_cycle(
+                        _make_dispatch_cycle_request(tmp),
+                        {"claude": FakeProvider()},
+                    )
+                )
+
+            self.assertEqual(result.delivery_transition.to_state, "review_ready")
+            self.assertEqual(len(delivery_calls), 2)
+            self.assertEqual(
+                delivery_calls[0].cas.task_id,
+                delivery_calls[1].cas.task_id,
+            )
+            self.assertEqual(
+                delivery_calls[0].dispatch_cas,
+                delivery_calls[1].dispatch_cas,
+            )
+            self.assertEqual(delivery_calls[0].event_id, delivery_calls[1].event_id)
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)

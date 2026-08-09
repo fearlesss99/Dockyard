@@ -13,15 +13,17 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "agentdesk" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+from agent_capability_registry import AgentCapability, AgentCapabilityRegistry  # noqa: E402
+from core_types import TaskDifficulty  # noqa: E402
 from dockyard_composition import (  # noqa: E402
     DockyardCompositionGateway,
     DockyardPairingAuthorizer,
     DockyardPlanReadService,
-    _default_task,
     _edited_tasks,
 )
 from dockyard_control_api import DockyardApiConfig, DockyardControlServer  # noqa: E402
@@ -38,6 +40,8 @@ from dockyard_project_registry import (  # noqa: E402
     DockyardRegisterProjectRequest,
 )
 from dockyard_sse import DockyardSseHub  # noqa: E402
+from pm_codex_planner import PmCodexPlanner  # noqa: E402
+from pm_task_decomposer import decompose_requirement  # noqa: E402
 from dockyard_web_runtime import (  # noqa: E402
     DockyardBrowserBootstrap,
     DockyardWebRuntime,
@@ -65,6 +69,30 @@ class DockyardRequirementCompositionTests(unittest.TestCase):
             DockyardPlanStore(self.root / ".agentdesk/runtime/plans"),
             self.root / "docs/pm/tasks",
         )
+        self.capability_registry = AgentCapabilityRegistry((AgentCapability(
+            "agentdesk.agent-capability/v1", "codex-pm", "codex",
+            "gpt-5.6-sol",
+            (TaskDifficulty.BASIC, TaskDifficulty.STANDARD, TaskDifficulty.ADVANCED, TaskDifficulty.EXPERT),
+            ("planning", "read", "implementation", "testing"), "deep", 4, True, True,
+        ),))
+        planner = PmCodexPlanner(
+            self.repository,
+            "codex",
+            self.capability_registry.route(TaskDifficulty.EXPERT, ("planning", "read")),
+        )
+
+        def agent_plan(_planner, *, plan_id, requirement, snapshot_commit, command_id, registry):
+            return decompose_requirement(
+                plan_id=plan_id,
+                requirement=requirement,
+                snapshot_commit=snapshot_commit,
+                registry=registry,
+            )
+
+        self.pm_plan_patch = patch.object(
+            PmCodexPlanner, "plan", autospec=True, side_effect=agent_plan,
+        )
+        self.pm_plan_patch.start()
         pairing = DockyardPairingStore(self.root / ".agentdesk/runtime/pairing")
         issued = pairing.issue(DockyardPairingIssueRequest(
             "PAIR-1", STAMP, "2026-08-03T08:10:00Z", 3, "OP-ISSUE",
@@ -83,6 +111,7 @@ class DockyardRequirementCompositionTests(unittest.TestCase):
         gateway = DockyardCompositionGateway(
             self.pm, lambda: SNAPSHOT, self.hub, self.registry,
             plan_id="PLAN-1", now=lambda: STAMP,
+            agent_registry=self.capability_registry, pm_planner=planner,
         )
         read_service = DockyardPlanReadService(
             lambda: SNAPSHOT, self.registry, self.pm, "PRJ-1", "PLAN-1",
@@ -101,6 +130,7 @@ class DockyardRequirementCompositionTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.server.stop()
+        self.pm_plan_patch.stop()
         self.temp.cleanup()
 
     def _read(self, suffix: str) -> tuple[int, dict[str, object]]:
@@ -123,6 +153,7 @@ class DockyardRequirementCompositionTests(unittest.TestCase):
         revision: int,
         command_id: str,
         snapshot: str = SNAPSHOT,
+        confirmation_id: str | None = None,
     ) -> tuple[int, dict[str, object]]:
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         idempotency = "IDEMP-" + command_id
@@ -134,7 +165,7 @@ class DockyardRequirementCompositionTests(unittest.TestCase):
             "idempotency_key": idempotency,
             "expected_snapshot_commit": snapshot,
             "expected_revision": revision,
-            "confirmation_id": None,
+            "confirmation_id": confirmation_id,
             "payload_digest": hashlib.sha256(raw).hexdigest(),
         }
         body = json.dumps({"envelope": envelope, "payload": payload}).encode("utf-8")
@@ -192,12 +223,12 @@ class DockyardRequirementCompositionTests(unittest.TestCase):
         self.assertNotIn("\n", projection["tasks"][0]["title"])
         self.assertLessEqual(len(projection["tasks"][0]["title"]), 256)
 
-    def test_default_task_identity_is_canonical_stable_and_plan_bound(self) -> None:
-        first = _default_task("PLAN-1", "实现真实需求入口", SNAPSHOT)
-        replay = _default_task("PLAN-1", "替换需求不改变计划身份", SNAPSHOT)
-        other = _default_task("PLAN-2", "实现真实需求入口", SNAPSHOT)
-        self.assertEqual(first.task_id, replay.task_id)
-        self.assertNotEqual(first.task_id, other.task_id)
+    def test_pm_agent_task_identity_is_canonical_and_plan_bound(self) -> None:
+        self.assertEqual(self._create()[0], 200)
+        plan = self.pm.latest("PLAN-1")
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        first = plan.tasks[0]
         self.assertIsNotNone(re.fullmatch(r"TC-[0-9]{20}", first.task_id))
         self.assertEqual(
             expected_branch(first.task_id, 1, 1, "DSP-TEST-001"),
@@ -205,7 +236,11 @@ class DockyardRequirementCompositionTests(unittest.TestCase):
         )
 
     def test_edit_normalizes_legacy_validation_type_to_canonical_qa(self) -> None:
-        legacy = replace(_default_task("PLAN-1", "测试验证", SNAPSHOT), task_type="validation")
+        self.assertEqual(self._create(requirement="测试验证")[0], 200)
+        plan = self.pm.latest("PLAN-1")
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        legacy = replace(plan.tasks[0], task_type="validation")
         raw = [{
             "task_id": legacy.task_id,
             "title": legacy.title,
@@ -252,6 +287,32 @@ class DockyardRequirementCompositionTests(unittest.TestCase):
         approval_status, approval = self._read("overview")
         self.assertEqual(approval_status, 200)
         self.assertEqual(approval["phase"], "APPROVAL_PENDING")
+
+    def test_discarded_draft_is_retained_as_history_and_allows_a_successor(self) -> None:
+        self.assertEqual(self._create()[0], 200)
+        first = self.pm.latest("PLAN-1")
+        self.assertIsNotNone(first)
+        assert first is not None
+        status, receipt = self._command(
+            "plan.discard",
+            "/api/dockyard/v1/projects/PRJ-1/plans/PLAN-1/discard",
+            "POST",
+            {"plan_id": "PLAN-1", "plan_digest": first.plan_digest},
+            first.revision,
+            "CMD-DISCARD-1",
+            confirmation_id="CONF-DISCARD-1",
+        )
+        self.assertEqual(status, 200, receipt)
+        self.assertEqual(receipt["outcome"], "discarded")
+        discarded = self.pm.latest("PLAN-1")
+        self.assertIsNotNone(discarded)
+        assert discarded is not None
+        self.assertIs(discarded.phase, DockyardPlanPhase.DISCARDED)
+        self.assertEqual(self._create(command_id="CMD-CREATE-SUCCESSOR")[0], 200)
+        successor = self.pm.latest("PLAN-1-r3")
+        self.assertIsNotNone(successor)
+        assert successor is not None
+        self.assertIs(successor.phase, DockyardPlanPhase.DRAFTED)
 
     def test_create_replay_is_byte_exact_and_divergence_is_rejected(self) -> None:
         first_status, first = self._create()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import mimetypes
 import json
 import http.client
@@ -24,6 +25,42 @@ _SPA_ROUTES = frozenset({
     "/diagnostics",
     "/settings",
 })
+
+_UPSTREAM_READ_TIMEOUT_SECONDS = 15
+_UPSTREAM_COMMAND_TIMEOUT_SECONDS = 195
+
+
+def _upstream_timeout(method: str) -> int:
+    """Keep long PM/provider commands inside the Web proxy's wait window."""
+    return (
+        _UPSTREAM_COMMAND_TIMEOUT_SECONDS
+        if method in {"POST", "PATCH", "PUT"}
+        else _UPSTREAM_READ_TIMEOUT_SECONDS
+    )
+
+
+def _proxy_error_body(
+    method: str,
+    route: str,
+    error_code: str,
+    *,
+    retryable: bool,
+) -> bytes:
+    digest = hashlib.sha256(f"{method}\x1f{route}".encode("utf-8")).hexdigest()
+    return json.dumps(
+        {
+            "schema_version": "dockyard.error/v1",
+            "request_id": "REQ-" + digest[:16],
+            "error_code": error_code,
+            "category": "transport",
+            "retryable": retryable,
+            "safe_message": "Dockyard upstream request did not complete.",
+            "correlation_digest": digest,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 class DockyardWebRuntimeError(ValueError):
@@ -309,7 +346,11 @@ class DockyardWebRuntime:
                 connection_class = http.client.HTTPSConnection if upstream.scheme == "https" else http.client.HTTPConnection
                 host = upstream.hostname
                 assert host is not None and upstream.port is not None
-                connection = connection_class(host, upstream.port, timeout=15)
+                connection = connection_class(
+                    host,
+                    upstream.port,
+                    timeout=_upstream_timeout(self.command),
+                )
                 try:
                     connection.request(self.command, route, body=body, headers=headers)
                     response = connection.getresponse()
@@ -330,8 +371,30 @@ class DockyardWebRuntime:
                     self.end_headers()
                     if self.command != "HEAD":
                         self.wfile.write(response_body)
+                except TimeoutError:
+                    self._send(
+                        504,
+                        _proxy_error_body(
+                            self.command,
+                            route,
+                            "UPSTREAM_TIMEOUT",
+                            retryable=True,
+                        ),
+                        "application/json; charset=utf-8",
+                        no_store=True,
+                    )
                 except (OSError, http.client.HTTPException):
-                    self._reject(502)
+                    self._send(
+                        502,
+                        _proxy_error_body(
+                            self.command,
+                            route,
+                            "UPSTREAM_UNAVAILABLE",
+                            retryable=True,
+                        ),
+                        "application/json; charset=utf-8",
+                        no_store=True,
+                    )
                 finally:
                     connection.close()
 

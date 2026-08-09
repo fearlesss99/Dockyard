@@ -54,6 +54,7 @@ from dockyard_plan_store import (
 )
 from dockyard_pm_service import (
     DockyardPlanApprovalRequest,
+    DockyardPlanDiscardRequest,
     DockyardPlanDraftRequest,
     DockyardPlanEditRequest,
     DockyardPlanMaterializeRequest,
@@ -109,10 +110,8 @@ from difficulty_assessment_store import DifficultyAssessmentStore
 from dispatcher_gateway import DispatchIdentity, DispatchRequest, ModelSelectionSnapshot
 from agent_capability_registry import (
     AgentCapabilityRegistry,
-    AgentRoutingUnavailableError,
 )
-from pm_task_decomposer import PmDecompositionInputError, decompose_requirement
-from pm_repository_context import PmRepositoryInspectionError, inspect_repository
+from pm_codex_planner import PmCodexPlanner, PmCodexPlanningError
 from mad_audit_gateway import MadAuditGatewayResult
 from approval_gate import (
     ApprovalCheckRequest,
@@ -123,16 +122,21 @@ from approval_gate import (
 )
 from control_plane_transition import (
     AcknowledgePayload,
+    CancelledPayload,
     DispatchCAS,
     DispatchFailedPayload,
     DispatchPayload,
     TransitionCAS,
+    TransitionCASConflictError,
     TransitionEventContext,
+    TransitionLockContentionError,
     TransitionRequest,
     ControlPlaneTransitionService,
 )
 from workflow_orchestrator import (
     DispatchCycleRequest,
+    TaskCancellationRequest,
+    WorkflowInputError,
     WorkflowInvariantError,
     WorkflowOrchestrator,
 )
@@ -344,47 +348,6 @@ def _materialize_operation_id(command_id: str) -> str:
 
 def _approval_pending_operation_id(command_id: str) -> str:
     return "PEND-" + hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:59]
-
-
-def _default_task(plan_id: str, requirement: str, snapshot_commit: str) -> DockyardPlanTask:
-    """Create the bounded local-MVP PM draft without invoking a provider."""
-    identity_digest = hashlib.sha256(plan_id.encode("utf-8")).digest()
-    suffix = f"{int.from_bytes(identity_digest[:8], 'big'):020d}"
-    headline = next((line.strip() for line in requirement.splitlines() if line.strip()), requirement)
-    title = headline if len(headline) <= 96 else headline[:93].rstrip() + "…"
-    return DockyardPlanTask(
-        "TC-" + suffix,
-        title,
-        requirement,
-        (),
-        "serial",
-        "R1",
-        "implementation",
-        "codex",
-        "gpt-5.6-sol",
-        "standard",
-        32000,
-        3,
-        snapshot_commit,
-        BusinessPriority.P1,
-        (
-            "scope.bounded",
-            "clarity.explicit",
-            "concurrency.single_writer",
-            "contract.internal",
-            "impact.informational",
-            "rollback.simple",
-            "dependency.none",
-        ),
-        None,
-        None,
-        None,
-        "L0",
-        ("coding",),
-        None,
-        0,
-        1,
-    )
 
 
 class DockyardPairingAuthorizer:
@@ -1343,6 +1306,18 @@ _EDITABLE_TASK_FIELDS = frozenset({
 })
 
 
+def _pm_codex_failure_code(error: PmCodexPlanningError) -> str:
+    """Map private planner failures to stable, non-sensitive API codes."""
+    reason = str(error)
+    if reason == "pm_codex:proxy_certificate_untrusted":
+        return "PM_CODEX_PROXY_CERTIFICATE_UNTRUSTED"
+    if reason == "pm_codex:dispatch_failed":
+        return "PM_CODEX_DISPATCH_FAILED"
+    if reason == "pm_codex:local_policy_rejected":
+        return "PM_CODEX_PLAN_REJECTED"
+    return "PM_CODEX_OUTPUT_INVALID"
+
+
 def _edited_tasks(raw: object, current: tuple[DockyardPlanTask, ...]) -> tuple[DockyardPlanTask, ...]:
     if type(raw) is not list or len(raw) != len(current):
         raise DockyardCommandRejected(400, "COMMAND_PAYLOAD_INVALID", "input")
@@ -1406,6 +1381,7 @@ class DockyardCompositionGateway:
         providers: Mapping[str, object] | None = None,
         provider_cli_versions: tuple[tuple[str, str], ...] | None = None,
         agent_registry: AgentCapabilityRegistry | None = None,
+        pm_planner: PmCodexPlanner | None = None,
         plan_id_changed: Callable[[str], None] | None = None,
         now: Callable[[], str] = _utc_now,
     ) -> None:
@@ -1433,6 +1409,8 @@ class DockyardCompositionGateway:
         self._active_registry = active_registry
         self._terminate_receipts: dict[str, tuple[str, DockyardCommandReceipt]] = {}
         self._terminate_receipts_lock = threading.Lock()
+        self._cancel_receipts: dict[str, tuple[str, DockyardCommandReceipt]] = {}
+        self._cancel_receipts_lock = threading.Lock()
         self._plan_id = None if plan_id is None else _text(plan_id, "plan_id", 128)
         if plan_id_changed is not None and not callable(plan_id_changed):
             raise TypeError("plan_id_changed must be callable or None")
@@ -1459,6 +1437,9 @@ class DockyardCompositionGateway:
         if agent_registry is not None and type(agent_registry) is not AgentCapabilityRegistry:
             raise TypeError("agent_registry must be AgentCapabilityRegistry or None")
         self._agent_registry = agent_registry
+        if pm_planner is not None and type(pm_planner) is not PmCodexPlanner:
+            raise TypeError("pm_planner must be PmCodexPlanner or None")
+        self._pm_planner = pm_planner
         if self._providers is not None and self._ready_provider_ids is not None:
             missing = set(self._providers) - set(self._ready_provider_ids)
             if missing:
@@ -1475,6 +1456,8 @@ class DockyardCompositionGateway:
             raise DockyardCommandRejected(409, "SNAPSHOT_STALE", "conflict")
         if request.envelope.command_type == "plan.create":
             return self._create_plan(request, current_snapshot)
+        if request.envelope.command_type == "plan.discard":
+            return self._discard_plan(request, current_snapshot)
         if request.envelope.command_type == "plan.update":
             return self._update_plan(request, current_snapshot)
         if request.envelope.command_type == "plan.approve":
@@ -1485,11 +1468,106 @@ class DockyardCompositionGateway:
             return self._return_delivery(request, current_snapshot)
         if request.envelope.command_type == "dispatch.terminate":
             return self._terminate_dispatch(request, current_snapshot)
+        if request.envelope.command_type == "task.cancel":
+            return self._cancel_task(request, current_snapshot)
         if request.envelope.command_type == "task.retry":
             return self._retry_task(request, current_snapshot)
         if request.envelope.command_type == "project.remove":
             return self._remove_project(request, current_snapshot)
         raise DockyardCommandRejected(409, "COMMAND_OWNER_UNAVAILABLE", "not_ready")
+
+    def _cancel_task(
+        self,
+        request: DockyardCommandRequest,
+        snapshot_commit: str,
+    ) -> DockyardCommandReceipt:
+        """Soft-delete one quiescent task through the canonical transition owner.
+
+        A task with an active dispatch is deliberately rejected here; the UI
+        must use the separate exact-generation dispatch termination command.
+        The canonical TASK_CANCELLED event and task state remain durable.
+        """
+        if self._project_root is None:
+            raise DockyardCommandRejected(409, "COMMAND_OWNER_UNAVAILABLE", "not_ready")
+        envelope = request.envelope
+        payload = _payload(request.payload_json)
+        if set(payload) != {"task_id", "event_id"}:
+            raise DockyardCommandRejected(400, "COMMAND_PAYLOAD_INVALID", "input")
+        task_id = _text(payload["task_id"], "task_id", 128)
+        event_id = _text(payload["event_id"], "event_id", 128)
+        if request.resource_id != task_id or envelope.confirmation_id is None:
+            raise DockyardCommandRejected(409, "RESOURCE_ID_DIVERGENCE", "conflict")
+        with self._cancel_receipts_lock:
+            existing = self._cancel_receipts.get(envelope.command_id)
+        if existing is not None:
+            payload_digest, receipt = existing
+            if payload_digest != envelope.payload_digest:
+                raise DockyardCommandRejected(409, "COMMAND_ID_DIVERGENCE", "conflict")
+            return replace(receipt, replayed=True)
+        snapshot = StateProvider(self._project_root).snapshot()
+        task = next((value for value in snapshot.tasks if value.task_id == task_id), None)
+        if task is None:
+            raise DockyardCommandRejected(404, "TASK_NOT_FOUND", "not_found")
+        if task.revision != envelope.expected_revision:
+            raise DockyardCommandRejected(409, "REVISION_STALE", "conflict")
+        if task.current_dispatch is not None:
+            raise DockyardCommandRejected(409, "ACTIVE_DISPATCH_REQUIRES_TERMINATE", "conflict")
+        if task.state in {"cancelled", "superseded", "integrated"}:
+            raise DockyardCommandRejected(409, "TASK_ALREADY_TERMINAL", "conflict")
+        if any(value.event_id == event_id for value in snapshot.events):
+            raise DockyardCommandRejected(409, "EVENT_ID_CONFLICT", "conflict")
+        transition = TransitionRequest(
+            cas=TransitionCAS(
+                task_id=task_id,
+                expected_revision=task.revision,
+                expected_state=task.state,
+                expected_snapshot_commit=envelope.expected_snapshot_commit,
+            ),
+            dispatch_cas=None,
+            event_id=event_id,
+            event_type="TASK_CANCELLED",
+            payload=CancelledPayload(),
+            event_context=TransitionEventContext(
+                source_message_id=envelope.command_id,
+                evidence_refs=(),
+                guard_results=(),
+            ),
+        )
+        try:
+            result = asyncio.run(WorkflowOrchestrator(
+                self._project_root,
+                _DockyardWorkflowClock(self._now),
+            ).cancel_quiescent_task(TaskCancellationRequest(transition)))
+        except WorkflowInputError as exc:
+            raise DockyardCommandRejected(409, "TASK_CANCEL_CONFLICT", "conflict") from exc
+        except TransitionCASConflictError as exc:
+            raise DockyardCommandRejected(409, "TASK_CANCEL_CONFLICT", "conflict") from exc
+        except TransitionLockContentionError as exc:
+            raise DockyardCommandRejected(409, "STATE_LOCK_CONTENTION", "conflict") from exc
+        completed_at = self._now()
+        committed_snapshot = self._snapshot_commit()
+        receipt = DockyardCommandReceipt(
+            "dockyard.command-receipt/v1",
+            envelope.command_id,
+            envelope.project_id,
+            envelope.command_type,
+            "cancelled",
+            result.cancellation_transition.event_id,
+            committed_snapshot,
+            False,
+            completed_at,
+            _receipt_digest(envelope, "cancelled", committed_snapshot, completed_at),
+        )
+        with self._cancel_receipts_lock:
+            self._cancel_receipts[envelope.command_id] = (envelope.payload_digest, receipt)
+        self._sse_hub.publish(
+            project_id=envelope.project_id,
+            event_type="task.changed",
+            snapshot_commit=committed_snapshot,
+            resource_id=task_id,
+            occurred_at=completed_at,
+        )
+        return receipt
 
     def _retry_task(
         self,
@@ -2338,39 +2416,37 @@ class DockyardCompositionGateway:
             raise DockyardCommandRejected(409, "REVISION_STALE", "conflict")
         existing = self._pm_service.latest(requested_plan_id)
         plan_id = requested_plan_id
-        if existing is not None and existing.phase is DockyardPlanPhase.MATERIALIZED:
+        if existing is not None and existing.phase in {
+            DockyardPlanPhase.MATERIALIZED,
+            DockyardPlanPhase.DISCARDED,
+        }:
             # A materialized plan is immutable.  Start a fresh PM session with
             # a deterministic successor identity while retaining all prior
             # revisions and task evidence under the old plan ID.
             plan_id = f"{requested_plan_id}-r{existing.revision + 1}"
             existing = None
         replayed = existing is not None and existing.last_operation_id == envelope.command_id
-        tasks = (_default_task(plan_id, requirement, snapshot_commit),)
-        if self._agent_registry is not None:
-            try:
-                repository_inventory = (
-                    None
-                    if self._project_root is None
-                    else inspect_repository(self._project_root, snapshot_commit)
+        if replayed and existing is not None:
+            tasks = existing.tasks
+        else:
+            # A Dockyard plan is a PM-agent artefact.  Local control-plane code
+            # may validate, bind and persist the result, but must never invent a
+            # one-card substitute when PM-Codex is unavailable.
+            if self._pm_planner is None or self._agent_registry is None:
+                raise DockyardCommandRejected(
+                    409, "PM_AGENT_UNAVAILABLE", "not_ready"
                 )
-                decomposition = decompose_requirement(
+            try:
+                decomposition = self._pm_planner.plan(
                     plan_id=plan_id,
                     requirement=requirement,
                     snapshot_commit=snapshot_commit,
+                    command_id=envelope.command_id,
                     registry=self._agent_registry,
-                    repository_inventory=repository_inventory,
                 )
-            except AgentRoutingUnavailableError as exc:
+            except PmCodexPlanningError as exc:
                 raise DockyardCommandRejected(
-                    409, "AGENT_ROUTING_UNAVAILABLE", "not_ready"
-                ) from exc
-            except PmDecompositionInputError as exc:
-                raise DockyardCommandRejected(
-                    400, "PM_DECOMPOSITION_INVALID", "input"
-                ) from exc
-            except PmRepositoryInspectionError as exc:
-                raise DockyardCommandRejected(
-                    409, "PM_REPOSITORY_EVIDENCE_UNAVAILABLE", "not_ready"
+                    502, _pm_codex_failure_code(exc), "provider"
                 ) from exc
             tasks = tuple(item.plan_task for item in decomposition.tasks)
         try:
@@ -2408,6 +2484,58 @@ class DockyardCompositionGateway:
             replayed,
             plan.updated_at,
             _receipt_digest(envelope, "drafted", snapshot_commit, plan.updated_at),
+        )
+
+    def _discard_plan(
+        self,
+        request: DockyardCommandRequest,
+        snapshot_commit: str,
+    ) -> DockyardCommandReceipt:
+        if self._plan_id is None:
+            raise DockyardCommandRejected(409, "COMMAND_OWNER_UNAVAILABLE", "not_ready")
+        envelope = request.envelope
+        payload = _payload(request.payload_json)
+        if set(payload) != {"plan_id", "plan_digest"}:
+            raise DockyardCommandRejected(400, "COMMAND_PAYLOAD_INVALID", "input")
+        plan_id = _text(payload["plan_id"], "plan_id", 128)
+        plan_digest = _sha(payload["plan_digest"])
+        if plan_id != self._plan_id or request.resource_id != plan_id:
+            raise DockyardCommandRejected(409, "PLAN_ID_DIVERGENCE", "conflict")
+        if envelope.confirmation_id is None:
+            raise DockyardCommandRejected(409, "CONFIRMATION_REQUIRED", "conflict")
+        latest = self._latest(plan_id)
+        if latest.project_id != envelope.project_id:
+            raise DockyardCommandRejected(409, "PROJECT_ID_DIVERGENCE", "conflict")
+        if envelope.expected_revision != latest.revision or latest.plan_digest != plan_digest:
+            raise DockyardCommandRejected(409, "PLAN_CONFLICT", "conflict")
+        try:
+            discarded = self._pm_service.discard(DockyardPlanDiscardRequest(
+                plan_id,
+                latest.revision,
+                latest.content_digest,
+                self._now(),
+                envelope.command_id,
+            ))
+        except DockyardPlanConflictError as exc:
+            raise DockyardCommandRejected(409, "PLAN_CONFLICT", "conflict") from exc
+        self._sse_hub.publish(
+            project_id=envelope.project_id,
+            event_type="project.changed",
+            snapshot_commit=snapshot_commit,
+            resource_id=plan_id,
+            occurred_at=discarded.updated_at,
+        )
+        return DockyardCommandReceipt(
+            "dockyard.command-receipt/v1",
+            envelope.command_id,
+            envelope.project_id,
+            envelope.command_type,
+            "discarded",
+            None,
+            snapshot_commit,
+            False,
+            discarded.updated_at,
+            _receipt_digest(envelope, "discarded", snapshot_commit, discarded.updated_at),
         )
 
     def _update_plan(

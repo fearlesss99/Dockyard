@@ -80,6 +80,23 @@ describe("Dockyard typed command client", () => {
     await expect(client.execute(draft)).rejects.toBeInstanceOf(DockyardClientError);
   });
 
+  it("wraps a non-JSON proxy failure as a typed client error", async () => {
+    const fetcher = vi.fn(async () => new Response(
+      "Dockyard request rejected",
+      { status: 502, headers: { "Content-Type": "text/plain" } },
+    ));
+    const client = new DockyardClient(
+      "http://127.0.0.1:7001",
+      { deviceId: "DEV-1", bearerToken: "token", csrfValue: "CSRF-1" },
+      () => "1",
+      fetcher as typeof fetch,
+    );
+    await expect(client.execute(draft)).rejects.toMatchObject({
+      status: 502,
+      envelope: null,
+    });
+  });
+
   it("contains no provider API credential surface", () => {
     const source = String(DockyardClient);
     expect(source).not.toMatch(/DEEPSEEK_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY/);

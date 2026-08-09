@@ -36,8 +36,12 @@ from pm_materialization_admission_handoff import (
     HANDOFF_SCHEMA_VERSION,
     DispatchApprovalAuthorization,
     MaterializedTaskEvidence,
+    canonical_worktree_identity,
 )
-from pm_task_admission_preparation import with_content_digest
+from pm_task_admission_preparation import (
+    PmTaskAdmissionPreparationRuntime,
+    with_content_digest,
+)
 from portfolio_scheduler_store import BusinessPriority
 
 STAMP = "2026-08-03T12:00:00Z"
@@ -94,8 +98,8 @@ class Fixture:
         self.head = git(self.root, "rev-parse", "HEAD")
         bindings = self.root / ".agentdesk/runtime/model-bindings.yaml"
         bindings.parent.mkdir(parents=True)
-        bindings.write_text(json.dumps({"schema_version": "agentdesk.model-bindings/v2", "updated_at": STAMP, "bindings": {"basic": {"provider": "claude", "model_id": "test-basic", "tier": "basic", "deliberation_tier": "efficient", "context_window_tokens": 64000, "capabilities": ["coding"], "enabled": True}}}) + "\n", encoding="utf-8")
-        self.task = DockyardPlanTask("TC-002", "Task", "Implement.", dependencies, "serial" if dependencies else "parallel", "R1", "implementation", "codex", "legacy", "basic", 1000, 3, self.head, BusinessPriority.P1, RATIONALE, None, None, None, "L0", ("coding",), None, 0, 1)
+        bindings.write_text(json.dumps({"schema_version": "agentdesk.model-bindings/v2", "updated_at": STAMP, "bindings": {"aaa-codex": {"provider": "codex", "model_id": "test-alt", "tier": "basic", "deliberation_tier": "efficient", "context_window_tokens": 64000, "capabilities": ["coding"], "enabled": True}, "basic": {"provider": "claude", "model_id": "test-basic", "tier": "basic", "deliberation_tier": "efficient", "context_window_tokens": 64000, "capabilities": ["coding"], "enabled": True}}}) + "\n", encoding="utf-8")
+        self.task = DockyardPlanTask("TC-002", "Task", "Implement.", dependencies, "serial" if dependencies else "parallel", "R1", "implementation", "claude", "test-basic", "basic", 1000, 3, self.head, BusinessPriority.P1, RATIONALE, None, None, None, "L0", ("coding",), None, 0, 1)
         tasks = (self.task,)
         if dependencies:
             dependency = dataclasses.replace(self.task, task_id=dependencies[0], dependencies=())
@@ -143,6 +147,20 @@ class DockyardTaskAdmissionCompositionTests(unittest.TestCase):
         self.assertEqual(handoff.calls, 1)
         self.assertTrue((self.fx.root / ".agentdesk/runtime/dockyard-admission/context" / f"{progress.context_snapshot_id}.yaml").is_file())
         self.assertTrue((self.fx.root / ".agentdesk/runtime/admission-preparation/handoff-inputs" / f"{progress.preparation_id}.yaml").is_file())
+
+    def test_pm_selected_provider_and_model_are_preserved_at_admission(self) -> None:
+        # The unfenced selector would prefer the lexically-first Codex binding.
+        # The durable plan names Claude, so preparation must not apply a second
+        # unrelated ranking at admission time.
+        self.fx.task = dataclasses.replace(
+            self.fx.task, provider_id="claude", model_id="test-basic"
+        )
+        self.fx.plan = dataclasses.replace(self.fx.plan, tasks=(self.fx.task,))
+        runtime = DockyardTaskAdmissionCompositionRuntime(self.fx.root, handoff=FakeHandoff())
+        progress = runtime.execute(self.fx.plan, self.fx.task, self.fx.evidence, self.fx.authorization)
+        inputs = PmTaskAdmissionPreparationRuntime(self.fx.root).read_handoff_inputs(progress.preparation_id)
+        self.assertEqual(inputs.admission_plan_template.model_selection.selected_model_provider, "claude")
+        self.assertEqual(inputs.admission_plan_template.model_selection.selected_model_id, "test-basic")
 
     def test_finalized_replay_does_not_repeat_downstream_calls(self) -> None:
         handoff = FakeHandoff()
@@ -219,6 +237,31 @@ class DockyardTaskAdmissionCompositionTests(unittest.TestCase):
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0], results[1])
         self.assertEqual(handoff.calls, 1)
+
+    def test_later_preparation_keeps_worktree_identity_on_current_cas_base(self) -> None:
+        # Simulate an earlier card's evidence commit before this card starts.
+        # The current HEAD is now newer than the frozen task base, yet both
+        # the preparation and handoff paths must derive the same worktree.
+        advanced = self.fx.root / "advanced-by-prior-card.txt"
+        advanced.write_text("evidence\n", encoding="utf-8")
+        git(self.fx.root, "add", advanced.name)
+        git(self.fx.root, "commit", "-m", "docs: prior card evidence")
+        runtime = DockyardTaskAdmissionCompositionRuntime(self.fx.root, handoff=FakeHandoff())
+        progress = runtime.execute(self.fx.plan, self.fx.task, self.fx.evidence, self.fx.authorization)
+        inputs = PmTaskAdmissionPreparationRuntime(self.fx.root).read_handoff_inputs(progress.preparation_id)
+        self.assertNotEqual(inputs.materialization_admission_request.expected_head_commit, self.fx.task.base_commit)
+        self.assertEqual(
+            inputs.materialization_admission_request.expected_base_commit,
+            inputs.materialization_admission_request.expected_head_commit,
+        )
+        worktree = runtime._worktree(
+            inputs.admission_plan_template,
+            inputs.materialization_admission_request,
+        )
+        self.assertEqual(
+            inputs.admission_plan_template.canonical_worktree_identity,
+            canonical_worktree_identity(worktree),
+        )
 
     def test_context_cold_start_proves_all_empty_slots_without_sequence(self) -> None:
         handoff = FakeHandoff()

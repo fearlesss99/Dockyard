@@ -1,6 +1,7 @@
 export type DockyardCommandType =
   | "plan.create"
   | "plan.update"
+  | "plan.discard"
   | "plan.approve"
   | "task.retry"
   | "task.cancel"

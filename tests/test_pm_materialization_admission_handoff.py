@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import subprocess
 import sys
@@ -27,6 +28,7 @@ from pm_materialization_admission_handoff import (
     MaterializationAdmissionRuntime,
     MaterializedTaskEvidence,
     _SchedulerEvidence,
+    _GitOwner,
     canonical_worktree_identity,
     repository_identity,
     with_content_digest,
@@ -251,10 +253,57 @@ class MaterializationAdmissionRuntimeTests(unittest.TestCase):
         self.assertTrue(prior_assessment.is_file())
         self.assertNotIn(str(prior_card.relative_to(self.fx.root)).replace("\\", "/"), _git(self.fx.root, "ls-files"))
 
-    def test_unrelated_untracked_file_still_fails_closed(self) -> None:
-        (self.fx.root / "unrelated.txt").write_text("user data\n", encoding="utf-8")
+    def test_unrelated_untracked_file_is_not_committed_with_evidence(self) -> None:
+        unrelated = self.fx.root / "unrelated.txt"
+        unrelated.write_text("user data\n", encoding="utf-8")
+        receipt, scheduler = self._run()
+        self.assertIs(receipt.phase, MaterializationAdmissionPhase.FINALIZED)
+        self.assertEqual(scheduler.calls, 1)
+        self.assertTrue(unrelated.is_file())
+        self.assertNotIn("unrelated.txt", _git(self.fx.root, "show", "--format=", "--name-only", "HEAD").splitlines())
+
+    def test_later_card_appends_evidence_after_prior_card_advanced_head(self) -> None:
+        self._run()
+        task_id = "TC-002"
+        card_rel = f"docs/pm/tasks/{task_id}-r1-dockyard.md"
+        card = self.fx.root / card_rel
+        card.write_text("second durable task card\n", encoding="utf-8")
+        assessment_rel = f"docs/pm/assessments/{task_id}/r1/ASM-002.yaml"
+        assessment = self.fx.root / assessment_rel
+        assessment.parent.mkdir(parents=True)
+        assessment.write_text("second assessment\n", encoding="utf-8")
+        evidence = dataclasses.replace(
+            self.fx.evidence,
+            task_id=task_id,
+            task_card_relative_path=card_rel,
+            task_card_content_digest="sha256:" + hashlib.sha256(card.read_bytes()).hexdigest(),
+            content_digest="sha256:" + "0" * 64,
+        )
+        evidence = with_content_digest(evidence)
+        request = dataclasses.replace(
+            self.fx.request,
+            handoff_id="HANDOFF-002",
+            task_id=task_id,
+            materialized_task_content_digest=evidence.content_digest,
+            expected_task_card_relative_path=card_rel,
+            expected_task_card_content_digest=evidence.task_card_content_digest,
+            expected_assessment_relative_path=assessment_rel,
+            expected_assessment_content_digest="sha256:" + hashlib.sha256(assessment.read_bytes()).hexdigest(),
+            assessment_id="ASM-002",
+            content_digest="sha256:" + "0" * 64,
+        )
+        request = with_content_digest(request)
+        commit = _GitOwner().bind(self.fx.root, request, evidence)
+        self.assertEqual(commit, _git(self.fx.root, "rev-parse", "HEAD"))
+        self.assertEqual(_git(self.fx.root, "show", f"HEAD:{card_rel}"), "second durable task card")
+        self.assertEqual(_git(self.fx.root, "show", f"HEAD:{assessment_rel}"), "second assessment")
+
+    def test_foreign_staged_file_remains_fail_closed(self) -> None:
+        unrelated = self.fx.root / "unrelated.txt"
+        unrelated.write_text("user data\n", encoding="utf-8")
+        _git(self.fx.root, "add", "unrelated.txt")
         scheduler = _FakeScheduler()
-        with self.assertRaisesRegex(MaterializationAdmissionConflictError, "dirty_worktree"):
+        with self.assertRaisesRegex(MaterializationAdmissionConflictError, "staged_worktree"):
             self._run(scheduler)
         self.assertEqual(scheduler.calls, 0)
 

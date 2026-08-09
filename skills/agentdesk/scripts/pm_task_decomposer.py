@@ -16,11 +16,13 @@ from pm_repository_context import PmRepositoryInventory
 
 __all__ = [
     "PmTaskRoutingOverride",
+    "PmCodexTaskSpec",
     "PmTaskBlueprint",
     "PmDecompositionResult",
     "PmDecompositionError",
     "PmDecompositionInputError",
     "decompose_requirement",
+    "decompose_codex_tasks",
 ]
 
 
@@ -90,6 +92,51 @@ class PmTaskRoutingOverride:
             _text(agent_id, "forbidden_agent", 256)
         if len(set(self.forbidden_agents)) != len(self.forbidden_agents):
             raise PmDecompositionInputError("forbidden_agents contain duplicates")
+
+
+@dataclass(frozen=True, slots=True)
+class PmCodexTaskSpec:
+    """Strict, provider-produced task suggestion consumed by local PM policy."""
+
+    title: str
+    description: str
+    dependencies: tuple[int, ...]
+    execution_mode: str
+    task_type: str
+    capabilities: tuple[str, ...]
+    rationale_keys: tuple[str, ...]
+    difficulty: TaskDifficulty
+    risk: str
+    business_priority: BusinessPriority
+
+    def __post_init__(self) -> None:
+        _text(self.title, "title", 256)
+        _document_text(self.description, "description")
+        if type(self.dependencies) is not tuple:
+            raise PmDecompositionInputError("dependencies must be tuple")
+        for dependency in self.dependencies:
+            if type(dependency) is not int or isinstance(dependency, bool) or dependency < 1:
+                raise PmDecompositionInputError("dependency index is invalid")
+        if len(set(self.dependencies)) != len(self.dependencies):
+            raise PmDecompositionInputError("dependencies contain duplicates")
+        if self.execution_mode not in {"parallel", "serial"}:
+            raise PmDecompositionInputError("execution_mode is invalid")
+        _text(self.task_type, "task_type", 64)
+        if type(self.capabilities) is not tuple or not self.capabilities:
+            raise PmDecompositionInputError("capabilities are invalid")
+        for capability in self.capabilities:
+            _text(capability, "capability", 128)
+        if len(set(self.capabilities)) != len(self.capabilities):
+            raise PmDecompositionInputError("capabilities contain duplicates")
+        if type(self.rationale_keys) is not tuple or len(self.rationale_keys) != 7:
+            raise PmDecompositionInputError("rationale_keys are invalid")
+        for rationale_key in self.rationale_keys:
+            _text(rationale_key, "rationale_key", 128)
+        if type(self.difficulty) is not TaskDifficulty:
+            raise PmDecompositionInputError("difficulty is invalid")
+        _text(self.risk, "risk", 32)
+        if type(self.business_priority) is not BusinessPriority:
+            raise PmDecompositionInputError("business_priority is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,4 +330,111 @@ def decompose_requirement(
         registry.max_concurrency,
         hashlib.sha256(serialized).hexdigest(),
         None if repository_inventory is None else repository_inventory.content_digest,
+    )
+
+
+def decompose_codex_tasks(
+    *,
+    plan_id: str,
+    task_specs: tuple[PmCodexTaskSpec, ...],
+    snapshot_commit: str,
+    registry: AgentCapabilityRegistry,
+) -> PmDecompositionResult:
+    """Convert a validated PM-Codex result into canonical local PM tasks.
+
+    Codex may suggest scope, rationale, and ordering, but it never selects a
+    provider or bypasses the deterministic difficulty and capability policy.
+    The local registry remains authoritative for every route.
+    """
+    _text(plan_id, "plan_id", 128)
+    snapshot_commit = _sha(snapshot_commit, "snapshot_commit")
+    if type(task_specs) is not tuple or not task_specs:
+        raise PmDecompositionInputError("task_specs are invalid")
+    if len(task_specs) > 32 or any(type(item) is not PmCodexTaskSpec for item in task_specs):
+        raise PmDecompositionInputError("task_specs contain an invalid item")
+    if type(registry) is not AgentCapabilityRegistry:
+        raise PmDecompositionInputError("registry is invalid")
+    if any(
+        capability.provider_id not in {"claude", "codex", "reasonix"}
+        for capability in registry.capabilities
+    ):
+        raise PmDecompositionInputError("registry contains an unsupported provider")
+
+    blueprints: list[PmTaskBlueprint] = []
+    for index, spec in enumerate(task_specs, start=1):
+        if any(dependency >= index for dependency in spec.dependencies):
+            raise PmDecompositionInputError("dependencies must point to earlier tasks")
+        dependencies = tuple(blueprints[dependency - 1].task_id for dependency in spec.dependencies)
+        digest = hashlib.sha256(
+            f"{plan_id}:{index}:{spec.title}:{spec.description}".encode("utf-8")
+        ).digest()
+        task_id = f"TC-{int.from_bytes(digest[:8], 'big'):020d}"
+        assessment = assess_task_difficulty(
+            assessment_id=f"ASM-{digest.hex()[:24]}",
+            task_id=task_id,
+            revision=1,
+            rationale_keys=spec.rationale_keys,
+            selected_difficulty=spec.difficulty,
+        )
+        difficulty = assessment.selected_difficulty
+        route = registry.route(difficulty, spec.capabilities)
+        execution_mode = "serial" if dependencies else spec.execution_mode
+        plan_task = DockyardPlanTask(
+            task_id,
+            spec.title,
+            spec.description,
+            dependencies,
+            execution_mode,
+            "R1",
+            spec.task_type,
+            route.provider_id,
+            route.model_id,
+            difficulty.value,
+            _BUDGET[difficulty],
+            3,
+            snapshot_commit,
+            spec.business_priority,
+            spec.rationale_keys,
+            difficulty,
+            None,
+            None,
+            spec.risk,
+            spec.capabilities,
+            None,
+            0,
+            1,
+        )
+        blueprints.append(PmTaskBlueprint(
+            task_id,
+            spec.title,
+            spec.description,
+            dependencies,
+            execution_mode,
+            spec.task_type,
+            difficulty,
+            spec.rationale_keys,
+            spec.risk,
+            spec.capabilities,
+            route,
+            plan_task,
+        ))
+
+    serialized = json.dumps(
+        {
+            "source": "pm-codex",
+            "tasks": tuple(
+                (item.task_id, item.dependencies, item.route.agent_id, item.difficulty.value)
+                for item in blueprints
+            ),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return PmDecompositionResult(
+        "agentdesk.pm-decomposition/v1",
+        plan_id,
+        tuple(blueprints),
+        registry.max_concurrency,
+        hashlib.sha256(serialized).hexdigest(),
+        None,
     )

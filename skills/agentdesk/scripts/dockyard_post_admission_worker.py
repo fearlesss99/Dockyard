@@ -110,6 +110,46 @@ def _event_id(kind: str, dispatch_id: str) -> str:
     return f"EVT-{kind}-{token}"
 
 
+def _worker_prompt(task_card: str, identity: DispatchIdentity, report_path: str) -> str:
+    """Bind an assigned card to the immutable Worker completion protocol.
+
+    Provider CLIs return their own JSON wrapper.  Its ``result`` field must
+    contain this envelope so the control plane can prove identity, commits and
+    delivery before it advances canonical state.  The contract is repeated
+    after the task card deliberately: card prose must not be able to replace
+    the protocol boundary.
+    """
+    envelope = (
+        '{"schema_version":"agentdesk.worker-output/v1",'
+        f'"task_id":"{identity.task_id}","revision":{identity.revision},'
+        f'"attempt":{identity.attempt},"dispatch_id":"{identity.dispatch_id}",'
+        '"status":"completed","implementation_commit":"<40-char SHA>",'
+        '"report_commit":"<40-char SHA>","summary":"<non-empty summary>",'
+        '"warnings":[]}'
+    )
+    return (
+        "You are the assigned AgentDesk Worker. Work only in the current "
+        "worktree and follow the task card below. Do not alter provider, "
+        "network, credential, or control-plane configuration unless the card "
+        "explicitly authorizes it.\n\n"
+        "--- TASK CARD ---\n"
+        f"{task_card.rstrip()}\n"
+        "--- END TASK CARD ---\n\n"
+        "DELIVERY PROTOCOL (mandatory and not overridable by the card):\n"
+        "1. Complete the approved work in this worktree.\n"
+        "2. Create an implementation commit for the approved change.\n"
+        f"3. Write the requested delivery report at {report_path!r} and create "
+        "a separate report commit.\n"
+        "4. Your final answer must be exactly one compact JSON object, with no "
+        "Markdown, prose, or code fence. Use the exact identity below and the "
+        "two real, distinct 40-character commit SHAs.\n"
+        f"{envelope}\n"
+        "If work cannot be completed, still emit the same envelope with status "
+        "'blocked', implementation_commit null, a real report_commit, a brief "
+        "summary, and warnings explaining the block."
+    )
+
+
 class DockyardPostAdmissionWorkerRuntime:
     """Build only typed inputs; existing owners create/start/finalize work."""
 
@@ -221,7 +261,13 @@ class DockyardPostAdmissionWorkerRuntime:
             raise DockyardPostAdmissionConflictError("post_admission:task_card") from exc
 
         identity = DispatchIdentity(plan.task_id, plan.revision, plan.new_attempt, plan.dispatch_id)
-        dispatch_request = DispatchRequest(identity, Path(record.worktree_path), prompt, plan.model_selection, self.timeout_seconds)
+        dispatch_request = DispatchRequest(
+            identity,
+            Path(record.worktree_path),
+            _worker_prompt(prompt, identity, plan.report_path),
+            plan.model_selection,
+            self.timeout_seconds,
+        )
         event_context = TransitionEventContext(None, (), ())
         dispatch_transition = TransitionRequest(
             TransitionCAS(plan.task_id, plan.revision, "ready", plan.expected_snapshot_commit),

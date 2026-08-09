@@ -15,7 +15,11 @@ sys.path.insert(0, str(ROOT / "skills" / "agentdesk" / "scripts"))
 from agent_capability_registry import AgentCapability, AgentCapabilityRegistry  # noqa: E402
 from core_types import TaskDifficulty  # noqa: E402
 from dockyard_composition import DockyardCompositionGateway  # noqa: E402
-from dockyard_control_api import DockyardCommandEnvelope, DockyardCommandRequest  # noqa: E402
+from dockyard_control_api import (  # noqa: E402
+    DockyardCommandEnvelope,
+    DockyardCommandRejected,
+    DockyardCommandRequest,
+)
 from dockyard_plan_store import DockyardPlanStore  # noqa: E402
 from dockyard_pm_service import DockyardPmService  # noqa: E402
 from dockyard_project_registry import DockyardProjectRegistry, DockyardRegisterProjectRequest  # noqa: E402
@@ -24,7 +28,7 @@ sys.path.pop(0)
 
 
 class DockyardPmAutoRoutingTests(unittest.TestCase):
-    def test_create_plan_uses_git_bound_decomposition_and_routes_tasks(self) -> None:
+    def test_create_plan_rejects_when_pm_agent_is_not_registered(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repository = root / "repo"
@@ -74,14 +78,10 @@ class DockyardPmAutoRoutingTests(unittest.TestCase):
                     snapshot, 1, None, hashlib.sha256(payload).hexdigest(),
                 ), None, payload,
             )
-            receipt = gateway.execute(request)
-            self.assertEqual(receipt.outcome, "drafted")
-            plan = pm.latest("PLAN-1")
-            self.assertIsNotNone(plan)
-            assert plan is not None
-            self.assertEqual(len(plan.tasks), 2)
-            self.assertEqual(plan.tasks[0].provider_id, "codex")
-            self.assertEqual(plan.tasks[1].dependencies, (plan.tasks[0].task_id,))
+            with self.assertRaises(DockyardCommandRejected) as raised:
+                gateway.execute(request)
+            self.assertEqual(raised.exception.code, "PM_AGENT_UNAVAILABLE")
+            self.assertIsNone(pm.latest("PLAN-1"))
 
     def test_multiline_requirement_produces_projection_safe_single_line_title(self) -> None:
         from pm_task_decomposer import decompose_requirement

@@ -6,22 +6,30 @@ import {
   CommandWorkflows,
   approvalActionFromProjection,
   acceptanceActionFromProjection,
+  canOpenCommandAtViewport,
+  cancelActionFromTask,
+  clearedCommandConfirmation,
+  commandViewportRestrictionMessage,
   commandSuccessMessage,
   commandFailureFeedback,
+  discardPlanAction,
   confirmationForAction,
   editorTasksFromProjection,
   invalidatedProjectionFeedback,
   movePlanTask,
+  planSubmissionProblem,
+  removePlanTask,
   removalActionFromProjection,
   returnActionFromProjection,
   reviewActionsFromProjections,
   retryActionFromProjection,
   terminationActionFromProjection,
+  taskCommandProjectionsMatch,
   shouldShowCommandUnavailable,
   verifiedProjectionMessage,
   verifiedProjectionState,
 } from "./CommandWorkflows";
-import type { DockyardLiveRunSummary, DockyardPlanApprovalProjection, DockyardPlanProjection, DockyardReviewProjection, DockyardRunListProjection } from "../types/api";
+import type { DockyardLiveRunSummary, DockyardPlanApprovalProjection, DockyardPlanProjection, DockyardReviewProjection, DockyardRunListProjection, DockyardTaskListProjection } from "../types/api";
 import { DockyardClient, DockyardClientError } from "../client/dockyardClient";
 import type { PlanEditorTask } from "../types/commands";
 
@@ -245,6 +253,169 @@ describe("Dockyard command confirmation workflows", () => {
     });
     expect(action?.confirmation.requiredPhrase).toBe("重试 TC-1");
     expect(retryActionFromProjection({ ...run, retry_available: false }, "PRJ-1", "b".repeat(40))).toBeNull();
+  });
+
+  it("reports a missing PM-Codex agent without pretending the plan is stale", () => {
+    const error = new DockyardClientError(409, {
+      schema_version: "dockyard.error/v1",
+      request_id: "REQ-PM-1",
+      error_code: "PM_AGENT_UNAVAILABLE",
+      category: "not_ready",
+      retryable: false,
+      safe_message: "request was not accepted",
+      correlation_digest: "b".repeat(64),
+    });
+    expect(commandFailureFeedback(error)).toEqual({
+      state: "failed",
+      message: "PM-Codex Agent 未就绪；为避免本地规则冒充 PM，系统没有创建计划或任务卡。",
+    });
+  });
+
+  it.each([
+    ["PM_CODEX_PROXY_CERTIFICATE_UNTRUSTED", "无法信任当前代理的 TLS 证书"],
+    ["PM_CODEX_DISPATCH_FAILED", "CLI 调用失败"],
+    ["PM_CODEX_OUTPUT_INVALID", "计划格式未通过校验"],
+    ["PM_CODEX_PLAN_REJECTED", "不符合本地任务与路由策略"],
+  ])("reports the safe PM-Codex failure branch %s", (errorCode, message) => {
+    const error = new DockyardClientError(502, {
+      schema_version: "dockyard.error/v1",
+      request_id: "REQ-PM-SAFE-1",
+      error_code: errorCode,
+      category: "provider",
+      retryable: false,
+      safe_message: "request was not accepted",
+      correlation_digest: "d".repeat(64),
+    });
+    expect(commandFailureFeedback(error)).toEqual({
+      state: "failed",
+      message: expect.stringContaining(message),
+    });
+  });
+
+  it("reports a structured upstream timeout without claiming success", () => {
+    const error = new DockyardClientError(504, {
+      schema_version: "dockyard.error/v1",
+      request_id: "REQ-UPSTREAM-1",
+      error_code: "UPSTREAM_TIMEOUT",
+      category: "transport",
+      retryable: true,
+      safe_message: "upstream request did not complete",
+      correlation_digest: "c".repeat(64),
+    });
+    const feedback = commandFailureFeedback(error);
+    expect(feedback.state).toBe("failed");
+    expect(feedback.message).toContain("超时");
+  });
+
+  it("offers an explicit confirmed discard for an unapproved one-task draft", () => {
+    const plan: DockyardPlanProjection = {
+      schema_version: "dockyard.plan-projection/v1",
+      project_id: "PRJ-REAL",
+      snapshot_commit: "a".repeat(40),
+      project_generation: 1,
+      plan_id: "PLAN-REAL",
+      revision: 2,
+      phase: "DRAFTED",
+      requirement: "旧草案",
+      tasks: [{
+        task_id: "TC-OLD", title: "旧任务", description: "旧任务", dependencies: [],
+        execution_mode: "parallel", role_id: "R1", provider_id: "codex",
+        model_id: "gpt-5.6-sol", budget_tokens: 1, max_attempts: 1,
+      }],
+      plan_digest: "b".repeat(64),
+      content_digest: "c".repeat(64),
+    };
+    const action = discardPlanAction(plan);
+    expect(action?.draft.commandType).toBe("plan.discard");
+    expect(action?.draft.payload).toEqual({ plan_id: "PLAN-REAL", plan_digest: "b".repeat(64) });
+    expect(action?.confirmation.requiredPhrase).toBe("放弃 PLAN-REAL");
+    expect(discardPlanAction({ ...plan, phase: "APPROVAL_PENDING" })).toBeNull();
+  });
+
+  it("clears the entire confirmation context when navigation changes route", () => {
+    expect(clearedCommandConfirmation()).toEqual({
+      active: null,
+      acknowledged: false,
+      phrase: "",
+    });
+  });
+
+  it("removes a draft task and detaches dependencies without mutating the source", () => {
+    const tasks: readonly PlanEditorTask[] = [
+      {
+        taskId: "TC-001", title: "需求分析", description: "分析", executionMode: "parallel",
+        dependencies: [], agentId: "pm", providerId: "codex", modelId: "gpt-5.6-sol", budgetTokens: 100,
+        maxAttempts: 1,
+      },
+      {
+        taskId: "TC-002", title: "实现", description: "实现", executionMode: "serial",
+        dependencies: ["TC-001", "TC-KEEP"], agentId: "r1", providerId: "claude", modelId: "claude-sonnet",
+        budgetTokens: 200, maxAttempts: 2,
+      },
+    ];
+    const remaining = removePlanTask(tasks, "TC-001");
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.taskId).toBe("TC-002");
+    expect(remaining[0]?.dependencies).toEqual(["TC-KEEP"]);
+    expect(tasks).toHaveLength(2);
+    expect(removePlanTask(tasks, "TC-MISSING")).toBe(tasks);
+    const lastTask = remaining;
+    expect(removePlanTask(lastTask, "TC-002")).toBe(lastTask);
+  });
+
+  it("keeps plan submission actionable when draft input is invalid", () => {
+    expect(planSubmissionProblem("   ", [])).toBe("请输入非空需求后再提交审批。");
+    expect(planSubmissionProblem("实现需求", [])).toBe("计划至少需要保留一个任务后才能提交审批。");
+    expect(planSubmissionProblem("实现需求", [{
+      taskId: "TC-001", title: "实现", description: "实现", executionMode: "serial",
+      dependencies: [], agentId: "R1", providerId: "codex", modelId: "gpt-5.6-sol",
+      budgetTokens: 100, maxAttempts: 1,
+    }])).toBeNull();
+  });
+
+  it("builds a durable soft-delete action only for quiescent task states", () => {
+    const task = {
+      task_id: "TC-READY", revision: 2, state: "ready", attempt: null,
+      role_id: null, provider_id: null, model_id: null, deliberation_tier: null,
+      delivery_state: null, integration_state: null, updated_at: "2026-08-07T00:00:00Z",
+      blocked_kind: null, has_report: false, content_digest: "d".repeat(64),
+    } as const;
+    const action = cancelActionFromTask(task, "PRJ-REAL", "a".repeat(40));
+    expect(action?.label).toBe("删除任务");
+    expect(action?.draft.commandType).toBe("task.cancel");
+    expect(action?.draft.payload).toEqual({
+      task_id: "TC-READY",
+      event_id: "EVT-DOCKYARD-CANCEL-TC-READY-2",
+    });
+    expect(action?.confirmation.mobileAllowed).toBe(false);
+    expect(canOpenCommandAtViewport(action!, 390)).toBe(false);
+    expect(canOpenCommandAtViewport(action!, 1440)).toBe(true);
+    expect(commandViewportRestrictionMessage(action!, 390)).toContain("移动端保持只读");
+    expect(commandViewportRestrictionMessage(action!, 1440)).toBeNull();
+    expect(cancelActionFromTask({ ...task, role_id: "R1" }, "PRJ-REAL", "a".repeat(40))).toBeNull();
+    expect(cancelActionFromTask({ ...task, state: "in_progress" }, "PRJ-REAL", "a".repeat(40))).toBeNull();
+    expect(cancelActionFromTask({ ...task, state: "cancelled" }, "PRJ-REAL", "a".repeat(40))).toBeNull();
+  });
+
+  it("combines task and run commands only from one verified snapshot", () => {
+    const tasks = {
+      schema_version: "dockyard.task-list/v1",
+      project_id: "PRJ-REAL",
+      snapshot_commit: "a".repeat(40),
+      tasks: [],
+      reviews: [],
+      content_digest: "b".repeat(64),
+    } satisfies DockyardTaskListProjection;
+    const runs = {
+      schema_version: "dockyard.run-list/v1",
+      project_id: "PRJ-REAL",
+      snapshot_commit: "a".repeat(40),
+      runs: [],
+      content_digest: "c".repeat(64),
+    } satisfies DockyardRunListProjection;
+    expect(taskCommandProjectionsMatch(tasks, runs)).toBe(true);
+    expect(taskCommandProjectionsMatch(tasks, { ...runs, snapshot_commit: "d".repeat(40) })).toBe(false);
+    expect(taskCommandProjectionsMatch(tasks, null)).toBe(false);
   });
 
   it("creates a desktop-only returned-delivery redispatch from durable evidence", () => {

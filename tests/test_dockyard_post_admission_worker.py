@@ -217,6 +217,12 @@ class DockyardPostAdmissionWorkerTests(unittest.TestCase):
         handoff = request.handoff_request
         self.assertEqual((handoff.dispatch_id, handoff.dispatch_event_id), (self.plan.dispatch_id, self.plan.event_id))
         self.assertEqual(handoff.dispatch_cycle_request.dispatch_request.workspace, Path(self.plan.canonical_worktree))
+        prompt = handoff.dispatch_cycle_request.dispatch_request.prompt
+        self.assertIn("DELIVERY PROTOCOL", prompt)
+        self.assertIn('"schema_version":"agentdesk.worker-output/v1"', prompt)
+        self.assertIn(f'"task_id":"{self.plan.task_id}"', prompt)
+        self.assertIn(f'"dispatch_id":"{self.plan.dispatch_id}"', prompt)
+        self.assertIn(self.plan.report_path, prompt)
         self.assertEqual(providers["claude"], provider)
         self.assertEqual(orchestrator.project_root, self.fx.project_root)
 

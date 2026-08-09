@@ -296,8 +296,6 @@ class CodexCliProvider:
 
         # Build argv — frozen order from §2.12.4.
         argv = (
-            "--ask-for-approval",
-            "never",
             "exec",
             "--ephemeral",
             "--json",
@@ -307,6 +305,8 @@ class CodexCliProvider:
             model_id,
             "--sandbox",
             self.sandbox_mode,
+            "-c",
+            "approval_policy=never",
             "-c",
             f'model_reasoning_effort="{mapped_effort}"',
             "-",

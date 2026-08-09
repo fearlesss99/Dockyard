@@ -27,13 +27,14 @@ export function DockyardApp({ initialPath, client, projectId }: DockyardAppProps
     setPath(nextPath);
     if (initialPath === undefined && typeof window !== "undefined") {
       window.history.pushState(null, "", nextPath);
+      window.scrollTo({ top: 0, left: 0 });
     }
   };
 
   return (
     <AppShell activeRoute={route} onNavigate={navigate} writeEnabled={client !== undefined}>
       {route.id === "workbench"
-        ? <WorkbenchPage client={client} projectId={projectId} />
+        ? <WorkbenchPage client={client} projectId={projectId} onNavigate={navigate} />
         : <OperationalPage route={route} client={client} projectId={projectId} />}
     </AppShell>
   );

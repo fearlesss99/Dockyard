@@ -57,6 +57,7 @@ _COMMAND_TYPES = frozenset({
     "project.register",
     "plan.create",
     "plan.update",
+    "plan.discard",
     "plan.approve",
     "task.retry",
     "task.cancel",
@@ -389,6 +390,7 @@ def _command_route(method: str, path: str) -> tuple[str, str | None, str | None]
     patterns = (
         ("POST", r"plans", "plan.create", None),
         ("PATCH", r"plans/([^/]+)", "plan.update", 1),
+        ("POST", r"plans/([^/]+)/discard", "plan.discard", 1),
         ("POST", r"plans/([^/]+)/approve", "plan.approve", 1),
         ("POST", r"tasks/([^/]+)/retry", "task.retry", 1),
         ("POST", r"tasks/([^/]+)/cancel", "task.cancel", 1),

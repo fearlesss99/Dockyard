@@ -11,10 +11,10 @@ import type {
   DockyardTaskListProjection,
 } from "../types/api";
 import type { DockyardRoute, DockyardRouteId } from "../navigation/routes";
-import { CommandWorkflows, type LiveCommandEvidence } from "./CommandWorkflows";
+import { cancelActionFromTask, CommandWorkflows, type CommandAction, type LiveCommandEvidence } from "./CommandWorkflows";
 
 type LiveData =
-  | { readonly kind: "tasks"; readonly value: DockyardTaskListProjection }
+  | { readonly kind: "tasks"; readonly value: DockyardTaskListProjection; readonly runs?: DockyardRunListProjection }
   | { readonly kind: "runs"; readonly value: DockyardRunListProjection }
   | { readonly kind: "providers"; readonly value: DockyardProviderListProjection }
   | { readonly kind: "overview"; readonly value: DockyardOperationalOverviewProjection };
@@ -36,6 +36,7 @@ export function OperationalPage({
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [refresh, setRefresh] = useState(0);
   const [sseState, setSseState] = useState<SseConnectionState>("connected");
+  const [requestedTaskAction, setRequestedTaskAction] = useState<CommandAction | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -46,7 +47,12 @@ export function OperationalPage({
     }
     setLoadState("loading");
     const request = routeId === "tasks"
-      ? client.readTasks(projectId).then((value): LiveData => ({ kind: "tasks", value }))
+      ? Promise.all([client.readTasks(projectId), client.readRuns(projectId)]).then(([value, runs]): LiveData => {
+        if (value.snapshot_commit !== runs.snapshot_commit) {
+          throw new Error("Task and run projections are not from the same snapshot");
+        }
+        return { kind: "tasks", value, runs };
+      })
       : routeId === "runs"
         ? client.readRuns(projectId).then((value): LiveData => ({ kind: "runs", value }))
         : routeId === "workers"
@@ -68,13 +74,13 @@ export function OperationalPage({
   }, [client, projectId, routeId, refresh]);
 
   useEffect(() => {
-    if (!client || !projectId || routeId !== "runs" || typeof EventSource === "undefined") {
+    if (!client || !projectId || !["runs", "tasks"].includes(routeId) || typeof EventSource === "undefined") {
       setSseState("connected");
       return;
     }
     const source = new EventSource(client.eventsUrl(projectId));
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-    const refreshRuns = () => setRefresh((value) => value + 1);
+    const refreshEvidence = () => setRefresh((value) => value + 1);
     source.onopen = () => {
       if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
       reconnectTimer = undefined;
@@ -87,8 +93,9 @@ export function OperationalPage({
       if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
       reconnectTimer = setTimeout(() => setSseState("reconnecting"), 5000);
     };
-    source.addEventListener("run.changed", refreshRuns);
-    source.addEventListener("snapshot.changed", refreshRuns);
+    source.addEventListener("task.changed", refreshEvidence);
+    source.addEventListener("run.changed", refreshEvidence);
+    source.addEventListener("snapshot.changed", refreshEvidence);
     return () => {
       if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
       source.close();
@@ -98,8 +105,12 @@ export function OperationalPage({
   if (routeId === "workbench") return null;
   return (
     <div className="page-stack">
-      <section className="hero-panel hero-panel--compact">
-        <div><span className="eyebrow">{route.eyebrow}</span><h2>{route.label}</h2><p>{route.description}</p></div>
+      <section className="projection-status" role="status">
+        <span className={loadState === "ready" ? "snapshot-dot" : "snapshot-dot snapshot-dot--idle"} aria-hidden="true" />
+        <div>
+          <strong>{loadState === "failed" ? "投影不可用" : loadState === "loading" ? "正在读取安全投影" : loadState === "ready" ? "证据已校验" : "等待本机 Runner"}</strong>
+          <span>{loadState === "ready" ? "页面只使用当前已验证快照。" : "不会用样例或旧快照填充当前状态。"}</span>
+        </div>
         <StatusPill state={loadState === "failed" ? "failure" : loadState === "loading" ? "warning" : loadState === "ready" ? "selected" : "unknown"}>
           {loadState === "failed" ? "投影不可用" : loadState === "loading" ? "读取中" : loadState === "ready" ? "已校验证据" : "Runner 未连接"}
         </StatusPill>
@@ -107,13 +118,26 @@ export function OperationalPage({
       {sseConnectionBannerState(sseState, data !== null) === "reconnecting"
         ? <ReadStateBanner state="reconnecting" />
         : null}
-      {renderPage(routeId, loadState, data)}
+      {renderPage(routeId, loadState, data, projectId, (task) => {
+        if (
+          !projectId
+          || data?.kind !== "tasks"
+          || data.runs === undefined
+          || data.runs.snapshot_commit !== data.value.snapshot_commit
+        ) return;
+        const action = cancelActionFromTask(task, projectId, data?.kind === "tasks" ? data.value.snapshot_commit : "");
+        if (action) setRequestedTaskAction(action);
+      })}
       <CommandWorkflows
         routeId={routeId}
         client={client}
         projectId={projectId}
         liveEvidence={routeId === "runs" ? [] : liveCommandEvidence(data)}
-        runProjection={data?.kind === "runs" ? data.value : undefined}
+        runProjection={data?.kind === "runs" ? data.value : data?.kind === "tasks" ? data.runs : undefined}
+        taskProjection={data?.kind === "tasks" ? data.value : undefined}
+        requestedAction={requestedTaskAction}
+        onRequestedActionConsumed={() => setRequestedTaskAction(null)}
+        onEvidenceInvalidated={() => setRefresh((value) => value + 1)}
       />
     </div>
   );
@@ -171,14 +195,20 @@ function needsOperationalProjection(routeId: DockyardRouteId): boolean {
   return ["requirements", "tasks", "runs", "reviews", "workers", "projects", "diagnostics"].includes(routeId);
 }
 
-function renderPage(routeId: Exclude<DockyardRouteId, "workbench">, state: LoadState, data: LiveData | null): ReactElement {
+function renderPage(
+  routeId: Exclude<DockyardRouteId, "workbench">,
+  state: LoadState,
+  data: LiveData | null,
+  projectId: string | undefined,
+  onCancelTask: (task: DockyardLiveTaskSummary) => void,
+): ReactElement {
   if (routeId === "requirements") return <RequirementsView />;
   if (routeId === "reviews") return <ReviewsView connected={state === "ready"} />;
   if (routeId === "settings") return <SettingsView />;
   if (state === "loading") return <EvidenceState mark="···" title="正在读取本机证据" copy="页面只接受同一份已校验快照，不会先展示缓存样例。" banner="loading" />;
   if (state === "failed") return <EvidenceState mark="!" title="安全投影暂不可用" copy="没有展示旧数据，也没有根据异常文本推测状态。" banner="failed" />;
   if (data === null) return <EvidenceState mark="—" title="尚未连接本机 Runner" copy="连接建立后，这里会显示只读的 canonical evidence。" banner="not_ready" />;
-  if (routeId === "tasks" && data.kind === "tasks") return <TasksView projection={data.value} />;
+  if (routeId === "tasks" && data.kind === "tasks") return <TasksView projection={data.value} onCancelTask={onCancelTask} />;
   if (routeId === "runs" && data.kind === "runs") return <RunsView projection={data.value} />;
   if (routeId === "workers" && data.kind === "providers") return <WorkersView projection={data.value} />;
   if (routeId === "projects" && data.kind === "overview") return <ProjectsView projection={data.value.overview} />;
@@ -223,7 +253,13 @@ function RequirementsView() {
   );
 }
 
-function TasksView({ projection }: { readonly projection: DockyardTaskListProjection }) {
+function TasksView({
+  projection,
+  onCancelTask,
+}: {
+  readonly projection: DockyardTaskListProjection;
+  readonly onCancelTask: (task: DockyardLiveTaskSummary) => void;
+}) {
   if (projection.tasks.length === 0) {
     return <EvidenceState mark="0" title="还没有 canonical task" copy="提交并批准计划后，真实任务会从同一 Git 快照出现在这里。" banner="empty" />;
   }
@@ -232,7 +268,7 @@ function TasksView({ projection }: { readonly projection: DockyardTaskListProjec
     <section className="content-grid content-grid--balanced">
       <article className="panel">
         <header className="panel__header"><div><span className="eyebrow">Lifecycle</span><h3>任务列表</h3></div><span className="muted">{projection.tasks.length} 项</span></header>
-        <div className="record-list">{projection.tasks.map((task) => <TaskRow task={task} key={task.task_id} />)}</div>
+        <div className="record-list">{projection.tasks.map((task) => <TaskRow task={task} key={task.task_id} onCancel={() => onCancelTask(task)} />)}</div>
       </article>
       <article className="panel">
         <header className="panel__header"><div><span className="eyebrow">任务详情</span><h3>{selected.task_id}</h3></div></header>
@@ -242,8 +278,9 @@ function TasksView({ projection }: { readonly projection: DockyardTaskListProjec
   );
 }
 
-function TaskRow({ task }: { readonly task: DockyardLiveTaskSummary }) {
-  return <div className="record-card"><div><strong>{task.task_id}</strong><small>r{task.revision} · attempt {task.attempt ?? "—"} · {task.provider_id ?? "未选择 Provider"}</small></div><StatusPill state={task.state === "integrated" ? "success" : task.state === "blocked" ? "blocked" : task.state === "ready" ? "warning" : "selected"}>{task.state}</StatusPill></div>;
+function TaskRow({ task, onCancel }: { readonly task: DockyardLiveTaskSummary; readonly onCancel: () => void }) {
+  const cancellable = (task.state === "draft" || task.state === "ready" || task.state === "blocked") && task.role_id === null;
+  return <div className="record-card"><div><strong>{task.task_id}</strong><small>r{task.revision} · attempt {task.attempt ?? "—"} · {task.provider_id ?? "未选择 Provider"}</small></div><div className="record-card__actions"><StatusPill state={task.state === "integrated" ? "success" : task.state === "blocked" ? "blocked" : task.state === "ready" ? "warning" : "selected"}>{task.state}</StatusPill>{cancellable ? <button className="button button--danger" type="button" onClick={onCancel} data-mobile="false">删除任务</button> : <span className="muted">证据保留</span>}</div></div>;
 }
 
 function RunsView({ projection }: { readonly projection: DockyardRunListProjection }) {
@@ -295,5 +332,5 @@ function DiagnosticsView({ projection }: { readonly projection: DockyardLiveOver
 }
 
 function SettingsView() {
-  return <section className="content-grid content-grid--balanced"><article className="panel"><header className="panel__header"><div><span className="eyebrow">界面</span><h3>显示设置</h3></div></header><dl className="detail-list"><div><dt>主题</dt><dd>Harbor Cyan 深色</dd></div><div><dt>语言</dt><dd>简体中文</dd></div><div><dt>动画</dt><dd>减少非证据动效</dd></div></dl></article><article className="panel"><header className="panel__header"><div><span className="eyebrow">安全</span><h3>本机边界</h3></div></header><dl className="detail-list"><div><dt>用户</dt><dd>本地单用户 · 无登录</dd></div><div><dt>Control API</dt><dd>loopback-only</dd></div><div><dt>云端</dt><dd><StatusPill state="unknown">未配置</StatusPill></dd></div></dl></article></section>;
+  return <section className="content-grid content-grid--balanced"><article className="panel"><header className="panel__header"><div><span className="eyebrow">界面</span><h3>显示设置</h3></div></header><dl className="detail-list"><div><dt>主题</dt><dd>Waypoint Light 亮色</dd></div><div><dt>语言</dt><dd>简体中文</dd></div><div><dt>动画</dt><dd>视频遵循系统减少动态效果设置</dd></div></dl></article><article className="panel"><header className="panel__header"><div><span className="eyebrow">安全</span><h3>本机边界</h3></div></header><dl className="detail-list"><div><dt>用户</dt><dd>本地单用户 · 无登录</dd></div><div><dt>Control API</dt><dd>loopback-only</dd></div><div><dt>云端</dt><dd><StatusPill state="unknown">未配置</StatusPill></dd></div></dl></article></section>;
 }

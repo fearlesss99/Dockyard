@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +34,9 @@ from dockyard_pairing import (  # noqa: E402
     DockyardPairingStore,
 )
 from dockyard_plan_store import DockyardPlanStore, DockyardPlanTask  # noqa: E402
+from pm_materialization_admission_handoff import MaterializationAdmissionConflictError  # noqa: E402
+from portfolio_scheduler_worker_handoff_store import PortfolioSchedulerWorkerHandoffNotFoundError  # noqa: E402
+from dockyard_task_admission_composition import DockyardAdmissionCompositionRecoveryRequired  # noqa: E402
 from dockyard_pm_service import (  # noqa: E402
     DockyardPlanApprovalRequest,
     DockyardPlanDraftRequest,
@@ -213,6 +217,55 @@ class DockyardLocalRuntimeTests(unittest.TestCase):
         second = self._runtime()
         with self.assertRaises(DockyardLocalRuntimeConflictError):
             second.start()
+
+    def test_stranded_materialized_plan_does_not_prevent_loopback_start(self) -> None:
+        stranded = SimpleNamespace(plan_id="PLAN-1")
+        with mock.patch.object(DockyardPlanStore, "current_session", return_value=stranded), mock.patch(
+            "dockyard_local_runtime._resume_current_materialized_plan",
+            side_effect=MaterializationAdmissionConflictError("handoff:dirty_worktree"),
+        ):
+            result = self._runtime().start()
+        connection = http.client.HTTPConnection(result.address.host, result.address.port, timeout=2)
+        connection.request("GET", "/api/dockyard/v1/health")
+        response = connection.getresponse()
+        body = json.loads(response.read())
+        connection.close()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(body["status"], "ready")
+
+    def test_missing_stranded_handoff_does_not_prevent_loopback_start(self) -> None:
+        stranded = SimpleNamespace(plan_id="PLAN-1")
+        with mock.patch.object(DockyardPlanStore, "current_session", return_value=stranded), mock.patch(
+            "dockyard_local_runtime._resume_current_materialized_plan",
+            side_effect=PortfolioSchedulerWorkerHandoffNotFoundError(
+                "portfolio_scheduler_worker_handoff:handoff_pair"
+            ),
+        ):
+            result = self._runtime().start()
+        connection = http.client.HTTPConnection(result.address.host, result.address.port, timeout=2)
+        connection.request("GET", "/api/dockyard/v1/health")
+        response = connection.getresponse()
+        body = json.loads(response.read())
+        connection.close()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(body["status"], "ready")
+
+    def test_stranded_admission_recovery_does_not_prevent_loopback_start(self) -> None:
+        stranded = SimpleNamespace(plan_id="PLAN-1")
+        with mock.patch.object(DockyardPlanStore, "current_session", return_value=stranded), mock.patch(
+            "dockyard_local_runtime._resume_current_materialized_plan",
+            side_effect=DockyardAdmissionCompositionRecoveryRequired(
+                "composition:handoff_recovery_required"
+            ),
+        ):
+            result = self._runtime().start()
+        connection = http.client.HTTPConnection(result.address.host, result.address.port, timeout=2)
+        connection.request("GET", "/api/dockyard/v1/health")
+        response = connection.getresponse()
+        body = json.loads(response.read())
+        connection.close()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(body["status"], "ready")
 
     def test_missing_project_and_device_fail_before_listener(self) -> None:
         empty_registry = Path(self.temp.name) / "empty-registry"

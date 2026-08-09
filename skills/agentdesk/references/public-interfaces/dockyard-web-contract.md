@@ -1,6 +1,7 @@
 # Dockyard Web Product Contract
 
 Status: **Contract Current — TC-13.29b**
+Visual shell direction: **Approved — Waypoint Light, 2026-08-09**
 Loopback Web shell runtime: **Current — TC-13.29l.6**
 Deterministic local requirement-to-plan composition: **Current — TC-13.29l.7**
 Retry owner composition: **Current — TC-13.29l.13b**
@@ -34,7 +35,7 @@ state with browser state.
 
 ## 2. Information architecture
 
-The primary navigation is exact and ordered:
+The Dockyard business route registry remains exact and ordered:
 
 1. 工作台
 2. 需求与方案
@@ -46,37 +47,67 @@ The primary navigation is exact and ordered:
 8. 系统诊断
 9. 设置
 
-Reference screenshots influence only density, dark visual tone, three-column
-layout, cards, borders, and context panels. Dockyard must not copy another
-product's brand, logo, icons, names, navigation items, assets, or features.
+Desktop presents these routes in a top navigation bar. A history drawer exposes
+recently viewed Dockyard routes without pretending to be chat or project
+history; it may add safe projected objects only when an existing typed API owns
+that evidence. Closing the drawer, refreshing the browser, or losing
+browser-local history must not change canonical task, run, approval, or project
+state.
+
+The approved reference influences composition, scale, translucent surfaces,
+video treatment, and motion. It does not replace the `Dockyard` brand or add the
+reference product's names, navigation, account controls, credits, attachments,
+voice input, prompt library, or other capabilities.
 
 ## 3. Visual system
 
 - product name: `Dockyard`.
 - Chinese UI only in the first runtime.
-- dark theme only.
-- deep black-blue surfaces with one Dockyard-owned accent palette.
-- left navigation, central workspace, optional right context inspector.
+- light, high-contrast operational surfaces over a full-viewport video hero.
+- neutral white/near-white surfaces, near-black text, and a Dockyard-owned
+  forest-green accent palette.
+- top navigation, central workspace, and a dismissible history drawer.
 - dense operational presentation without hiding confirmation or error states.
-- no decorative animation that implies progress not backed by evidence.
+- decorative motion must never imply progress not backed by runtime evidence.
 - no dynamic task relationship graph in the first runtime.
 
 Color tokens must distinguish neutral, selected, success, warning, failure,
 blocked, unknown, and focus states without borrowing reference-product tokens.
 
+The workbench video is decorative, muted, looping, `playsInline`, and excluded
+from the accessibility tree. Its approved source is
+`https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260329_050842_be71947f-f16e-4a14-810c-06e83d23ddb5.mp4`
+or a locally packaged byte-identical copy. It is sized to 115% width and height,
+horizontally centered, top-anchored, and rendered with an `object-top` focal
+point. Failure to load or autoplay falls back to an intentional static
+background and never blocks navigation or operational controls. A remote media
+request must not contain project, device, task, session, or user data.
+
+Video opacity is controlled in JavaScript, not by CSS transitions. Each fade
+cancels any active animation frame and resumes from the current opacity. Load and
+loop start fade in over 250 ms. Once 0.55 seconds remain, a `fadingOutRef` guard
+allows one 250 ms fade-out. `ended` sets opacity to zero, waits 100 ms, seeks to
+zero, resumes playback, and fades in. The video remains purely atmospheric; its
+playback state is never presented as Runner, task, or integration state.
+
 ## 4. Workbench
 
-The workbench contains all five primary summaries without placing every feature
-on one screen:
+The first viewport prioritizes `运行状态总览` inside the video hero. It exposes
+honest Runner/SSE/snapshot health and active-run evidence before secondary
+content, while preserving the requirement input as an existing Dockyard action.
+It contains all five primary summaries without placing every feature on one
+screen:
 
-1. requirement input and current plan state;
+1. active Worker/Runner/provider health and current run phases;
 2. current tasks by lifecycle state;
 3. pending approvals and user decisions;
-4. active Worker/Runner/provider health;
+4. requirement input and current plan state;
 5. recent delivery, MAD verdict, and integration result.
 
 Each summary links to its dedicated page. The workbench is a projection, not a
-state owner.
+state owner. Hero controls reuse only current Dockyard routes and frozen Control
+API commands; visual similarity to the reference is not authority to add a fake
+or disconnected command.
 
 ## 5. Requirement and plan experience
 
@@ -122,6 +153,13 @@ changed digest closes the dialog, refreshes evidence, and requires a new user
 confirmation. Optimistic UI never declares canonical success before a command
 receipt is received.
 
+Task cancellation is a canonical `task.cancel` soft delete for exact
+`draft`, `ready`, or `blocked` evidence only. It is desktop-only, requires the
+typed phrase `删除 <task>`, preserves Git and historical evidence, and refreshes
+the task/run projection after the command receipt. A task with active dispatch
+evidence must use the exact-generation termination workflow first. Delivery
+acceptance and return keep their existing confirmation and mobile policies.
+
 Project removal says `不会删除 Git 仓库` and cannot offer a repository-delete
 checkbox. Automatic recovery is displayed but does not create an extra user
 confirmation beyond its existing policy.
@@ -147,6 +185,11 @@ The mobile layout is purpose-built; it is not a scaled desktop canvas. It must
 support current mobile Safari for the four permitted operations and current
 stable Chrome/Edge for the full desktop experience.
 
+Mobile does not expose task deletion, project removal, returned-delivery
+redispatch, or complex plan/dependency editing. The top navigation collapses to
+a compact control and the history drawer becomes a bounded overlay without
+relaxing these command restrictions.
+
 ## 10. Empty, loading, reconnect, and failure states
 
 Every page defines Chinese empty, loading, stale, reconnecting, offline,
@@ -161,14 +204,17 @@ recovery, retryability, liveness, or success.
 ## 11. Explicit exclusions
 
 The first runtime excludes dynamic task graphs, multi-user accounts,
-organizations, RBAC, public registration, billing, email, Telegram, enterprise
-messaging, browser notifications, light theme, arbitrary plugins, arbitrary
-terminal access, repository deletion, cloud relay, and deployment.
+organizations, RBAC, public registration or login, billing or credits, email,
+Telegram, enterprise messaging, browser notifications, attachments, voice
+capture, a prompt library, arbitrary plugins, arbitrary terminal access,
+repository deletion, cloud relay, and deployment. The approved light visual
+direction does not change these capability exclusions.
 
 ## 12. Status boundary
 
 - Dockyard Web product contract: **Contract Current — TC-13.29b**.
-- Web foundation/design system: **Current — TC-13.29h**.
+- Web foundation/design system: **Current — TC-13.29h foundation; Waypoint
+  Light visual revision approved 2026-08-09**.
 - Read-only operational pages: **Current — TC-13.29i**.
 - Command/mobile workflows: **Core Current — TC-13.29k**.
 - Loopback Web shell runtime: **Current — TC-13.29l.6**.

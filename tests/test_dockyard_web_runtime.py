@@ -18,10 +18,32 @@ from dockyard_web_runtime import (
     DockyardBrowserBootstrap,
     DockyardWebRuntime,
     DockyardWebRuntimeConfig,
+    _proxy_error_body,
+    _upstream_timeout,
 )
 
 
 class DockyardWebRuntimeTests(unittest.TestCase):
+    def test_command_proxy_waits_longer_than_pm_planner(self) -> None:
+        for method in ("GET", "HEAD", "OPTIONS"):
+            self.assertEqual(_upstream_timeout(method), 15)
+        for method in ("POST", "PATCH", "PUT"):
+            self.assertEqual(_upstream_timeout(method), 195)
+
+    def test_proxy_transport_error_is_a_safe_json_envelope(self) -> None:
+        body = _proxy_error_body(
+            "POST",
+            "/api/dockyard/v1/projects/PRJ-1/plans",
+            "UPSTREAM_TIMEOUT",
+            retryable=True,
+        )
+        value = __import__("json").loads(body)
+        self.assertEqual(value["schema_version"], "dockyard.error/v1")
+        self.assertEqual(value["error_code"], "UPSTREAM_TIMEOUT")
+        self.assertEqual(value["category"], "transport")
+        self.assertTrue(value["retryable"])
+        self.assertNotIn("PRJ-1", value["safe_message"])
+
     def test_production_index_bootstraps_before_head_closes(self) -> None:
         production_index = (
             Path(__file__).resolve().parents[1]

@@ -1063,8 +1063,6 @@ class ArgvConstructionTests(unittest.TestCase):
         p = _make_provider(sandbox_mode="workspace-write")
         inv = self._inv_for(p)
         expected = (
-            "--ask-for-approval",
-            "never",
             "exec",
             "--ephemeral",
             "--json",
@@ -1074,6 +1072,8 @@ class ArgvConstructionTests(unittest.TestCase):
             "gpt-5",
             "--sandbox",
             "workspace-write",
+            "-c",
+            "approval_policy=never",
             "-c",
             'model_reasoning_effort="medium"',
             "-",
@@ -1107,12 +1107,12 @@ class ArgvConstructionTests(unittest.TestCase):
         inv = self._inv_for(p)
         self.assertIsInstance(inv.argv, tuple)
 
-    def test_approval_before_exec(self) -> None:
+    def test_approval_policy_is_noninteractive(self) -> None:
         p = _make_provider()
         inv = self._inv_for(p)
-        approval_idx = inv.argv.index("--ask-for-approval")
-        exec_idx = inv.argv.index("exec")
-        self.assertLess(approval_idx, exec_idx)
+        policy_idx = inv.argv.index("approval_policy=never")
+        self.assertEqual(inv.argv[policy_idx - 1], "-c")
+        self.assertNotIn("--ask-for-approval", inv.argv)
 
     def test_stdin_marker_last(self) -> None:
         p = _make_provider()
@@ -1138,7 +1138,7 @@ class ArgvConstructionTests(unittest.TestCase):
     def test_effort_with_deep_tier(self) -> None:
         p = _make_provider()
         inv = self._inv_for(p, selected_deliberation_tier="deep")
-        c_idx = inv.argv.index("-c")
+        c_idx = inv.argv.index('model_reasoning_effort="high"') - 1
         self.assertEqual(
             inv.argv[c_idx + 1],
             'model_reasoning_effort="high"',

@@ -68,6 +68,8 @@ from control_plane_transition import (
     RequeuePayload,
     SupersededPayload,
     TransitionCAS,
+    TransitionCASConflictError,
+    _resolve_head_commit,
     apply_owner_loss_recovery_transition,
     execute_owner_loss_retry_reservation,
     TransitionEventContext,
@@ -3214,6 +3216,56 @@ class WorkflowOrchestrator:
             "heartbeat task terminated unexpectedly"
         )
 
+    def _submit_delivery_with_fresh_snapshot(
+        self,
+        execution: ActiveDispatchExecution,
+        delivery_receipt: DeliveryReceipt,
+    ) -> TransitionResult:
+        """Submit delivery while tolerating independent task completions.
+
+        Every retry retains the task, revision, state, dispatch and event
+        identity from the acknowledged execution.  Only the repository-wide
+        snapshot CAS is refreshed, because another independent delivery may
+        have committed between this Worker finishing and acquiring the
+        transition lock.
+        """
+        request = execution._request
+        dispatch_tr = request.dispatch_transition_request
+        acknowledge_tr = request.acknowledge_transition_request
+        last_conflict: TransitionCASConflictError | None = None
+
+        for _ in range(4):
+            current_snapshot = _resolve_head_commit(self.project_root)
+            delivery_transition = TransitionRequest(
+                cas=TransitionCAS(
+                    task_id=dispatch_tr.cas.task_id,
+                    expected_revision=acknowledge_tr.cas.expected_revision,
+                    expected_state="in_progress",
+                    expected_snapshot_commit=current_snapshot,
+                ),
+                dispatch_cas=acknowledge_tr.dispatch_cas,
+                event_id=request.delivery_event_id,
+                event_type="DELIVERY_SUBMITTED",
+                payload=DeliverySubmittedPayload(
+                    implementation_commit=delivery_receipt.implementation_commit,
+                    report_commit=delivery_receipt.report_commit,
+                ),
+                event_context=request.delivery_event_context,
+            )
+            try:
+                return ControlPlaneTransitionService(
+                    self.project_root
+                ).apply_transition(
+                    delivery_transition,
+                    execution._handle.lease,
+                    self.clock.now(),
+                )
+            except TransitionCASConflictError as exc:
+                last_conflict = exc
+
+        assert last_conflict is not None
+        raise last_conflict
+
     async def _finalize_active_dispatch(
         self,
         execution: ActiveDispatchExecution,
@@ -3305,42 +3357,11 @@ class WorkflowOrchestrator:
                             _DispatchFailureKind.WORKER_OUTPUT_FAILED
                         )
                     else:
-                        dispatch_tr = request.dispatch_transition_request
-                        ack_tr = request.acknowledge_transition_request
-                        delivery_tr = TransitionRequest(
-                            cas=TransitionCAS(
-                                task_id=dispatch_tr.cas.task_id,
-                                expected_revision=(
-                                    ack_tr.cas.expected_revision
-                                ),
-                                expected_state="in_progress",
-                                expected_snapshot_commit=(
-                                    dispatch_tr.cas
-                                    .expected_snapshot_commit
-                                ),
-                            ),
-                            dispatch_cas=ack_tr.dispatch_cas,
-                            event_id=request.delivery_event_id,
-                            event_type="DELIVERY_SUBMITTED",
-                            payload=DeliverySubmittedPayload(
-                                implementation_commit=(
-                                    delivery_receipt
-                                    .implementation_commit
-                                ),
-                                report_commit=(
-                                    delivery_receipt.report_commit
-                                ),
-                            ),
-                            event_context=request.delivery_event_context,
-                        )
                         try:
                             delivery_transition = (
-                                ControlPlaneTransitionService(
-                                    self.project_root
-                                ).apply_transition(
-                                    delivery_tr,
-                                    execution._handle.lease,
-                                    self.clock.now(),
+                                self._submit_delivery_with_fresh_snapshot(
+                                    execution,
+                                    delivery_receipt,
                                 )
                             )
                         except BaseException as exc:

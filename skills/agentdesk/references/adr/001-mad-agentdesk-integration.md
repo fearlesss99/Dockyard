@@ -2516,23 +2516,22 @@ No compile-time control string is required or permitted in `argv`.
 Frozen as **non-interactive, single-shot** execution:
 
 ```text
-codex --ask-for-approval never exec --ephemeral --json --color never
+codex exec --ephemeral --json --color never
       --model <model_id> --sandbox <sandbox_mode>
-      -c model_reasoning_effort="<effort>" -
+      -c approval_policy=never -c model_reasoning_effort="<effort>" -
 ```
 
 Required flags:
 
 | Flag | Value / Source |
 |------|---------------|
-| `--ask-for-approval` | `never` (hard-coded, must precede `exec`) |
 | `exec` | Non-interactive sub-command |
 | `--ephemeral` | (flag, no argument) |
 | `--json` | (flag, no argument) |
 | `--color` | `never` |
 | `--model` | `request.model_selection.selected_model_id` |
 | `--sandbox` | Configured safe mode (see 搂2.12.7) |
-| `-c` | `model_reasoning_effort="<mapped_effort>"` (see 搂2.12.6) |
+| `-c` | `approval_policy=never` and `model_reasoning_effort="<mapped_effort>"` (see 搂2.12.6) |
 | `-` | Stdin positional marker (must be last) |
 
 `executable` and `argv` are strictly separated:
@@ -2550,8 +2549,6 @@ def build_invocation(
     _validate_model_id(model_id)
 
     argv = (
-        "--ask-for-approval",
-        "never",
         "exec",
         "--ephemeral",
         "--json",
@@ -2561,6 +2558,8 @@ def build_invocation(
         model_id,
         "--sandbox",
         self.sandbox_mode,
+        "-c",
+        "approval_policy=never",
         "-c",
         f'model_reasoning_effort="{mapped_effort}"',
         "-",
@@ -2576,16 +2575,13 @@ def build_invocation(
 
 **argv ordering rules (frozen):**
 
-1. `--ask-for-approval never` must appear **before** `exec`.
-   Placing it after `exec` causes a parameter error.
-2. `exec` sub-command.
-3. `exec` options: `--ephemeral`, `--json`, `--color never`.
-4. `--model <model_id>`, `--sandbox <sandbox_mode>`.
-5. `-c model_reasoning_effort="<effort>"` 鈥?the entire key=value is one
-   argv element.
-6. `-` 鈥?stdin marker, must be last.
-7. `executable` does NOT appear in `argv`.
-8. The result is always `tuple(argv)`.
+1. `exec` is the non-interactive sub-command.
+2. `exec` options: `--ephemeral`, `--json`, `--color never`.
+3. `--model <model_id>`, `--sandbox <sandbox_mode>`.
+4. `-c approval_policy=never` and `-c model_reasoning_effort="<effort>"`.
+5. `-` 鈥?stdin marker, must be last.
+6. `executable` does NOT appear in `argv`.
+7. The result is always `tuple(argv)`.
 
 **Model ID character allowlist:** When the resolved executable is a
 `.cmd`/`.bat` shim on Windows, dynamic argv values must use a strict
@@ -2724,13 +2720,13 @@ Approval policy is hard-coded as `never` 鈥?it is **not** a provider
 field:
 
 ```text
---ask-for-approval never
+-c approval_policy=never
 ```
 
 Frozen rules:
 
 * The value is always `"never"` 鈥?callers cannot override it.
-* The flag must appear **before** `exec`.
+* The override must appear in the `exec` argument list.
 * `"never"` means: do not prompt for interactive approval; execution
   failures are immediately returned to the model.
 * `"never"` does **not** bypass the sandbox 鈥?`--sandbox` remains in

@@ -326,7 +326,16 @@ class DockyardTaskAdmissionCompositionRuntime:
                 context_snapshot_content_digest=context.content_digest,
             )
         profile, request = self._preparation_inputs(plan, task, evidence, context, stem)
-        prepared = self.preparation.prepare(profile, request, evidence)
+        # The task's provider/model pair is part of the durable PM plan.  It
+        # is a route fence, not a suggestion: admission may validate that the
+        # pair remains policy-eligible, but it must not select another agent.
+        prepared = self.preparation.prepare(
+            profile,
+            request,
+            evidence,
+            planned_provider_id=task.provider_id,
+            planned_model_id=task.model_id,
+        )
         if progress.phase is DockyardTaskAdmissionPhase.DEPENDENCIES_READY:
             progress = self._advance(progress, DockyardTaskAdmissionPhase.PREPARED, DockyardTaskAdmissionOutcome.PREPARED, preparation_receipt_id=prepared.receipt.receipt_id)
         progress = self._advance(progress, DockyardTaskAdmissionPhase.HANDOFF_STARTED, DockyardTaskAdmissionOutcome.PREPARED)
@@ -423,7 +432,14 @@ class DockyardTaskAdmissionCompositionRuntime:
         dispatch_stem = hashlib.sha256(f"PREP-{stem}\0{1}".encode()).hexdigest()[:20]
         dispatch_id = "DSP-" + dispatch_stem
         dispatch_branch = expected_dispatch_branch(task.task_id, 1, task.new_attempt, dispatch_id)
-        worktree_id = derive_worktree_id(common, str(self.root), dispatch_branch, head, task.task_id, 1, task.new_attempt, dispatch_id)
+        # The current HEAD is the exact CAS/read boundary and the base used by
+        # the durable handoff.  Earlier cards may append evidence-only commits
+        # before this one is prepared, so do not reuse the plan's older source
+        # snapshot for this per-dispatch worktree identity.
+        worktree_id = derive_worktree_id(
+            common, str(self.root), dispatch_branch, head,
+            task.task_id, 1, task.new_attempt, dispatch_id,
+        )
         worktree_path = Path(expected_worktree_path(str(self.root), worktree_id))
         request = AdmissionPreparationRequest(PREPARATION_SCHEMA_VERSION, "PREP-" + stem, profile.profile_id, profile.content_digest, evidence.content_digest, repository_identity(self.root), head, ROLE_POLICY_FILE.as_posix(), head, "sha256:" + hashlib.sha256(policy).hexdigest(), MODEL_BINDINGS_FILE.as_posix(), "sha256:" + hashlib.sha256(bindings).hexdigest(), MODEL_BINDINGS_SCHEMA_VERSION, 1, canonical_worktree_identity(worktree_path), "dockyard-" + plan.project_id, f"reports/{task.task_id}.md", head, branch, "sha256:" + "0" * 64)
         return profile, with_content_digest(request)

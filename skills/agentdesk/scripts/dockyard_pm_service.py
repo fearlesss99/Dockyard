@@ -22,6 +22,7 @@ __all__ = [
     "DockyardPlanDraftRequest",
     "DockyardPlanEditRequest",
     "DockyardPlanTransitionRequest",
+    "DockyardPlanDiscardRequest",
     "DockyardPlanApprovalRequest",
     "DockyardPlanMaterializeRequest",
     "DockyardPlanMaterializeResult",
@@ -139,6 +140,15 @@ class DockyardPlanTransitionRequest:
     expected_revision: int
     expected_content_digest: str
     transitioned_at: str
+    operation_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DockyardPlanDiscardRequest:
+    plan_id: str
+    expected_revision: int
+    expected_content_digest: str
+    discarded_at: str
     operation_id: str
 
 
@@ -314,6 +324,37 @@ class DockyardPmService:
             phase=DockyardPlanPhase.APPROVAL_PENDING,
             previous_revision_digest=latest.content_digest,
             updated_at=request.transitioned_at,
+            last_operation_id=operation,
+            request_digest=request_digest,
+            content_digest=_empty_record_digest(),
+        ))
+
+    def discard(self, request: DockyardPlanDiscardRequest) -> DockyardPlanRecord:
+        """Terminally discard an unapproved draft without deleting its evidence."""
+        if not isinstance(request, DockyardPlanDiscardRequest):
+            raise DockyardPlanInputError("request has an invalid type")
+        operation = _identifier(request.operation_id, "operation_id")
+        request_digest = _request_digest("discard", (
+            request.plan_id, str(request.expected_revision), request.expected_content_digest,
+        ))
+        observed = self._store.latest(request.plan_id)
+        if observed is not None and observed.last_operation_id == operation:
+            if observed.request_digest == request_digest:
+                return observed
+            raise DockyardPlanConflictError("divergent discard replay")
+        latest = self._latest(
+            request.plan_id, request.expected_revision, request.expected_content_digest,
+        )
+        if latest.phase not in {DockyardPlanPhase.DRAFTED, DockyardPlanPhase.EDITED}:
+            raise DockyardPlanConflictError("plan cannot be discarded")
+        return self._store.save(replace(
+            latest,
+            revision=latest.revision + 1,
+            phase=DockyardPlanPhase.DISCARDED,
+            previous_revision_digest=latest.content_digest,
+            updated_at=request.discarded_at,
+            approved_at=None,
+            materialized_at=None,
             last_operation_id=operation,
             request_digest=request_digest,
             content_digest=_empty_record_digest(),

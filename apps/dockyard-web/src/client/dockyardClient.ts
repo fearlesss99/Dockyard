@@ -354,7 +354,12 @@ export class DockyardClient {
       },
       body: `{"envelope":${canonicalJson(envelope)},"payload":${payloadJson}}`,
     });
-    const value = await response.json() as DockyardCommandReceipt | DockyardErrorEnvelope;
+    let value: DockyardCommandReceipt | DockyardErrorEnvelope;
+    try {
+      value = await response.json() as DockyardCommandReceipt | DockyardErrorEnvelope;
+    } catch {
+      throw new DockyardClientError(response.status || 500, null);
+    }
     if (!response.ok) {
       throw new DockyardClientError(
         response.status,

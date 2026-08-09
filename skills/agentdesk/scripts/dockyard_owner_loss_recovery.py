@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import subprocess
 import threading
 import time
@@ -114,9 +115,24 @@ def _timestamp(clock: object) -> str:
 
 
 def _git_head(root: Path) -> str:
+    git_environment = os.environ.copy()
+    for variable in tuple(git_environment):
+        if variable.startswith("GIT_"):
+            git_environment.pop(variable, None)
     try:
         result = subprocess.run(
-            ("git", "-C", str(root), "rev-parse", "--verify", "HEAD"),
+            (
+                "git",
+                "-c",
+                "core.longpaths=true",
+                "-c",
+                f"safe.directory={root}",
+                "-C",
+                str(root),
+                "rev-parse",
+                "--verify",
+                "HEAD",
+            ),
             check=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -125,6 +141,7 @@ def _git_head(root: Path) -> str:
             encoding="utf-8",
             errors="strict",
             timeout=15,
+            env=git_environment,
         )
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise DockyardOwnerLossRecoveryConflictError(

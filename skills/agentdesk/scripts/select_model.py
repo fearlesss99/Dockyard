@@ -529,7 +529,23 @@ def select_binding(
     task_min_tier: str,
     task_capabilities: set[str],
     degradation_approval_id: Optional[str],
+    *,
+    required_provider_id: Optional[str] = None,
+    required_model_id: Optional[str] = None,
 ) -> dict[str, Any]:
+    """Select an eligible binding, optionally fenced to a PM-planned route.
+
+    The optional fence is intentionally exact: a durable plan that names a
+    provider/model pair must never be silently re-routed at admission time.
+    Callers without a PM plan retain the original policy-only behaviour.
+    """
+    if (required_provider_id is None) != (required_model_id is None):
+        raise SelectionError("planned provider and model must be supplied together")
+    if required_provider_id is not None:
+        if not _nonempty_string(required_provider_id) or not _nonempty_string(required_model_id):
+            raise SelectionError("planned provider and model must be non-empty strings")
+        required_provider_id = required_provider_id.strip()
+        required_model_id = required_model_id.strip()
     (
         required_tier,
         preferred_tier,
@@ -548,6 +564,12 @@ def select_binding(
     eligible: list[dict[str, Any]] = []
     rejected: list[str] = []
     for binding in bindings:
+        if required_provider_id is not None and (
+            binding["provider"] != required_provider_id
+            or binding["model_id"] != required_model_id
+        ):
+            rejected.append(f"{binding['binding_id']} (not the PM-planned provider/model)")
+            continue
         reasons = _rejection_reasons(
             binding,
             required_tier,

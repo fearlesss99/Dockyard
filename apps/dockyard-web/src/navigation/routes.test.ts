@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { dockyardRoutes, resolveDockyardRoute } from "./routes";
 
 describe("Dockyard routes", () => {
-  it("freezes the exact nine Chinese navigation items", () => {
+  it("preserves the exact nine Chinese business routes across shell redesigns", () => {
     expect(dockyardRoutes.map((route) => route.label)).toEqual([
       "工作台",
       "需求与方案",
@@ -13,6 +13,17 @@ describe("Dockyard routes", () => {
       "项目",
       "系统诊断",
       "设置",
+    ]);
+    expect(dockyardRoutes.map((route) => route.path)).toEqual([
+      "/",
+      "/requirements",
+      "/tasks",
+      "/runs",
+      "/reviews",
+      "/workers",
+      "/projects",
+      "/diagnostics",
+      "/settings",
     ]);
   });
 

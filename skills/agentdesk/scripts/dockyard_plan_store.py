@@ -61,16 +61,19 @@ class DockyardPlanPhase(str, Enum):
     APPROVAL_PENDING = "APPROVAL_PENDING"
     APPROVED = "APPROVED"
     MATERIALIZED = "MATERIALIZED"
+    DISCARDED = "DISCARDED"
 
 
 _ALLOWED_PHASE_TRANSITIONS = {
     DockyardPlanPhase.DRAFTED: frozenset({
         DockyardPlanPhase.EDITED,
         DockyardPlanPhase.APPROVAL_PENDING,
+        DockyardPlanPhase.DISCARDED,
     }),
     DockyardPlanPhase.EDITED: frozenset({
         DockyardPlanPhase.EDITED,
         DockyardPlanPhase.APPROVAL_PENDING,
+        DockyardPlanPhase.DISCARDED,
     }),
     DockyardPlanPhase.APPROVAL_PENDING: frozenset({DockyardPlanPhase.APPROVED}),
     DockyardPlanPhase.APPROVED: frozenset({
@@ -78,6 +81,7 @@ _ALLOWED_PHASE_TRANSITIONS = {
         DockyardPlanPhase.MATERIALIZED,
     }),
     DockyardPlanPhase.MATERIALIZED: frozenset(),
+    DockyardPlanPhase.DISCARDED: frozenset(),
 }
 
 
@@ -509,7 +513,10 @@ class DockyardPlanStore:
             record = self.latest(path.name)
             if record is not None:
                 records.append(record)
-        active = [record for record in records if record.phase is not DockyardPlanPhase.MATERIALIZED]
+        active = [record for record in records if record.phase not in {
+            DockyardPlanPhase.MATERIALIZED,
+            DockyardPlanPhase.DISCARDED,
+        }]
         if len(active) > 1:
             raise DockyardPlanConflictError("multiple active plan sessions")
         if active:

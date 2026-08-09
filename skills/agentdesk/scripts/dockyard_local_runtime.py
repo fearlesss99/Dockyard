@@ -39,16 +39,27 @@ from dockyard_provider_service import (
     project_provider_health,
 )
 from dockyard_sse import DockyardSseHub
-from dockyard_task_admission_composition import DockyardTaskAdmissionCompositionRuntime
+from dockyard_task_admission_composition import (
+    DockyardAdmissionCompositionError,
+    DockyardTaskAdmissionCompositionRuntime,
+)
+from pm_task_admission_preparation import AdmissionPreparationConflictError
+from select_model import SelectionError
 from pm_materialization_admission_handoff import (
     DISPATCH_AUTHORIZATION_SCHEMA_VERSION,
     HANDOFF_SCHEMA_VERSION,
     DispatchApprovalAuthorization,
+    MaterializationAdmissionConflictError,
     MaterializedTaskEvidence,
     with_content_digest as with_handoff_digest,
 )
 from dockyard_post_admission_worker import DockyardPostAdmissionWorkerRuntime
 from dockyard_owner_loss_recovery import DockyardOwnerLossRecoveryRuntime
+from portfolio_scheduler_worker_handoff_store import (
+    PortfolioSchedulerWorkerHandoffStore,
+    PortfolioSchedulerWorkerHandoffStoreError,
+    ScheduledDispatchHandoffPhase,
+)
 from dockyard_provider_factory import (
     DockyardConfiguredProviders,
     build_configured_providers,
@@ -57,7 +68,9 @@ from dockyard_terminal_owner_composition import (
     DockyardTerminalOwnerCompositionRuntime,
 )
 from dispatcher_gateway import AgentCliProvider
-from agent_capability_registry import AgentCapabilityRegistry
+from agent_capability_registry import AgentCapabilityRegistry, AgentRoutingUnavailableError
+from core_types import TaskDifficulty
+from pm_codex_planner import PmCodexPlanner
 from mad_gateway import MadGatewayConfig
 from dockyard_web_runtime import (
     DockyardBrowserBootstrap,
@@ -235,7 +248,29 @@ def _resume_current_materialized_plan(
             "sha256:" + "0" * 64,
         ))
         assert isinstance(evidence, MaterializedTaskEvidence)
-        task_admission.execute(current_plan, task, evidence, authorization)
+        progress = task_admission.execute(
+            current_plan, task, evidence, authorization
+        )
+        if (
+            progress.phase.value == "FINALIZED"
+            and task_admission.post_admission is not None
+            and progress.handoff_receipt_id is not None
+        ):
+            evidence_store = getattr(task_admission.handoff, "evidence_store", None)
+            reader = getattr(evidence_store, "read_receipt", None)
+            receipt = reader(progress.handoff_receipt_id) if callable(reader) else None
+            if receipt is not None and receipt.dispatch_id is not None:
+                try:
+                    handoff = PortfolioSchedulerWorkerHandoffStore(
+                        task_admission.root
+                    ).read_handoff(receipt.dispatch_id)
+                except PortfolioSchedulerWorkerHandoffStoreError:
+                    # This is incomplete historical evidence, not authority
+                    # to start another Worker.  Keep the task untouched and
+                    # continue recovering later cards in the same plan.
+                    continue
+                if handoff.phase is not ScheduledDispatchHandoffPhase.FINALIZED:
+                    task_admission._start_post_admission(receipt)
 
 
 def _provider_projection_evidence(
@@ -517,6 +552,22 @@ class DockyardLocalRuntime:
                 tuple(sorted(self._providers)) if self._providers is not None else (),
                 config.max_concurrency,
             )
+            pm_planner = None
+            if self._providers is not None and agent_registry is not None and "codex" in self._providers:
+                try:
+                    pm_route = agent_registry.route(
+                        TaskDifficulty.EXPERT,
+                        ("planning", "read"),
+                    )
+                    codex_executable = getattr(self._providers["codex"], "executable", None)
+                    if type(codex_executable) is str and codex_executable:
+                        pm_planner = PmCodexPlanner(
+                            project_root,
+                            codex_executable,
+                            pm_route,
+                        )
+                except AgentRoutingUnavailableError:
+                    pm_planner = None
             if self._providers is not None:
                 if self._audit_config is not None:
                     assert self._integration_target_branch is not None
@@ -565,11 +616,27 @@ class DockyardLocalRuntime:
                 background_post_admission=self._background_post_admission,
             )
             if current_plan is not None:
-                _resume_current_materialized_plan(
-                    plan_store,
-                    task_admission,
-                    current_plan,
-                )
+                try:
+                    _resume_current_materialized_plan(
+                        plan_store,
+                        task_admission,
+                        current_plan,
+                    )
+                except (
+                    AdmissionPreparationConflictError,
+                    DockyardAdmissionCompositionError,
+                    MaterializationAdmissionConflictError,
+                    PortfolioSchedulerWorkerHandoffStoreError,
+                    SelectionError,
+                ):
+                    # A previously materialized plan may be stranded at an
+                    # incomplete preparation phase, divergent evidence, or
+                    # a dirty project worktree, or a missing/divergent
+                    # handoff pair. Preserve its durable
+                    # evidence and keep the local control API available so a
+                    # fresh PM session can be created; never start a worker
+                    # from unproven recovery evidence during bootstrap.
+                    pass
             gateway = DockyardCompositionGateway(
                 pm,
                 snapshot_commit,
@@ -590,6 +657,7 @@ class DockyardLocalRuntime:
                     self._provider_cli_versions if self._providers is not None else None
                 ),
                 agent_registry=agent_registry,
+                pm_planner=pm_planner,
                 plan_id_changed=read_service.set_current_plan_id,
                 now=lambda: _runtime_now(self._clock),
             )

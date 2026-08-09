@@ -653,36 +653,54 @@ class _GitOwner:
         assessment_data = assessment.read_bytes()
         if "sha256:" + hashlib.sha256(assessment_data).hexdigest() != request.expected_assessment_content_digest:
             raise MaterializationAdmissionConflictError("handoff:assessment_digest")
-        if head == request.expected_head_commit:
-            status = self._run(root, "status", "--porcelain", "--untracked-files=all").decode().splitlines()
-            status = [
-                line for line in status
-                if not line[3:].replace("\\", "/").startswith(".agentdesk/runtime/")
-            ]
-            allowed = {evidence.task_card_relative_path, request.expected_assessment_relative_path}
-            current: set[str] = set()
-            unsafe: list[str] = []
-            for line in status:
-                path = line[3:].replace("\\", "/")
-                if path in allowed:
-                    current.add(path)
-                    continue
-                is_prior_dockyard_evidence = (
-                    line[:2] == "??"
-                    and (
-                        _DOCKYARD_UNTRACKED_TASK.fullmatch(path) is not None
-                        or _DOCKYARD_UNTRACKED_ASSESSMENT.fullmatch(path) is not None
-                    )
-                )
-                if not is_prior_dockyard_evidence:
-                    unsafe.append(line)
-            if current != allowed or unsafe:
-                raise MaterializationAdmissionConflictError("handoff:dirty_worktree")
-            self._run(root, "add", "--", evidence.task_card_relative_path, request.expected_assessment_relative_path)
-            self._run(root, "commit", "-m", f"docs: materialize {evidence.task_id} task evidence")
-            head = self._run(root, "rev-parse", "HEAD").decode().strip()
-        else:
-            self._run(root, "merge-base", "--is-ancestor", request.expected_head_commit, head)
+        self._run(root, "merge-base", "--is-ancestor", request.expected_head_commit, head)
+        allowed = {evidence.task_card_relative_path, request.expected_assessment_relative_path}
+        tracked = {
+            path.replace("\\", "/")
+            for path in self._run(
+                root, "ls-tree", "-r", "--name-only", head, "--",
+                evidence.task_card_relative_path,
+                request.expected_assessment_relative_path,
+            ).decode().splitlines()
+            if path
+        }
+        if tracked:
+            if tracked != allowed:
+                raise MaterializationAdmissionConflictError("handoff:evidence_pair")
+            committed = self._run(root, "show", f"{head}:{evidence.task_card_relative_path}")
+            committed_assessment = self._run(
+                root, "show", f"{head}:{request.expected_assessment_relative_path}"
+            )
+            if committed != data:
+                raise MaterializationAdmissionConflictError("handoff:committed_card")
+            if committed_assessment != assessment_data:
+                raise MaterializationAdmissionConflictError("handoff:committed_assessment")
+            return _sha(head, "task_card_git_commit")
+
+        # The project can legitimately contain an in-progress change while
+        # Dockyard materializes an independent task card.  `git commit`
+        # commits the index rather than the complete working tree, so only a
+        # foreign *staged* path is unsafe: it could accidentally be included
+        # in this evidence-only commit.  Leave modified and untracked user
+        # files untouched.  This also lets later cards in the same plan append
+        # their own evidence after an earlier card has advanced HEAD.
+        staged = {
+            path.replace("\\", "/")
+            for path in self._run(root, "diff", "--cached", "--name-only").decode().splitlines()
+            if path
+        }
+        if not staged.issubset(allowed):
+            raise MaterializationAdmissionConflictError("handoff:staged_worktree")
+        self._run(root, "add", "--", evidence.task_card_relative_path, request.expected_assessment_relative_path)
+        committed_paths = {
+            path.replace("\\", "/")
+            for path in self._run(root, "diff", "--cached", "--name-only").decode().splitlines()
+            if path
+        }
+        if committed_paths != allowed:
+            raise MaterializationAdmissionConflictError("handoff:evidence_index")
+        self._run(root, "commit", "-m", f"docs: materialize {evidence.task_id} task evidence")
+        head = self._run(root, "rev-parse", "HEAD").decode().strip()
         committed = self._run(root, "show", f"{head}:{evidence.task_card_relative_path}")
         if committed != data:
             raise MaterializationAdmissionConflictError("handoff:committed_card")

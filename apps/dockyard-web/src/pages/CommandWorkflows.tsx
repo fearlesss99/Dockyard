@@ -9,6 +9,8 @@ import type {
   DockyardProjectPlanningProjection,
   DockyardReviewProjection,
   DockyardRunListProjection,
+  DockyardTaskListProjection,
+  DockyardLiveTaskSummary,
   DockyardLiveRunSummary,
 } from "../types/api";
 import type {
@@ -29,6 +31,9 @@ export function verifiedProjectionMessage(message: string): string {
 }
 
 export function commandSuccessMessage(commandType: string, snapshotCommit: string): string {
+  if (commandType === "plan.discard") {
+    return "草案已放弃；历史证据保留，现可生成一份新的 PM-Codex 草案。";
+  }
   if (commandType === "delivery.accept") {
     return "已验收交付并完成 Git 集成。";
   }
@@ -77,6 +82,69 @@ export function commandFailureFeedback(error: unknown): {
       message: "PM 没有找到满足该任务难度的 Agent；请打开高级路由覆盖，指定已配置的 Agent，或先补齐本机 Provider 绑定。",
     };
   }
+  if (
+    error instanceof DockyardClientError
+    && error.envelope?.error_code === "PM_AGENT_UNAVAILABLE"
+  ) {
+    return {
+      state: "failed",
+      message: "PM-Codex Agent 未就绪；为避免本地规则冒充 PM，系统没有创建计划或任务卡。",
+    };
+  }
+  if (
+    error instanceof DockyardClientError
+    && error.envelope?.error_code === "PM_CODEX_PROXY_CERTIFICATE_UNTRUSTED"
+  ) {
+    return {
+      state: "failed",
+      message: "PM-Codex 无法信任当前代理的 TLS 证书；未创建计划或任务卡。请在 Windows“当前用户 > 受信任的根证书颁发机构”安装代理根证书后重试；不要关闭代理或跳过证书校验。",
+    };
+  }
+  if (
+    error instanceof DockyardClientError
+    && error.envelope?.error_code === "PM_CODEX_DISPATCH_FAILED"
+  ) {
+    return {
+      state: "failed",
+      message: "PM-Codex CLI 调用失败；未创建计划或任务卡。请确认 Codex 登录、模型与网络可用后重试。",
+    };
+  }
+  if (
+    error instanceof DockyardClientError
+    && error.envelope?.error_code === "PM_CODEX_OUTPUT_INVALID"
+  ) {
+    return {
+      state: "failed",
+      message: "PM-Codex 返回的计划格式未通过校验；未创建计划或任务卡。请重试生成。",
+    };
+  }
+  if (
+    error instanceof DockyardClientError
+    && error.envelope?.error_code === "PM_CODEX_PLAN_REJECTED"
+  ) {
+    return {
+      state: "failed",
+      message: "PM-Codex 计划不符合本地任务与路由策略；未创建计划或任务卡。请调整需求或 Provider 能力后重试。",
+    };
+  }
+  if (
+    error instanceof DockyardClientError
+    && error.envelope?.error_code === "UPSTREAM_TIMEOUT"
+  ) {
+    return {
+      state: "failed",
+      message: "本机 Runner 等待上游操作超时；未收到命令回执，请核对诊断后重试。",
+    };
+  }
+  if (
+    error instanceof DockyardClientError
+    && error.envelope?.error_code === "UPSTREAM_UNAVAILABLE"
+  ) {
+    return {
+      state: "failed",
+      message: "本机 Runner 上游暂不可用；未收到命令回执，请核对诊断后重试。",
+    };
+  }
   if (error instanceof DockyardClientError && error.status === 409) {
     return {
       state: "stale",
@@ -91,6 +159,37 @@ export interface CommandAction {
   readonly label: string;
   readonly confirmation: CommandConfirmation;
   readonly draft: DockyardCommandDraft;
+}
+
+export function clearedCommandConfirmation(): {
+  readonly active: null;
+  readonly acknowledged: false;
+  readonly phrase: "";
+} {
+  return { active: null, acknowledged: false, phrase: "" };
+}
+
+export const MOBILE_COMMAND_BREAKPOINT = 900;
+const MOBILE_COMMAND_RESTRICTION_MESSAGE = "该操作仅允许在桌面端核对并提交，移动端保持只读。";
+
+export function canOpenCommandAtViewport(action: CommandAction, viewportWidth: number): boolean {
+  return action.confirmation.mobileAllowed || viewportWidth > MOBILE_COMMAND_BREAKPOINT;
+}
+
+export function commandViewportRestrictionMessage(
+  action: CommandAction,
+  viewportWidth: number,
+): string | null {
+  return canOpenCommandAtViewport(action, viewportWidth)
+    ? null
+    : MOBILE_COMMAND_RESTRICTION_MESSAGE;
+}
+
+export function taskCommandProjectionsMatch(
+  tasks: DockyardTaskListProjection | undefined,
+  runs: DockyardRunListProjection | null | undefined,
+): boolean {
+  return tasks !== undefined && runs != null && tasks.snapshot_commit === runs.snapshot_commit;
 }
 
 export interface LiveCommandEvidence {
@@ -305,6 +404,78 @@ export function terminationActionFromProjection(
   };
 }
 
+export function cancelActionFromTask(
+  task: DockyardLiveTaskSummary,
+  projectId: string,
+  snapshotCommit: string,
+): CommandAction | null {
+  if (
+    !(task.state === "draft" || task.state === "ready" || task.state === "blocked")
+    || task.role_id !== null
+  ) return null;
+  return {
+    id: `cancel-task-${task.task_id}`,
+    label: "删除任务",
+    confirmation: {
+      title: `删除 ${task.task_id}`,
+      consequence: "确认后通过 canonical TASK_CANCELLED 将任务软删除；不会删除 Git 仓库、提交或历史证据。正在运行的任务必须先走终止进程。",
+      facts: [
+        { label: "Task", value: `${task.task_id} · r${task.revision}` },
+        { label: "当前状态", value: task.state },
+        { label: "处理方式", value: "TASK_CANCELLED · durable soft delete" },
+      ],
+      requiredPhrase: `删除 ${task.task_id}`,
+      destructive: true,
+      mobileAllowed: false,
+    },
+    draft: {
+      projectId,
+      commandType: "task.cancel",
+      endpoint: `/api/dockyard/v1/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(task.task_id)}/cancel`,
+      method: "POST",
+      expectedSnapshotCommit: snapshotCommit,
+      expectedRevision: task.revision,
+      confirmationId: `CONF-CANCEL-${task.task_id}-${task.revision}`,
+      payload: {
+        task_id: task.task_id,
+        event_id: `EVT-DOCKYARD-CANCEL-${task.task_id}-${task.revision}`,
+      },
+    },
+  };
+}
+
+export function discardPlanAction(
+  plan: DockyardPlanProjection,
+): CommandAction | null {
+  if (!(plan.phase === "DRAFTED" || plan.phase === "EDITED")) return null;
+  return {
+    id: `discard-plan-${plan.plan_id}-${plan.revision}`,
+    label: "放弃草案",
+    confirmation: {
+      title: `放弃 ${plan.plan_id}`,
+      consequence: "当前未批准草案将被终态放弃，历史证据会保留；随后可重新请求 PM-Codex 生成新草案。",
+      facts: [
+        { label: "Plan", value: `${plan.plan_id} · r${plan.revision}` },
+        { label: "任务数量", value: String(plan.tasks.length) },
+        { label: "处理方式", value: "DISCARDED · 保留历史，不派发任务" },
+      ],
+      requiredPhrase: `放弃 ${plan.plan_id}`,
+      destructive: true,
+      mobileAllowed: true,
+    },
+    draft: {
+      projectId: plan.project_id,
+      commandType: "plan.discard",
+      endpoint: `/api/dockyard/v1/projects/${encodeURIComponent(plan.project_id)}/plans/${encodeURIComponent(plan.plan_id)}/discard`,
+      method: "POST",
+      expectedSnapshotCommit: plan.snapshot_commit,
+      expectedRevision: plan.revision,
+      confirmationId: `CONF-DISCARD-${plan.plan_id}-${plan.revision}`,
+      payload: { plan_id: plan.plan_id, plan_digest: plan.plan_digest },
+    },
+  };
+}
+
 export function retryActionFromProjection(
   run: DockyardLiveRunSummary,
   projectId: string,
@@ -373,6 +544,33 @@ export function movePlanTask(
   return copy;
 }
 
+/**
+ * Remove one task from the local draft and detach dependencies pointing at it.
+ * This is intentionally a draft-only edit; durable task evidence remains
+ * immutable and can only be changed through the guarded command owners.
+ */
+export function removePlanTask(
+  tasks: readonly PlanEditorTask[],
+  taskId: string,
+): readonly PlanEditorTask[] {
+  if (tasks.length <= 1 || !tasks.some((task) => task.taskId === taskId)) return tasks;
+  return tasks
+    .filter((task) => task.taskId !== taskId)
+    .map((task) => ({
+      ...task,
+      dependencies: task.dependencies.filter((dependency) => dependency !== taskId),
+    }));
+}
+
+export function planSubmissionProblem(
+  requirement: string,
+  tasks: readonly PlanEditorTask[],
+): string | null {
+  if (!requirement.trim()) return "请输入非空需求后再提交审批。";
+  if (tasks.length === 0) return "计划至少需要保留一个任务后才能提交审批。";
+  return null;
+}
+
 export function editorTasksFromProjection(
   projection: DockyardPlanProjection,
 ): readonly PlanEditorTask[] {
@@ -404,12 +602,20 @@ export function CommandWorkflows({
   projectId,
   liveEvidence = [],
   runProjection,
+  taskProjection,
+  requestedAction = null,
+  onRequestedActionConsumed,
+  onEvidenceInvalidated,
 }: {
   readonly routeId: DockyardRouteId;
   readonly client?: DockyardClient;
   readonly projectId?: string;
   readonly liveEvidence?: readonly LiveCommandEvidence[];
   readonly runProjection?: DockyardRunListProjection;
+  readonly taskProjection?: DockyardTaskListProjection;
+  readonly requestedAction?: CommandAction | null;
+  readonly onRequestedActionConsumed?: () => void;
+  readonly onEvidenceInvalidated?: () => void;
 }) {
   const [active, setActive] = useState<CommandAction | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
@@ -436,7 +642,7 @@ export function CommandWorkflows({
 
   useEffect(() => {
     let current = true;
-    if (!client || !projectId || routeId !== "tasks") {
+    if (!client || !projectId || routeId !== "tasks" || runProjection !== undefined) {
       setTaskRunProjection(null);
       return () => { current = false; };
     }
@@ -445,21 +651,29 @@ export function CommandWorkflows({
       () => { if (current) setTaskRunProjection(null); },
     );
     return () => { current = false; };
-  }, [client, projectId, routeId, refresh]);
+  }, [client, projectId, routeId, refresh, runProjection]);
+
+  const effectiveTaskRunProjection = routeId === "tasks"
+    ? runProjection ?? taskRunProjection
+    : null;
 
   useEffect(() => {
     if (
       (routeId === "runs" && runProjection !== undefined)
-      || (routeId === "tasks" && taskRunProjection !== null)
+      || (routeId === "tasks" && taskCommandProjectionsMatch(taskProjection, effectiveTaskRunProjection))
     ) {
       markProjectionVerified();
     }
-  }, [routeId, runProjection, taskRunProjection]);
+  }, [effectiveTaskRunProjection, routeId, runProjection, taskProjection]);
 
   useEffect(() => {
     if (routeRef.current === routeId) return;
     routeRef.current = routeId;
+    const cleared = clearedCommandConfirmation();
     terminalFeedbackRef.current = "";
+    setActive(cleared.active);
+    setAcknowledged(cleared.acknowledged);
+    setPhrase(cleared.phrase);
     setState("idle");
     setMessage("");
   }, [routeId]);
@@ -511,7 +725,7 @@ export function CommandWorkflows({
       if (current) {
         setProjectPlanning(null);
         setState("failed");
-        setMessage("本机 PM 入口尚未就绪。");
+        setMessage("PM-Codex Agent 未就绪，无法生成计划草案。");
       }
     });
     return () => { current = false; };
@@ -575,6 +789,8 @@ export function CommandWorkflows({
     source.addEventListener("approval.changed", invalidate);
     source.addEventListener("project.changed", invalidate);
     source.addEventListener("review.changed", invalidate);
+    source.addEventListener("task.changed", invalidate);
+    source.addEventListener("run.changed", invalidate);
     return () => source.close();
   }, [client, projectId, routeId]);
 
@@ -582,24 +798,33 @@ export function CommandWorkflows({
     if (routeId === "reviews") {
       return reviewActionsFromProjections(reviews);
     }
-    const commandRuns = routeId === "tasks" ? taskRunProjection : runProjection;
+    const commandRuns = routeId === "tasks" ? effectiveTaskRunProjection : runProjection;
+    const taskProjectionsReady = routeId !== "tasks" || taskCommandProjectionsMatch(taskProjection, commandRuns);
+    if (!taskProjectionsReady) return [];
+    const taskActions = routeId === "tasks" && projectId && taskProjection
+      ? taskProjection.tasks.flatMap((task) => {
+        const action = cancelActionFromTask(task, projectId, taskProjection.snapshot_commit);
+        return action ? [action] : [];
+      })
+      : [];
     if ((routeId === "runs" || routeId === "tasks") && projectId && commandRuns) {
-      return commandRuns.runs
+      return [...taskActions, ...commandRuns.runs
         .flatMap((run) => [
           terminationActionFromProjection(run, projectId, commandRuns.snapshot_commit),
           retryActionFromProjection(run, projectId, commandRuns.snapshot_commit),
         ])
-        .filter((action): action is CommandAction => action !== null);
+        .filter((action): action is CommandAction => action !== null)];
     }
+    if (taskActions.length > 0) return taskActions;
     if (routeId === "requirements" && projection) return [approvalActionFromProjection(projection)];
     if (routeId === "projects" && projection) return [removalActionFromProjection(projection)];
     return [];
-  }, [projectId, projection, reviews, routeId, runProjection, taskRunProjection]);
+  }, [effectiveTaskRunProjection, projectId, projection, reviews, routeId, runProjection, taskProjection]);
 
   const createDraft = async () => {
     if (!client || !projectPlanning || !requirement.trim()) {
       setState("failed");
-      setMessage("请输入非空需求，并确认本机 PM 已连接。");
+      setMessage("请输入非空需求，并确认 PM-Codex Agent 已连接。");
       return;
     }
     setState("submitting");
@@ -611,17 +836,22 @@ export function CommandWorkflows({
       setRequirement(created.requirement);
       setTasks(editorTasksFromProjection(created));
       setState("committed");
-      setMessage("计划草案已由本机 PM 保存；批准前不会派发任务。");
+      setMessage("计划草案已由 PM-Codex 生成，并由本地控制面校验和持久化；批准前不会派发任务。");
     } catch (error) {
-      setState(error instanceof DockyardClientError && error.status === 409 ? "stale" : "failed");
-      setMessage(error instanceof DockyardClientError && error.status === 409
-        ? "状态已变化，请刷新后重新提交需求。"
-        : "需求未提交；未创建计划或任务卡。");
+      const feedback = commandFailureFeedback(error);
+      setState(feedback.state);
+      setMessage(feedback.message);
     }
   };
 
   const submitForApproval = async () => {
-    if (!client || !plan || plan.phase === "APPROVAL_PENDING" || !requirement.trim() || tasks.length === 0) return;
+    if (!client || !plan || plan.phase === "APPROVAL_PENDING") return;
+    const problem = planSubmissionProblem(requirement, tasks);
+    if (problem !== null) {
+      setState("failed");
+      setMessage(problem);
+      return;
+    }
     setState("submitting");
     setMessage("");
     try {
@@ -641,6 +871,14 @@ export function CommandWorkflows({
   };
 
   const open = (action: CommandAction) => {
+    const viewportWidth = typeof window === "undefined" ? Number.POSITIVE_INFINITY : window.innerWidth;
+    const restriction = commandViewportRestrictionMessage(action, viewportWidth);
+    if (restriction !== null) {
+      setState("failed");
+      setMessage(restriction);
+      setActive(null);
+      return;
+    }
     terminalFeedbackRef.current = "";
     setActive(action);
     setAcknowledged(false);
@@ -649,10 +887,24 @@ export function CommandWorkflows({
     setMessage("");
   };
 
+  useEffect(() => {
+    if (!requestedAction) return;
+    open(requestedAction);
+    onRequestedActionConsumed?.();
+  }, [onRequestedActionConsumed, requestedAction]);
+
   const submit = async () => {
     if (!active || !client) {
       setState("failed");
       setMessage("本机 Control API 会话尚未配对，命令未提交。");
+      setActive(null);
+      return;
+    }
+    const viewportWidth = typeof window === "undefined" ? Number.POSITIVE_INFINITY : window.innerWidth;
+    const restriction = commandViewportRestrictionMessage(active, viewportWidth);
+    if (restriction !== null) {
+      setState("failed");
+      setMessage(restriction);
       setActive(null);
       return;
     }
@@ -664,9 +916,16 @@ export function CommandWorkflows({
         receipt.snapshot_commit,
       );
       terminalFeedbackRef.current = successMessage;
+      if (active.draft.commandType === "plan.discard") {
+        setPlan(null);
+        setTasks([]);
+        setRequirement("");
+      }
       setState("committed");
       setMessage(successMessage);
       setProjection(null);
+      setRefresh((value) => value + 1);
+      onEvidenceInvalidated?.();
     } catch (error) {
       const feedback = commandFailureFeedback(error);
       setState(feedback.state);
@@ -674,6 +933,7 @@ export function CommandWorkflows({
       if (feedback.state === "stale") {
         setProjection(null);
         setRefresh((value) => value + 1);
+        onEvidenceInvalidated?.();
       }
     } finally {
       setActive(null);
@@ -681,7 +941,7 @@ export function CommandWorkflows({
   };
 
   if (shouldShowCommandUnavailable(routeId, actions.length, state)) {
-    const taskOwnerConnected = routeId === "tasks" && taskRunProjection !== null;
+    const taskOwnerConnected = routeId === "tasks" && taskCommandProjectionsMatch(taskProjection, effectiveTaskRunProjection);
     return (
       <section className="panel command-panel">
         <header className="panel__header">
@@ -710,6 +970,9 @@ export function CommandWorkflows({
         <div className="plan-editor desktop-only">
           <label className="routing-mode-toggle"><input type="checkbox" checked={advancedRouting} onChange={(event) => setAdvancedRouting(event.target.checked)} disabled={plan?.phase === "APPROVAL_PENDING"} /><span>开启高级路由覆盖</span><small>{advancedRouting ? "PM 自动分配已暂时让位给你的逐任务设置" : "PM 会按任务难度、能力和并发上限自动分配 Agent"}</small></label>
           <label className="field-stack"><span>需求文本</span><textarea value={requirement} onChange={(event) => setRequirement(event.target.value)} placeholder="描述你希望完成的结果、边界与验收标准……" disabled={plan?.phase === "APPROVAL_PENDING"} /></label>
+          <div className="inline-actions inline-actions--editor">
+            <button className="button button--quiet" type="button" onClick={() => setRequirement("")} disabled={!requirement || plan?.phase === "APPROVAL_PENDING"}>清空需求输入</button>
+          </div>
           {tasks.length > 0 && <div className="plan-task-list">
             {tasks.map((task) => (
               <article className="plan-task" key={task.taskId}>
@@ -723,6 +986,7 @@ export function CommandWorkflows({
                 <div className="inline-actions">
                   <button type="button" onClick={() => setTasks(movePlanTask(tasks, task.taskId, -1))} disabled={!advancedRouting || plan?.phase === "APPROVAL_PENDING"}>上移</button>
                   <button type="button" onClick={() => setTasks(movePlanTask(tasks, task.taskId, 1))} disabled={!advancedRouting || plan?.phase === "APPROVAL_PENDING"}>下移</button>
+                  <button className="button button--danger" type="button" onClick={() => setTasks(removePlanTask(tasks, task.taskId))} disabled={plan?.phase === "APPROVAL_PENDING" || tasks.length <= 1}>删除任务</button>
                 </div>
               </article>
             ))}
@@ -730,8 +994,9 @@ export function CommandWorkflows({
           <div className="command-actions">
             {!plan && <button className="button button--primary" type="button" onClick={createDraft} disabled={!client || !projectPlanning || state === "submitting"}>生成计划草案</button>}
             {plan && plan.phase !== "APPROVAL_PENDING" && <button className="button button--primary" type="button" onClick={submitForApproval} disabled={state === "submitting"}>提交审批</button>}
+            {plan && discardPlanAction(plan) && <button className="button button--danger" type="button" onClick={() => open(discardPlanAction(plan)!)} disabled={state === "submitting"}>放弃草案</button>}
           </div>
-          <p className="muted-copy">草案由本机唯一 PM 持久化；提交审批和批准计划是两个独立步骤，批准前零派发。</p>
+          <p className="muted-copy">PM-Codex 负责拆解需求；本地控制面只负责校验、持久化与批准后的派发。提交审批和批准计划是两个独立步骤，批准前零派发。</p>
         </div>
       )}
 
@@ -751,7 +1016,9 @@ export function CommandWorkflows({
       )}
 
       <div className="command-actions">
-        {actions.map((action) => <button className={action.confirmation.destructive ? "button button--danger" : "button button--primary"} type="button" key={action.id} onClick={() => open(action)} data-mobile={action.confirmation.mobileAllowed}>{action.label}</button>)}
+        {actions
+          .filter((action) => !(routeId === "tasks" && action.draft.commandType === "task.cancel"))
+          .map((action) => <button className={action.confirmation.destructive ? "button button--danger" : "button button--primary"} type="button" key={action.id} onClick={() => open(action)} data-mobile={action.confirmation.mobileAllowed}>{action.label}</button>)}
       </div>
       {message && <p className={`command-message command-message--${state}`}>{message}</p>}
       {active && <ConfirmationDialog confirmation={active.confirmation} acknowledged={acknowledged} phrase={phrase} busy={state === "submitting"} onAcknowledge={setAcknowledged} onPhrase={setPhrase} onCancel={() => setActive(null)} onConfirm={submit} />}

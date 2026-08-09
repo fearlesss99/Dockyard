@@ -508,7 +508,15 @@ class PmTaskAdmissionPreparationRuntime:
     def read_handoff_inputs(self, preparation_id: str) -> AdmissionPreparationHandoffInputs:
         return self.store.read_handoff_inputs(preparation_id)
 
-    def prepare(self, profile: PmTaskAdmissionProfile, request: AdmissionPreparationRequest, materialized: MaterializedTaskEvidence) -> AdmissionPreparationResult:
+    def prepare(
+        self,
+        profile: PmTaskAdmissionProfile,
+        request: AdmissionPreparationRequest,
+        materialized: MaterializedTaskEvidence,
+        *,
+        planned_provider_id: str | None = None,
+        planned_model_id: str | None = None,
+    ) -> AdmissionPreparationResult:
         self._validate(profile, request, materialized)
         policy, bindings, role_id, base_commit = self._load_sources(
             request, materialized
@@ -533,6 +541,8 @@ class PmTaskAdmissionPreparationRuntime:
             assessment.selected_difficulty.value,
             set(profile.task_capabilities),
             profile.degradation_approval_id,
+            required_provider_id=planned_provider_id,
+            required_model_id=planned_model_id,
         )
         model = _model(selected)
         self.store.model_selection(request.preparation_id, model)
@@ -542,7 +552,12 @@ class PmTaskAdmissionPreparationRuntime:
         template = MaterializationAdmissionPlanTemplate(HANDOFF_SCHEMA_VERSION, "APT-" + stem, profile.task_id, profile.revision, receipt.worker_kind, assessment_id, "DSP-" + stem, "EVT-" + stem, "MSG-" + stem, role_id, request.report_path, model, "ready", profile.expected_task_attempt, profile.new_attempt, SCHEMA_VERSION, request.holder_instance_id, request.canonical_worktree_identity, profile.prepared_at, "sha256:" + "0" * 64)
         template = replace(template, content_digest=_content_digest(template))
         assessment_digest = "sha256:" + stored.content_sha256
-        handoff = MaterializationAdmissionRequest(HANDOFF_SCHEMA_VERSION, "HANDOFF-" + stem, profile.project_id, profile.plan_id, profile.task_id, profile.revision, materialized.content_digest, template.template_id, template.content_digest, profile.plan_revision, materialized.plan_content_digest, materialized.task_card_relative_path, materialized.task_card_content_digest, stored.relative_path, assessment_digest, request.repository_identity, request.expected_head_commit, base_commit, request.expected_branch, generation, profile.business_priority, receipt.worker_kind, assessment_id, SCHEMA_VERSION, profile.prepared_at, "sha256:" + "0" * 64)
+        # `materialization_base_commit` is the checked current HEAD used when
+        # this preparation bound its worktree identity.  The card's own
+        # declared base is still validated by _load_sources, but cannot be
+        # used to derive a different worktree after an earlier parallel card
+        # has appended evidence-only commits.
+        handoff = MaterializationAdmissionRequest(HANDOFF_SCHEMA_VERSION, "HANDOFF-" + stem, profile.project_id, profile.plan_id, profile.task_id, profile.revision, materialized.content_digest, template.template_id, template.content_digest, profile.plan_revision, materialized.plan_content_digest, materialized.task_card_relative_path, materialized.task_card_content_digest, stored.relative_path, assessment_digest, request.repository_identity, request.expected_head_commit, request.materialization_base_commit, request.expected_branch, generation, profile.business_priority, receipt.worker_kind, assessment_id, SCHEMA_VERSION, profile.prepared_at, "sha256:" + "0" * 64)
         handoff = replace(handoff, content_digest=_content_digest(handoff))
         handoff_inputs = AdmissionPreparationHandoffInputs(PREPARATION_SCHEMA_VERSION, request.preparation_id, receipt.receipt_id, profile.content_digest, materialized.content_digest, profile.expected_task_attempt, profile.new_attempt, stored.relative_path, assessment_digest, template, handoff, profile.prepared_at, "sha256:" + "0" * 64)
         handoff_inputs = replace(handoff_inputs, content_digest=_inputs_digest(handoff_inputs))
