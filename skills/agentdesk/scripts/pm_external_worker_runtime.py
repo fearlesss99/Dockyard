@@ -160,10 +160,18 @@ def _runtime_root(project_root: Path) -> Path:
 
 
 def load_external_worker_endpoint(
-    project_root: Path, role_id: str
+    project_root: Path,
+    role_id: str,
+    provider_id: str | None = None,
+    model_binding_id: str | None = None,
 ) -> ExternalWorkerEndpoint:
-    """Load one exact role endpoint from the gitignored registry."""
+    """Load one exact role/provider/binding endpoint from the local registry."""
     role_id = _safe_text(role_id, "role_id")
+    if (provider_id is None) != (model_binding_id is None):
+        raise PmExternalWorkerInputError("external_worker:endpoint_selector")
+    if provider_id is not None:
+        provider_id = _safe_text(provider_id, "provider_id")
+        model_binding_id = _safe_text(model_binding_id, "model_binding_id")
     path = _runtime_root(project_root) / "external-workers.yaml"
     if path.is_symlink():
         raise PmExternalWorkerInputError("external_worker:config_link")
@@ -177,17 +185,29 @@ def load_external_worker_endpoint(
         raise PmExternalWorkerInputError("external_worker:config_schema")
     if raw.get("schema_version") != CONFIG_SCHEMA or type(raw.get("workers")) is not dict:
         raise PmExternalWorkerInputError("external_worker:config_schema")
-    item = raw["workers"].get(role_id)
     expected = {
         "endpoint_id", "role_id", "provider_id", "model_binding_id",
         "executable", "permission_mode", "status",
     }
-    if type(item) is not dict or set(item) != expected:
-        raise PmExternalWorkerInputError("external_worker:endpoint_schema")
-    endpoint = ExternalWorkerEndpoint(**item)
-    for field in ("endpoint_id", "role_id", "provider_id", "model_binding_id", "permission_mode"):
-        _safe_text(getattr(endpoint, field), field)
-    if endpoint.role_id != role_id or endpoint.status != "verified":
+    candidates: list[ExternalWorkerEndpoint] = []
+    for item in raw["workers"].values():
+        if type(item) is not dict or set(item) != expected:
+            raise PmExternalWorkerInputError("external_worker:endpoint_schema")
+        endpoint = ExternalWorkerEndpoint(**item)
+        for field in ("endpoint_id", "role_id", "provider_id", "model_binding_id", "permission_mode"):
+            _safe_text(getattr(endpoint, field), field)
+        if endpoint.role_id != role_id:
+            continue
+        if provider_id is not None and (
+            endpoint.provider_id != provider_id
+            or endpoint.model_binding_id != model_binding_id
+        ):
+            continue
+        candidates.append(endpoint)
+    if len(candidates) != 1:
+        raise PmExternalWorkerConflictError("external_worker:endpoint_identity")
+    endpoint = candidates[0]
+    if endpoint.status != "verified":
         raise PmExternalWorkerInputError("external_worker:endpoint_status")
     executable = Path(endpoint.executable)
     if not executable.is_absolute() or not executable.is_file():
@@ -312,9 +332,14 @@ async def run_pm_external_worker(
     if type(orchestrator) is not WorkflowOrchestrator or orchestrator.project_root != root:
         raise PmExternalWorkerInputError("external_worker:orchestrator")
 
-    endpoint = load_external_worker_endpoint(root, request.role_id)
     dispatch = request.handoff_request.dispatch_cycle_request.dispatch_request
     snapshot = dispatch.model_selection
+    endpoint = load_external_worker_endpoint(
+        root,
+        request.role_id,
+        snapshot.selected_model_provider,
+        snapshot.model_binding_id,
+    )
     if (
         snapshot.selected_model_provider != endpoint.provider_id
         or snapshot.model_binding_id != endpoint.model_binding_id

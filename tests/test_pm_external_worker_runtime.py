@@ -58,6 +58,33 @@ def _write_config(root: Path, executable: Path) -> None:
     )
 
 
+def _write_multi_provider_config(
+    root: Path, claude_executable: Path, reasonix_executable: Path
+) -> None:
+    path = root / ".agentdesk" / "runtime"
+    path.mkdir(parents=True)
+    common = {
+        "role_id": "DEV", "permission_mode": "default", "status": "verified",
+    }
+    data = {
+        "schema_version": runtime.CONFIG_SCHEMA,
+        "updated_at": "2026-08-02T11:00:00Z",
+        "workers": {
+            "DEV:claude": {
+                **common, "endpoint_id": "EXT-DEV-CLAUDE", "provider_id": "claude",
+                "model_binding_id": "BIND-CLAUDE", "executable": str(claude_executable),
+            },
+            "DEV:reasonix": {
+                **common, "endpoint_id": "EXT-DEV-REASONIX", "provider_id": "reasonix",
+                "model_binding_id": "BIND-REASONIX", "executable": str(reasonix_executable),
+            },
+        },
+    }
+    (path / "external-workers.yaml").write_text(
+        json.dumps(data, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def _handoff(root: Path) -> AdmittedDispatchStartRequest:
     cycle = object.__new__(DispatchCycleRequest)
     identity = SimpleNamespace(task_id="TC-026", revision=1, attempt=1, dispatch_id="DSP-26")
@@ -354,6 +381,24 @@ class PmExternalWorkerRuntimeTests(unittest.IsolatedAsyncioTestCase):
             endpoint = runtime.load_external_worker_endpoint(root, "DEV")
             self.assertEqual(endpoint.provider_id, "claude")
             self.assertEqual(endpoint.status, "verified")
+
+    def test_same_role_selects_exact_provider_binding_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            claude = root / "claude.exe"
+            reasonix = root / "reasonix.exe"
+            claude.write_bytes(b"")
+            reasonix.write_bytes(b"")
+            _write_multi_provider_config(root, claude, reasonix)
+            endpoint = runtime.load_external_worker_endpoint(
+                root, "DEV", "reasonix", "BIND-REASONIX"
+            )
+            self.assertEqual(endpoint.endpoint_id, "EXT-DEV-REASONIX")
+            self.assertEqual(endpoint.executable, str(reasonix))
+            with self.assertRaisesRegex(
+                runtime.PmExternalWorkerConflictError, "endpoint_identity"
+            ):
+                runtime.load_external_worker_endpoint(root, "DEV")
 
     def test_runtime_validator_accepts_external_worker_without_codex_thread(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
