@@ -22,6 +22,8 @@ from dispatcher_gateway import (
     DispatchIdentity,
     DispatchRequest,
     DispatchNonZeroExitError,
+    DispatchLaunchError,
+    DispatchTimeoutError,
     ModelSelectionSnapshot,
     run_dispatch,
 )
@@ -301,16 +303,28 @@ User requirement:
             timeout_seconds=self.timeout_seconds,
         )
         provider = CodexCliProvider("codex", self.executable, "read-only")
-        try:
-            result = _run_async(run_dispatch(request, {"codex": provider}))
-        except DispatchNonZeroExitError as exc:
-            if _is_untrusted_proxy_certificate(exc):
-                raise PmCodexPlanningError(
-                    "pm_codex:proxy_certificate_untrusted"
-                ) from exc
-            raise PmCodexPlanningError("pm_codex:dispatch_failed") from exc
-        except Exception as exc:
-            raise PmCodexPlanningError("pm_codex:dispatch_failed") from exc
+        # A freshly started local Runner can race the first CLI process with
+        # proxy/socket readiness.  Retry exactly once at this side-effect-free
+        # planning boundary; the plan is not persisted until this returns.
+        # Persistent failures still fail closed with the same stable error.
+        last_error: Exception | None = None
+        for _attempt in range(2):
+            try:
+                result = _run_async(run_dispatch(request, {"codex": provider}))
+                break
+            except DispatchNonZeroExitError as exc:
+                if _is_untrusted_proxy_certificate(exc):
+                    raise PmCodexPlanningError(
+                        "pm_codex:proxy_certificate_untrusted"
+                    ) from exc
+                last_error = exc
+            except (DispatchLaunchError, DispatchTimeoutError) as exc:
+                last_error = exc
+            except Exception as exc:
+                raise PmCodexPlanningError("pm_codex:dispatch_failed") from exc
+        else:
+            assert last_error is not None
+            raise PmCodexPlanningError("pm_codex:dispatch_failed") from last_error
         specs = _decode_plan(result.stdout, plan_id)
         try:
             return decompose_codex_tasks(

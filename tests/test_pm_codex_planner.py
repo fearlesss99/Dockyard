@@ -16,7 +16,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from agent_capability_registry import AgentCapability, AgentCapabilityRegistry  # noqa: E402
 from core_types import TaskDifficulty  # noqa: E402
-from dispatcher_gateway import DispatchNonZeroExitError  # noqa: E402
+from dispatcher_gateway import DispatchLaunchError, DispatchNonZeroExitError  # noqa: E402
 from pm_codex_planner import (  # noqa: E402
     PmCodexPlanner,
     PmCodexPlanningError,
@@ -141,6 +141,38 @@ class PmCodexPlannerTests(unittest.TestCase):
         self.assertIn("MUST read these project-local files", request.prompt)
         self.assertIn("Reasonix/deepseek-v4-flash", request.prompt)
         self.assertEqual(request.model_selection.selected_model_provider, "codex")
+
+    def test_planner_retries_one_transient_cli_start_failure(self) -> None:
+        attempts = 0
+
+        async def flaky_run(request, providers):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise DispatchLaunchError("cold-start")
+            event = {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": json.dumps(_payload())},
+            }
+            return SimpleNamespace(stdout=(json.dumps(event) + "\n").encode())
+
+        with tempfile.TemporaryDirectory() as directory:
+            planner = PmCodexPlanner(
+                Path(directory),
+                "codex",
+                _registry().route(TaskDifficulty.EXPERT, ("planning", "read")),
+            )
+            with patch("pm_codex_planner.run_dispatch", flaky_run):
+                result = planner.plan(
+                    plan_id=PLAN_ID,
+                    requirement="Add a bounded feature.",
+                    snapshot_commit=SNAPSHOT,
+                    command_id="CMD-CODEX-RETRY",
+                    registry=_registry(),
+                )
+
+        self.assertEqual(attempts, 2)
+        self.assertEqual(len(result.tasks), 1)
 
     def test_local_router_uses_only_registered_cost_ordered_bindings(self) -> None:
         basic_rationale = (
