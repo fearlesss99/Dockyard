@@ -448,6 +448,15 @@ export function CommandWorkflows({
   }, [client, projectId, routeId, refresh]);
 
   useEffect(() => {
+    if (
+      (routeId === "runs" && runProjection !== undefined)
+      || (routeId === "tasks" && taskRunProjection !== null)
+    ) {
+      markProjectionVerified();
+    }
+  }, [routeId, runProjection, taskRunProjection]);
+
+  useEffect(() => {
     if (routeRef.current === routeId) return;
     routeRef.current = routeId;
     terminalFeedbackRef.current = "";
