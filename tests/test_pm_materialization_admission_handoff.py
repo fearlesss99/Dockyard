@@ -235,6 +235,29 @@ class MaterializationAdmissionRuntimeTests(unittest.TestCase):
         self.assertEqual(scheduler.plans[0].receipt_id, f"SR-{queue[0].queue_id[2:]}-1-g1")
         self.assertTrue((self.fx.root / ".agentdesk/runtime/materialization-admission/admission-plans/HANDOFF-001.yaml").is_file())
 
+    def test_prior_untracked_dockyard_evidence_does_not_block_current_materialization(self) -> None:
+        prior_card = self.fx.root / "docs/pm/tasks/TC-12345678901234567890-r1-dockyard.md"
+        prior_card.write_text("prior durable task evidence\n", encoding="utf-8")
+        prior_assessment = self.fx.root / (
+            "docs/pm/assessments/TC-12345678901234567890/r1/"
+            "ASM-0123456789abcdef01234567.yaml"
+        )
+        prior_assessment.parent.mkdir(parents=True)
+        prior_assessment.write_text("prior durable assessment evidence\n", encoding="utf-8")
+        receipt, scheduler = self._run()
+        self.assertIs(receipt.phase, MaterializationAdmissionPhase.FINALIZED)
+        self.assertEqual(scheduler.calls, 1)
+        self.assertTrue(prior_card.is_file())
+        self.assertTrue(prior_assessment.is_file())
+        self.assertNotIn(str(prior_card.relative_to(self.fx.root)).replace("\\", "/"), _git(self.fx.root, "ls-files"))
+
+    def test_unrelated_untracked_file_still_fails_closed(self) -> None:
+        (self.fx.root / "unrelated.txt").write_text("user data\n", encoding="utf-8")
+        scheduler = _FakeScheduler()
+        with self.assertRaisesRegex(MaterializationAdmissionConflictError, "dirty_worktree"):
+            self._run(scheduler)
+        self.assertEqual(scheduler.calls, 0)
+
     def test_finalized_replay_is_zero_scheduler_calls(self) -> None:
         first, scheduler = self._run()
         replay_runtime = MaterializationAdmissionRuntime(self.fx.root, scheduler=scheduler)

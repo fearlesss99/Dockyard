@@ -497,20 +497,30 @@ class DockyardPlanStore:
         return self.read(plan_id, max(revisions))
 
     def current_session(self, base_plan_id: str) -> DockyardPlanRecord | None:
-        """Recover the unique non-terminal session descended from a base ID."""
+        """Recover the unique active session, or its deepest terminal ancestor."""
         base = _identifier(base_plan_id, "plan_id")
-        candidates: list[DockyardPlanRecord] = []
+        family = re.compile(re.escape(base) + r"(?:-r[1-9][0-9]*)*\Z")
+        records: list[DockyardPlanRecord] = []
         for path in self._root.iterdir():
-            if path.name != base and not path.name.startswith(base + "-r"):
+            if family.fullmatch(path.name) is None:
                 continue
             if not path.is_dir() or _reparse(path):
                 raise DockyardPlanFilesystemError("plan session path is not plain")
             record = self.latest(path.name)
-            if record is not None and record.phase is not DockyardPlanPhase.MATERIALIZED:
-                candidates.append(record)
-        if len(candidates) > 1:
+            if record is not None:
+                records.append(record)
+        active = [record for record in records if record.phase is not DockyardPlanPhase.MATERIALIZED]
+        if len(active) > 1:
             raise DockyardPlanConflictError("multiple active plan sessions")
-        return None if not candidates else candidates[0]
+        if active:
+            return active[0]
+        if not records:
+            return None
+        deepest = max(record.plan_id.count("-r") for record in records)
+        terminal = [record for record in records if record.plan_id.count("-r") == deepest]
+        if len(terminal) != 1:
+            raise DockyardPlanConflictError("multiple terminal plan sessions")
+        return terminal[0]
 
     def save(self, record: DockyardPlanRecord) -> DockyardPlanRecord:
         if not isinstance(record, DockyardPlanRecord):

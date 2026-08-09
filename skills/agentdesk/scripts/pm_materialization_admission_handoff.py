@@ -72,6 +72,12 @@ _SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_DOCKYARD_UNTRACKED_TASK = re.compile(
+    r"docs/pm/tasks/TC-[0-9]{20}-r[1-9][0-9]*-dockyard\.md\Z"
+)
+_DOCKYARD_UNTRACKED_ASSESSMENT = re.compile(
+    r"docs/pm/assessments/TC-[0-9]{20}/r[1-9][0-9]*/ASM-[0-9a-f]{24}\.yaml\Z"
+)
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -653,9 +659,24 @@ class _GitOwner:
                 line for line in status
                 if not line[3:].replace("\\", "/").startswith(".agentdesk/runtime/")
             ]
-            observed = {line[3:].replace("\\", "/") for line in status}
             allowed = {evidence.task_card_relative_path, request.expected_assessment_relative_path}
-            if observed != allowed:
+            current: set[str] = set()
+            unsafe: list[str] = []
+            for line in status:
+                path = line[3:].replace("\\", "/")
+                if path in allowed:
+                    current.add(path)
+                    continue
+                is_prior_dockyard_evidence = (
+                    line[:2] == "??"
+                    and (
+                        _DOCKYARD_UNTRACKED_TASK.fullmatch(path) is not None
+                        or _DOCKYARD_UNTRACKED_ASSESSMENT.fullmatch(path) is not None
+                    )
+                )
+                if not is_prior_dockyard_evidence:
+                    unsafe.append(line)
+            if current != allowed or unsafe:
                 raise MaterializationAdmissionConflictError("handoff:dirty_worktree")
             self._run(root, "add", "--", evidence.task_card_relative_path, request.expected_assessment_relative_path)
             self._run(root, "commit", "-m", f"docs: materialize {evidence.task_id} task evidence")
