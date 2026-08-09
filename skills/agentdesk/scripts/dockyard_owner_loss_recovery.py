@@ -382,7 +382,9 @@ class DockyardOwnerLossRecoveryRuntime:
         retry_plan = None
         next_dispatch_id = None
         if failed_attempt < 3:
-            plan = self._source_plan(task_id, revision, failed_attempt, failed_dispatch_id)
+            plan = self._source_plan(
+                task_id, revision, failed_attempt, failed_dispatch_id, receipt
+            )
             next_dispatch_id = "DSP-OWNER-RETRY-" + token
             self._ensure_automatic_approval(
                 task_id, revision, failed_attempt + 1, next_dispatch_id,
@@ -518,14 +520,60 @@ class DockyardOwnerLossRecoveryRuntime:
             outcome, event_id, next_dispatch_id, completed_at,
         )
 
-    def _source_plan(self, task_id, revision, attempt, dispatch_id) -> AdmissionPlanReservation:
-        plans = tuple(
+    def _source_plan(
+        self, task_id, revision, attempt, dispatch_id, dispatch_receipt
+    ) -> AdmissionPlanReservation:
+        all_plans = tuple(
             plan for plan in PortfolioSchedulerStore(self.root).enumerate_validated_admission_plans()
             if plan.task_id == task_id
             and plan.revision == revision
-            and plan.new_attempt == attempt
-            and plan.dispatch_id == dispatch_id
         )
+        retry_receipt = dispatch_evidence.read_retry_receipt(self.root, dispatch_id)
+        if retry_receipt is None:
+            plans = tuple(
+                plan for plan in all_plans
+                if plan.new_attempt == attempt and plan.dispatch_id == dispatch_id
+            )
+            expected_event_id = None if not plans else plans[0].event_id
+        else:
+            if (
+                retry_receipt.task_id != task_id
+                or retry_receipt.revision != revision
+                or retry_receipt.next_attempt != attempt
+                or retry_receipt.next_dispatch_id != dispatch_id
+                or retry_receipt.phase not in {"RETRY_STARTED", "RETRY_FINALIZING"}
+                or retry_receipt.supervisor_pid != dispatch_receipt.supervisor_pid
+                or retry_receipt.worker_pid != dispatch_receipt.worker_pid
+            ):
+                raise DockyardOwnerLossRecoveryConflictError(
+                    "owner_loss:retry_receipt_identity"
+                )
+            source_dispatch_id = retry_receipt.failed_dispatch_id
+            source_attempt = retry_receipt.failed_attempt
+            while True:
+                plans = tuple(
+                    plan for plan in all_plans
+                    if plan.new_attempt == source_attempt
+                    and plan.dispatch_id == source_dispatch_id
+                )
+                if plans:
+                    break
+                source_retry = dispatch_evidence.read_retry_receipt(
+                    self.root, source_dispatch_id
+                )
+                if (
+                    source_retry is None
+                    or source_retry.task_id != task_id
+                    or source_retry.revision != revision
+                    or source_retry.next_attempt != source_attempt
+                    or source_retry.next_dispatch_id != source_dispatch_id
+                ):
+                    raise DockyardOwnerLossRecoveryConflictError(
+                        "owner_loss:retry_source_identity"
+                    )
+                source_dispatch_id = source_retry.failed_dispatch_id
+                source_attempt = source_retry.failed_attempt
+            expected_event_id = retry_receipt.next_dispatch_event_id
         if len(plans) != 1:
             raise DockyardOwnerLossRecoveryConflictError("owner_loss:plan_identity")
         plan = plans[0]
@@ -534,7 +582,7 @@ class DockyardOwnerLossRecoveryRuntime:
         dispatched = tuple(
             event for event in snapshot.events
             if event.event_type == "TASK_DISPATCHED"
-            and event.event_id == plan.event_id
+            and event.event_id == expected_event_id
             and event.task_id == task_id
             and event.revision == revision
             and event.attempt == attempt
@@ -542,8 +590,7 @@ class DockyardOwnerLossRecoveryRuntime:
         )
         outboxes = tuple(
             item for item in snapshot.outbox
-            if item.message_id == plan.outbox_message_id
-            and item.event_id == plan.event_id
+            if item.event_id == expected_event_id
             and item.task_id == task_id
             and item.revision == revision
             and item.attempt == attempt
@@ -581,21 +628,47 @@ class DockyardOwnerLossRecoveryRuntime:
             raise DockyardOwnerLossRecoveryConflictError(
                 "owner_loss:outbox_plan_binding"
             )
-        handoff = PortfolioSchedulerWorkerHandoffStore(self.root).read_handoff(dispatch_id)
-        if (
-            handoff.task_id != task_id
-            or handoff.revision != revision
-            or handoff.attempt != attempt
-            or handoff.dispatch_id != dispatch_id
-            or handoff.plan_digest != plan.content_digest
-            or handoff.receipt_id != plan.receipt_id
-            or handoff.phase not in {
-                ScheduledDispatchHandoffPhase.SUPERVISOR_STARTED,
-                ScheduledDispatchHandoffPhase.WORKER_STARTED,
-                ScheduledDispatchHandoffPhase.ACKNOWLEDGED,
-            }
-        ):
-            raise DockyardOwnerLossRecoveryConflictError("owner_loss:handoff_identity")
+        if retry_receipt is None:
+            handoff_store = PortfolioSchedulerWorkerHandoffStore(self.root)
+            handoff = handoff_store.read_handoff(dispatch_id)
+            handoff_receipt = handoff_store.read_handoff_receipt(dispatch_id)
+            reserved_start_crash = (
+                handoff.phase in {
+                    ScheduledDispatchHandoffPhase.ADMISSION_COMMITTED,
+                    ScheduledDispatchHandoffPhase.HANDOFF_RESERVED,
+                }
+                and handoff_receipt.phase
+                in {
+                    ScheduledDispatchHandoffPhase.ADMISSION_COMMITTED,
+                    ScheduledDispatchHandoffPhase.HANDOFF_RESERVED,
+                }
+                and dispatch_receipt.phase
+                == dispatch_evidence.DispatchReceiptPhase.WORKER_STARTED.value
+                and handoff_receipt.generation_id == dispatch_receipt.generation_id
+                and handoff_receipt.task_id == task_id
+                and handoff_receipt.revision == revision
+                and handoff_receipt.attempt == attempt
+                and handoff_receipt.dispatch_id == dispatch_id
+            )
+            if (
+                handoff.task_id != task_id
+                or handoff.revision != revision
+                or handoff.attempt != attempt
+                or handoff.dispatch_id != dispatch_id
+                or handoff.plan_digest != plan.content_digest
+                or handoff.receipt_id != plan.receipt_id
+                or (
+                    handoff.phase not in {
+                        ScheduledDispatchHandoffPhase.SUPERVISOR_STARTED,
+                        ScheduledDispatchHandoffPhase.WORKER_STARTED,
+                        ScheduledDispatchHandoffPhase.ACKNOWLEDGED,
+                    }
+                    and not reserved_start_crash
+                )
+            ):
+                raise DockyardOwnerLossRecoveryConflictError(
+                    "owner_loss:handoff_identity"
+                )
         return plan
 
     def _ensure_automatic_approval(
@@ -697,14 +770,7 @@ class DockyardOwnerLossRecoveryRuntime:
         if provider_id not in self.providers or provider_version is None:
             raise DockyardOwnerLossRecoveryConflictError("owner_loss:provider_not_ready")
         worktree = Path(plan.canonical_worktree).resolve(strict=True)
-        task_card = (worktree / plan.task_card_path).resolve(strict=True)
-        try:
-            task_card.relative_to(worktree)
-            prompt = task_card.read_text(encoding="utf-8", errors="strict")
-        except (OSError, UnicodeError, ValueError) as exc:
-            raise DockyardOwnerLossRecoveryConflictError(
-                "owner_loss:task_card"
-            ) from exc
+        prompt = self._task_card_prompt(plan)
         assessment = DifficultyAssessmentStore().read(
             self.root, plan.task_id, plan.revision, plan.assessment_id
         ).assessment
@@ -766,3 +832,31 @@ class DockyardOwnerLossRecoveryRuntime:
             context,
         )
         return BoundedDispatchRetryRequest((DispatchRetryAttempt(cycle, failure),))
+
+    def _task_card_prompt(self, plan: AdmissionPlanReservation) -> str:
+        task_card = (self.root / plan.task_card_path).resolve(strict=True)
+        try:
+            task_card.relative_to(self.root)
+            prompt = task_card.read_text(encoding="utf-8", errors="strict")
+            committed = subprocess.run(
+                (
+                    "git", "-c", f"safe.directory={self.root}", "-C", str(self.root),
+                    "show", f"{plan.task_card_commit}:{plan.task_card_path}",
+                ),
+                check=True,
+                capture_output=True,
+                timeout=20,
+            ).stdout.decode("utf-8", errors="strict")
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise DockyardOwnerLossRecoveryConflictError(
+                "owner_loss:task_card"
+            ) from exc
+        except subprocess.SubprocessError as exc:
+            raise DockyardOwnerLossRecoveryConflictError(
+                "owner_loss:task_card_commit"
+            ) from exc
+        if committed != prompt:
+            raise DockyardOwnerLossRecoveryConflictError(
+                "owner_loss:task_card_commit"
+            )
+        return prompt

@@ -240,12 +240,20 @@ class DockyardOwnerLossRecoveryTests(unittest.TestCase):
         self.assertEqual(recover.call_count, 2)
 
     def _runtime(self) -> DockyardOwnerLossRecoveryRuntime:
-        return DockyardOwnerLossRecoveryRuntime(
+        runtime = DockyardOwnerLossRecoveryRuntime(
             self.root,
             {"claude": self.provider},
             (("claude", "2.1.214"),),
             clock=self.clock,
         )
+        # The upstream owner-loss fixture intentionally uses a synthetic
+        # task_card_commit. This suite tests recovery orchestration, while
+        # production task-card ancestry is covered by the Dockyard admission
+        # composition tests.
+        runtime._task_card_prompt = lambda plan: (
+            self.root / plan.task_card_path
+        ).read_text(encoding="utf-8")
+        return runtime
 
     def test_real_dead_process_recovers_and_finalizes_attempt_two(self) -> None:
         runtime = self._runtime()
