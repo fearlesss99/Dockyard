@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -12,6 +13,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 _ROOT = Path(__file__).resolve().parents[1]
 _SCRIPTS = _ROOT / "skills" / "agentdesk" / "scripts"
@@ -22,6 +24,7 @@ from dockyard_local_runtime import (  # noqa: E402
     DockyardLocalRuntimeConflictError,
     DockyardLocalRuntimeInputError,
     DockyardLocalRuntimePreconditionError,
+    _git_head,
 )
 from dockyard_pairing import (  # noqa: E402
     DockyardDeviceScope,
@@ -88,6 +91,7 @@ class DockyardLocalRuntimeTests(unittest.TestCase):
             ("git", "-C", str(self.project_root), "rev-parse", "HEAD"),
             check=True, capture_output=True, text=True, encoding="utf-8",
         ).stdout.strip()
+
         bindings = self.project_root / ".agentdesk" / "runtime" / "model-bindings.yaml"
         bindings.parent.mkdir(parents=True)
         bindings.write_text(json.dumps({
@@ -142,6 +146,16 @@ class DockyardLocalRuntimeTests(unittest.TestCase):
             "http://127.0.0.1:5173", "127.0.0.1", 0, _NOW,
         )
         self.runtimes: list[DockyardLocalRuntime] = []
+
+    def test_git_head_ignores_inherited_repository_scope(self) -> None:
+        hostile_environment = {
+            "GIT_DIR": str(self.project_root / "missing-git-dir"),
+            "GIT_WORK_TREE": str(self.project_root / "missing-work-tree"),
+            "GIT_INDEX_FILE": str(self.project_root / "missing-index"),
+            "GIT_COMMON_DIR": str(self.project_root / "missing-common-dir"),
+        }
+        with mock.patch.dict(os.environ, hostile_environment, clear=False):
+            self.assertEqual(_git_head(self.project_root), self.head)
 
     def tearDown(self) -> None:
         for runtime in reversed(self.runtimes):

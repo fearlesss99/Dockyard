@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import threading
 from collections.abc import Mapping
@@ -135,9 +136,30 @@ def _origin(value: object) -> str:
 
 
 def _git_head(project_root: Path) -> str:
+    git_environment = os.environ.copy()
+    for variable in (
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_WORK_TREE",
+    ):
+        git_environment.pop(variable, None)
     try:
         completed = subprocess.run(
-            ("git", "-C", str(project_root), "rev-parse", "--verify", "HEAD"),
+            (
+                "git",
+                "-c",
+                "core.longpaths=true",
+                "-c",
+                f"safe.directory={project_root}",
+                "-C",
+                str(project_root),
+                "rev-parse",
+                "--verify",
+                "HEAD",
+            ),
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -145,6 +167,7 @@ def _git_head(project_root: Path) -> str:
             encoding="utf-8",
             errors="strict",
             timeout=10,
+            env=git_environment,
         )
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise DockyardLocalRuntimePreconditionError("project HEAD is unavailable") from exc
