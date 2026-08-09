@@ -275,14 +275,33 @@ def _scan_yaml_files(
 
 
 def _git_command(project_root: Path, argv: list[str]) -> tuple[int, bytes, bytes]:
+    arguments = list(argv[1:])
+    if len(arguments) >= 2 and arguments[0] == "-C":
+        arguments = arguments[2:]
+    command = [
+        "git",
+        "--no-replace-objects",
+        "-c",
+        "core.longpaths=true",
+        "-c",
+        f"safe.directory={project_root}",
+        "-C",
+        str(project_root),
+        *arguments,
+    ]
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.upper().startswith("GIT_")
+    }
     try:
         result = subprocess.run(
-            argv,
-            cwd=str(project_root),
+            command,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
             shell=False,
+            env=environment,
         )
     except (OSError, subprocess.TimeoutExpired):
         _error(DifficultyAssessmentStoreAncestryError, "git_command")

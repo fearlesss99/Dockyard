@@ -306,9 +306,9 @@ class DifficultyAssessmentStoreTests(unittest.TestCase):
 
         def fake_run(argv: list[str], **kwargs: object) -> SimpleNamespace:
             calls.append((argv, kwargs))
-            if argv[1:3] == ["rev-parse", "HEAD"]:
+            if argv[-2:] == ["rev-parse", "HEAD"]:
                 return SimpleNamespace(returncode=0, stdout=(self.head + "\n").encode(), stderr=b"")
-            if argv[1:3] == ["cat-file", "-t"]:
+            if argv[-3:-1] == ["cat-file", "-t"]:
                 return SimpleNamespace(returncode=0, stdout=b"commit\n", stderr=b"")
             return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
@@ -317,8 +317,10 @@ class DifficultyAssessmentStoreTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         for argv, kwargs in calls:
             self.assertIsInstance(argv, list)
+            self.assertIn(f"safe.directory={self.root}", argv)
             self.assertFalse(kwargs["shell"])
             self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+            self.assertFalse(any(name.upper().startswith("GIT_") for name in kwargs["env"]))
 
     def test_concurrent_same_writes_produce_one_write_and_one_replay(self) -> None:
         barrier = threading.Barrier(2)
