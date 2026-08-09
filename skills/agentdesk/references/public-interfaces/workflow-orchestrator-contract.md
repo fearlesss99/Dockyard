@@ -63,9 +63,9 @@ Codex rate-limit classification, and provider rate-limit wiring remain Target
 Reasonix Basic Provider contract is Contract Current — TC-13.28a.2 Phase A (frozen
 identity, CLI invocation surface, sandbox boundaries, decoder gate, API key
 isolation; permission-mode is `acceptEdits` + `--allowed-tools Bash,Read,Write,Edit`
-frozen by loopback-stub evidence); adapter is Implemented/Unselectable, decoder is
-Fixture Verified; Reasonix Basic runtime (end-to-end), decoder live evidence,
-and real API probe remain Target — TC-13.28a.2 Phase B.
+frozen by loopback-stub evidence); adapter and delivery routing are Runtime Wired,
+and the decoder is Fixture Verified; decoder live evidence and a successful real
+API probe remain environment-gated — TC-13.28a.2 Phase B.
 Interface #22 is unchanged by Reasonix.
 Active-dispatch cancellation
 contract is repaired and frozen as of TC-13.18d.9a.1 (execution-based

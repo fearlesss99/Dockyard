@@ -176,12 +176,23 @@ class ReasonixCliProviderBuildInvocationTests(unittest.TestCase):
         inv = p.build_invocation(req)
         self.assertEqual(inv.argv[0], "run")
 
-    def test_model_flag_is_deepseek_v4_flash(self) -> None:
+    def test_model_flag_uses_reasonix_provider_route(self) -> None:
         p = _make_provider()
         req = _make_request()
         inv = p.build_invocation(req)
         idx = inv.argv.index("--model")
-        self.assertEqual(inv.argv[idx + 1], "deepseek-v4-flash")
+        self.assertEqual(inv.argv[idx + 1], "deepseek-flash")
+        self.assertEqual(
+            req.model_selection.selected_model_id,
+            "deepseek-v4-flash",
+        )
+
+    def test_project_config_maps_route_without_secret(self) -> None:
+        text = (_REPO_ROOT / "reasonix.toml").read_text(encoding="utf-8")
+        self.assertIn('name = "deepseek-flash"', text)
+        self.assertIn('model = "deepseek-v4-flash"', text)
+        self.assertIn('api_key_env = "DEEPSEEK_API_KEY"', text)
+        self.assertNotIn("sk-", text)
 
     def test_profile_flag_is_economy(self) -> None:
         p = _make_provider()

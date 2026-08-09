@@ -30,6 +30,7 @@ __all__ = ["ReasonixCliProvider"]
 
 _FROZEN_PROVIDER_ID: str = "reasonix"
 _FROZEN_MODEL_ID: str = "deepseek-v4-flash"
+_FROZEN_REASONIX_ROUTE: str = "deepseek-flash"
 _FROZEN_PROFILE: str = "economy"
 _FROZEN_MAX_STEPS: int = 12
 
@@ -236,7 +237,9 @@ class ReasonixCliProvider:
         # Build argv — frozen order, no shell string injection.
         argv: list[str] = [
             "run",
-            "--model", model_id,
+            # Reasonix selects a configured provider route here; the
+            # immutable API model identity remains on DispatchRequest.
+            "--model", _FROZEN_REASONIX_ROUTE,
             "--profile", _FROZEN_PROFILE,
             "--max-steps", str(self.max_steps),
             "--output-format", "json",

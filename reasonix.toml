@@ -1,0 +1,18 @@
+config_version = 5
+default_model = "deepseek-flash"
+language = "zh"
+
+[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+context_window = 1000000
+
+[permissions]
+mode = "ask"
+
+[sandbox]
+bash = "off"
+network = true

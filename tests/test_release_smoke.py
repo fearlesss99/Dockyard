@@ -15541,11 +15541,11 @@ class TC1328a1ReasonixBasicProviderContractFreezeTests(unittest.TestCase):
         self.assertIn("**unchanged**", self.contract)
         self.assertIn("No new orchestrator method", self.contract)
 
-    # -- 12. Adapter + Decoder Implemented / Unselectable (pending Phase B) --
+    # -- 12. Adapter/runtime wiring + decoder evidence (pending live success) --
 
-    def test_adapter_is_implemented_unselectable(self) -> None:
+    def test_adapter_is_runtime_wired(self) -> None:
         normalized = self._normalize(self.contract)
-        self.assertIn("Implemented / Unselectable", normalized)
+        self.assertIn("Runtime Wired", normalized)
         self.assertIn("Reasonix Basic CLI Adapter", normalized)
 
     def test_decoder_is_fixture_verified(self) -> None:
@@ -15557,7 +15557,7 @@ class TC1328a1ReasonixBasicProviderContractFreezeTests(unittest.TestCase):
         normalized = self._normalize(self.contract)
         self.assertIn("Reasonix Runtime (end-to-end)", normalized)
         self.assertIn("Reasonix Real API Probe", normalized)
-        self.assertIn("**Target**", normalized)
+        self.assertIn("Live Success Pending", normalized)
 
     # -- 13. CLI preflight commands are precise --
 
@@ -15588,7 +15588,7 @@ class TC1328a1ReasonixBasicProviderContractFreezeTests(unittest.TestCase):
             normalized,
         )
         self.assertIn("Contract Current — TC-13.28a.2 Phase A", normalized)
-        self.assertIn("Adapter Implemented-Unselectable", normalized)
+        self.assertIn("Runtime Wired", normalized)
 
     # -- 16. WorkflowOrchestrator contract mentions Reasonix --
 
@@ -15599,7 +15599,7 @@ class TC1328a1ReasonixBasicProviderContractFreezeTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "and real API probe remain Target",
+            "successful real API probe remain environment-gated",
             normalized,
         )
 
@@ -15887,7 +15887,7 @@ class TC1329bDockyardContractFreezeTests(unittest.TestCase):
     def test_prior_interface_36_and_39_statuses_remain_present(self) -> None:
         self.assertIn("| 36 | PortfolioScheduler durable admission |", self.adr)
         self.assertIn("| 39 | AgentDesk Reasonix Basic Provider |", self.adr)
-        self.assertIn("Adapter Implemented-Unselectable", self.adr)
+        self.assertIn("Runtime Wired", self.adr)
 
     def test_interface_22_remains_lifecycle_owner(self) -> None:
         self.assertIn("Interface #22 remains the canonical lifecycle owner", self.control)
@@ -17244,7 +17244,7 @@ class TC1329n1DockyardCoreStatusSealTests(unittest.TestCase):
         self.assertIn("default selection is `Standard + balanced`", self.web)
         self.assertIn("Automated", self.web)
         self.assertIn("Target", self.web)
-        self.assertIn("Adapter Implemented-Unselectable", self.adr)
+        self.assertIn("Runtime Wired", self.adr)
         self.assertIn("Codex runtime/decoder: Target/deferred", self.adr)
 
 

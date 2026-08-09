@@ -26,6 +26,7 @@ Out of scope (unchanged by this contract):
 |-------|-------------|-------|
 | `provider_id` | `"reasonix"` | Exact string; no alias, no case-fold, no localised variant |
 | `model_id` | `"deepseek-v4-flash"` | Exact string; never auto-upgraded |
+| Reasonix route | `"deepseek-flash"` | Local CLI provider name mapped to the frozen model identity |
 | `profile` | `"economy"` | Only profile at the Basic tier |
 | `max_tool_rounds` | `12` | Hard ceiling per dispatch |
 | `dispatch_mode` | `one-shot` via `reasonix run` | No interactive TUI, no `--continue`, no `--resume` |
@@ -70,7 +71,7 @@ Exactly one subcommand is used per dispatch:
 
 ```text
 reasonix run
-  --model deepseek-v4-flash
+  --model deepseek-flash
   --profile economy
   --max-steps 12
   --output-format json
@@ -82,7 +83,7 @@ Additional frozen rules:
 
 | Flag | Value | Rationale |
 |------|-------|-----------|
-| `--model` | `deepseek-v4-flash` | Exact; never overridden |
+| `--model` | `deepseek-flash` | Exact Reasonix route; resolves only to `deepseek-v4-flash` in project config |
 | `--profile` | `economy` | Exact; never upgraded |
 | `--max-steps` | `12` | Hard ceiling per dispatch |
 | `--output-format` | `json` | Single structured result to stdout |
@@ -286,9 +287,9 @@ field is added.
 |-----------|--------|--------|
 | Reasonix Basic Provider Contract | **Contract Current** | TC-13.28a.2 Phase A |
 | Reasonix Basic Permission Policy | **Evidence Current — `acceptEdits` + `--allowed-tools Bash,Read,Write,Edit`** | TC-13.28a.2 Phase A loopback evidence |
-| Reasonix Basic CLI Adapter | **Implemented / Unselectable** | TC-13.28a.2 Phase A (`reasonix_cli_provider.py`) |
+| Reasonix Basic CLI Adapter | **Runtime Wired** | Dockyard local runtime (`reasonix_cli_provider.py`) |
 | Reasonix Decoder | **Fixture Verified / Live Evidence Target** | TC-13.28a.2 Phase A (`reasonix_output_decoder.py`) |
-| Reasonix Runtime (end-to-end) | **Target** (pending Phase B real API probe) | TC-13.28a.2 |
+| Reasonix Runtime (end-to-end) | **Wired / Live Success Pending** | Real API execution remains environment-gated |
 | Reasonix Real API Probe | **Target** | TC-13.28a.2 Phase B |
 | Reasonix ACP / Desktop UI | **Target** | Deferred to separate UI phase |
 | Interface #22 | **Unchanged** | Current — TC-13.18d.13b |
