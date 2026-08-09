@@ -8,6 +8,7 @@ start a Worker, execute ACK or delivery transitions, call
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import unicodedata
@@ -699,12 +700,39 @@ class PortfolioSchedulerAdmission:
             / f"{event_id}.yaml"
         ).is_file()
 
+    @staticmethod
+    def _task_attempt(task: TaskEntry) -> int:
+        attempt = task.attempt
+        if attempt is None:
+            return 0
+        if type(attempt) is not int or attempt < 0:
+            raise PortfolioAdmissionFencingError(
+                "portfolio_admission:task_attempt_invalid"
+            )
+        return attempt
     def _git_head(self) -> str:
+        environment = {
+            name: value
+            for name, value in os.environ.items()
+            if not name.upper().startswith("GIT_")
+        }
         result = subprocess.run(
-            ["git", "-C", str(self._project_root), "rev-parse", "HEAD"],
+            [
+                "git",
+                "--no-replace-objects",
+                "-c",
+                "core.longpaths=true",
+                "-c",
+                f"safe.directory={self._project_root}",
+                "-C",
+                str(self._project_root),
+                "rev-parse",
+                "HEAD",
+            ],
             capture_output=True,
             text=True,
             timeout=10,
+            env=environment,
         )
         if result.returncode != 0:
             raise PortfolioAdmissionFencingError(
@@ -716,14 +744,3 @@ class PortfolioSchedulerAdmission:
                 "portfolio_admission:git_head_invalid"
             )
         return head
-
-    @staticmethod
-    def _task_attempt(task: TaskEntry) -> int:
-        attempt = task.attempt
-        if attempt is None:
-            return 0
-        if type(attempt) is not int or attempt < 0:
-            raise PortfolioAdmissionFencingError(
-                "portfolio_admission:task_attempt_invalid"
-            )
-        return attempt
