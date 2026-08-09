@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +23,7 @@ if str(SCRIPTS) not in sys.path:
 import dispatch_supervisor_evidence as dispatch_evidence  # noqa: E402
 from core_types import WorkerKind  # noqa: E402
 from dockyard_owner_loss_recovery import (  # noqa: E402
+    DockyardOwnerLossRecoveryConflictError,
     DockyardOwnerLossRecoveryOutcome,
     DockyardOwnerLossRecoveryRuntime,
 )
@@ -209,6 +211,33 @@ class DockyardOwnerLossRecoveryTests(unittest.TestCase):
         ):
             store.advance_phase(plan.dispatch_id, phase, timestamp, receipt)
         return plan
+
+    def test_one_blocked_identity_does_not_stop_later_recovery(self) -> None:
+        runtime = self._runtime()
+        first = SimpleNamespace(
+            task_id="TC-BLOCKED", revision=1, attempt=1, state="dispatched",
+            current_dispatch=SimpleNamespace(dispatch_id="DSP-BLOCKED"),
+        )
+        second = SimpleNamespace(
+            task_id="TC-RECOVERABLE", revision=1, attempt=1, state="dispatched",
+            current_dispatch=SimpleNamespace(dispatch_id="DSP-RECOVERABLE"),
+        )
+        expected = object()
+        with (
+            patch.object(
+                StateProvider, "snapshot",
+                return_value=SimpleNamespace(tasks=(first, second)),
+            ),
+            patch.object(
+                runtime, "_recover_identity",
+                side_effect=(
+                    DockyardOwnerLossRecoveryConflictError("owner_loss:receipt_missing"),
+                    expected,
+                ),
+            ) as recover,
+        ):
+            self.assertEqual(runtime.recover_pending(), (expected,))
+        self.assertEqual(recover.call_count, 2)
 
     def _runtime(self) -> DockyardOwnerLossRecoveryRuntime:
         return DockyardOwnerLossRecoveryRuntime(

@@ -277,7 +277,15 @@ class DockyardOwnerLossRecoveryRuntime:
         )
         results: list[DockyardOwnerLossRecoveryResult] = []
         for task_id, revision, attempt, dispatch_id in identities:
-            result = self._recover_identity(task_id, revision, attempt, dispatch_id)
+            try:
+                result = self._recover_identity(
+                    task_id, revision, attempt, dispatch_id
+                )
+            except DockyardOwnerLossRecoveryError:
+                # One incomplete or divergent dispatch must remain fail-closed,
+                # but it must not prevent independent dispatch identities from
+                # receiving their own typed liveness decision.
+                continue
             if result is not None:
                 results.append(result)
         return tuple(results)
