@@ -102,6 +102,7 @@ from worker_output_decoder import (
     decode_worker_result,
     require_delivery_receipt,
 )
+from reasonix_output_decoder import decode_reasonix_output
 from worker_slot_lease import (
     WorkerSlotLease,
     WorkerSlotLeaseError,
@@ -387,22 +388,28 @@ class DispatchCycleRequest:
 
         # -- provider boundary ----------------------------------------------
         snapshot_sn = dr.model_selection
-        allowed_providers = frozenset({"claude", "claudecode"})
-        allowed_version = "2.1.214"
+        provider_versions = {
+            "claude": "2.1.214",
+            "claudecode": "2.1.214",
+            "reasonix": "1.19.1",
+        }
 
-        if snapshot_sn.selected_model_provider not in allowed_providers:
+        provider = snapshot_sn.selected_model_provider
+        if provider not in provider_versions:
             if snapshot_sn.selected_model_provider == "codex":
                 raise WorkflowInputError(
                     "codex provider is not supported "
                     "(blocked until TC-13.9c.2)"
                 )
             raise WorkflowInputError(
-                "provider must be claude or claudecode for delivery"
+                "provider is not supported for delivery"
             )
 
+        allowed_version = provider_versions[provider]
         if self.provider_cli_version != allowed_version:
             raise WorkflowInputError(
-                f"provider_cli_version must be {allowed_version!r}"
+                "provider_cli_version for "
+                f"{provider!r} must be {allowed_version!r}"
             )
 
         # -- worker_kind ----------------------------------------------------
@@ -3275,9 +3282,19 @@ class WorkflowOrchestrator:
                 else:
                     request = execution._request
                     try:
-                        worker_output = decode_worker_result(
-                            worker_result, request.provider_cli_version
-                        )
+                        if (
+                            request.dispatch_request.model_selection
+                            .selected_model_provider == "reasonix"
+                        ):
+                            worker_output = decode_reasonix_output(
+                                worker_result,
+                                request.provider_cli_version,
+                            )
+                        else:
+                            worker_output = decode_worker_result(
+                                worker_result,
+                                request.provider_cli_version,
+                            )
                         delivery_receipt = require_delivery_receipt(
                             worker_output
                         )

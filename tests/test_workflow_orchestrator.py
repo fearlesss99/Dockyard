@@ -10975,6 +10975,55 @@ class WorkflowOrchestratorDeliverySubmittedTests(unittest.TestCase):
                 holder_instance_id="test-instance",
             )
 
+    def test_04a_reasonix_exact_version_accepted(self) -> None:
+        ms = _make_model_selection(
+            provider="reasonix",
+            model_id="deepseek-v4-flash",
+            tier="basic",
+            deliberation="efficient",
+        )
+        dr = _make_dispatch_request(model_selection=ms)
+        tr = _make_transition_request(model_selection=ms, head_sha="a" * 40)
+        ack_tr = _make_ack_transition_request(head_sha="a" * 40)
+
+        request = DispatchCycleRequest(
+            dispatch_request=dr,
+            dispatch_transition_request=tr,
+            acknowledge_transition_request=ack_tr,
+            delivery_event_id="EVT-DELIVERY-001",
+            delivery_event_context=_make_delivery_event_context(),
+            provider_cli_version="1.19.1",
+            worker_kind=WorkerKind.BASIC_AGENT,
+            task_difficulty=TaskDifficulty.BASIC,
+            holder_instance_id="test-instance",
+        )
+
+        self.assertEqual(request.provider_cli_version, "1.19.1")
+
+    def test_04b_reasonix_wrong_version_rejected_pre_acquire(self) -> None:
+        ms = _make_model_selection(
+            provider="reasonix",
+            model_id="deepseek-v4-flash",
+            tier="basic",
+            deliberation="efficient",
+        )
+        dr = _make_dispatch_request(model_selection=ms)
+        tr = _make_transition_request(model_selection=ms, head_sha="a" * 40)
+        ack_tr = _make_ack_transition_request(head_sha="a" * 40)
+
+        with self.assertRaises(WorkflowInputError):
+            DispatchCycleRequest(
+                dispatch_request=dr,
+                dispatch_transition_request=tr,
+                acknowledge_transition_request=ack_tr,
+                delivery_event_id="EVT-DELIVERY-001",
+                delivery_event_context=_make_delivery_event_context(),
+                provider_cli_version="2.1.214",
+                worker_kind=WorkerKind.BASIC_AGENT,
+                task_difficulty=TaskDifficulty.BASIC,
+                holder_instance_id="test-instance",
+            )
+
     # -- 5. Invalid delivery event ID ---------------------------------------
 
     def test_05_delivery_event_id_invalid(self) -> None:

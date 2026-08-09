@@ -468,38 +468,24 @@ def _build_worker_output(
 ) -> WorkerOutput:
     """Construct a ``WorkerOutput`` from a validated envelope.
 
-    Note: we bypass ``WorkerOutput.__init__`` validation for ``provider``
-    because it hardcodes ``claude`` / ``claudecode`` only.  We validate
-    identity, commits, summary, and warnings ourselves in
-    ``_validate_envelope`` and construct via ``object.__new__`` +
-    manual field set to avoid the provider gate in the shared
-    ``WorkerOutput`` type.
-
-    This is a deliberate design choice for TC-13.28a.2 Phase A:
-    Reasonix uses the same ``WorkerOutput`` data model but with its own
-    decoder gate, not the Claude/Codex provider gate.
+    Reasonix keeps its own strict wrapper/version decoder while sharing the
+    common delivery model.  The common model accepts ``reasonix`` only after
+    this provider-specific decoder has validated the raw bytes.
     """
-    # Construct via object.__new__ to skip the Claude/Codex provider gate
-    # in WorkerOutput.__post_init__, then set each field manually.
-    output = object.__new__(WorkerOutput)
     status_str: str = envelope["status"]
     status_map = {e.value: e for e in WorkerCompletionStatus}
     status = status_map[status_str]
-
-    object.__setattr__(output, "identity", dispatch_result.identity)
-    object.__setattr__(output, "provider", _PROVIDER)
-    object.__setattr__(output, "model_id", dispatch_result.model_id)
-    object.__setattr__(output, "status", status)
-    object.__setattr__(
-        output, "implementation_commit", envelope.get("implementation_commit")
+    return WorkerOutput(
+        identity=dispatch_result.identity,
+        provider=_PROVIDER,
+        model_id=dispatch_result.model_id,
+        status=status,
+        implementation_commit=envelope.get("implementation_commit"),
+        report_commit=envelope["report_commit"],
+        summary=envelope["summary"],
+        warnings=tuple(envelope.get("warnings", [])),
+        stdout_sha256=dispatch_result.stdout_sha256,
     )
-    object.__setattr__(output, "report_commit", envelope["report_commit"])
-    object.__setattr__(output, "summary", envelope["summary"])
-    object.__setattr__(
-        output, "warnings", tuple(envelope.get("warnings", []))
-    )
-    object.__setattr__(output, "stdout_sha256", dispatch_result.stdout_sha256)
-    return output
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

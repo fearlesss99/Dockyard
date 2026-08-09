@@ -197,6 +197,16 @@ class ReasonixDecoderSuccessTests(unittest.TestCase):
         output = rod.decode_reasonix_output(wr, "1.19.1")
         self.assertEqual(output.warnings, ())
 
+    def test_completed_output_produces_delivery_receipt(self) -> None:
+        output = rod.decode_reasonix_output(_make_worker_result(), "1.19.1")
+
+        receipt = wod.require_delivery_receipt(output)
+
+        self.assertEqual(receipt.provider, "reasonix")
+        self.assertEqual(receipt.model_id, "deepseek-v4-flash")
+        self.assertEqual(receipt.implementation_commit, "a" * 40)
+        self.assertEqual(receipt.report_commit, "b" * 40)
+
 
 class ReasonixDecoderFailureTests(unittest.TestCase):
     """Fail-closed paths for wrapper/version/identity/integrity violations."""

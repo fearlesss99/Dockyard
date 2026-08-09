@@ -49,6 +49,9 @@ __all__ = [
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _SUPPORTED_PROVIDERS: frozenset[str] = frozenset({"claude", "claudecode"})
+_DELIVERY_PROVIDERS: frozenset[str] = frozenset(
+    {"claude", "claudecode", "reasonix"}
+)
 _SUPPORTED_VERSION: str = "2.1.214"
 
 # Observed 20 top-level keys in Claude 2.1.214 JSON wrapper output.
@@ -123,7 +126,7 @@ class WorkerOutput:
 
     Fields:
         identity: The ``DispatchIdentity`` from the dispatch.
-        provider: Provider string (``claude`` or ``claudecode``).
+        provider: Provider string accepted by a provider-specific decoder.
         model_id: Model identifier from the dispatch snapshot.
         status: Decoded ``WorkerCompletionStatus``.
         implementation_commit: 40-char lowercase hex or None.
@@ -156,9 +159,10 @@ class WorkerOutput:
             )
 
         # ── provider ────────────────────────────────────────────────────
-        if self.provider not in ("claude", "claudecode"):
+        if self.provider not in _DELIVERY_PROVIDERS:
             raise ValueError(
-                f"provider must be 'claude' or 'claudecode'"
+                "provider must be one of "
+                f"{sorted(_DELIVERY_PROVIDERS)!r}"
             )
 
         # ── model_id ────────────────────────────────────────────────────
@@ -287,9 +291,10 @@ class DeliveryReceipt:
             )
 
         # ── provider ────────────────────────────────────────────────────
-        if self.provider not in ("claude", "claudecode"):
+        if self.provider not in _DELIVERY_PROVIDERS:
             raise ValueError(
-                f"provider must be 'claude' or 'claudecode'"
+                "provider must be one of "
+                f"{sorted(_DELIVERY_PROVIDERS)!r}"
             )
 
         # ── model_id ────────────────────────────────────────────────────
@@ -996,9 +1001,9 @@ def require_delivery_receipt(
         )
 
     # provider
-    if output.provider not in ("claude", "claudecode"):
+    if output.provider not in _DELIVERY_PROVIDERS:
         raise WorkerOutputSchemaError(
-            "provider must be claude or claudecode"
+            "provider is not trusted for delivery"
         )
 
     # model_id
