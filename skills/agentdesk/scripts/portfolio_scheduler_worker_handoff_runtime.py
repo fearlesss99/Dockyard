@@ -183,7 +183,8 @@ def _verify_git_worktree(path: Path, expected_head: str, expected_branch: str) -
     try:
         def run(*arguments: str) -> bytes:
             completed = subprocess.run(
-                ["git", *arguments], cwd=path, stdin=subprocess.DEVNULL,
+                ["git", "-c", "core.longpaths=true", *arguments],
+                cwd=path, stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
                 check=False, timeout=15,
             )

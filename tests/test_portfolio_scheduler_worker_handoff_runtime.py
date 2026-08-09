@@ -99,6 +99,23 @@ class HandoffRuntimeTypeTests(unittest.TestCase):
             with self.assertRaises(runtime.AdmittedDispatchConflictError):
                 runtime._verify_git_worktree(root, head, "main")
 
+    def test_git_worktree_identity_enables_windows_long_paths(self) -> None:
+        head = "a" * 40
+        completed = (
+            subprocess.CompletedProcess([], 0, head.encode() + b"\n", b""),
+            subprocess.CompletedProcess([], 0, b"main\n", b""),
+            subprocess.CompletedProcess([], 0, b"", b""),
+        )
+        with patch.object(runtime.subprocess, "run", side_effect=completed) as run:
+            runtime._verify_git_worktree(Path.cwd(), head, "main")
+
+        self.assertEqual(run.call_count, 3)
+        for call in run.call_args_list:
+            self.assertEqual(
+                call.args[0][:3],
+                ["git", "-c", "core.longpaths=true"],
+            )
+
 
 class HandoffRuntimeFlowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
