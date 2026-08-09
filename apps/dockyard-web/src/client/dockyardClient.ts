@@ -113,7 +113,11 @@ export class DockyardClient {
       confirmationId: null,
       payload: { plan_id: project.plan_id, requirement },
     });
-    return this.readPlan(project.project_id, project.plan_id);
+    // The PM may advance to a new immutable plan identity after the prior
+    // plan was materialized.  Re-read the project pointer before projecting
+    // the newly drafted plan instead of retrying the retired plan ID.
+    const current = await this.readProjectPlanning(project.project_id);
+    return this.readPlan(project.project_id, current.plan_id);
   }
 
   async submitPlan(

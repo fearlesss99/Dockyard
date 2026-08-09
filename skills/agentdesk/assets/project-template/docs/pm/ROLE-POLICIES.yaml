@@ -18,9 +18,9 @@
       "degradation_policy": "block"
     },
     "DEV": {
-      "default_tier": "standard",
-      "minimum_tier": "standard",
-      "deliberation_tier": "balanced",
+      "default_tier": "basic",
+      "minimum_tier": "basic",
+      "deliberation_tier": "efficient",
       "required_capabilities": ["coding", "testing"],
       "degradation_policy": "allow_to_minimum"
     },

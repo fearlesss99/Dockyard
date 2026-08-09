@@ -695,6 +695,10 @@ class DockyardPlanReadService:
             raise TypeError("retry_provider_ids must not contain duplicates")
         self._retry_provider_ids = frozenset(normalized_retry_ids)
 
+    def set_current_plan_id(self, plan_id: str) -> None:
+        """Follow the PM's current immutable plan session."""
+        self._plan_id = _text(plan_id, "plan_id", 128)
+
     def read(self, request: DockyardReadRequest) -> DockyardJsonResponse:
         snapshot = self._snapshot_commit()
         if request.endpoint == "health":
@@ -1395,6 +1399,7 @@ class DockyardCompositionGateway:
         providers: Mapping[str, object] | None = None,
         provider_cli_versions: tuple[tuple[str, str], ...] | None = None,
         agent_registry: AgentCapabilityRegistry | None = None,
+        plan_id_changed: Callable[[str], None] | None = None,
         now: Callable[[], str] = _utc_now,
     ) -> None:
         if type(pm_service) is not DockyardPmService:
@@ -1422,6 +1427,9 @@ class DockyardCompositionGateway:
         self._terminate_receipts: dict[str, tuple[str, DockyardCommandReceipt]] = {}
         self._terminate_receipts_lock = threading.Lock()
         self._plan_id = None if plan_id is None else _text(plan_id, "plan_id", 128)
+        if plan_id_changed is not None and not callable(plan_id_changed):
+            raise TypeError("plan_id_changed must be callable or None")
+        self._plan_id_changed = plan_id_changed
         if ready_provider_ids is not None:
             if type(ready_provider_ids) is not tuple:
                 raise TypeError("ready_provider_ids must be tuple or None")
@@ -2312,8 +2320,8 @@ class DockyardCompositionGateway:
             raise DockyardCommandRejected(400, "COMMAND_PAYLOAD_INVALID", "input")
         if request.resource_id is not None or envelope.confirmation_id is not None:
             raise DockyardCommandRejected(409, "RESOURCE_ID_DIVERGENCE", "conflict")
-        plan_id = _text(payload["plan_id"], "plan_id", 128)
-        if plan_id != self._plan_id:
+        requested_plan_id = _text(payload["plan_id"], "plan_id", 128)
+        if requested_plan_id != self._plan_id:
             raise DockyardCommandRejected(409, "PLAN_ID_DIVERGENCE", "conflict")
         requirement = _document_text(payload["requirement"], "requirement")
         project = self._project_registry.read(envelope.project_id)
@@ -2321,7 +2329,14 @@ class DockyardCompositionGateway:
             raise DockyardCommandRejected(409, "PROJECT_NOT_ACTIVE", "not_ready")
         if envelope.expected_revision != project.generation:
             raise DockyardCommandRejected(409, "REVISION_STALE", "conflict")
-        existing = self._pm_service.latest(plan_id)
+        existing = self._pm_service.latest(requested_plan_id)
+        plan_id = requested_plan_id
+        if existing is not None and existing.phase is DockyardPlanPhase.MATERIALIZED:
+            # A materialized plan is immutable.  Start a fresh PM session with
+            # a deterministic successor identity while retaining all prior
+            # revisions and task evidence under the old plan ID.
+            plan_id = f"{requested_plan_id}-r{existing.revision + 1}"
+            existing = None
         replayed = existing is not None and existing.last_operation_id == envelope.command_id
         tasks = (_default_task(plan_id, requirement, snapshot_commit),)
         if self._agent_registry is not None:
@@ -2363,6 +2378,10 @@ class DockyardCompositionGateway:
             ))
         except DockyardPlanConflictError as exc:
             raise DockyardCommandRejected(409, "PLAN_CONFLICT", "conflict") from exc
+        if plan_id != self._plan_id:
+            self._plan_id = plan_id
+            if self._plan_id_changed is not None:
+                self._plan_id_changed(plan_id)
         if not replayed:
             self._sse_hub.publish(
                 project_id=envelope.project_id,

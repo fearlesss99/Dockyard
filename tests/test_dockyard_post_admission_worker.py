@@ -11,6 +11,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -237,6 +238,101 @@ class DockyardPostAdmissionWorkerTests(unittest.TestCase):
                     clock=_Clock(),
                 ).execute(self.receipt)
         run.assert_not_awaited()
+
+    def test_finalized_tombstone_records_typed_dispatch_failure(self) -> None:
+        self._prepare_admission_only()
+        tombstone = SimpleNamespace(
+            task_id=self.plan.task_id,
+            revision=self.plan.revision,
+            attempt=self.plan.new_attempt,
+            dispatch_id=self.plan.dispatch_id,
+            winner="completion",
+            worker_done=True,
+            heartbeat_done=True,
+            release_completed=True,
+            failure_kind="worker_failed",
+        )
+        task = SimpleNamespace(
+            task_id=self.plan.task_id,
+            revision=self.plan.revision,
+            attempt=self.plan.new_attempt,
+            state="in_progress",
+            current_dispatch=SimpleNamespace(dispatch_id=self.plan.dispatch_id),
+        )
+        state_provider = MagicMock()
+        state_provider.snapshot.return_value = SimpleNamespace(
+            tasks=(task,), events=(),
+        )
+        transition_service = MagicMock()
+        runtime = post.DockyardPostAdmissionWorkerRuntime(
+            self.fx.project_root,
+            {"claude": _LocalProvider(b"")},
+            (("claude", "2.1.214"),),
+            clock=_Clock(),
+        )
+        with (
+            patch.object(post._dse, "read_dispatch_tombstone", return_value=tombstone),
+            patch.object(post, "StateProvider", return_value=state_provider),
+            patch.object(
+                post, "ControlPlaneTransitionService",
+                return_value=transition_service,
+            ),
+        ):
+            runtime._record_finalized_dispatch_failure(self.plan)
+
+        transition = transition_service.apply_transition.call_args.args[0]
+        self.assertEqual(transition.cas.expected_state, "in_progress")
+        self.assertEqual(transition.event_type, "DISPATCH_FAILED")
+        self.assertEqual(
+            transition.dispatch_cas.expected_dispatch_id,
+            self.plan.dispatch_id,
+        )
+        self.assertEqual(transition.payload.failure_kind, "worker_failed")
+        self.assertEqual(
+            transition.event_context.evidence_refs,
+            (
+                f"dispatch-supervisor/{self.plan.dispatch_id}.receipt",
+                f"dispatch-supervisor/{self.plan.dispatch_id}.tombstone",
+            ),
+        )
+        self.assertIsNone(
+            transition_service.apply_transition.call_args.kwargs["lease"]
+        )
+
+    def test_incomplete_tombstone_fails_closed_without_transition(self) -> None:
+        self._prepare_admission_only()
+        tombstone = SimpleNamespace(
+            task_id=self.plan.task_id,
+            revision=self.plan.revision,
+            attempt=self.plan.new_attempt,
+            dispatch_id=self.plan.dispatch_id,
+            winner="completion",
+            worker_done=True,
+            heartbeat_done=True,
+            release_completed=False,
+            failure_kind="worker_failed",
+        )
+        state_provider = MagicMock()
+        transition_service = MagicMock()
+        runtime = post.DockyardPostAdmissionWorkerRuntime(
+            self.fx.project_root,
+            {"claude": _LocalProvider(b"")},
+            (("claude", "2.1.214"),),
+            clock=_Clock(),
+        )
+        with (
+            patch.object(post._dse, "read_dispatch_tombstone", return_value=tombstone),
+            patch.object(post, "StateProvider", return_value=state_provider),
+            patch.object(
+                post, "ControlPlaneTransitionService",
+                return_value=transition_service,
+            ),
+        ):
+            with self.assertRaises(post.DockyardPostAdmissionConflictError):
+                runtime._record_finalized_dispatch_failure(self.plan)
+
+        state_provider.snapshot.assert_not_called()
+        transition_service.apply_transition.assert_not_called()
 
     def test_real_local_helper_advances_ack_delivery_and_finalizes_handoff(self) -> None:
         provider = _WorkspaceLocalProvider()

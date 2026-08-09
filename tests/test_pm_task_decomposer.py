@@ -98,6 +98,20 @@ class PmTaskDecomposerTests(unittest.TestCase):
         self.assertEqual(result.repository_digest, "b" * 64)
         self.assertEqual(result.tasks[0].difficulty, TaskDifficulty.ADVANCED)
 
+    def test_project_mention_does_not_promote_bounded_readme_task(self) -> None:
+        result = decompose_requirement(
+            plan_id="PLAN-README",
+            requirement="在项目 README 中补充本地运行说明，并新增一个最小 Markdown 示例文件。",
+            snapshot_commit=SNAPSHOT,
+            registry=_registry(),
+            repository_inventory=PmRepositoryInventory(
+                "agentdesk.pm-repository-inventory/v1", SNAPSHOT, 10,
+                ("README.md",), (("md", 1),), "c" * 64,
+            ),
+        )
+        self.assertEqual(result.tasks[0].difficulty, TaskDifficulty.BASIC)
+        self.assertEqual(result.tasks[0].route.provider_id, "reasonix")
+
     def test_user_override_has_precedence_over_automatic_route(self) -> None:
         result = decompose_requirement(
             plan_id="PLAN-3",

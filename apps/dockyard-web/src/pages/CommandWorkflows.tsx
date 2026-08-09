@@ -425,7 +425,9 @@ export function CommandWorkflows({
   const [reviews, setReviews] = useState<readonly DockyardReviewProjection[]>([]);
   const [refresh, setRefresh] = useState(0);
   const terminalFeedbackRef = useRef("");
+  const activeActionRef = useRef<CommandAction | null>(null);
   const routeRef = useRef(routeId);
+  activeActionRef.current = active;
   const markProjectionVerified = () => {
     setState(verifiedProjectionState);
     setMessage(verifiedProjectionMessage);
@@ -533,11 +535,17 @@ export function CommandWorkflows({
     if (!["requirements", "projects", "reviews", "runs"].includes(routeId)) return;
     const source = new EventSource(client.eventsUrl(projectId));
     const invalidate = () => {
+      const hasPendingConfirmation = activeActionRef.current !== null;
       const feedback = invalidatedProjectionFeedback(terminalFeedbackRef.current);
       setProjection(null);
       setActive(null);
-      setState(feedback.state);
-      setMessage(feedback.message);
+      if (hasPendingConfirmation || terminalFeedbackRef.current) {
+        setState(feedback.state);
+        setMessage(feedback.message);
+      } else {
+        setState("idle");
+        setMessage("");
+      }
       setRefresh((value) => value + 1);
     };
     source.addEventListener("snapshot.changed", invalidate);
@@ -574,6 +582,7 @@ export function CommandWorkflows({
     setMessage("");
     try {
       const created = await client.createPlan(projectPlanning, requirement.trim());
+      setProjectPlanning(await client.readProjectPlanning(projectPlanning.project_id));
       setPlan(created);
       setRequirement(created.requirement);
       setTasks(editorTasksFromProjection(created));

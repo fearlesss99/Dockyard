@@ -459,6 +459,27 @@ class DockyardLocalRuntime:
                     self._provider_cli_versions,
                     clock=self._clock,
                 )
+            read_service = DockyardPlanReadService(
+                snapshot_commit,
+                registry,
+                pm,
+                config.project_id,
+                config.plan_id,
+                terminal_owner,
+                project_root,
+                _provider_projection_evidence(
+                    project_root,
+                    self._providers,
+                    self._provider_cli_versions,
+                    config.started_at,
+                ),
+                active_registry=active_registry,
+                retry_provider_ids=(
+                    tuple(sorted(self._providers))
+                    if self._providers is not None
+                    else ()
+                ),
+            )
             gateway = DockyardCompositionGateway(
                 pm,
                 snapshot_commit,
@@ -483,6 +504,7 @@ class DockyardLocalRuntime:
                     self._provider_cli_versions if self._providers is not None else None
                 ),
                 agent_registry=agent_registry,
+                plan_id_changed=read_service.set_current_plan_id,
                 now=lambda: _runtime_now(self._clock),
             )
             server = DockyardControlServer(
@@ -492,27 +514,7 @@ class DockyardLocalRuntime:
                     (config.bind_host, "localhost"),
                     (_origin(config.browser_origin),),
                 ),
-                DockyardPlanReadService(
-                    snapshot_commit,
-                    registry,
-                    pm,
-                    config.project_id,
-                    config.plan_id,
-                    terminal_owner,
-                    project_root,
-                    _provider_projection_evidence(
-                        project_root,
-                        self._providers,
-                        self._provider_cli_versions,
-                        config.started_at,
-                    ),
-                    active_registry=active_registry,
-                    retry_provider_ids=(
-                        tuple(sorted(self._providers))
-                        if self._providers is not None
-                        else ()
-                    ),
-                ),
+                read_service,
                 gateway,
                 DockyardPairingAuthorizer(pairing, config.csrf_value),
                 hub,

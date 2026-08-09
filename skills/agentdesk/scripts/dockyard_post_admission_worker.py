@@ -14,7 +14,9 @@ from pathlib import Path
 from control_plane_transition import (
     AcknowledgePayload,
     DispatchCAS,
+    DispatchFailedPayload,
     DispatchPayload,
+    ControlPlaneTransitionService,
     TransitionCAS,
     TransitionEventContext,
     TransitionRequest,
@@ -46,6 +48,8 @@ from workflow_orchestrator import DispatchCycleRequest, WorkflowOrchestrator
 from dockyard_terminal_owner_composition import (
     DockyardTerminalOwnerCompositionRuntime,
 )
+import dispatch_supervisor_evidence as _dse
+from state_provider import StateProvider
 from worktree_lifecycle_store import (
     WorktreeLifecycleStore,
     WorktreePhase,
@@ -234,10 +238,108 @@ class DockyardPostAdmissionWorkerRuntime:
             "OP-PM-WORKER-" + hashlib.sha256(plan.dispatch_id.encode()).hexdigest()[:24],
             str(self.root), plan.role_id, "PM", requested_at, start,
         )
-        result = await run_pm_external_worker(
-            request, self.providers, WorkflowOrchestrator(self.root, self.clock),
-            active_registry=self.active_registry,
-        )
+        try:
+            result = await run_pm_external_worker(
+                request, self.providers, WorkflowOrchestrator(self.root, self.clock),
+                active_registry=self.active_registry,
+            )
+        except BaseException as worker_error:
+            # A background admission worker must not leave the canonical task
+            # in ``in_progress`` after the existing finalizer has published a
+            # complete failure tombstone.  Recovery is intentionally derived
+            # only from typed durable evidence; the exception text is never
+            # inspected or used for classification.
+            self._record_finalized_dispatch_failure(plan)
+            raise worker_error
         if self.terminal_owner is not None:
             await self.terminal_owner.execute(receipt, result)
         return result
+
+    def _record_finalized_dispatch_failure(
+        self,
+        plan: AdmissionPlanReservation,
+    ) -> None:
+        """Persist one typed ``DISPATCH_FAILED`` transition after finalization.
+
+        The supervisor tombstone is the sole failure-classification source.
+        Missing or incomplete evidence fails closed and leaves the original
+        Worker error unchanged for the durable error marker.
+        """
+        tombstone = _dse.read_dispatch_tombstone(self.root, plan.dispatch_id)
+        if (
+            tombstone is None
+            or tombstone.task_id != plan.task_id
+            or tombstone.revision != plan.revision
+            or tombstone.attempt != plan.new_attempt
+            or tombstone.dispatch_id != plan.dispatch_id
+            or tombstone.winner != "completion"
+            or not tombstone.worker_done
+            or not tombstone.heartbeat_done
+            or not tombstone.release_completed
+            or tombstone.failure_kind is None
+        ):
+            raise DockyardPostAdmissionConflictError(
+                "post_admission:failure_evidence"
+            )
+
+        snapshot = StateProvider(self.root).snapshot()
+        task = next(
+            (item for item in snapshot.tasks if item.task_id == plan.task_id),
+            None,
+        )
+        if task is None:
+            raise DockyardPostAdmissionConflictError(
+                "post_admission:failure_task"
+            )
+        failure_event_id = _event_id("FAILED", plan.dispatch_id)
+        existing = next(
+            (event for event in snapshot.events if event.event_id == failure_event_id),
+            None,
+        )
+        if existing is not None:
+            if (
+                existing.task_id != plan.task_id
+                or existing.revision != plan.revision
+                or existing.event_type != "DISPATCH_FAILED"
+                or existing.dispatch_id != plan.dispatch_id
+            ):
+                raise DockyardPostAdmissionConflictError(
+                    "post_admission:failure_event_identity"
+                )
+            return
+        if (
+            task.revision != plan.revision
+            or task.attempt != plan.new_attempt
+            or task.state != "in_progress"
+            or task.current_dispatch is None
+            or task.current_dispatch.dispatch_id != plan.dispatch_id
+        ):
+            raise DockyardPostAdmissionConflictError(
+                "post_admission:failure_task_state"
+            )
+
+        transition = TransitionRequest(
+            cas=TransitionCAS(
+                task_id=plan.task_id,
+                expected_revision=plan.revision,
+                expected_state="in_progress",
+                expected_snapshot_commit=plan.expected_snapshot_commit,
+            ),
+            dispatch_cas=DispatchCAS(plan.dispatch_id, plan.new_attempt),
+            event_id=failure_event_id,
+            event_type="DISPATCH_FAILED",
+            payload=DispatchFailedPayload(tombstone.failure_kind),
+            event_context=TransitionEventContext(
+                None,
+                (
+                    f"dispatch-supervisor/{plan.dispatch_id}.receipt",
+                    f"dispatch-supervisor/{plan.dispatch_id}.tombstone",
+                ),
+                (),
+            ),
+        )
+        ControlPlaneTransitionService(self.root).apply_transition(
+            transition,
+            lease=None,
+            now=self.clock.now(),
+        )

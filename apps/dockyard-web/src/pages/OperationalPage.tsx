@@ -73,12 +73,26 @@ export function OperationalPage({
       return;
     }
     const source = new EventSource(client.eventsUrl(projectId));
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     const refreshRuns = () => setRefresh((value) => value + 1);
-    source.onopen = () => setSseState("connected");
-    source.onerror = () => setSseState("reconnecting");
+    source.onopen = () => {
+      if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+      setSseState("connected");
+    };
+    source.onerror = () => {
+      // The loopback API closes an idle SSE response deliberately and the
+      // browser reconnects automatically.  Do not flash a stale warning for
+      // that normal one-second idle boundary; surface only a sustained loss.
+      if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(() => setSseState("reconnecting"), 5000);
+    };
     source.addEventListener("run.changed", refreshRuns);
     source.addEventListener("snapshot.changed", refreshRuns);
-    return () => source.close();
+    return () => {
+      if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
+      source.close();
+    };
   }, [client, projectId, routeId]);
 
   if (routeId === "workbench") return null;

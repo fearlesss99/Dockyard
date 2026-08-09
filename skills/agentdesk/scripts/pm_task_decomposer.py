@@ -128,7 +128,11 @@ def _rationale(
     repository_inventory: PmRepositoryInventory | None,
 ) -> tuple[str, ...]:
     text = f"{segment} {full_requirement}"
-    broad_scope = repository_inventory is not None and _contains(text, "项目", "全仓", "全部")
+    # Mentioning a project is not, by itself, a whole-repository change.
+    # Reserve the cross-module difficulty for explicit broad-scope language;
+    # otherwise a small README/example task is incorrectly promoted to
+    # Advanced and becomes unroutable on a Basic-only local runner.
+    broad_scope = repository_inventory is not None and _contains(text, "全仓", "全部")
     return (
         "scope.architecture" if _contains(text, "架构", "重构", "迁移") else
         "scope.cross_module" if _contains(text, "跨模块", "多个模块", "全仓", "仓库") or broad_scope else
