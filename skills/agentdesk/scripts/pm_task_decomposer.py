@@ -226,15 +226,9 @@ def decompose_requirement(
             "testing" if _contains(segment, "测试", "验证", "审议", "验收") else "implementation",
         )
         override = _override_for(segment, routing_overrides)
-        declared_capabilities = frozenset(
-            capability
-            for item in registry.capabilities
-            for capability in item.capabilities
-        )
-        route_capabilities = capabilities if set(capabilities).issubset(declared_capabilities) else ()
         route = registry.route(
             difficulty,
-            route_capabilities,
+            capabilities,
             forced_agent=None if override is None else override.forced_agent,
             preferred_agent=None if override is None else override.preferred_agent,
             forbidden_agents=() if override is None else override.forbidden_agents,
@@ -243,7 +237,7 @@ def decompose_requirement(
         if index > 1 and _contains(segment, "测试", "验证", "审议", "验收", "集成", "文档"):
             dependencies = (blueprints[-1].task_id,)
         execution_mode = "serial" if dependencies else "parallel"
-        task_type = "validation" if "testing" in capabilities else "implementation"
+        task_type = "qa" if "testing" in capabilities else "implementation"
         title = _task_title(segment)
         plan_task = DockyardPlanTask(
             task_id,

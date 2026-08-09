@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,7 @@ from dockyard_composition import (  # noqa: E402
     DockyardPairingAuthorizer,
     DockyardPlanReadService,
     _default_task,
+    _edited_tasks,
 )
 from dockyard_control_api import DockyardApiConfig, DockyardControlServer  # noqa: E402
 from dockyard_pairing import (  # noqa: E402
@@ -201,6 +203,22 @@ class DockyardRequirementCompositionTests(unittest.TestCase):
             expected_branch(first.task_id, 1, 1, "DSP-TEST-001"),
             f"agentdesk/{first.task_id}/r1/a1/DSP-TEST-001",
         )
+
+    def test_edit_normalizes_legacy_validation_type_to_canonical_qa(self) -> None:
+        legacy = replace(_default_task("PLAN-1", "测试验证", SNAPSHOT), task_type="validation")
+        raw = [{
+            "task_id": legacy.task_id,
+            "title": legacy.title,
+            "description": legacy.description,
+            "dependencies": [],
+            "execution_mode": legacy.execution_mode,
+            "role_id": legacy.role_id,
+            "provider_id": legacy.provider_id,
+            "model_id": legacy.model_id,
+            "budget_tokens": legacy.budget_tokens,
+            "max_attempts": legacy.max_attempts,
+        }]
+        self.assertEqual(_edited_tasks(raw, (legacy,))[0].task_type, "qa")
 
     def test_edit_submission_advances_to_approval_pending_without_dispatch(self) -> None:
         self.assertEqual(self._create()[0], 200)

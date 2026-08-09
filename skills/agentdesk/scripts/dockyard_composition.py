@@ -1371,6 +1371,7 @@ def _edited_tasks(raw: object, current: tuple[DockyardPlanTask, ...]) -> tuple[D
             raise DockyardCommandRejected(400, "COMMAND_PAYLOAD_INVALID", "input")
         result.append(replace(
             current_by_id[task_id],
+            task_type="qa" if current_by_id[task_id].task_type == "validation" else current_by_id[task_id].task_type,
             title=_text(item["title"], "title", 256),
             description=_document_text(item["description"], "description"),
             dependencies=dependency_tuple,

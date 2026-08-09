@@ -96,7 +96,7 @@ class DockyardLocalRuntimeTests(unittest.TestCase):
         bindings.parent.mkdir(parents=True)
         bindings.write_text(json.dumps({
             "schema_version": "agentdesk.model-bindings/v2", "updated_at": _NOW,
-            "bindings": {"basic": {"provider": "claude", "model_id": "test-basic", "tier": "basic", "deliberation_tier": "efficient", "context_window_tokens": 64000, "capabilities": ["coding"], "enabled": True}},
+            "bindings": {"basic": {"provider": "claude", "model_id": "test-basic", "tier": "expert", "deliberation_tier": "deep", "context_window_tokens": 64000, "capabilities": ["coding", "testing"], "enabled": True}},
         }) + "\n", encoding="utf-8")
 
         self.registry_root = root / "registry"

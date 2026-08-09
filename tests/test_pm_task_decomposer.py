@@ -72,7 +72,7 @@ class PmTaskDecomposerTests(unittest.TestCase):
         self.assertEqual(len(result.tasks), 2)
         self.assertEqual(result.tasks[1].dependencies, (result.tasks[0].task_id,))
         self.assertEqual(result.tasks[1].execution_mode, "serial")
-        self.assertEqual(result.tasks[1].task_type, "validation")
+        self.assertEqual(result.tasks[1].task_type, "qa")
 
     def test_unmarked_multiline_prose_is_not_split_accidentally(self) -> None:
         result = decompose_requirement(

@@ -196,11 +196,17 @@ class AgentCapabilityRegistry:
             raise AgentRoutingUnavailableError("forced agent is forbidden")
 
         def eligible(item: AgentCapability) -> bool:
+            capabilities = frozenset(item.capabilities)
+            supports_required = all(
+                capability in capabilities
+                or (capability == "implementation" and "coding" in capabilities)
+                for capability in required_capabilities
+            )
             return (
                 item.enabled
                 and item.agent_id not in forbidden_agents
                 and difficulty in item.supported_difficulties
-                and set(required_capabilities).issubset(item.capabilities)
+                and supports_required
             )
 
         if forced_agent is not None:

@@ -66,6 +66,21 @@ class AgentCapabilityRegistryTests(unittest.TestCase):
     def test_max_concurrency_is_bounded(self) -> None:
         self.assertEqual(_registry().max_concurrency, 4)
 
+    def test_coding_capability_satisfies_implementation_without_covering_testing(self) -> None:
+        registry = AgentCapabilityRegistry((
+            AgentCapability(
+                "agentdesk.agent-capability/v1", "coding-agent", "claude",
+                "claude-opus", (TaskDifficulty.ADVANCED,),
+                ("coding",), "deep", 1,
+            ),
+        ))
+        self.assertEqual(
+            registry.route(TaskDifficulty.ADVANCED, ("implementation",)).agent_id,
+            "coding-agent",
+        )
+        with self.assertRaises(AgentRoutingUnavailableError):
+            registry.route(TaskDifficulty.ADVANCED, ("testing",))
+
     def test_malformed_bindings_do_not_silently_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
