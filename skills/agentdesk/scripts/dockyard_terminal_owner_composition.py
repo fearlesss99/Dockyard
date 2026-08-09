@@ -422,7 +422,7 @@ class DockyardTerminalOwnerCompositionRuntime:
             plan.task_card_path,
             plan.report_path,
             delivery.report_commit,
-            plan.base_commit,
+            plan.task_card_commit,
             delivery.implementation_commit,
             MadDeliberationDepth.BALANCED,
         )
@@ -711,7 +711,7 @@ class DockyardTerminalOwnerCompositionRuntime:
             plan.task_card_path,
             plan.report_path,
             delivery.report_commit,
-            plan.base_commit,
+            plan.task_card_commit,
             delivery.implementation_commit,
             MadDeliberationDepth.BALANCED,
         )
@@ -1060,7 +1060,7 @@ class DockyardTerminalOwnerCompositionRuntime:
             plan.task_card_path,
             plan.report_path,
             delivery.report_commit,
-            plan.base_commit,
+            plan.task_card_commit,
             delivery.implementation_commit,
             MadDeliberationDepth.BALANCED,
         )
@@ -1359,7 +1359,7 @@ class DockyardTerminalOwnerCompositionRuntime:
             plan.task_card_path,
             plan.report_path,
             delivery.report_commit,
-            plan.base_commit,
+            plan.task_card_commit,
             delivery.implementation_commit,
             MadDeliberationDepth.BALANCED,
         )
