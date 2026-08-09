@@ -54,6 +54,9 @@ class PmRepositoryContextTests(unittest.TestCase):
             "GIT_WORK_TREE": str(self.root / "missing-work-tree"),
             "GIT_INDEX_FILE": str(self.root / "missing-index"),
             "GIT_OBJECT_DIRECTORY": str(self.root / "missing-objects"),
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.bare",
+            "GIT_CONFIG_VALUE_0": "true",
         }
         with mock.patch.dict("os.environ", poisoned):
             inventory = inspect_repository(self.root, self.head)
