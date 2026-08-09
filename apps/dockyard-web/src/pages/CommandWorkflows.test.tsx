@@ -12,6 +12,7 @@ import {
   commandViewportRestrictionMessage,
   commandSuccessMessage,
   commandFailureFeedback,
+  commandOwnerConnectedForRoute,
   discardPlanAction,
   confirmationForAction,
   editorTasksFromProjection,
@@ -58,6 +59,13 @@ describe("Dockyard command confirmation workflows", () => {
     expect(verifiedProjectionMessage("命令未提交。请查看安全诊断摘要。")).toBe(
       "命令未提交。请查看安全诊断摘要。",
     );
+  });
+
+  it("treats an empty but successfully-read review projection as connected", () => {
+    expect(commandOwnerConnectedForRoute("reviews", true, false)).toBe(true);
+    expect(commandOwnerConnectedForRoute("reviews", false, true)).toBe(false);
+    expect(commandOwnerConnectedForRoute("tasks", false, true)).toBe(true);
+    expect(commandOwnerConnectedForRoute("runs", true, true)).toBe(false);
   });
 
   it("preserves a verified terminal success after its pending action disappears", () => {

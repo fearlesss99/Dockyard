@@ -52,6 +52,16 @@ export function shouldShowCommandUnavailable(
   return actionCount === 0 && routeId !== "requirements" && state !== "committed";
 }
 
+export function commandOwnerConnectedForRoute(
+  routeId: DockyardRouteId,
+  reviewOwnerConnected: boolean,
+  taskOwnerConnected: boolean,
+): boolean {
+  if (routeId === "reviews") return reviewOwnerConnected;
+  if (routeId === "tasks") return taskOwnerConnected;
+  return false;
+}
+
 export function invalidatedProjectionFeedback(terminalFeedback: string): {
   readonly state: CommandUiState;
   readonly message: string;
@@ -656,6 +666,10 @@ export function CommandWorkflows({
   const [plan, setPlan] = useState<DockyardPlanProjection | null>(null);
   const [projection, setProjection] = useState<DockyardPlanApprovalProjection | null>(null);
   const [reviews, setReviews] = useState<readonly DockyardReviewProjection[]>([]);
+  // A successful review projection read is the authoritative signal that the
+  // terminal review/acceptance owner is mounted.  An empty review list is a
+  // valid connected state; it must not be confused with an absent owner.
+  const [reviewOwnerConnected, setReviewOwnerConnected] = useState(false);
   const [taskRunProjection, setTaskRunProjection] = useState<DockyardRunListProjection | null>(null);
   const [refresh, setRefresh] = useState(0);
   const terminalFeedbackRef = useRef("");
@@ -762,16 +776,23 @@ export function CommandWorkflows({
     let current = true;
     if (!client || !projectId || routeId !== "reviews") {
       setReviews([]);
+      setReviewOwnerConnected(false);
       return () => { current = false; };
     }
     client.readReviews(projectId).then(
       (value) => {
         if (current) {
           setReviews(value.reviews);
+          setReviewOwnerConnected(true);
           markProjectionVerified();
         }
       },
-      () => { if (current) setReviews([]); },
+      () => {
+        if (current) {
+          setReviews([]);
+          setReviewOwnerConnected(false);
+        }
+      },
     );
     return () => { current = false; };
   }, [client, projectId, routeId, refresh]);
@@ -969,14 +990,21 @@ export function CommandWorkflows({
 
   if (shouldShowCommandUnavailable(routeId, actions.length, state)) {
     const taskOwnerConnected = routeId === "tasks" && taskCommandProjectionsMatch(taskProjection, effectiveTaskRunProjection);
+    const commandOwnerConnected = commandOwnerConnectedForRoute(
+      routeId,
+      reviewOwnerConnected,
+      taskOwnerConnected,
+    );
     return (
       <section className="panel command-panel">
         <header className="panel__header">
           <div><span className="eyebrow">操作</span><h3>受控命令</h3></div>
-          <StatusPill state={taskOwnerConnected ? "success" : "unknown"}>{taskOwnerConnected ? "owner 已接入" : client ? "owner 未接入" : "Runner 未连接"}</StatusPill>
+          <StatusPill state={commandOwnerConnected ? "success" : "unknown"}>{commandOwnerConnected ? "owner 已接入" : client ? "owner 未接入" : "Runner 未连接"}</StatusPill>
         </header>
-        <p className="muted-copy">{taskOwnerConnected
-          ? "生产命令 owner 已接入；当前任务没有满足精确代际、租约和进程证据要求的可执行操作。"
+        <p className="muted-copy">{commandOwnerConnected
+          ? routeId === "reviews"
+            ? "审议与验收 owner 已接入；当前没有满足审议结果与交付证据门槛的可执行操作。"
+            : "生产命令 owner 已接入；当前任务没有满足精确代际、租约和进程证据要求的可执行操作。"
           : client
           ? "当前页面只展示已验证证据；对应生产 owner 尚未接入，操作保持禁用。"
           : "尚未建立本机 Control API 会话。这里不会生成草稿命令，也不会显示演示操作。"}</p>
