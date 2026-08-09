@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DockyardClient, DockyardClientError } from "../client/dockyardClient";
 import { ConfirmationDialog } from "../components/ConfirmationDialog";
+import { CollapsibleCollection } from "../components/CollapsibleCollection";
 import { StatusPill } from "../components/StatusPill";
 import type { DockyardRouteId } from "../navigation/routes";
 import type {
@@ -326,6 +327,32 @@ export function reviewActionsFromProjections(
     if (review.audit_verdict === "fail") return [returnActionFromProjection(review)];
     return [];
   });
+}
+
+function reviewCollectionGroups(reviews: readonly DockyardReviewProjection[]) {
+  return [
+    {
+      key: "pass",
+      label: "ACCEPT",
+      description: "审议通过，等待验收",
+      items: reviews.filter((review) => review.audit_verdict === "pass"),
+      openByDefault: true,
+    },
+    {
+      key: "blocked",
+      label: "BLOCKED",
+      description: "审议被阻塞，需要处理",
+      items: reviews.filter((review) => review.audit_verdict === "blocked"),
+      openByDefault: true,
+    },
+    {
+      key: "return",
+      label: "RETURN",
+      description: "审议未通过，等待返修",
+      items: reviews.filter((review) => review.audit_verdict === "fail"),
+      openByDefault: false,
+    },
+  ].filter((group) => group.items.length > 0);
 }
 
 export function removalActionFromProjection(projection: DockyardPlanApprovalProjection): CommandAction {
@@ -973,7 +1000,9 @@ export function CommandWorkflows({
           <div className="inline-actions inline-actions--editor">
             <button className="button button--quiet" type="button" onClick={() => setRequirement("")} disabled={!requirement || plan?.phase === "APPROVAL_PENDING"}>清空需求输入</button>
           </div>
-          {tasks.length > 0 && <div className="plan-task-list">
+          {tasks.length > 0 && <details className="plan-task-shelf" open>
+            <summary><span><span className="eyebrow">TASK PLAN</span><strong>任务草案</strong></span><span className="collection-group__count">{tasks.length}</span></summary>
+            <div className="plan-task-list">
             {tasks.map((task) => (
               <article className="plan-task" key={task.taskId}>
                 <div><strong>{task.taskId}</strong><small>{task.dependencies.length ? `依赖 ${task.dependencies.join(", ")}` : "无依赖"}</small></div>
@@ -990,7 +1019,8 @@ export function CommandWorkflows({
                 </div>
               </article>
             ))}
-          </div>}
+            </div>
+          </details>}
           <div className="command-actions">
             {!plan && <button className="button button--primary" type="button" onClick={createDraft} disabled={!client || !projectPlanning || state === "submitting"}>生成计划草案</button>}
             {plan && plan.phase !== "APPROVAL_PENDING" && <button className="button button--primary" type="button" onClick={submitForApproval} disabled={state === "submitting"}>提交审批</button>}
@@ -1001,9 +1031,11 @@ export function CommandWorkflows({
       )}
 
       {routeId === "reviews" && reviews.length > 0 && (
-        <div className="record-list">
-          {reviews.map((review) => (
-            <article className="review-card" key={review.dispatch_id}>
+        <CollapsibleCollection
+          groups={reviewCollectionGroups(reviews)}
+          itemKey={(review) => review.dispatch_id}
+          renderItem={(review) => (
+            <article className="review-card">
               <div className="review-card__title">
                 <div><span className="eyebrow">{review.task_id} · attempt {review.attempt}</span><strong>{review.audit_verdict === "pass" ? "审议已完成，等待你的验收" : review.audit_verdict === "fail" ? "审议未通过，等待退回返修" : "审议被阻塞，需要人工处理"}</strong></div>
                 <StatusPill state={review.audit_verdict === "pass" ? "success" : review.audit_verdict === "fail" ? "failure" : "blocked"}>{review.audit_verdict === "pass" ? "通过" : review.audit_verdict}</StatusPill>
@@ -1011,8 +1043,8 @@ export function CommandWorkflows({
               <p>{review.audit_verdict === "pass" ? "实现与交付报告已由 MAD 审议。确认验收后才会进入 Git 集成，不会自动越过门禁。" : review.audit_verdict === "fail" ? "失败审议证据已经冻结。确认退回后任务会重新变为待派发，但不会自动启动下一次 Worker。" : "审议证据尚不能形成安全结论，Dockyard 不会自动继续。"}</p>
               <dl className="detail-list"><div><dt>Dispatch</dt><dd>{review.dispatch_id}</dd></div><div><dt>实现提交</dt><dd><code>{review.implementation_commit}</code></dd></div><div><dt>报告提交</dt><dd><code>{review.report_commit}</code></dd></div></dl>
             </article>
-          ))}
-        </div>
+          )}
+        />
       )}
 
       <div className="command-actions">

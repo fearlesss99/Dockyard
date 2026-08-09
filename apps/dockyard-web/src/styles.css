@@ -208,6 +208,21 @@ button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visibl
 code, .detail-list dd, .diagnostic-row__id, .hero-panel__meta strong { min-width: 0; overflow-wrap: anywhere; }
 
 .record-list, .timeline-list, .diagnostic-list { display: grid; gap: 10px; }
+.collection-list { display: grid; gap: 12px; }
+.collection-group, .plan-task-shelf { overflow: hidden; border: 1px solid #d8e0d9; border-radius: 10px; background: #fbfcfa; }
+.collection-group__summary, .plan-task-shelf > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; cursor: pointer; list-style: none; }
+.collection-group__summary::-webkit-details-marker, .plan-task-shelf > summary::-webkit-details-marker { display: none; }
+.collection-group__summary::after, .plan-task-shelf > summary::after { content: "⌄"; color: #246b45; font-size: 16px; transition: transform 160ms ease; }
+.collection-group[open] > .collection-group__summary::after, .plan-task-shelf[open] > summary::after { transform: rotate(180deg); }
+.collection-group__heading, .plan-task-shelf > summary > span:first-child { display: grid; gap: 3px; }
+.collection-group__heading strong, .plan-task-shelf > summary strong { color: #1b2520; font-size: 13px; }
+.collection-group__count { min-width: 24px; padding: 3px 8px; border: 1px solid #b8c8bc; border-radius: 999px; color: #246b45; font-size: 11px; text-align: center; }
+.collection-group__items { display: grid; gap: 10px; padding: 0 10px 10px; }
+.collection-group__items > * > .record-card, .collection-group__items > * > .timeline-row, .collection-group__items > * > .task-row, .collection-group__items > * > .review-card { margin: 0; }
+.plan-task-shelf { margin-top: 14px; }
+.plan-task-shelf > summary { border-bottom: 1px solid transparent; }
+.plan-task-shelf[open] > summary { border-bottom-color: #d8e0d9; }
+.plan-task-shelf .plan-task-list { padding: 12px; }
 .record-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px; border: 1px solid #d8e0d9; border-radius: 8px; background: #f8faf7; }
 .record-card strong, .record-card small { display: block; }
 .record-card strong { font-size: 13px; }

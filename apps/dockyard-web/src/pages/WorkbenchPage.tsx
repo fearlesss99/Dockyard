@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { DockyardClient } from "../client/dockyardClient";
 import { ReadStateBanner } from "../components/ReadStateBanner";
 import { StatusPill } from "../components/StatusPill";
+import { TimeGroupedCollection } from "../components/CollapsibleCollection";
 import type { DockyardSemanticState } from "../design/tokens";
 import type {
   DockyardOperationalOverviewProjection,
@@ -197,15 +198,20 @@ export function WorkbenchPage({ client, projectId, onNavigate }: WorkbenchPagePr
             {evidence.tasks.tasks.length === 0
               ? <ReadStateBanner state="empty" />
               : (
-                <div className="task-table" role="table" aria-label="当前任务">
-                  {evidence.tasks.tasks.map((task) => (
-                    <div className="task-row" role="row" key={task.task_id}>
+                <TimeGroupedCollection
+                  items={evidence.tasks.tasks}
+                  getUpdatedAt={(task) => task.updated_at}
+                  isActive={(task) => !["integrated", "cancelled"].includes(task.state)}
+                  itemKey={(task) => `${task.task_id}-r${task.revision}`}
+                  className="task-table"
+                  renderItem={(task) => (
+                    <div className="task-row" role="row">
                       <div><strong>{task.task_id}</strong><small>r{task.revision} · 尝试 {task.attempt ?? "—"}</small></div>
                       <div><span>{task.role_id ?? "角色未绑定"}</span><small>{task.provider_id ?? "Provider 未选择"} / {task.model_id ?? "模型未绑定"}</small></div>
                       <StatusPill state={taskTone(task.state)}>{task.state}</StatusPill>
                     </div>
-                  ))}
-                </div>
+                  )}
+                />
               )}
           </article>
 

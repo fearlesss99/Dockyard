@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { ReadStateBanner } from "../components/ReadStateBanner";
 import { StatusPill } from "../components/StatusPill";
+import { TimeGroupedCollection } from "../components/CollapsibleCollection";
 import type { DockyardClient } from "../client/dockyardClient";
 import type {
   DockyardLiveOverviewProjection,
@@ -268,7 +269,13 @@ function TasksView({
     <section className="content-grid content-grid--balanced">
       <article className="panel">
         <header className="panel__header"><div><span className="eyebrow">Lifecycle</span><h3>任务列表</h3></div><span className="muted">{projection.tasks.length} 项</span></header>
-        <div className="record-list">{projection.tasks.map((task) => <TaskRow task={task} key={task.task_id} onCancel={() => onCancelTask(task)} />)}</div>
+        <TimeGroupedCollection
+          items={projection.tasks}
+          getUpdatedAt={(task) => task.updated_at}
+          isActive={(task) => !["integrated", "cancelled"].includes(task.state)}
+          itemKey={(task) => `${task.task_id}-r${task.revision}`}
+          renderItem={(task) => <TaskRow task={task} onCancel={() => onCancelTask(task)} />}
+        />
       </article>
       <article className="panel">
         <header className="panel__header"><div><span className="eyebrow">任务详情</span><h3>{selected.task_id}</h3></div></header>
@@ -290,7 +297,13 @@ function RunsView({ projection }: { readonly projection: DockyardRunListProjecti
   return (
     <section className="panel">
       <header className="panel__header"><div><span className="eyebrow">运行阶段</span><h3>调度与恢复</h3></div><span className="muted">{projection.runs.length} 条</span></header>
-      <div className="timeline-list">{projection.runs.map((run) => <article className="timeline-row" key={run.dispatch_id}><span className={`timeline-dot timeline-dot--${run.phase === "RECOVERY_REQUIRED" ? "unknown" : "active"}`} /><div><strong>{run.task_id}</strong><small>attempt {run.attempt} · {run.dispatch_id}</small></div><div><StatusPill state={run.phase === "RECOVERY_REQUIRED" ? "unknown" : "selected"}>{run.phase}</StatusPill><small>{run.heartbeat_state} · {run.updated_at}</small></div></article>)}</div>
+      <TimeGroupedCollection
+        items={projection.runs}
+        getUpdatedAt={(run) => run.updated_at}
+        isActive={(run) => !["FINALIZED", "FAILED", "CANCELLED"].includes(run.phase)}
+        itemKey={(run) => run.dispatch_id}
+        renderItem={(run) => <article className="timeline-row"><span className={`timeline-dot timeline-dot--${run.phase === "RECOVERY_REQUIRED" ? "unknown" : "active"}`} /><div><strong>{run.task_id}</strong><small>attempt {run.attempt} · {run.dispatch_id}</small></div><div><StatusPill state={run.phase === "RECOVERY_REQUIRED" ? "unknown" : "selected"}>{run.phase}</StatusPill><small>{run.heartbeat_state} · {run.updated_at}</small></div></article>}
+      />
     </section>
   );
 }
