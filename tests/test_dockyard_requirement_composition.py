@@ -180,6 +180,16 @@ class DockyardRequirementCompositionTests(unittest.TestCase):
         self.assertEqual(projection["tasks"][0]["task_id"], plan.tasks[0].task_id)
         self.assertNotIn("base_commit", projection["tasks"][0])
 
+    def test_multiline_requirement_round_trips_through_strict_plan_projection(self) -> None:
+        requirement = "增加 Runner 摘要：\n\n1. 显示连接状态。\n2. 增加前端测试。"
+        status, _ = self._create(requirement=requirement)
+        self.assertEqual(status, 200)
+        projection_status, projection = self._read("plans/PLAN-1")
+        self.assertEqual(projection_status, 200)
+        self.assertEqual(projection["requirement"], requirement)
+        self.assertNotIn("\n", projection["tasks"][0]["title"])
+        self.assertLessEqual(len(projection["tasks"][0]["title"]), 256)
+
     def test_default_task_identity_is_canonical_stable_and_plan_bound(self) -> None:
         first = _default_task("PLAN-1", "实现真实需求入口", SNAPSHOT)
         replay = _default_task("PLAN-1", "替换需求不改变计划身份", SNAPSHOT)

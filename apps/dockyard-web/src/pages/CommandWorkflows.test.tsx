@@ -44,6 +44,7 @@ describe("Dockyard command confirmation workflows", () => {
     expect(verifiedProjectionMessage(
       "状态已变化。正在刷新当前投影，请重新核对后确认。",
     )).toBe("");
+    expect(verifiedProjectionMessage("状态已变化，请刷新后重新提交需求。")).toBe("");
     expect(verifiedProjectionState("failed")).toBe("failed");
     expect(verifiedProjectionState("committed")).toBe("committed");
     expect(verifiedProjectionMessage("命令未提交。请查看安全诊断摘要。")).toBe(

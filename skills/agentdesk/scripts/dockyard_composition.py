@@ -506,7 +506,7 @@ class DockyardPlanTaskProjection:
     def __post_init__(self) -> None:
         _text(self.task_id, "task_id", 128)
         _text(self.title, "title", 256)
-        _text(self.description, "description", 32768)
+        _document_text(self.description, "description", 32768)
         if type(self.dependencies) is not tuple:
             raise ValueError("projection dependencies are invalid")
         for dependency in self.dependencies:
@@ -553,7 +553,7 @@ class DockyardPlanProjection:
             DockyardPlanPhase.APPROVAL_PENDING.value,
         }:
             raise ValueError("plan projection phase is invalid")
-        _text(self.requirement, "requirement", 32768)
+        _document_text(self.requirement, "requirement", 32768)
         if type(self.tasks) is not tuple or not self.tasks:
             raise ValueError("plan projection tasks are invalid")
         if any(type(task) is not DockyardPlanTaskProjection for task in self.tasks):
@@ -595,9 +595,12 @@ class DockyardReviewProjection:
 
 
 def _task_projection(task: DockyardPlanTask) -> DockyardPlanTaskProjection:
+    title = " ".join(task.title.split())
+    if len(title) > 256:
+        title = title[:253].rstrip() + "…"
     return DockyardPlanTaskProjection(
         task.task_id,
-        task.title,
+        title,
         task.description,
         task.dependencies,
         task.execution_mode,
@@ -625,9 +628,12 @@ def _plan_projection_digest(
         plan.requirement,
     ]
     for task in plan.tasks:
+        title = " ".join(task.title.split())
+        if len(title) > 256:
+            title = title[:253].rstrip() + "…"
         values.extend((
             task.task_id,
-            task.title,
+            title,
             task.description,
             *task.dependencies,
             task.execution_mode,

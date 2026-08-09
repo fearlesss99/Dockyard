@@ -173,6 +173,12 @@ def _segments(requirement: str) -> tuple[str, ...]:
     return tuple(_BULLET.sub("", line) for line in raw_lines)
 
 
+def _task_title(segment: str) -> str:
+    """Create a single-line title that is safe for strict projections."""
+    normalized = " ".join(segment.split())
+    return normalized if len(normalized) <= 256 else normalized[:253].rstrip() + "…"
+
+
 def _override_for(segment: str, overrides: tuple[PmTaskRoutingOverride, ...]) -> PmTaskRoutingOverride | None:
     lowered = segment.casefold()
     return next((item for item in overrides if item.task_hint.casefold() in lowered), None)
@@ -238,9 +244,10 @@ def decompose_requirement(
             dependencies = (blueprints[-1].task_id,)
         execution_mode = "serial" if dependencies else "parallel"
         task_type = "validation" if "testing" in capabilities else "implementation"
+        title = _task_title(segment)
         plan_task = DockyardPlanTask(
             task_id,
-            segment[:256],
+            title,
             segment,
             dependencies,
             execution_mode,
@@ -264,7 +271,7 @@ def decompose_requirement(
             1,
         )
         blueprints.append(PmTaskBlueprint(
-            task_id, segment[:256], segment, dependencies, execution_mode, task_type,
+            task_id, title, segment, dependencies, execution_mode, task_type,
             difficulty, rationale_keys, _DIFFICULTY_RISK[difficulty], capabilities,
             route, plan_task,
         ))

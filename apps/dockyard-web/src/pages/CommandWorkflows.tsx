@@ -25,7 +25,7 @@ export function verifiedProjectionState(state: CommandUiState): CommandUiState {
 }
 
 export function verifiedProjectionMessage(message: string): string {
-  return message === STALE_PROJECTION_MESSAGE ? "" : message;
+  return message === STALE_PROJECTION_MESSAGE || message.startsWith("状态已变化") ? "" : message;
 }
 
 export function commandSuccessMessage(commandType: string, snapshotCommit: string): string {
@@ -423,6 +423,7 @@ export function CommandWorkflows({
   const [plan, setPlan] = useState<DockyardPlanProjection | null>(null);
   const [projection, setProjection] = useState<DockyardPlanApprovalProjection | null>(null);
   const [reviews, setReviews] = useState<readonly DockyardReviewProjection[]>([]);
+  const [taskRunProjection, setTaskRunProjection] = useState<DockyardRunListProjection | null>(null);
   const [refresh, setRefresh] = useState(0);
   const terminalFeedbackRef = useRef("");
   const activeActionRef = useRef<CommandAction | null>(null);
@@ -432,6 +433,19 @@ export function CommandWorkflows({
     setState(verifiedProjectionState);
     setMessage(verifiedProjectionMessage);
   };
+
+  useEffect(() => {
+    let current = true;
+    if (!client || !projectId || routeId !== "tasks") {
+      setTaskRunProjection(null);
+      return () => { current = false; };
+    }
+    client.readRuns(projectId).then(
+      (value) => { if (current) setTaskRunProjection(value); },
+      () => { if (current) setTaskRunProjection(null); },
+    );
+    return () => { current = false; };
+  }, [client, projectId, routeId, refresh]);
 
   useEffect(() => {
     if (routeRef.current === routeId) return;
@@ -532,7 +546,7 @@ export function CommandWorkflows({
 
   useEffect(() => {
     if (!client || !projectId || typeof EventSource === "undefined") return;
-    if (!["requirements", "projects", "reviews", "runs"].includes(routeId)) return;
+    if (!["requirements", "projects", "reviews", "runs", "tasks"].includes(routeId)) return;
     const source = new EventSource(client.eventsUrl(projectId));
     const invalidate = () => {
       const hasPendingConfirmation = activeActionRef.current !== null;
@@ -559,18 +573,19 @@ export function CommandWorkflows({
     if (routeId === "reviews") {
       return reviewActionsFromProjections(reviews);
     }
-    if (routeId === "runs" && projectId && runProjection) {
-      return runProjection.runs
+    const commandRuns = routeId === "tasks" ? taskRunProjection : runProjection;
+    if ((routeId === "runs" || routeId === "tasks") && projectId && commandRuns) {
+      return commandRuns.runs
         .flatMap((run) => [
-          terminationActionFromProjection(run, projectId, runProjection.snapshot_commit),
-          retryActionFromProjection(run, projectId, runProjection.snapshot_commit),
+          terminationActionFromProjection(run, projectId, commandRuns.snapshot_commit),
+          retryActionFromProjection(run, projectId, commandRuns.snapshot_commit),
         ])
         .filter((action): action is CommandAction => action !== null);
     }
     if (routeId === "requirements" && projection) return [approvalActionFromProjection(projection)];
     if (routeId === "projects" && projection) return [removalActionFromProjection(projection)];
     return [];
-  }, [projectId, projection, reviews, routeId, runProjection]);
+  }, [projectId, projection, reviews, routeId, runProjection, taskRunProjection]);
 
   const createDraft = async () => {
     if (!client || !projectPlanning || !requirement.trim()) {
@@ -657,13 +672,16 @@ export function CommandWorkflows({
   };
 
   if (shouldShowCommandUnavailable(routeId, actions.length, state)) {
+    const taskOwnerConnected = routeId === "tasks" && taskRunProjection !== null;
     return (
       <section className="panel command-panel">
         <header className="panel__header">
           <div><span className="eyebrow">操作</span><h3>受控命令</h3></div>
-          <StatusPill state="unknown">{client ? "owner 未接入" : "Runner 未连接"}</StatusPill>
+          <StatusPill state={taskOwnerConnected ? "success" : "unknown"}>{taskOwnerConnected ? "owner 已接入" : client ? "owner 未接入" : "Runner 未连接"}</StatusPill>
         </header>
-        <p className="muted-copy">{client
+        <p className="muted-copy">{taskOwnerConnected
+          ? "生产命令 owner 已接入；当前任务没有满足精确代际、租约和进程证据要求的可执行操作。"
+          : client
           ? "当前页面只展示已验证证据；对应生产 owner 尚未接入，操作保持禁用。"
           : "尚未建立本机 Control API 会话。这里不会生成草稿命令，也不会显示演示操作。"}</p>
         {liveEvidence.length > 0 && <div className="record-list" data-testid="live-command-evidence">

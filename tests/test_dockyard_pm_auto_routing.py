@@ -83,6 +83,27 @@ class DockyardPmAutoRoutingTests(unittest.TestCase):
             self.assertEqual(plan.tasks[0].provider_id, "codex")
             self.assertEqual(plan.tasks[1].dependencies, (plan.tasks[0].task_id,))
 
+    def test_multiline_requirement_produces_projection_safe_single_line_title(self) -> None:
+        from pm_task_decomposer import decompose_requirement
+
+        registry = AgentCapabilityRegistry((
+            AgentCapability(
+                "agentdesk.agent-capability/v1", "codex-expert", "codex",
+                "gpt-5.6-sol", (TaskDifficulty.STANDARD, TaskDifficulty.ADVANCED, TaskDifficulty.EXPERT),
+                ("implementation", "testing"), "deep", 4, True,
+            ),
+        ))
+        requirement = "增加 Runner 摘要：\n\n1. 显示连接状态。\n2. 增加前端测试。"
+        result = decompose_requirement(
+            plan_id="PLAN-MULTILINE",
+            requirement=requirement,
+            snapshot_commit="a" * 40,
+            registry=registry,
+        )
+        self.assertNotIn("\n", result.tasks[0].title)
+        self.assertNotIn("\r", result.tasks[0].title)
+        self.assertLessEqual(len(result.tasks[0].title), 256)
+
 
 if __name__ == "__main__":
     unittest.main()
