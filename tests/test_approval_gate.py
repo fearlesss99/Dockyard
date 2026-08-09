@@ -3171,6 +3171,20 @@ class GitAncestryTests(unittest.TestCase):
             result = ag._git_is_ancestor(proj, head, head)
             self.assertTrue(result)
 
+    def test_git_helpers_ignore_inherited_repository_overrides(self) -> None:
+        with _temp_project() as proj:
+            head = _git_head(proj)
+            poisoned = {
+                "GIT_DIR": str(proj / "missing-git-dir"),
+                "GIT_WORK_TREE": str(proj / "missing-work-tree"),
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.bare",
+                "GIT_CONFIG_VALUE_0": "true",
+            }
+            with mock.patch.dict(os.environ, poisoned):
+                self.assertEqual(ag._git_rev_parse_head(proj), head)
+                self.assertTrue(ag._git_is_ancestor(proj, head, head))
+
     def test_real_ancestor_returns_true(self) -> None:
         with _temp_project() as proj:
             head1 = _git_head(proj)

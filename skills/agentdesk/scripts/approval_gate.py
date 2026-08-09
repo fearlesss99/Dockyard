@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import enum
 import errno
+import os
 import io
 import json
 import os
@@ -873,6 +874,28 @@ def _validate_project_root(project_root: Path) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _git_environment() -> dict[str, str]:
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if not name.upper().startswith("GIT_")
+    }
+
+
+def _git_command(project_root: Path, *arguments: str) -> list[str]:
+    return [
+        "git",
+        "--no-replace-objects",
+        "-c",
+        "core.longpaths=true",
+        "-c",
+        f"safe.directory={project_root}",
+        "-C",
+        str(project_root),
+        *arguments,
+    ]
+
+
 def _git_rev_parse_head(project_root: Path) -> str:
     """Return the 40-char hex SHA of HEAD via ``git rev-parse HEAD``.
 
@@ -881,11 +904,11 @@ def _git_rev_parse_head(project_root: Path) -> str:
     """
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(project_root),
+            _git_command(project_root, "rev-parse", "HEAD"),
             capture_output=True,
             timeout=10,
             shell=False,
+            env=_git_environment(),
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         raise ApprovalSnapshotConflictError(
@@ -929,11 +952,11 @@ def _git_is_ancestor(
 
     try:
         result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", ancestor_sha, descendant_sha],
-            cwd=str(project_root),
+            _git_command(project_root, "merge-base", "--is-ancestor", ancestor_sha, descendant_sha),
             capture_output=True,
             timeout=10,
             shell=False,
+            env=_git_environment(),
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         raise ApprovalSnapshotConflictError(
