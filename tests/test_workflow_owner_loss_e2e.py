@@ -16,6 +16,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 _ROOT = Path(__file__).resolve().parents[1]
 _SCRIPTS = _ROOT / "skills" / "agentdesk" / "scripts"
@@ -907,7 +908,16 @@ class OwnerLossAutomaticRetryE2E(unittest.TestCase):
                 failed_receipt.boot_id,
             )
             self.assertIs(worker_liveness, dse.ProcessLiveness.DEAD)
-            tree_liveness = dse.probe_dispatch_process_tree(failed_receipt)
+            probe_calls: list[tuple[tuple[object, ...], dict[str, object], str]] = []
+            original_probe_process = dse.probe_process
+
+            def trace_probe_process(*args: object, **kwargs: object):
+                result = original_probe_process(*args, **kwargs)
+                probe_calls.append((args, kwargs, result.value))
+                return result
+
+            with patch.object(dse, "probe_process", side_effect=trace_probe_process):
+                tree_liveness = dse.probe_dispatch_process_tree(failed_receipt)
             if tree_liveness is dse.ProcessLiveness.UNKNOWN:
                 # The supervisor has been waited and the exact Worker PID is
                 # already DEAD.  Take one new complete durable snapshot for
@@ -917,7 +927,8 @@ class OwnerLossAutomaticRetryE2E(unittest.TestCase):
             self.assertIs(
                 tree_liveness,
                 dse.ProcessLiveness.DEAD,
-                "durable supervisor and Worker tree must be DEAD",
+                "durable supervisor and Worker tree must be DEAD; "
+                f"probes={probe_calls!r}",
             )
 
             plan = _retry_plan(project)
