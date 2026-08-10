@@ -104,6 +104,7 @@ class DockyardLocalClosedLoopE2ETests(unittest.TestCase):
         root = Path(self.fixture.temp.name)
         script = root / "dockyard_test_pm_codex.py"
         script.write_text(
+            "#!/usr/bin/env python3\n"
             "import json, re, sys\n"
             "prompt = sys.stdin.read()\n"
             "match = re.search(r'\\\"plan_id\\\":\\\"([^\\\"]+)\\\"', prompt)\n"
