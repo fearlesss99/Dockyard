@@ -703,6 +703,8 @@ class WorkflowHappyPathE2ETests(unittest.IsolatedAsyncioTestCase):
         # Create real empty executable files (touch).
         fake_claude_exe.write_bytes(b"")
         fake_mad_exe.write_bytes(b"")
+        fake_claude_exe.chmod(0o700)
+        fake_mad_exe.chmod(0o700)
 
         try:
             # ── 2. Create temp project with git repo ────────────────────────

@@ -811,6 +811,8 @@ class WorkflowRecoveryE2ETests(unittest.IsolatedAsyncioTestCase):
 
         fake_claude_exe.write_bytes(b"")
         fake_mad_exe.write_bytes(b"")
+        fake_claude_exe.chmod(0o700)
+        fake_mad_exe.chmod(0o700)
 
         try:
             # ── 2. Create temp project with git repo ────────────────────────
