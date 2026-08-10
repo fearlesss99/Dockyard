@@ -1,4 +1,4 @@
-# AgentDesk
+# Dockyard
 
 [English](#english) · [中文](#中文)
 
@@ -28,7 +28,7 @@ Install the pinned beta with the bundled Skill installer:
 
 ```bash
 python3 ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
-  --repo LeviXDD/AgentDeskSkill \
+  --repo fearlesss99/Dockyard \
   --path skills/agentdesk \
   --ref v0.1.0-beta
 ```
@@ -76,7 +76,7 @@ Standard 需要 Codex Desktop 能够创建、命名、列出/读取并跨任务�
 
 ```bash
 python3 ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
-  --repo LeviXDD/AgentDeskSkill \
+  --repo fearlesss99/Dockyard \
   --path skills/agentdesk \
   --ref v0.1.0-beta
 ```
