@@ -131,14 +131,18 @@ jobs:
               ),
               "repository tests failed",
           )
-          first_error = next(
-              (index for index, line in enumerate(lines) if line.startswith("ERROR: ")),
+          first_problem = next(
+              (
+                  index
+                  for index, line in enumerate(lines)
+                  if re.match(r"^(?:FAIL|ERROR): ", line)
+              ),
               None,
           )
           traceback_excerpt = []
-          if first_error is not None:
-              start = max(0, first_error - 1)
-              end = min(len(lines), first_error + 240)
+          if first_problem is not None:
+              start = max(0, first_problem - 1)
+              end = min(len(lines), first_problem + 240)
               traceback_excerpt = lines[start:end]
           excerpt = "\n".join([
               *failures[:8],
