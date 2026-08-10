@@ -1417,6 +1417,20 @@ def _probe_pid_state(pid: int) -> str:
     if pid <= 0:
         return "absent"
     if os.name != "nt":
+        # A zombie is still visible to kill(2), but it cannot execute or
+        # retain descendants.  Preserve that terminal evidence so a lost
+        # supervisor is not misclassified as ALIVE merely because init has
+        # not reaped the child yet.
+        try:
+            stat_path = Path("/proc") / str(pid) / "stat"
+            stat_text = stat_path.read_text(encoding="utf-8")
+            stat_end = stat_text.rfind(")")
+            if stat_end >= 0:
+                process_state = stat_text[stat_end + 2 :].split()[0]
+                if process_state in ("Z", "X", "x"):
+                    return "terminal"
+        except (OSError, IndexError):
+            pass
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -2202,6 +2216,10 @@ def probe_process(
     if current_boot != boot_id:
         # System rebooted since the receipt was written.
         return ProcessLiveness.UNKNOWN
+    if state == "terminal":
+        if require_tree and not _worker_tree_dead(recorded_process_group):
+            return ProcessLiveness.UNKNOWN
+        return ProcessLiveness.DEAD
     return ProcessLiveness.ALIVE
 
 
