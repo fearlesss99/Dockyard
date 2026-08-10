@@ -138,7 +138,7 @@ jobs:
           traceback_excerpt = []
           if first_error is not None:
               start = max(0, first_error - 1)
-              end = min(len(lines), first_error + 45)
+              end = min(len(lines), first_error + 240)
               traceback_excerpt = lines[start:end]
           excerpt = "\n".join([
               *failures[:8],

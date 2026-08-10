@@ -521,9 +521,13 @@ class OwnerLossAutomaticRetryE2E(unittest.TestCase):
             [sys.executable, "-c", "import threading; threading.Event().wait()"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=os.name != "nt",
         )
         creation = dse.get_process_creation_time(dead.pid)
         self.assertIsNotNone(creation)
+        worker_process_group = (
+            os.getpgid(dead.pid) if os.name != "nt" else None
+        )
         dead.terminate()
         dead.wait(timeout=20)
         generation = f"GEN-OWNER-DEAD-{failed_attempt}"
@@ -555,7 +559,7 @@ class OwnerLossAutomaticRetryE2E(unittest.TestCase):
             generation_id=generation,
             worker_pid=dead.pid,
             worker_creation_time=creation or "",
-            worker_process_group=None,
+            worker_process_group=worker_process_group,
         )
         evidence = ("docs/pm/evidence/dead-owner-e2e.yaml",)
         request = OwnerLossRecoveryRequest(
