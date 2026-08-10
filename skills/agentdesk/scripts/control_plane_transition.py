@@ -5530,8 +5530,6 @@ __all__ = [
     "CancelledPayload",
     "SupersededPayload",
     "DispatchFailedPayload",
-    "OwnerLossRetryReservationRequest",
-    "execute_owner_loss_retry_reservation",
     "ControlPlaneTransitionError",
     "TransitionValidationError",
     "TransitionCASConflictError",

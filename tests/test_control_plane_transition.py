@@ -88,10 +88,10 @@ class TestControlPlaneTransitionBase(unittest.TestCase):
 class TestAllSymbols(TestControlPlaneTransitionBase):
     """TC-13.18d.12c: __all__ contains the narrow owner-loss entry."""
 
-    def test_001_all_length_is_35(self) -> None:
+    def test_001_all_length_is_37(self) -> None:
         self.assertEqual(
-            len(self.cpt.__all__), 35,
-            f"__all__ must have exactly 35 symbols, got {len(self.cpt.__all__)}",
+            len(self.cpt.__all__), 37,
+            f"__all__ must have exactly 37 symbols, got {len(self.cpt.__all__)}",
         )
 
     def test_002_all_frozen_order_matches_spec(self) -> None:
@@ -99,6 +99,8 @@ class TestAllSymbols(TestControlPlaneTransitionBase):
             "ControlPlaneTransitionService",
             "OwnerLossTransitionCheck",
             "apply_owner_loss_recovery_transition",
+            "OwnerLossRetryReservationRequest",
+            "execute_owner_loss_retry_reservation",
             "TransitionCAS",
             "DispatchCAS",
             "TransitionRequest",
@@ -2499,7 +2501,7 @@ class TestImportZeroSideEffects(unittest.TestCase):
             timeout=10,
         )
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout.strip(), "32")
+        self.assertEqual(result.stdout.strip(), "37")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -5733,6 +5735,7 @@ class TestChangeIntegrated(TestControlPlaneTransitionBase):
 
         tmpdir, root, head, svc, task = self._harness._setup_project(
             self.cpt, task_state="accepted", task_id="TC-001", revision=1,
+            attempt=1,
             setup_approval_grant=True,
             integrate_accepted_commit="e" * 40,
             current_dispatch={"dispatch_id": "DSP-001"},
@@ -5745,6 +5748,21 @@ class TestChangeIntegrated(TestControlPlaneTransitionBase):
             },
         )
         try:
+            # CHANGE_INTEGRATED resolves dispatch identity from the durable
+            # acceptance record, so the fixture must provide that evidence.
+            acceptance_path = root / "docs" / "pm" / "acceptances" / "TC-001-r1-a1-review1.md"
+            acceptance_path.write_text(
+                "---\n"
+                "schema_version: agentdesk.acceptance/v2\n"
+                "task_id: TC-001\n"
+                "revision: 1\n"
+                "decision: accepted\n"
+                "reviewed_dispatch_id: DSP-001\n"
+                "attempt: 1\n"
+                "accepted_commit: " + "e" * 40 + "\n"
+                "---\n",
+                encoding="utf-8",
+            )
             cas = self.cpt.TransitionCAS(
                 task_id="TC-001", expected_revision=1,
                 expected_state="accepted",
@@ -8018,6 +8036,7 @@ class TestDeliveryAcceptedEndToEnd(TestControlPlaneTransitionBase):
                 "acceptance_path": None,
                 "integrated_commit": None,
                 "delivery_state": "submitted",
+                "integration_state": None,
                 "blocked_reason": None,
                 "blocked_kind": None,
                 "blocked_owner": None,
@@ -10363,8 +10382,8 @@ class TestNonGatedRegistryCheck(unittest.TestCase):
     def test_count_exactly_12_non_gated(self) -> None:
         all_evts = set(self._cpt_sr._TRANSITION_SPECS.keys())
         gated = set(self._cpt_sr._GATED_EVENT_TYPES)
-        self.assertEqual(12, len(all_evts - gated))
-        self.assertEqual(15, len(all_evts))
+        self.assertEqual(13, len(all_evts - gated))
+        self.assertEqual(16, len(all_evts))
 
     def test_exact_non_gated_set(self) -> None:
         expected = {
@@ -10372,6 +10391,7 @@ class TestNonGatedRegistryCheck(unittest.TestCase):
             "DELIVERY_RETURNED", "TASK_REQUEUED", "INTEGRATION_FAILED",
             "TASK_BLOCKED", "BLOCKER_RESOLVED", "BLOCKER_RESCOPED",
             "BLOCKER_CANCELLED", "TASK_CANCELLED", "TASK_SUPERSEDED",
+            "DISPATCH_FAILED",
         }
         all_evts = set(self._cpt_sr._TRANSITION_SPECS.keys())
         gated = set(self._cpt_sr._GATED_EVENT_TYPES)
@@ -10438,7 +10458,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                             for n in (1, 2)},
             "leases": {
                 "basic_agent-1": {
-                    "lease_id": "WSL-" + "0" * 32, "lease_epoch": 3,
+                    "lease_id": "WSL-" + "0" * 32, "lease_epoch": 1,
                     "slot_id": "basic_agent-1", "worker_kind": "basic_agent",
                     "holder_dispatch_id": dispatch_id,
                     "holder_instance_id": "worker-inst-1",
@@ -10811,6 +10831,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
                 "unblock_condition": None, "review_after": None,
                 "blocked_attempt_valid": None, "resume_state": None,
+                "granted_approval_ids": None,
                 "timestamps": {
                     "created_at": "2026-07-29T00:00:00Z",
                     "updated_at": "2026-07-29T00:00:00Z",
@@ -10821,6 +10842,8 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                     "accepted_at": None,
                     "integrated_at": None,
                     "blocked_at": None,
+                    "cancelled_at": None,
+                    "superseded_at": None,
                 },
             }
             state = {
@@ -11036,7 +11059,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 "task_id": "TC-600", "revision": 1,
                 "state": "accepted", "attempt": 1,
                 "task_card_path": "docs/pm/tasks/TC-600.md",
-                "task_card_commit": "0" * 40,
+                "task_card_commit": "a" * 40,
                 "current_dispatch": None,
                 "implementation_commit": None,
                 "report_commit": None,
@@ -11635,8 +11658,8 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 "task_card_path": "docs/pm/tasks/TC-001.md",
                 "task_card_commit": "0" * 40,
                 "current_dispatch": None,
-                "implementation_commit": "i" * 40,
-                "report_commit": "r" * 40,
+                "implementation_commit": "a" * 40,
+                "report_commit": "b" * 40,
                 "accepted_commit": "c" * 40,
                 "acceptance_path": acceptance_path,
                 "integrated_commit": None,
@@ -11873,7 +11896,20 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                     "slot_epochs": {f"{t}_agent-{n}": 1
                                     for t in ("basic", "standard", "advanced", "expert")
                                     for n in (1, 2)},
-                    "leases": {},
+                    "leases": {
+                        "basic_agent-1": {
+                            "lease_id": "WSL-" + "a" * 32,
+                            "lease_epoch": 1,
+                            "slot_id": "basic_agent-1",
+                            "worker_kind": "basic_agent",
+                            "holder_dispatch_id": dispatch_id,
+                            "holder_instance_id": "worker-inst-1",
+                            "canonical_worktree": str(root).replace("\\", "/"),
+                            "acquired_at": "2026-07-29T00:00:00Z",
+                            "heartbeat_at": "2026-07-29T00:00:00Z",
+                            "expires_at": "2026-08-29T10:00:00Z",
+                        },
+                    },
                 }), encoding="utf-8",
             )
 
@@ -11896,15 +11932,17 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                     "model_selection": {},
                 },
                 "report_path": f"docs/pm/reports/{task_id}-r1-a1.md",
-                "implementation_commit": "i" * 40,
-                "report_commit": "r" * 40,
+                "implementation_commit": "a" * 40,
+                "report_commit": "b" * 40,
                 "accepted_commit": None,
                 "acceptance_path": None,
                 "integrated_commit": None,
                 "delivery_state": "submitted",
+                "integration_state": None,
                 "blocked_reason": None, "blocked_kind": None, "blocked_owner": None,
                 "unblock_condition": None, "review_after": None,
                 "blocked_attempt_valid": None, "resume_state": None,
+                "granted_approval_ids": None,
                 "timestamps": {
                     "created_at": "2026-07-29T00:00:00Z",
                     "updated_at": "2026-07-29T00:00:00Z",
@@ -11915,11 +11953,14 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                     "accepted_at": None,
                     "integrated_at": None,
                     "blocked_at": None,
+                    "cancelled_at": None,
+                    "superseded_at": None,
                 },
             }
             state = {
                 "schema_version": "agentdesk.tasks/v2",
                 "project_id": "test-clear",
+                "adoption_level": "standard",
                 "updated_at": "2026-07-29T00:00:00Z",
                 "pm_control": {"holder_id": "pm-test-001", "lease_epoch": 1, "mode": "timed"},
                 "tasks": [task_data],
@@ -11934,8 +11975,8 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 f"dispatch_id: {dispatch_id}\n"
                 f"task_id: {task_id}\n"
                 "revision: 1\nattempt: 1\n"
-                "implementation_commit: " + "i" * 40 + "\n"
-                "report_commit: " + "r" * 40 + "\n"
+                "implementation_commit: " + "a" * 40 + "\n"
+                "report_commit: " + "b" * 40 + "\n"
                 "---\n",
                 encoding="utf-8",
             )
@@ -11979,7 +12020,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
             svc = self.cpt.ControlPlaneTransitionService(project_root=root)
             acceptance_path = f"docs/pm/acceptances/{task_id}-r1-a1-review1.md"
             da_payload = self.cpt.DeliveryAcceptedPayload(
-                accepted_commit="c" * 40,
+                accepted_commit="a" * 40,
                 acceptance_path=acceptance_path,
                 residual_risks=("None",),
                 criteria_evidence=("All tests pass",),
@@ -12032,13 +12073,15 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                            check=True, timeout=10, capture_output=True)
 
             for d in ("docs/pm/events", "docs/pm/outbox", "docs/pm/state",
-                      "docs/pm/approvals", ".agentdesk/runtime"):
+                      "docs/pm/acceptances", "docs/pm/approvals",
+                      "docs/pm/tasks", "docs/pm/reports",
+                      ".agentdesk/runtime"):
                 (root / d.replace("/", os.sep)).mkdir(parents=True, exist_ok=True)
 
             task_data = {
                 "task_id": "TC-700", "revision": 1, "state": "ready",
                 "task_card_path": "docs/pm/tasks/TC-700.md",
-                "task_card_commit": "0" * 40,
+                "task_card_commit": "a" * 40,
                 "attempt": None, "current_dispatch": None,
                 "report_path": None,
                 "implementation_commit": None, "report_commit": None,
@@ -12049,8 +12092,14 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 "unblock_condition": None, "review_after": None,
                 "blocked_attempt_valid": None, "resume_state": None,
                 "granted_approval_ids": None,
-                "timestamps": {"created_at": "2026-07-29T00:00:00Z",
-                               "updated_at": "2026-07-29T00:00:00Z"},
+                "timestamps": {
+                    "created_at": "2026-07-29T00:00:00Z",
+                    "ready_at": None, "dispatched_at": None,
+                    "started_at": None, "delivered_at": None,
+                    "blocked_at": None, "accepted_at": None,
+                    "integrated_at": None, "updated_at": "2026-07-29T00:00:00Z",
+                    "cancelled_at": None, "superseded_at": None,
+                },
             }
             state = {"schema_version": "agentdesk.tasks/v2",
                      "project_id": "test-24f", "adoption_level": "standard",
@@ -12134,7 +12183,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 dispatch_id="DSP-24F", role_id="worker-basic",
                 model_selection=mss,
                 task_card_path="docs/pm/tasks/TC-700.md",
-                task_card_commit="0" * 40,
+                task_card_commit="a" * 40,
                 base_commit=head, branch="main",
                 report_path="docs/pm/reports/TC-700-r1.md",
                 outbox_message_id="MSG-24F-DSP",
@@ -12350,7 +12399,9 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
             # Read the outbox file
             outbox_path = root / "docs" / "pm" / "outbox" / "MSG-OB-DSP.yaml"
             outbox_raw = outbox_path.read_text(encoding="utf-8")
-            outbox_doc = _j_ob.loads(outbox_raw)
+            with _temporary_scripts_path():
+                from state_provider import _parse_canonical_yaml
+            outbox_doc = _parse_canonical_yaml(outbox_raw, "test outbox")
             self.assertIn("model_selection", outbox_doc)
             ms = outbox_doc["model_selection"]
             self.assertIsInstance(ms, dict)
@@ -12378,13 +12429,14 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                            check=True, timeout=10, capture_output=True)
 
             for d in ("docs/pm/events", "docs/pm/outbox", "docs/pm/state",
-                      "docs/pm/acceptances", "docs/pm/approvals", ".agentdesk/runtime"):
+                      "docs/pm/acceptances", "docs/pm/approvals",
+                      "docs/pm/tasks", "docs/pm/reports", ".agentdesk/runtime"):
                 (root / d.replace("/", os.sep)).mkdir(parents=True, exist_ok=True)
 
             task_data = {
                 "task_id": "TC-702", "revision": 1, "state": "ready",
                 "task_card_path": "docs/pm/tasks/TC-702.md",
-                "task_card_commit": "0" * 40,
+                "task_card_commit": "a" * 40,
                 "attempt": None, "current_dispatch": None,
                 "report_path": None,
                 "implementation_commit": None, "report_commit": None,
@@ -12395,8 +12447,14 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 "unblock_condition": None, "review_after": None,
                 "blocked_attempt_valid": None, "resume_state": None,
                 "granted_approval_ids": None,
-                "timestamps": {"created_at": "2026-07-29T00:00:00Z",
-                               "updated_at": "2026-07-29T00:00:00Z"},
+                "timestamps": {
+                    "created_at": "2026-07-29T00:00:00Z",
+                    "ready_at": None, "dispatched_at": None,
+                    "started_at": None, "delivered_at": None,
+                    "blocked_at": None, "accepted_at": None,
+                    "integrated_at": None, "updated_at": "2026-07-29T00:00:00Z",
+                    "cancelled_at": None, "superseded_at": None,
+                },
             }
             state = {"schema_version": "agentdesk.tasks/v2",
                      "project_id": "test-vp", "adoption_level": "standard",
@@ -12438,7 +12496,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
             head = r.stdout.strip()
 
             rtd = root / ".agentdesk" / "runtime"
-            (rtd / "worker-slot-lease.yaml").write_text(_j_ob.dumps({
+            (rtd / "worker-slot-lease.yaml").write_text(_j_vp.dumps({
                 "schema_version": "agentdesk.worker-slot-lease/v1",
                 "updated_at": "1970-01-01T00:00:00Z",
                 "slot_epochs": {"basic_agent-1": 1, "basic_agent-2": 0,
@@ -12477,7 +12535,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
                 dispatch_id="DSP-VP", role_id="worker-basic",
                 model_selection=mss,
                 task_card_path="docs/pm/tasks/TC-702.md",
-                task_card_commit="0" * 40,
+                task_card_commit="a" * 40,
                 base_commit=head, branch="main",
                 report_path="docs/pm/reports/TC-702-r1.md",
                 outbox_message_id="MSG-VP-DSP",
@@ -12511,7 +12569,7 @@ class TestGatedSuccessPaths(TestControlPlaneTransitionBase):
             # validate_project must accept
             with _temporary_scripts_path():
                 import validate_project as _vp_mod
-            _vp_mod.validate_project(root)
+            _vp_mod.validate(root, require_committed=False)
         finally:
             tmpdir.cleanup()
 
@@ -12579,7 +12637,7 @@ class TestTASK_DISPATCHEDFailureAndReplay(TestControlPlaneTransitionBase):
                             for n in (1, 2)},
             "leases": {
                 "basic_agent-1": {
-                    "lease_id": "WSL-" + "0" * 32, "lease_epoch": 3,
+                    "lease_id": "WSL-" + "0" * 32, "lease_epoch": 1,
                     "slot_id": "basic_agent-1", "worker_kind": "basic_agent",
                     "holder_dispatch_id": did,
                     "holder_instance_id": "worker-inst-1",
@@ -12658,7 +12716,7 @@ class TestTASK_DISPATCHEDFailureAndReplay(TestControlPlaneTransitionBase):
                 dispatch_id="DSP-FR", role_id="worker-basic",
                 model_selection=mss,
                 task_card_path="docs/pm/tasks/TC-700.md",
-                task_card_commit="0" * 40,
+                task_card_commit="a" * 40,
                 base_commit=head, branch="main",
                 report_path="docs/pm/reports/TC-700-r1.md",
                 outbox_message_id="MSG-20260727-FR",
@@ -12716,7 +12774,7 @@ class TestTASK_DISPATCHEDFailureAndReplay(TestControlPlaneTransitionBase):
                 dispatch_id="DSP-FR", role_id="worker-basic",
                 model_selection=mss,
                 task_card_path="docs/pm/tasks/TC-700.md",
-                task_card_commit="0" * 40,
+                task_card_commit="a" * 40,
                 base_commit=head2, branch="main",
                 report_path="docs/pm/reports/TC-700-r1.md",
                 outbox_message_id="MSG-20260727-FR-REPLAY",

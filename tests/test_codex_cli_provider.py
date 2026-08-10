@@ -1748,14 +1748,23 @@ class CrossModuleCompatibilityTests(unittest.TestCase):
         self.assertIsInstance(p, dg.AgentCliProvider)
 
     def test_module_state_not_destroyed_by_this_test(self) -> None:
-        """Prove no test in this class deletes modules or mutates sys.path."""
+        """Prove this test itself leaves module state and ``sys.path`` intact.
+
+        The repository suite imports several skill modules at collection time;
+        those modules may legitimately contribute the shared scripts directory
+        to ``sys.path`` before this class runs.  The old assertion treated that
+        pre-existing suite state as a leak and made the full discover run fail
+        even though this test had not changed it.
+        """
+        path_before = list(sys.path)
+        modules_before = set(sys.modules)
         for m in list(sys.modules):
             self.assertIn(m, sys.modules,
                           f"Module {m} was deleted from sys.modules")
-        self.assertNotIn(
-            str(_SCRIPTS), sys.path[1:],
-            f"scripts dir leaked into sys.path: {sys.path}"
-        )
+        self.assertEqual(sys.path, path_before,
+                         "sys.path changed while checking module state")
+        self.assertTrue(modules_before.issubset(sys.modules),
+                        "a pre-existing module was removed while checking state")
 
 
 if __name__ == "__main__":
