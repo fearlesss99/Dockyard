@@ -1960,7 +1960,7 @@ def probe_dispatch_process_tree(
         return ProcessLiveness.UNKNOWN
 
     order = DispatchReceiptPhase.order()
-    if phase.value < DispatchReceiptPhase.SUPERVISOR_READY.value:
+    if order.index(phase) < order.index(DispatchReceiptPhase.SUPERVISOR_READY):
         # No durable evidence that the Job was ever initialized.
         return ProcessLiveness.UNKNOWN
 
