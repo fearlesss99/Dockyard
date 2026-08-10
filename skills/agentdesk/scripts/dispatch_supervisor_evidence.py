@@ -2110,7 +2110,11 @@ def _worker_tree_dead(recorded_pgid: int | None) -> bool:
             pgid = int(rest[2])  # field 5 (1-indexed) → index 2 after comm
         except (ValueError, IndexError):
             continue
-        if pgid == recorded_pgid:
+        process_state = rest[0]
+        # Explicit kernel terminal states cannot execute or retain live
+        # descendants.  They may remain visible until their parent reaps
+        # them, so they must not keep an otherwise-dead Worker tree alive.
+        if pgid == recorded_pgid and process_state not in ("Z", "X", "x"):
             return False  # a living member exists
     return True
 

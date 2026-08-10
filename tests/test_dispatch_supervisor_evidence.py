@@ -16,7 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPTS = _REPO_ROOT / "skills" / "agentdesk" / "scripts"
@@ -1161,6 +1161,34 @@ class ThreeStateProbeTests(unittest.TestCase):
         )
         result = dse.probe_dispatch_process_tree(r)
         self.assertEqual(result, dse.ProcessLiveness.UNKNOWN)
+
+    @unittest.skipIf(os.name == "nt", "POSIX /proc semantics only")
+    def test_zombie_process_group_member_does_not_keep_tree_alive(self) -> None:
+        recorded_pgid = 4321
+        zombie_stat = (
+            "1234 (worker) Z 1 4321 4321 0 -1 0 0 0 0 0 0 0 0 0 0 1 0 99"
+        )
+        entry = Path("/proc/1234")
+        with (
+            patch.object(Path, "iterdir", return_value=[entry]),
+            patch.object(Path, "stat"),
+            patch("builtins.open", mock_open(read_data=zombie_stat)),
+        ):
+            self.assertTrue(dse._worker_tree_dead(recorded_pgid))
+
+    @unittest.skipIf(os.name == "nt", "POSIX /proc semantics only")
+    def test_sleeping_process_group_member_keeps_tree_alive(self) -> None:
+        recorded_pgid = 4321
+        sleeping_stat = (
+            "1234 (worker) S 1 4321 4321 0 -1 0 0 0 0 0 0 0 0 0 0 1 0 99"
+        )
+        entry = Path("/proc/1234")
+        with (
+            patch.object(Path, "iterdir", return_value=[entry]),
+            patch.object(Path, "stat"),
+            patch("builtins.open", mock_open(read_data=sleeping_stat)),
+        ):
+            self.assertFalse(dse._worker_tree_dead(recorded_pgid))
 
 
 class WindowsProbeTests(unittest.TestCase):
