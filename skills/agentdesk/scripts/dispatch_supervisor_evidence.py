@@ -2136,6 +2136,7 @@ def probe_process(
     *,
     recorded_process_group: int | None = None,
     require_tree: bool = False,
+    _retry_after_observation: bool = True,
 ) -> ProcessLiveness:
     """Three-state liveness probe for a single subject.
 
@@ -2158,6 +2159,19 @@ def probe_process(
         return ProcessLiveness.UNKNOWN
     current_creation = get_process_creation_time(pid)
     if current_creation is None:
+        # A terminating POSIX process can remain visible to kill(2) while
+        # /proc/<pid>/stat is already closing.  Re-read once so that this
+        # narrow teardown race reaches DEAD when the PID disappears; a second
+        # unavailable read remains UNKNOWN and therefore fail-closed.
+        if _retry_after_observation:
+            return probe_process(
+                pid,
+                creation_time,
+                boot_id,
+                recorded_process_group=recorded_process_group,
+                require_tree=require_tree,
+                _retry_after_observation=False,
+            )
         # PID present but incarnation unreadable (permissions/platform).
         return ProcessLiveness.UNKNOWN
     if current_creation != creation_time:
