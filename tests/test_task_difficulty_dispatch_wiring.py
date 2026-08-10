@@ -968,8 +968,13 @@ class TestDifficultyAssessmentFailClosed(unittest.TestCase):
                 / "TC-001" / "r1" / "ASM-TC-001-r1.yaml"
             )
             tampered = target.read_text(encoding="utf-8").replace(
-                "selected_difficulty: advanced",
-                "selected_difficulty: basic",
+                'selected_difficulty: "advanced"',
+                'selected_difficulty: "basic"',
+            )
+            self.assertNotEqual(
+                tampered,
+                target.read_text(encoding="utf-8"),
+                "fixture must alter the canonical selected_difficulty field",
             )
             target.write_text(tampered, encoding="utf-8")
 

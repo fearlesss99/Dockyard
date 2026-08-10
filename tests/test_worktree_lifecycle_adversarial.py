@@ -173,7 +173,15 @@ class WorktreeLifecycleAdversarialTests(unittest.TestCase):
         result = WorktreeLifecycleManager(self.root).create(self.request)
         self.assertEqual(result.outcome, WorktreeLifecycleOutcome.READY)
         listed = _git(self.root, "worktree", "list", "--porcelain", "-z").stdout.decode()
-        self.assertEqual(listed.replace("/", "\\").count(self.path), 1)
+        listed_paths = tuple(
+            Path(field.removeprefix("worktree ")).resolve()
+            for field in listed.split("\0")
+            if field.startswith("worktree ")
+        )
+        self.assertEqual(
+            sum(path == Path(self.path).resolve() for path in listed_paths),
+            1,
+        )
 
     def test_malformed_git_output_and_permission_error_are_typed(self) -> None:
         with patch.object(manager_module, "_run_git", return_value=b"not-a-path\nsecond-line"):

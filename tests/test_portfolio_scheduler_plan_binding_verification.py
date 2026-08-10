@@ -315,7 +315,7 @@ class PortfolioSchedulerPlanBindingVerificationTests(unittest.TestCase):
         root, store, entry, request = self._new_queued()
         try:
             divergent_plan = dataclasses.replace(
-                request.plan, dispatch_id="DSP-DIVERGENT"
+                request.plan, report_path="reports/divergent-report.md"
             )
             divergent_request = dataclasses.replace(request, plan=divergent_plan)
             first = pr.PortfolioSchedulerRuntime(root, store=store)

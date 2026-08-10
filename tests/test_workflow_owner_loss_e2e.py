@@ -7,6 +7,7 @@ import base64
 import dataclasses
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -291,6 +292,8 @@ class _SupervisorHarness:
         generation_id: str,
         identity: dict[str, object],
     ) -> None:
+        self._project = project
+        self._dispatch_id = dispatch_id
         runner = _SCRIPTS / "dispatch_supervisor_runner.py"
         payload = {
             "project_root": str(project),
@@ -342,8 +345,23 @@ class _SupervisorHarness:
             )
 
     def terminate(self) -> None:
-        self.process.terminate()
-        self.process.wait(timeout=20)
+        if os.name != "nt":
+            receipt = dse.read_dispatch_receipt(
+                self._project, self._dispatch_id
+            )
+            if receipt is not None and receipt.worker_pid is not None:
+                try:
+                    os.kill(receipt.worker_pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            try:
+                self.process.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                self.process.terminate()
+                self.process.wait(timeout=20)
+        else:
+            self.process.terminate()
+            self.process.wait(timeout=20)
         self._reader.join(timeout=20)
         if self._reader.is_alive():
             raise AssertionError("supervisor frame reader did not stop")
