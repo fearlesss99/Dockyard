@@ -506,11 +506,14 @@ class TestClaudeOutputObservations(unittest.TestCase):
                / "001-mad-agentdesk-integration.md")
         text = adr.read_text(encoding="utf-8")
         for line in text.splitlines():
-            if "TC-13.9c" in line and "|" in line:
-                fields = [f.strip() for f in line.split("|")]
-                if len(fields) > 3:
-                    self.assertNotEqual(fields[3], "Current",
-                                        f"TC-13.9c must not be Current: {line}")
+            if "|" not in line:
+                continue
+            fields = [f.strip() for f in line.split("|")]
+            # TC-13.9c.1 is intentionally Current; guard only the exact
+            # aggregate card, not its versioned child card.
+            if len(fields) > 3 and fields[1] == "TC-13.9c":
+                self.assertNotEqual(fields[3], "Current",
+                                    f"TC-13.9c must not be Current: {line}")
 
     def test_131_tc1310_still_target(self) -> None:
         """TC-13.10 must remain Target — not Current."""
