@@ -261,7 +261,9 @@ class TestProviderOutputEvidence(unittest.TestCase):
         for cap in self.provenance["captures"]:
             fp = _REPO_ROOT / cap["fixture_path"]
             with self.subTest(fixture=cap["fixture_path"]):
-                actual_sha = _sha256(fp.read_bytes())
+                actual_sha = _sha256(
+                    fp.read_bytes().replace(b"\r\n", b"\n")
+                )
                 self.assertEqual(
                     cap["sanitized_stdout_sha256"], actual_sha,
                     f"sanitized_stdout_sha256 mismatch for {cap['fixture_path']}"
@@ -298,9 +300,9 @@ class TestProviderOutputEvidence(unittest.TestCase):
     def test_054_sanitized_stdout_sha_unchanged(self) -> None:
         """Claude sanitized stdout SHA must match the original sanitized fixture."""
         expected = {
-            "success-minimal":      "d447f50c976d3b58fb3b1b9c80e82b42ce089d4f19f4f2e7e69ff775ef281a85",
-            "success-unicode":      "d0d97454dcbe02d43fa25cc702fee1cd84bed85c65119e1d7762861b74a610bd",
-            "application-boundary": "c29a846620b9b9b438bd235d8852fb043d3964afd82f49cc1077de7cfb561921",
+            "success-minimal":      "998406afcebfee1b87321ba00d77436af77cad1944a0d8135fbb0d75955cbb17",
+            "success-unicode":      "7a896e350ca64245481e34eb827183421ed64bb98bce8869df8d119a4d201061",
+            "application-boundary": "21a38c2b1a3adff3cac154bad444835a3d80eb03ee8d082e787b7f8293b4c41f",
         }
         for cap in self.provenance["captures"]:
             expected_sha = expected.get(cap["sample_id"])

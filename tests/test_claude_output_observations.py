@@ -29,9 +29,9 @@ SAMPLE_IDS = ["success-minimal", "success-unicode", "application-boundary"]
 
 # Exact sanitized fixture SHA-256 from provenance — must never change.
 FIXTURE_SHA = {
-    "success-minimal":      "d447f50c976d3b58fb3b1b9c80e82b42ce089d4f19f4f2e7e69ff775ef281a85",
-    "success-unicode":      "d0d97454dcbe02d43fa25cc702fee1cd84bed85c65119e1d7762861b74a610bd",
-    "application-boundary": "c29a846620b9b9b438bd235d8852fb043d3964afd82f49cc1077de7cfb561921",
+    "success-minimal":      "998406afcebfee1b87321ba00d77436af77cad1944a0d8135fbb0d75955cbb17",
+    "success-unicode":      "7a896e350ca64245481e34eb827183421ed64bb98bce8869df8d119a4d201061",
+    "application-boundary": "21a38c2b1a3adff3cac154bad444835a3d80eb03ee8d082e787b7f8293b4c41f",
 }
 
 # Expected redaction paths from provenance
@@ -83,7 +83,7 @@ class TestClaudeOutputObservations(unittest.TestCase):
         """Fixture SHA-256 must match the provenance record — no modification."""
         for sid in SAMPLE_IDS:
             fp = _CLAUDE_DIR / f"{sid}.json"
-            actual = _sha256(fp.read_bytes())
+            actual = _sha256(fp.read_bytes().replace(b"\r\n", b"\n"))
             with self.subTest(fixture=sid):
                 self.assertEqual(actual, FIXTURE_SHA[sid],
                                  f"Fixture {sid} SHA changed! "

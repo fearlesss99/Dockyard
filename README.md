@@ -18,7 +18,7 @@ Standard requires Codex Desktop to expose task creation, naming, listing/reading
 
 ### Requirements
 
-- Python 3.10 or newer; bundled scripts use only the standard library.
+- Python 3.11 or newer; bundled scripts use only the standard library.
 - Git and a real repository root for durable workflow evidence.
 - A Codex environment that can load local Skills; Standard additionally requires Codex Desktop and the task operations described above.
 
@@ -68,7 +68,7 @@ Standard 需要 Codex Desktop 能够创建、命名、列出/读取并跨任务�
 
 ### 环境要求
 
-- Python 3.10 或更高版本；内置脚本仅使用标准库。
+- Python 3.11 或更高版本；内置脚本仅使用标准库。
 - Git，且目标路径应是真实的仓库根目录。
 - 能够加载本地 Skill 的 Codex 环境；Standard 还需要 Codex Desktop 及上述任务操作能力。
 
