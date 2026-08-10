@@ -13773,12 +13773,12 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
         self.assertIn("agentdesk.portfolio-scheduler/v1", self.contract_text)
         self.assertIn("does not implement a Scheduler", " ".join(self.contract_text.split()))
 
-    def test_current_system_allows_multiple_workers_without_builtin_scheduler(self) -> None:
+    def test_current_system_allows_multiple_workers_with_bounded_admission_scheduler(self) -> None:
         normalized = " ".join(self.contract_text.split())
         for statement in (
             "not a single-Worker architecture",
             "eight stable slots",
-            "no built-in queue and no PortfolioScheduler",
+            "provides a bounded queue/store",
             "WorkerSlotCapacityError",
             "does not mean that the Worker lifetime is globally serial",
             "can have only one active Worker",
@@ -14071,7 +14071,7 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
     def test_adr_interface_36_section_and_status_split_are_synchronized(self) -> None:
         normalized_adr = " ".join(self.adr_text.split())
         self.assertIn(
-            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Recovery Core Current**",
+            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core + Recovery Action Executor Runtime + Worker Handoff Contract + Worker Handoff Store Current**",
             normalized_adr,
         )
         self.assertIn("## 2.25 PortfolioScheduler Durable Admission", normalized_adr)
@@ -14085,18 +14085,25 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
             normalized_adr,
         )
         self.assertIn(
-            "selection-to-admission runtime is Current - TC-13.24b.2b.4a.4",
+            "Selection-to-Admission runtime is **Current - TC-13.24b.2b.4a.4**",
             normalized_adr,
         )
         self.assertIn(
-            "admission reservation core Current — TC-13.24b.2b.1",
+            "PortfolioScheduler admission reservation core **Current — TC-13.24b.2b.1**",
             normalized_adr,
         )
         self.assertIn(
-            "crash reconciliation decision core Current — TC-13.24b.2b.2",
+            "PortfolioScheduler crash reconciliation decision core **Current — TC-13.24b.2b.2**",
             normalized_adr,
         )
-        self.assertIn("WorktreeLifecycleManager **Target**", normalized_adr)
+        self.assertIn(
+            "WorktreeLifecycleManager Contract is **Contract Current — TC-13.25a**",
+            normalized_adr,
+        )
+        self.assertIn(
+            "Create/Release Runtime is **Current — TC-13.25c**",
+            normalized_adr,
+        )
         self.assertIn("Interface #22 is unchanged", normalized_adr)
 
     def test_status_keeps_taskdifficulty_wiring_and_interface_22_boundaries(self) -> None:
@@ -14125,7 +14132,14 @@ class TC1324aPortfolioSchedulerContractFreezeTests(unittest.TestCase):
             "Selection-to-Admission runtime: **Current - TC-13.24b.2b.4a.4**",
             normalized,
         )
-        self.assertIn("WorktreeLifecycleManager: **Target**", normalized)
+        self.assertIn(
+            "WorktreeLifecycleManager Contract: **Contract Current — TC-13.25a**",
+            normalized,
+        )
+        self.assertIn(
+            "WorktreeLifecycleManager Create/Release Runtime: **Current — TC-13.25c**",
+            normalized,
+        )
         self.assertIn(
             "TaskDifficulty dispatch/lifecycle wiring: **Current — TC-13.22b.3a**",
             normalized,
@@ -14983,9 +14997,10 @@ class TC1324b2b3AdmissionRecoveryIntegrationSealTests(unittest.TestCase):
             "PortfolioScheduler admission reservation core: **Current — TC-13.24b.2b.1**",
             "PortfolioScheduler crash reconciliation decision core: **Current — TC-13.24b.2b.2**",
             "Selection-to-Admission runtime: **Current - TC-13.24b.2b.4a.4**",
-            "admission reservation core Current — TC-13.24b.2b.1",
-            "crash reconciliation decision core Current — TC-13.24b.2b.2",
-            "selection-to-admission runtime is Current - TC-13.24b.2b.4a.4",
+            "PortfolioScheduler admission reservation core **Current — TC-13.24b.2b.1**",
+            "PortfolioScheduler crash reconciliation decision core **Current — TC-13.24b.2b.2**",
+            "Selection-to-Admission runtime is **Current - TC-13.24b.2b.4a.4**",
+            "WorktreeLifecycleManager Contract: **Contract Current — TC-13.25a**",
             "Complete PortfolioScheduler runtime and Worker startup/dispatch integration: **Target**",
             "Interface #22 is unchanged",
         ):
