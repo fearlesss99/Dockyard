@@ -349,25 +349,30 @@ class _SupervisorHarness:
             receipt = dse.read_dispatch_receipt(
                 self._project, self._dispatch_id
             )
+            # Lose the supervisor before terminating the Worker.  Otherwise
+            # the supervisor observes the Worker exit and advances the
+            # receipt to FINALIZING, which is intentionally fail-closed for
+            # owner-loss recovery.  The test models an owner loss, so the
+            # original WORKER_STARTED evidence must remain the recovery input.
+            try:
+                self.process.kill()
+            except ProcessLookupError:
+                pass
+            self.process.wait(timeout=20)
             if receipt is not None:
                 if receipt.worker_process_group is not None:
                     try:
                         os.killpg(
                             receipt.worker_process_group,
-                            signal.SIGTERM,
+                            signal.SIGKILL,
                         )
                     except ProcessLookupError:
                         pass
                 elif receipt.worker_pid is not None:
                     try:
-                        os.kill(receipt.worker_pid, signal.SIGTERM)
+                        os.kill(receipt.worker_pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
-            try:
-                self.process.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                self.process.terminate()
-                self.process.wait(timeout=20)
         else:
             self.process.terminate()
             self.process.wait(timeout=20)
