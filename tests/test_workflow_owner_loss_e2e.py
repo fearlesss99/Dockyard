@@ -7,6 +7,7 @@ import base64
 import dataclasses
 import json
 import os
+import select
 import signal
 import shutil
 import subprocess
@@ -368,11 +369,24 @@ class _SupervisorHarness:
                         )
                     except ProcessLookupError:
                         pass
-                elif receipt.worker_pid is not None:
+                if receipt.worker_pid is not None:
                     try:
                         os.kill(receipt.worker_pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
+                    pidfd_open = getattr(os, "pidfd_open", None)
+                    if callable(pidfd_open):
+                        try:
+                            pidfd = pidfd_open(receipt.worker_pid)
+                        except OSError:
+                            pidfd = None
+                        if pidfd is not None:
+                            try:
+                                poller = select.poll()
+                                poller.register(pidfd, select.POLLIN)
+                                poller.poll(20_000)
+                            finally:
+                                os.close(pidfd)
         else:
             self.process.terminate()
             self.process.wait(timeout=20)
