@@ -381,7 +381,11 @@ class DockyardCoreRemainingAdversarialTests(DockyardCoreAdversarialTests):
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = tuple(pool.map(create, ("CMD-RACE-A", "CMD-RACE-B")))
-        self.assertEqual(sorted(status for status, _ in results), [200, 409])
+        self.assertEqual(
+            sorted(status for status, _ in results),
+            [200, 409],
+            repr(results),
+        )
         winner_status, winner = self.fixture._get(
             "/api/dockyard/v1/projects/PRJ-1/plans/PLAN-E2E"
         )

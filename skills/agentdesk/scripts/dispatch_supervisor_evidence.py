@@ -2074,7 +2074,9 @@ def _probe_dispatch_job_windows(receipt: DispatchProcessReceipt) -> ProcessLiven
     return ProcessLiveness.UNKNOWN
 
 
-def _worker_tree_dead(recorded_pgid: int | None) -> bool:
+def _worker_tree_dead(
+    recorded_pgid: int | None, *, _retry_after_observation: bool = True
+) -> bool:
     """POSIX: confirm no living process shares the recorded process group.
 
     On Windows there is no process group; the tree cannot be confirmed and
@@ -2115,6 +2117,14 @@ def _worker_tree_dead(recorded_pgid: int | None) -> bool:
         # descendants.  They may remain visible until their parent reaps
         # them, so they must not keep an otherwise-dead Worker tree alive.
         if pgid == recorded_pgid and process_state not in ("Z", "X", "x"):
+            # A process can leave its group between the PID probe and this
+            # scan (especially while a supervisor reaps a killed Worker).
+            # Take one immediate second observation; a persistent member is
+            # still UNKNOWN, while a disappearing member is terminal.
+            if _retry_after_observation:
+                return _worker_tree_dead(
+                    recorded_pgid, _retry_after_observation=False
+                )
             return False  # a living member exists
     return True
 
