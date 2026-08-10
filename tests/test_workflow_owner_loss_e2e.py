@@ -907,6 +907,23 @@ class OwnerLossAutomaticRetryE2E(unittest.TestCase):
                 dse.ProcessLiveness.DEAD,
             )
             tree_liveness = dse.probe_dispatch_process_tree(failed_receipt)
+            group_members: list[tuple[int, str]] = []
+            if os.name != "nt" and failed_receipt.worker_process_group is not None:
+                for proc_entry in Path("/proc").iterdir():
+                    if not proc_entry.name.isdigit():
+                        continue
+                    try:
+                        stat_text = (proc_entry / "stat").read_text(
+                            encoding="utf-8"
+                        )
+                        stat_end = stat_text.rfind(")")
+                        stat_fields = stat_text[stat_end + 2 :].split()
+                        if int(stat_fields[2]) == failed_receipt.worker_process_group:
+                            group_members.append(
+                                (int(proc_entry.name), stat_fields[0])
+                            )
+                    except (OSError, ValueError, IndexError):
+                        continue
             self.assertIs(
                 tree_liveness,
                 dse.ProcessLiveness.DEAD,
@@ -929,6 +946,8 @@ class OwnerLossAutomaticRetryE2E(unittest.TestCase):
                     + repr(failed_receipt.supervisor_pid)
                     + ", worker_pid="
                     + repr(failed_receipt.worker_pid)
+                    + ", group_members="
+                    + repr(group_members)
                     + ", job_count="
                     + repr(
                         dse._DispatchJobOwner.probe_job_by_name(
