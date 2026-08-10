@@ -202,10 +202,7 @@ class ModulePropertiesTests(unittest.TestCase):
     def test_import_produces_no_output(self) -> None:
         """Importing the module must not write to stdout/stderr."""
         import_name = "mad_audit_gateway"
-        # Remove from cache first
-        for key in list(sys.modules):
-            if key == import_name or key.startswith(import_name + "."):
-                del sys.modules[key]
+        original = sys.modules.pop(import_name, None)
         stdout_capture = io.StringIO()
         stderr_capture = io.StringIO()
         with (
@@ -217,6 +214,9 @@ class ModulePropertiesTests(unittest.TestCase):
                 importlib.import_module(import_name)
             finally:
                 sys.path.pop(0)
+                sys.modules.pop(import_name, None)
+                if original is not None:
+                    sys.modules[import_name] = original
         self.assertEqual(stdout_capture.getvalue(), "")
         self.assertEqual(stderr_capture.getvalue(), "")
 

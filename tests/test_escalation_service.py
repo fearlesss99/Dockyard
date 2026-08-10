@@ -38,9 +38,7 @@ evaluate = escalation_service.evaluate_escalation
 
 def _reimport_clean() -> tuple[io.StringIO, io.StringIO]:
     """Reimport escalation_service capturing stdout/stderr."""
-    for mod in list(sys.modules):
-        if mod == "escalation_service" or mod.startswith("escalation_service."):
-            del sys.modules[mod]
+    original = sys.modules.pop("escalation_service", None)
     sys.path.insert(0, str(_SCRIPTS))
     try:
         stdout = io.StringIO()
@@ -50,6 +48,9 @@ def _reimport_clean() -> tuple[io.StringIO, io.StringIO]:
         return stdout, stderr
     finally:
         sys.path.remove(str(_SCRIPTS))
+        sys.modules.pop("escalation_service", None)
+        if original is not None:
+            sys.modules["escalation_service"] = original
 
 
 # =========================================================================

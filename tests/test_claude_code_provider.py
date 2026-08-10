@@ -2275,27 +2275,33 @@ class CrossModuleCompatibilityTests(unittest.TestCase):
     """TC-13.8: module coexists with other modules."""
 
     def test_coexists_with_dispatcher_gateway(self) -> None:
+        original = sys.modules.get("claude_code_provider")
         sys.path.insert(0, str(_SCRIPTS))
         try:
-            if "claude_code_provider" in sys.modules:
-                del sys.modules["claude_code_provider"]
+            sys.modules.pop("claude_code_provider", None)
             import claude_code_provider as ccp2  # noqa: F811
             import dispatcher_gateway as dg2  # noqa: F811
             self.assertIsNotNone(ccp2)
             self.assertIsNotNone(dg2)
         finally:
+            sys.modules.pop("claude_code_provider", None)
+            if original is not None:
+                sys.modules["claude_code_provider"] = original
             sys.path.pop(0)
 
     def test_coexists_with_core_types(self) -> None:
+        original = sys.modules.get("claude_code_provider")
         sys.path.insert(0, str(_SCRIPTS))
         try:
             import core_types as ct  # noqa: F811
-            if "claude_code_provider" in sys.modules:
-                del sys.modules["claude_code_provider"]
+            sys.modules.pop("claude_code_provider", None)
             import claude_code_provider as ccp2  # noqa: F811
             self.assertIsNotNone(ct)
             self.assertIsNotNone(ccp2)
         finally:
+            sys.modules.pop("claude_code_provider", None)
+            if original is not None:
+                sys.modules["claude_code_provider"] = original
             sys.path.pop(0)
 
 

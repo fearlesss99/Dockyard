@@ -89,9 +89,7 @@ def _req(
 
 def _reimport_clean() -> tuple[io.StringIO, io.StringIO]:
     """Reimport rate_limit capturing stdout/stderr."""
-    for mod in list(sys.modules):
-        if mod == "rate_limit" or mod.startswith("rate_limit."):
-            del sys.modules[mod]
+    original = sys.modules.pop("rate_limit", None)
     sys.path.insert(0, str(_SCRIPTS))
     try:
         stdout = io.StringIO()
@@ -101,6 +99,9 @@ def _reimport_clean() -> tuple[io.StringIO, io.StringIO]:
         return stdout, stderr
     finally:
         sys.path.remove(str(_SCRIPTS))
+        sys.modules.pop("rate_limit", None)
+        if original is not None:
+            sys.modules["rate_limit"] = original
 
 
 # =========================================================================

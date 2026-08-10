@@ -766,8 +766,7 @@ class ImportSideEffectTests(unittest.TestCase):
 
     def test_import_produces_no_output(self) -> None:
         name = "context_budget"
-        if name in sys.modules:
-            del sys.modules[name]
+        original = sys.modules.pop(name, None)
         stdout_capture = io.StringIO()
         stderr_capture = io.StringIO()
         with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
@@ -776,6 +775,9 @@ class ImportSideEffectTests(unittest.TestCase):
                 importlib.import_module(name)
             finally:
                 sys.path.remove(str(_SCRIPTS))
+                sys.modules.pop(name, None)
+                if original is not None:
+                    sys.modules[name] = original
         self.assertEqual(stdout_capture.getvalue(), "",
                          "import must not write to stdout")
         self.assertEqual(stderr_capture.getvalue(), "",
