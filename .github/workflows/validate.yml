@@ -131,7 +131,20 @@ jobs:
               ),
               "repository tests failed",
           )
-          excerpt = "\n".join([*failures, result])
+          first_error = next(
+              (index for index, line in enumerate(lines) if line.startswith("ERROR: ")),
+              None,
+          )
+          traceback_excerpt = []
+          if first_error is not None:
+              start = max(0, first_error - 1)
+              end = min(len(lines), first_error + 45)
+              traceback_excerpt = lines[start:end]
+          excerpt = "\n".join([
+              *failures[:8],
+              *traceback_excerpt,
+              result,
+          ])
           escaped = (
               excerpt.replace("%", "%25")
               .replace("\r", "%0D")
