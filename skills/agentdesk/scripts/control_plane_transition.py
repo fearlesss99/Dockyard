@@ -477,7 +477,13 @@ def _validate_safe_filename_segment(value: str, field_name: str) -> str:
         raise TransitionValidationError(
             f"{field_name} must not contain path separators"
         )
-    if value in (".", "..") or value.startswith(".." + os.sep) or value.startswith(".." + os.altsep if os.altsep else ""):
+    path_separators = tuple(
+        separator for separator in (os.sep, os.altsep) if separator
+    )
+    if value in (".", "..") or any(
+        value.startswith(".." + separator)
+        for separator in path_separators
+    ):
         raise TransitionValidationError(
             f"{field_name} must not be a path escape sequence"
         )
