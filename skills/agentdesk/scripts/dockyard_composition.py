@@ -1412,6 +1412,7 @@ class DockyardCompositionGateway:
         self._cancel_receipts: dict[str, tuple[str, DockyardCommandReceipt]] = {}
         self._cancel_receipts_lock = threading.Lock()
         self._plan_id = None if plan_id is None else _text(plan_id, "plan_id", 128)
+        self._plan_create_lock = threading.Lock()
         if plan_id_changed is not None and not callable(plan_id_changed):
             raise TypeError("plan_id_changed must be callable or None")
         self._plan_id_changed = plan_id_changed
@@ -2449,22 +2450,23 @@ class DockyardCompositionGateway:
                     502, _pm_codex_failure_code(exc), "provider"
                 ) from exc
             tasks = tuple(item.plan_task for item in decomposition.tasks)
-        try:
-            plan = self._pm_service.draft(DockyardPlanDraftRequest(
-                plan_id,
-                envelope.project_id,
-                requirement,
-                tasks,
-                "PM-DOCKYARD",
-                existing.created_at if replayed else self._now(),
-                envelope.command_id,
-            ))
-        except DockyardPlanConflictError as exc:
-            raise DockyardCommandRejected(409, "PLAN_CONFLICT", "conflict") from exc
-        if plan_id != self._plan_id:
-            self._plan_id = plan_id
-            if self._plan_id_changed is not None:
-                self._plan_id_changed(plan_id)
+        with self._plan_create_lock:
+            try:
+                plan = self._pm_service.draft(DockyardPlanDraftRequest(
+                    plan_id,
+                    envelope.project_id,
+                    requirement,
+                    tasks,
+                    "PM-DOCKYARD",
+                    existing.created_at if replayed else self._now(),
+                    envelope.command_id,
+                ))
+            except DockyardPlanConflictError as exc:
+                raise DockyardCommandRejected(409, "PLAN_CONFLICT", "conflict") from exc
+            if plan_id != self._plan_id:
+                self._plan_id = plan_id
+                if self._plan_id_changed is not None:
+                    self._plan_id_changed(plan_id)
         if not replayed:
             self._sse_hub.publish(
                 project_id=envelope.project_id,

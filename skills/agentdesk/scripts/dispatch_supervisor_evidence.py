@@ -1936,6 +1936,8 @@ _is_process_in_job_by_name = _DispatchJobOwner.probe_process_in_job_by_name
 
 def probe_dispatch_process_tree(
     receipt: DispatchProcessReceipt,
+    *,
+    _retry_after_observation: bool = True,
 ) -> ProcessLiveness:
     """Three-state liveness probe for a complete dispatch process tree.
 
@@ -1968,6 +1970,17 @@ def probe_dispatch_process_tree(
         receipt.supervisor_creation_time,
         receipt.boot_id,
     )
+    if (
+        supervisor_liveness is ProcessLiveness.UNKNOWN
+        and _retry_after_observation
+    ):
+        # A process can disappear between the identity read and the
+        # incarnation check.  Re-run the exact same evidence check once; a
+        # persistent evidence gap remains UNKNOWN and fail-closed.
+        return probe_dispatch_process_tree(
+            receipt,
+            _retry_after_observation=False,
+        )
     if supervisor_liveness == ProcessLiveness.ALIVE:
         return ProcessLiveness.ALIVE
 
@@ -1984,6 +1997,14 @@ def probe_dispatch_process_tree(
             recorded_process_group=receipt.worker_process_group,
             require_tree=True,
         )
+        if (
+            worker_liveness is ProcessLiveness.UNKNOWN
+            and _retry_after_observation
+        ):
+            return probe_dispatch_process_tree(
+                receipt,
+                _retry_after_observation=False,
+            )
         if worker_liveness == ProcessLiveness.ALIVE:
             return ProcessLiveness.ALIVE
         # On POSIX, if the supervisor is DEAD and the Worker tree is confirmed
