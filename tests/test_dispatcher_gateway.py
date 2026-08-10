@@ -124,7 +124,8 @@ def _get_helper_exe() -> str:
     fd, path = tempfile.mkstemp(suffix=".py", prefix="dg_test_helper_")
     os.close(fd)
     with open(path, "w", encoding="utf-8") as f:
-        f.write("import sys; sys.exit(0)\n")
+        f.write("#!/usr/bin/env python3\nimport sys; sys.exit(0)\n")
+    os.chmod(path, 0o700)
     _EXE_HELPER_SCRIPT = path
     return path
 
