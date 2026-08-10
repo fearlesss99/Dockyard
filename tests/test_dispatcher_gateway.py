@@ -1876,20 +1876,16 @@ class ImportBoundaryTests(unittest.TestCase):
 
     def _code_only(self) -> str:
         """Return source without docstrings and comments."""
+        import io
+        import tokenize
+
         src = (_SCRIPTS / "dispatcher_gateway.py").read_text(encoding="utf-8")
-        lines: list[str] = []
-        in_docstring = False
-        for line in src.splitlines():
-            stripped = line.strip()
-            if '"""' in stripped:
-                in_docstring = not in_docstring
-                continue
-            if in_docstring:
-                continue
-            if stripped.startswith("#"):
-                continue
-            lines.append(line)
-        return "\n".join(lines)
+        tokens = tokenize.generate_tokens(io.StringIO(src).readline)
+        return tokenize.untokenize(
+            token
+            for token in tokens
+            if token.type not in (tokenize.STRING, tokenize.COMMENT)
+        )
 
     def test_no_claude_reference(self) -> None:
         # Check code-only (no docstrings/comments) for Claude-specific flags
