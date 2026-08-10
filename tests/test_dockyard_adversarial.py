@@ -435,7 +435,7 @@ class DockyardCoreRemainingAdversarialTests(DockyardCoreAdversarialTests):
                 "/api/dockyard/v1/projects/PRJ-1/tasks/TC-001/retry",
                 "task.retry",
                 "CMD-RETRY",
-                409,
+                400,
             ),
             (
                 "/api/dockyard/v1/projects/PRJ-1/dispatches/DSP-001/terminate",
@@ -460,7 +460,9 @@ class DockyardCoreRemainingAdversarialTests(DockyardCoreAdversarialTests):
                     envelope_changes={"confirmation_id": "CONF-" + command_id},
                 )
                 self.assertEqual(status, expected, result)
-                if status == 409:
+                if command_type == "task.retry":
+                    self.assertEqual(result["error_code"], "COMMAND_PAYLOAD_INVALID")
+                elif status == 409:
                     self.assertEqual(result["error_code"], "COMMAND_OWNER_UNAVAILABLE")
         self._assert_zero_canonical()
 

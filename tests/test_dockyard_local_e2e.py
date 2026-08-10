@@ -20,6 +20,7 @@ import dockyard_terminal_owner_composition as terminal
 import dockyard_composition
 import workflow_orchestrator
 from dockyard_local_runtime import DockyardLocalRuntime
+from dockyard_owner_loss_recovery import DockyardOwnerLossRecoveryRuntime
 from state_provider import StateProvider
 from tests import test_dockyard_local_runtime as local_fixtures
 from tests import test_dockyard_post_admission_worker as worker_fixtures
@@ -35,6 +36,25 @@ class DockyardLocalClosedLoopE2ETests(unittest.TestCase):
             "test_runtime_starts_real_loopback_and_approves_through_production_owner"
         )
         self.fixture.setUp()
+        self.pm_codex_executable = self._install_deterministic_pm_codex()
+        bindings = self.fixture.project_root / ".agentdesk/runtime/model-bindings.yaml"
+        binding_document = json.loads(bindings.read_text(encoding="utf-8"))
+        binding_document["bindings"]["basic"]["capabilities"] = [
+            "coding", "implementation", "testing",
+        ]
+        binding_document["bindings"]["pm-codex"] = {
+            "provider": "codex",
+            "model_id": "test-pm-codex",
+            "tier": "expert",
+            "deliberation_tier": "deep",
+            "context_window_tokens": 128000,
+            "capabilities": ["implementation", "planning", "read"],
+            "enabled": True,
+        }
+        bindings.write_text(
+            json.dumps(binding_document, ensure_ascii=False, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
         self.plan_root = Path(self.fixture.temp.name) / "e2e-plans"
         self.plan_root.mkdir()
         self.config = replace(
@@ -74,23 +94,90 @@ class DockyardLocalClosedLoopE2ETests(unittest.TestCase):
         self.runtime: DockyardLocalRuntime | None = None
         self.result = None
 
+    def _install_deterministic_pm_codex(self) -> str:
+        """Create a local CLI that emits the frozen PM-Codex JSON envelope.
+
+        The E2E exercises the production planner and dispatcher without a
+        network login or a real model.  The wrapper accepts the same stdin
+        contract as Codex and returns one valid agent event.
+        """
+        root = Path(self.fixture.temp.name)
+        script = root / "dockyard_test_pm_codex.py"
+        script.write_text(
+            "import json, re, sys\n"
+            "prompt = sys.stdin.read()\n"
+            "match = re.search(r'\\\"plan_id\\\":\\\"([^\\\"]+)\\\"', prompt)\n"
+            "plan_id = match.group(1) if match else 'PLAN-E2E'\n"
+            "plan = {\n"
+            "    'schema_version': 'agentdesk.pm-codex-plan/v1',\n"
+            "    'plan_id': plan_id,\n"
+            "    'tasks': [{\n"
+            "        'title': 'Implement the requested change',\n"
+            "        'description': 'Apply the requested bounded change and verify it locally.',\n"
+            "        'dependencies': [],\n"
+            "        'execution_mode': 'parallel',\n"
+            "        'task_type': 'implementation',\n"
+            "        'capabilities': ['implementation'],\n"
+            "        'rationale_keys': [\n"
+            "            'scope.bounded', 'clarity.explicit',\n"
+            "            'concurrency.single_writer', 'contract.internal',\n"
+            "            'impact.informational', 'rollback.simple',\n"
+            "            'dependency.none',\n"
+            "        ],\n"
+            "        'difficulty': 'basic',\n"
+            "        'risk': 'L0',\n"
+            "        'business_priority': 'P1',\n"
+            "    }],\n"
+            "}\n"
+            "event = {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': json.dumps(plan, separators=(',', ':'))}}\n"
+            "sys.stdout.write(json.dumps(event, separators=(',', ':')) + '\\n')\n",
+            encoding="utf-8",
+        )
+        if sys.platform == "win32":
+            wrapper = root / "dockyard-test-pm-codex.cmd"
+            wrapper.write_text(
+                f'@echo off\r\n"{sys.executable}" "%~dp0dockyard_test_pm_codex.py"\r\n',
+                encoding="ascii",
+            )
+            return str(wrapper)
+        script.chmod(0o755)
+        return str(script)
+
+    def _pm_provider(self):
+        return type(
+            "_DeterministicPmCodexProvider",
+            (),
+            {
+                "provider_id": "codex",
+                "executable": self.pm_codex_executable,
+            },
+        )()
+
     def tearDown(self) -> None:
         if self.runtime is not None:
             self.runtime.stop()
         self.fixture.tearDown()
 
     def _start(self, *, workers: bool) -> None:
+        pm_provider = self._pm_provider()
         if workers:
             self.runtime = DockyardLocalRuntime(
                 self.config,
-                {"claude": worker_fixtures._WorkspaceLocalProvider()},
-                (("claude", "2.1.214"),),
+                {
+                    "claude": worker_fixtures._WorkspaceLocalProvider(),
+                    "codex": pm_provider,
+                },
+                (("claude", "2.1.214"), ("codex", "test-pm-codex")),
                 audit_config=workflow_fixtures._make_fake_mad_gateway_config(),
                 integration_target_branch=self.target_branch,
                 clock=worker_fixtures._Clock(),
             )
         else:
-            self.runtime = DockyardLocalRuntime(self.config)
+            self.runtime = DockyardLocalRuntime(
+                self.config,
+                {"codex": pm_provider},
+                (("codex", "test-pm-codex"),),
+            )
         self.result = self.runtime.start()
 
     def _get(self, path: str) -> tuple[int, dict[str, object]]:
@@ -509,11 +596,23 @@ class DockyardOwnerLossLocalRuntimeE2E(unittest.TestCase):
             (("claude", "2.1.214"),),
             clock=self.fixture.clock,
         )
-        result = self.runtime.start()
-        recovery = self.runtime._recovery_runtime
-        self.assertIsNotNone(recovery)
-        assert recovery is not None
-        recovered = recovery.wait(30)
+        # This fixture deliberately starts with a synthetic task-card commit.
+        # Keep the production ancestry check intact, but provide the same
+        # local card projection used by the direct recovery tests before the
+        # runtime launches its background owner-loss thread.
+        def task_card_prompt(runtime, plan):
+            return (runtime.root / plan.task_card_path).read_text(encoding="utf-8")
+
+        with patch.object(
+            DockyardOwnerLossRecoveryRuntime,
+            "_task_card_prompt",
+            task_card_prompt,
+        ):
+            result = self.runtime.start()
+            recovery = self.runtime._recovery_runtime
+            self.assertIsNotNone(recovery)
+            assert recovery is not None
+            recovered = recovery.wait(30)
         self.assertEqual(len(recovered), 1)
         self.assertIs(
             recovered[0].outcome,
