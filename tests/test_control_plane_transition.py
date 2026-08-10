@@ -6728,7 +6728,7 @@ class TestWriteFailureMatrix(TestControlPlaneTransitionBase):
             head = r.stdout.strip()
             # Fix grant snapshot_commits.
             for scope_val in ["dispatch", "accept", "integrate"]:
-                grant_path = approvals_dir / f"EVT-WFM-{scope_val}.yaml"
+                grant_path = approvals_dir / f"EVT-WFM-{scope_val.upper()}.yaml"
                 g = self._json.loads(grant_path.read_text(encoding="utf-8"))
                 g["snapshot_commit"] = head
                 grant_path.write_text(
