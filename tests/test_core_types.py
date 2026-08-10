@@ -56,8 +56,7 @@ def _import_module_in_isolation() -> tuple[str, str]:
     raises, the exception propagates.
     """
     name = "core_types"
-    if name in sys.modules:
-        del sys.modules[name]
+    original = sys.modules.pop(name, None)
     stdout = io.StringIO()
     stderr = io.StringIO()
     with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -67,6 +66,9 @@ def _import_module_in_isolation() -> tuple[str, str]:
             importlib.import_module(name)
         finally:
             sys.path.remove(str(_SCRIPTS))
+            sys.modules.pop(name, None)
+            if original is not None:
+                sys.modules[name] = original
     return stdout.getvalue(), stderr.getvalue()
 
 
@@ -349,8 +351,7 @@ class ImportSideEffectTests(unittest.TestCase):
     def test_import_produces_no_output(self) -> None:
         # Use importlib to get a fresh load.
         name = "core_types"
-        if name in sys.modules:
-            del sys.modules[name]
+        original = sys.modules.pop(name, None)
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -359,6 +360,9 @@ class ImportSideEffectTests(unittest.TestCase):
                 importlib.import_module(name)
             finally:
                 sys.path.remove(str(_SCRIPTS))
+                sys.modules.pop(name, None)
+                if original is not None:
+                    sys.modules[name] = original
         self.assertEqual(stdout.getvalue(), "",
                          "import must not write to stdout")
         self.assertEqual(stderr.getvalue(), "",
