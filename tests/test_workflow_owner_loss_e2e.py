@@ -908,10 +908,43 @@ class OwnerLossAutomaticRetryE2E(unittest.TestCase):
             )
             self.assertIs(worker_liveness, dse.ProcessLiveness.DEAD)
             tree_liveness = dse.probe_dispatch_process_tree(failed_receipt)
+            direct_tree_liveness = dse.probe_process(
+                failed_receipt.worker_pid,
+                failed_receipt.worker_creation_time,
+                failed_receipt.boot_id,
+                recorded_process_group=failed_receipt.worker_process_group,
+                require_tree=True,
+            )
+            group_members: list[tuple[int, str, int]] = []
+            if os.name != "nt" and failed_receipt.worker_process_group is not None:
+                for proc_entry in Path("/proc").iterdir():
+                    if not proc_entry.name.isdigit():
+                        continue
+                    try:
+                        stat_text = (proc_entry / "stat").read_text(
+                            encoding="utf-8"
+                        )
+                        stat_end = stat_text.rfind(")")
+                        stat_fields = stat_text[stat_end + 2 :].split()
+                        if int(stat_fields[2]) == failed_receipt.worker_process_group:
+                            group_members.append(
+                                (
+                                    int(proc_entry.name),
+                                    stat_fields[0],
+                                    int(stat_fields[2]),
+                                )
+                            )
+                    except (OSError, ValueError, IndexError):
+                        continue
             self.assertIs(
                 tree_liveness,
                 dse.ProcessLiveness.DEAD,
-                "durable supervisor and Worker tree must be DEAD",
+                (
+                    "durable supervisor and Worker tree must be DEAD; "
+                    f"direct={direct_tree_liveness.value}; "
+                    f"group={failed_receipt.worker_process_group!r}; "
+                    f"members={group_members!r}"
+                ),
             )
 
             plan = _retry_plan(project)
