@@ -493,7 +493,7 @@ class FinalizerTombstoneTests(unittest.TestCase):
         self.assertEqual(len(dse.DispatchFinalizerTombstone.__dataclass_fields__), 12)
         params = dse.DispatchFinalizerTombstone.__dataclass_params__
         self.assertTrue(params.frozen)
-        self.assertTrue(params.slots)
+        self.assertIn("__slots__", dse.DispatchFinalizerTombstone.__dict__)
         fields = set(dse.DispatchFinalizerTombstone.__dataclass_fields__.keys())
         self.assertEqual(
             fields,
@@ -1310,7 +1310,7 @@ class FieldCountFreezeTests(unittest.TestCase):
     def test_receipt_fields_frozen_and_slots(self) -> None:
         params = dse.DispatchProcessReceipt.__dataclass_params__
         self.assertTrue(params.frozen)
-        self.assertTrue(params.slots)
+        self.assertIn("__slots__", dse.DispatchProcessReceipt.__dict__)
 
 
 # ── TC-13.18d.12a-pre2.2.1 — API boundary closure tests ─────────────────

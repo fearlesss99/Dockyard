@@ -400,13 +400,9 @@ class TestFrozenAndSlots(TestControlPlaneTransitionBase):
                     cls.__dataclass_params__.frozen,
                     f"{name} must be frozen=True",
                 )
-                # slots=True is harder to detect from __dataclass_params__;
-                # verify by checking __slots__ on an instance.
-                if hasattr(cls, "__dataclass_params__"):
-                    self.assertTrue(
-                        cls.__dataclass_params__.slots,
-                        f"{name} must have slots=True",
-                    )
+                self.assertIn(
+                    "__slots__", cls.__dict__, f"{name} must have slots=True"
+                )
 
     def test_041_frozen_prevents_mutation(self) -> None:
         cas = self.cpt.TransitionCAS(
@@ -3536,7 +3532,7 @@ class TestAcceptanceOwnerApproval(TestControlPlaneTransitionBase):
     def test_615_frozen_and_slots(self) -> None:
         cls = self.cpt.AcceptanceOwnerApproval
         self.assertTrue(cls.__dataclass_params__.frozen)
-        self.assertTrue(cls.__dataclass_params__.slots)
+        self.assertIn("__slots__", cls.__dict__)
 
     def test_616_exact_two_fields(self) -> None:
         """AcceptanceOwnerApproval must have exactly gate, approval_ids."""
@@ -13874,7 +13870,7 @@ class TC1318d12cOwnerLossTransitionCheckTests(unittest.TestCase):
     def test_02_check_frozen_slots(self) -> None:
         params = self.cpt.OwnerLossTransitionCheck.__dataclass_params__
         self.assertTrue(params.frozen)
-        self.assertTrue(params.slots)
+        self.assertIn("__slots__", self.cpt.OwnerLossTransitionCheck.__dict__)
 
     def test_03_check_no_any_dict_or_callable(self) -> None:
         OK = self.cpt.OwnerLossTransitionCheck

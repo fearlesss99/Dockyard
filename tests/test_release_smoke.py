@@ -12578,8 +12578,8 @@ class TC1318d12aPre2RuntimeContractTests(unittest.TestCase):
         self.assertTrue(
             self.dse.DispatchFinalizerTombstone.__dataclass_params__.frozen
         )
-        self.assertTrue(
-            self.dse.DispatchFinalizerTombstone.__dataclass_params__.slots
+        self.assertIn(
+            "__slots__", self.dse.DispatchFinalizerTombstone.__dict__
         )
 
     def test_05_supervisor_typed_api(self) -> None:
