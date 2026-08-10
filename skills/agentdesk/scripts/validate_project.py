@@ -4425,7 +4425,11 @@ def _validate_approval_evidence(
             try:
                 st = os.lstat(str(entry))
                 import stat
-                if st.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                file_attributes = getattr(st, "st_file_attributes", 0)
+                reparse_attribute = getattr(
+                    stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0
+                )
+                if file_attributes & reparse_attribute:
                     reporter.error(
                         f"approval evidence must not be a reparse point: "
                         f"{entry.relative_to(project).as_posix()}"
@@ -4434,7 +4438,7 @@ def _validate_approval_evidence(
             except AttributeError:
                 # stat.FILE_ATTRIBUTE_REPARSE_POINT doesn't exist on
                 # this platform (e.g. POSIX) — not an error.
-                _assert_json_cannot_parse(event_yaml)
+                pass
             except OSError as exc:
                 reporter.error(
                     f"cannot verify whether approval evidence is a "
