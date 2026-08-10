@@ -1282,7 +1282,7 @@ class TC1317bProductionTests(unittest.TestCase):
 
         # frozen + slots
         self.assertTrue(getattr(TaskEntry, "__dataclass_params__").frozen)
-        self.assertTrue(getattr(TaskEntry, "__dataclass_params__").slots)
+        self.assertIn("__slots__", TaskEntry.__dict__)
 
         # No __dict__ on instance
         tree = _ProjectTree()

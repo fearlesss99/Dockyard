@@ -6906,9 +6906,6 @@ class ReleaseSmokeTests(unittest.TestCase):
     def test_tc1311c_apply_transition_no_longer_not_implemented(self) -> None:
         """apply_transition is now implemented — TC-13.11c is Current."""
         import importlib, sys
-        mod_name = "control_plane_transition"
-        if mod_name in sys.modules:
-            del sys.modules[mod_name]
         script_dir = str(SKILL_ROOT / "scripts")
         if script_dir not in sys.path:
             sys.path.insert(0, script_dir)
@@ -8499,9 +8496,6 @@ class TC1316bProductionSmokeTests(unittest.TestCase):
             self.assertEqual(set(mad_audit_gateway.__all__), expected)
         finally:
             sys.path.pop(0)
-            for k in list(sys.modules):
-                if k == "mad_audit_gateway" or k.startswith("mad_audit_gateway."):
-                    del sys.modules[k]
 
     # -- 3. MadAuditPlan has exactly 1 field (not 6) --
 
@@ -8599,9 +8593,6 @@ class TC1316bProductionSmokeTests(unittest.TestCase):
             )
         finally:
             sys.path.pop(0)
-            for k in list(sys.modules):
-                if k == "mad_audit_gateway" or k.startswith("mad_audit_gateway."):
-                    del sys.modules[k]
 
     def test_all_dataclasses_are_frozen_slots(self) -> None:
         """All 6 dataclasses must be frozen=True, slots=True."""

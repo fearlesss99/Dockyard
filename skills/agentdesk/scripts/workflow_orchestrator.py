@@ -114,6 +114,7 @@ from worker_slot_lease import (
 )
 from difficulty_assessment_store import (
     DifficultyAssessmentStore,
+    DifficultyAssessmentStoreError,
     read_by_task_revision,
     validate_ancestry_for_dispatch,
 )
@@ -1728,7 +1729,12 @@ def _validate_difficulty_assessment(
         )
 
     # 2. Read durable assessment evidence.
-    evidence = read_by_task_revision(project_root, task_id, revision)
+    try:
+        evidence = read_by_task_revision(project_root, task_id, revision)
+    except DifficultyAssessmentStoreError as exc:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: stored evidence is invalid"
+        ) from exc
     if evidence is None:
         raise WorkflowInputError(
             "difficulty_assessment: assessment evidence not found "
@@ -1765,9 +1771,14 @@ def _validate_difficulty_assessment(
         raise WorkflowInvariantError(
             "difficulty_assessment: snapshot_commit malformed"
         )
-    validate_ancestry_for_dispatch(
-        project_root, snapshot_commit, cas_snapshot_commit,
-    )
+    try:
+        validate_ancestry_for_dispatch(
+            project_root, snapshot_commit, cas_snapshot_commit,
+        )
+    except DifficultyAssessmentStoreError as exc:
+        raise WorkflowInvariantError(
+            "difficulty_assessment: snapshot ancestry is invalid"
+        ) from exc
 
     # 6. Validate selected_difficulty.
     if type(assessment.selected_difficulty) is not TaskDifficulty:

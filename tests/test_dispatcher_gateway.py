@@ -1953,40 +1953,49 @@ class CrossModuleCompatibilityTests(unittest.TestCase):
     """TC-13.7: ensure no module identity split when loaded with other modules."""
 
     def test_coexists_with_mad_gateway(self) -> None:
+        original = sys.modules.get("dispatcher_gateway")
         sys.path.insert(0, str(_SCRIPTS))
         try:
             import mad_gateway as mg  # noqa: F811
             # Reload dispatcher_gateway fresh
-            if "dispatcher_gateway" in sys.modules:
-                del sys.modules["dispatcher_gateway"]
+            sys.modules.pop("dispatcher_gateway", None)
             import dispatcher_gateway as dg2  # noqa: F811
             self.assertIsNotNone(mg)
             self.assertIsNotNone(dg2)
         finally:
+            sys.modules.pop("dispatcher_gateway", None)
+            if original is not None:
+                sys.modules["dispatcher_gateway"] = original
             sys.path.pop(0)
 
     def test_coexists_with_mad_refs(self) -> None:
+        original = sys.modules.get("dispatcher_gateway")
         sys.path.insert(0, str(_SCRIPTS))
         try:
             import mad_refs as mr  # noqa: F811
-            if "dispatcher_gateway" in sys.modules:
-                del sys.modules["dispatcher_gateway"]
+            sys.modules.pop("dispatcher_gateway", None)
             import dispatcher_gateway as dg2  # noqa: F811
             self.assertIsNotNone(mr)
             self.assertIsNotNone(dg2)
         finally:
+            sys.modules.pop("dispatcher_gateway", None)
+            if original is not None:
+                sys.modules["dispatcher_gateway"] = original
             sys.path.pop(0)
 
     def test_coexists_with_core_types(self) -> None:
+        original = sys.modules.get("dispatcher_gateway")
         sys.path.insert(0, str(_SCRIPTS))
         try:
             import core_types as ct  # noqa: F811
-            if "dispatcher_gateway" in sys.modules:
-                del sys.modules["dispatcher_gateway"]
+            sys.modules.pop("dispatcher_gateway", None)
             import dispatcher_gateway as dg2  # noqa: F811
             self.assertIsNotNone(ct)
             self.assertIsNotNone(dg2)
         finally:
+            sys.modules.pop("dispatcher_gateway", None)
+            if original is not None:
+                sys.modules["dispatcher_gateway"] = original
             sys.path.pop(0)
 
 
