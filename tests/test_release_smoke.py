@@ -172,7 +172,7 @@ class ReleaseSmokeTests(unittest.TestCase):
             self.assertTrue((REPO_ROOT / relative).is_file(), relative)
 
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("--repo LeviXDD/AgentDeskSkill", readme)
+        self.assertIn("--repo fearlesss99/Dockyard", readme)
         self.assertIn("--path skills/agentdesk", readme)
         self.assertIn("--ref v0.1.0-beta", readme)
         self.assertIn("$agentdesk", readme)
@@ -4229,18 +4229,19 @@ class ReleaseSmokeTests(unittest.TestCase):
         self.assertIn("never", section)
         self.assertIn("hard-coded", section)
 
-    def test_tc1383_approval_before_exec(self) -> None:
-        """§2.12.4 must state --ask-for-approval never must appear
-        before exec."""
+    def test_tc1383_approval_policy_is_configured_after_exec(self) -> None:
+        """§2.12.4 must configure non-interactive approval after exec."""
         adr_text = self._adr_path().read_text(encoding="utf-8")
         section = _extract_markdown_section(adr_text, "#### 2.12.4")
         self.assertIsNotNone(section, "ADR must contain §2.12.4")
-        target = section.lower()
-        self.assertTrue(
-            "before `exec`" in target
-            or "before exec" in target
-            or "must appear **before**" in section,
-            "§2.12.4 must state --ask-for-approval never precedes exec",
+        command = re.search(r"```text\n(.*?)```", section, re.DOTALL)
+        self.assertIsNotNone(command, "§2.12.4 must contain a CLI command block")
+        invocation = " ".join(command.group(1).split())
+        self.assertIn("codex exec", invocation)
+        self.assertIn("-c approval_policy=never", invocation)
+        self.assertLess(
+            invocation.index("exec"),
+            invocation.index("approval_policy=never"),
         )
 
     def test_tc1383_ephemeral_present(self) -> None:
@@ -4411,11 +4412,10 @@ class ReleaseSmokeTests(unittest.TestCase):
         code_m = re.search(r"```python\n(.*?)```", section, re.DOTALL)
         self.assertIsNotNone(code_m, "§2.12.4 must contain a Python code block")
         code = code_m.group(1)
-        self.assertIn("--ask-for-approval", code)
         self.assertIn('"exec"', code)
         self.assertIn("--ephemeral", code)
         self.assertIn("--json", code)
-        self.assertIn('"never"', code)
+        self.assertIn('"approval_policy=never"', code)
         self.assertIn("--model", code)
         self.assertIn("--sandbox", code)
         self.assertIn("-c", code)
@@ -4558,9 +4558,9 @@ class ReleaseSmokeTests(unittest.TestCase):
                  "p = ccp.CodexCliProvider(provider_id='codex', executable='codex', sandbox_mode='workspace-write'); "
                  "inv = p.build_invocation(req); "
                  "expected = ("
-                 "'--ask-for-approval', 'never', 'exec', '--ephemeral', '--json', "
+                 "'exec', '--ephemeral', '--json', "
                  "'--color', 'never', '--model', 'gpt-5', '--sandbox', 'workspace-write', "
-                 "'-c', 'model_reasoning_effort=\"medium\"', '-'); "
+                 "'-c', 'approval_policy=never', '-c', 'model_reasoning_effort=\"medium\"', '-'); "
                  "assert inv.argv == expected, f'argv mismatch: {{inv.argv}}'; "
                  "assert inv.env_overrides == (), f'env mismatch: {{inv.env_overrides}}'; "
                  "assert inv.executable == 'codex'; "
@@ -14227,7 +14227,10 @@ class TC1322b3aAndTC1324b1IntegrationStatusTests(unittest.TestCase):
             "Selection-to-Admission runtime: **Current - TC-13.24b.2b.4a.4**",
             normalized,
         )
-        self.assertIn("WorktreeLifecycleManager **Target**", normalized)
+        self.assertIn(
+            "WorktreeLifecycleManager Contract: **Contract Current — TC-13.25a**",
+            normalized,
+        )
         self.assertNotIn(
             "Admission orchestration/runtime wiring: **Current**",
             normalized,
@@ -14237,7 +14240,7 @@ class TC1322b3aAndTC1324b1IntegrationStatusTests(unittest.TestCase):
         normalized = " ".join(self.adr.split())
         self.assertIn("Interface #22 core orchestration is **Current — TC-13.18d.13b**", normalized)
         self.assertIn(
-            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Recovery Core Current**",
+            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core + Recovery Action Executor Runtime + Worker Handoff Contract + Worker Handoff Store Current**",
             normalized,
         )
         self.assertIn("Interface #22 is unchanged", normalized)
@@ -14807,7 +14810,7 @@ class TC1324b4b1RecoveryActionExecutorContractFreezeTests(unittest.TestCase):
         self.assertIn("does not implement a production executor", normalized)
         self.assertIn("does not call WorkflowOrchestrator, Worker", normalized)
 
-    def test_status_is_current_only_for_contract(self) -> None:
+    def test_status_tracks_current_contract_and_runtime(self) -> None:
         normalized = self._normalize(
             self.contract + "\n" + self.portfolio_contract + "\n" + self.adr
         )
@@ -14816,7 +14819,7 @@ class TC1324b4b1RecoveryActionExecutorContractFreezeTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "Recovery Action Executor Runtime: **Target — TC-13.24b.2b.4b.2**",
+            "Recovery Action Executor runtime: **Current — TC-13.24b.2b.4b.2**",
             normalized,
         )
         self.assertIn("Worker startup/complete Scheduler runtime: **Target**", normalized)
@@ -14825,11 +14828,15 @@ class TC1324b4b1RecoveryActionExecutorContractFreezeTests(unittest.TestCase):
         normalized = self._normalize(self.adr)
         self.assertIn("Interface #22 is unchanged", normalized)
         self.assertIn(
-            "Recovery Action Executor Contract Current",
+            "Recovery Action Executor Contract is **Current — TC-13.24b.2b.4b.1**",
             normalized,
         )
         self.assertIn(
-            "Recovery Action Executor Runtime and Worker startup/complete Scheduler runtime remain Target",
+            "Recovery Action Executor Runtime is **Current — TC-13.24b.2b.4b.2**",
+            normalized,
+        )
+        self.assertIn(
+            "Worker startup/complete Scheduler runtime remains **Target**",
             normalized,
         )
         self.assertIn(
@@ -14946,7 +14953,7 @@ class TC1324b2aPortfolioSchedulerSelectionPolicyStatusTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Recovery Core Current**",
+            "| 36 | PortfolioScheduler durable admission | **Contract + Store + Selection Policy + Admission Core + Plan Store/Runtime + Selection-to-Admission Runtime + Recovery Core + Recovery Action Executor Runtime + Worker Handoff Contract + Worker Handoff Store Current**",
             normalized,
         )
         self.assertIn("Interface #22 is unchanged", normalized)
@@ -15333,7 +15340,7 @@ class TC1324b4a2AdmissionPlanBindingContractFreezeTests(unittest.TestCase):
             "Recovery canonical event identity: **Current - TC-13.24b.2b.2c**",
             "Recovery adversarial verification: **Verified - TC-13.24b.2b.2d**",
             "Recovery Action Executor contract: **Contract Current — TC-13.24b.2b.4b.1**",
-            "Recovery Action Executor runtime: **Target — TC-13.24b.2b.4b.2**",
+            "Recovery Action Executor runtime: **Current — TC-13.24b.2b.4b.2**",
             "Worker startup/complete Scheduler runtime: **Target**",
         ):
             self.assertIn(status, normalized)
@@ -15357,7 +15364,11 @@ class TC1324b4a2AdmissionPlanBindingContractFreezeTests(unittest.TestCase):
             normalized,
         )
         self.assertIn(
-            "Recovery action execution and complete Scheduler runtime remain **Target**",
+            "Recovery Action Executor Runtime is **Current — TC-13.24b.2b.4b.2**",
+            normalized,
+        )
+        self.assertIn(
+            "Worker Handoff execution and complete Scheduler runtime remain **Target**",
             normalized,
         )
         self.assertIn("Interface #22 remains unchanged", normalized)
@@ -15849,8 +15860,8 @@ class TC1329bDockyardContractFreezeTests(unittest.TestCase):
 
     def test_reference_images_are_style_only(self) -> None:
         normalized = " ".join(self.web.split())
-        self.assertIn("influence only", normalized)
-        self.assertIn("must not copy another product's brand", normalized)
+        self.assertIn("approved reference influences composition", normalized)
+        self.assertIn("does not replace the `Dockyard` brand", normalized)
 
     def test_workbench_has_five_primary_summaries(self) -> None:
         for value in (
@@ -15886,13 +15897,14 @@ class TC1329bDockyardContractFreezeTests(unittest.TestCase):
     def test_no_dynamic_task_graph(self) -> None:
         self.assertIn("no dynamic task relationship graph", self.web)
 
-    def test_web_exclusions_are_frozen(self) -> None:
+    def test_web_exclusions_and_light_direction_are_frozen(self) -> None:
         for value in (
             "multi-user accounts", "public registration", "billing", "email",
-            "browser notifications", "light theme", "repository deletion",
+            "browser notifications", "repository deletion",
             "cloud relay",
         ):
             self.assertIn(value, self.web)
+        self.assertIn("light, high-contrast operational surfaces", self.web)
 
     def test_adr_interface_40_is_exact(self) -> None:
         self.assertIn("| 40 | Dockyard local visual control surface |", self.adr)
@@ -16094,7 +16106,10 @@ class TC1329l5aMaterializationAdmissionHandoffContractFreezeTests(unittest.TestC
             block,
         )
         self.assertIn("locks are not nested across owner calls", block)
-        self.assertIn("outside the handoff, Git, canonical, and queue locks", block)
+        self.assertIn(
+            "outside the handoff, Git, worktree, canonical, and queue locks",
+            block,
+        )
         self.assertIn("invoke the typed\n   PortfolioScheduler selection/admission boundary", block)
 
     def test_crash_matrix_is_complete_and_unambiguous(self) -> None:
@@ -16659,7 +16674,10 @@ class TC1329l5fDockyardPostDeliveryReviewContractTests(unittest.TestCase):
         self.assertIn("Contract Current — TC-13.29l.5f", self.adr)
         self.assertIn("Store Current — TC-13.29l.5g.1", self.adr)
         self.assertIn("Interface #22 Acceptance Owner Runtime Current", self.adr)
-        self.assertIn("Dockyard Composition Target — TC-13.29l.5g.2c.2", self.adr)
+        self.assertIn(
+            "Dockyard Normal-Path Composition Current — TC-13.29l.5g.2c.2",
+            self.adr,
+        )
 
 
 class TC1329l5f1DurableAcceptanceOwnerInputContractTests(unittest.TestCase):
@@ -16731,7 +16749,10 @@ class TC1329l5f1DurableAcceptanceOwnerInputContractTests(unittest.TestCase):
         self.assertIn("Owner Input Contract Current — TC-13.29l.5f.1", self.adr)
         self.assertIn("Store Current — TC-13.29l.5g.1", self.adr)
         self.assertIn("Interface #22 Acceptance Owner Runtime Current", self.adr)
-        self.assertIn("Dockyard Composition Target — TC-13.29l.5g.2c.2", self.adr)
+        self.assertIn(
+            "Dockyard Normal-Path Composition Current — TC-13.29l.5g.2c.2",
+            self.adr,
+        )
         self.assertIn("full TC-13.29l E2E remains Blocked", self.adr)
 
     def test_public_input_bans_mutable_clients_and_secrets(self) -> None:
@@ -16754,7 +16775,10 @@ class TC1329l5g1DockyardPostDeliveryReviewStoreStatusTests(unittest.TestCase):
         adr = " ".join((SKILL_ROOT / "references/adr/001-mad-agentdesk-integration.md").read_text(encoding="utf-8").split())
         self.assertIn("Store Current — TC-13.29l.5g.1", adr)
         self.assertIn("Interface #22 Acceptance Owner Runtime Current", adr)
-        self.assertIn("Dockyard Composition Target — TC-13.29l.5g.2c.2", adr)
+        self.assertIn(
+            "Dockyard Normal-Path Composition Current — TC-13.29l.5g.2c.2",
+            adr,
+        )
         self.assertIn("Interfaces #20/#22 remain sole MAD and lifecycle owners", adr)
 
     def test_store_module_exists_without_owner_imports(self) -> None:
@@ -17146,9 +17170,12 @@ class TC1329l6DockyardLoopbackWebShellStatusTests(unittest.TestCase):
             self.assertIn("Current — TC-13.29l.6", text)
 
     def test_core_e2e_is_verified_and_full_matrix_remains_partial(self) -> None:
-        for text in (self.web, self.control, self.adr):
+        for text in (self.web, self.control):
             self.assertIn("TC-13.29l.10", text)
-            self.assertIn("Partial", text)
+            self.assertIn("Partial/Target", text)
+        self.assertIn("TC-13.29l.10", self.adr)
+        for text in (self.web, self.control, self.adr):
+            self.assertIn("TC-13.29n", text)
 
     def test_runtime_is_in_memory_and_no_store(self) -> None:
         source = (SKILL_ROOT / "scripts/dockyard_web_runtime.py").read_text(encoding="utf-8")
@@ -17172,10 +17199,12 @@ class TC1329l7DockyardRequirementPlanStatusTests(unittest.TestCase):
             self.assertIn("Current — TC-13.29l.7", text)
 
     def test_model_pm_and_full_matrix_are_not_overclaimed(self) -> None:
-        for text in (self.web, self.control, self.adr):
+        for text in (self.web, self.control):
             self.assertIn("model-based PM decomposition", text)
             self.assertIn("Target", text)
-            self.assertIn("Partial", text)
+            self.assertIn("Partial/Target", text)
+        self.assertIn("adaptive model-based PM decomposition", self.adr)
+        self.assertIn("remain Target", self.adr)
 
     def test_browser_does_not_freeze_hidden_task_evidence(self) -> None:
         client = (SKILL_ROOT.parents[1] / "apps/dockyard-web/src/client/dockyardClient.ts").read_text(encoding="utf-8")
