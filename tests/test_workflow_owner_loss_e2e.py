@@ -925,6 +925,10 @@ class OwnerLossAutomaticRetryE2E(unittest.TestCase):
                     ).value
                     + ", worker_process_group="
                     + repr(failed_receipt.worker_process_group)
+                    + ", supervisor_pid="
+                    + repr(failed_receipt.supervisor_pid)
+                    + ", worker_pid="
+                    + repr(failed_receipt.worker_pid)
                     + ", job_count="
                     + repr(
                         dse._DispatchJobOwner.probe_job_by_name(
