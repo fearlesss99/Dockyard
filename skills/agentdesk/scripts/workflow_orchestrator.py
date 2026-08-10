@@ -3023,6 +3023,39 @@ class WorkflowOrchestrator:
                         ),
                         worker_boot_id=ds_receipt.boot_id,
                     )
+                except _dse.DispatchSupervisorContentionError:
+                    # The supervisor may be committing its terminal dispatch
+                    # receipt at exactly the same time as this retry receipt.
+                    # Yield once so that already-completed Worker cleanup can
+                    # release the shared evidence lock, then perform the
+                    # exact same CAS again.  This is not a retry policy or
+                    # polling loop: no new identity or side effect is made.
+                    await asyncio.sleep(0)
+                    try:
+                        _dse.advance_retry_to_started(
+                            self.project_root,
+                            next_dispatch_id=(
+                                lifecycle_to_inject.next_dispatch_id
+                            ),
+                            recovery_generation_id=(
+                                lifecycle_to_inject.recovery_generation_id
+                            ),
+                            supervisor_pid=ds_receipt.supervisor_pid,
+                            supervisor_creation_time=(
+                                ds_receipt.supervisor_creation_time
+                            ),
+                            supervisor_boot_id=ds_receipt.boot_id,
+                            worker_pid=ds_receipt.worker_pid,
+                            worker_creation_time=(
+                                ds_receipt.worker_creation_time
+                            ),
+                            worker_boot_id=ds_receipt.boot_id,
+                        )
+                    except _dse.DispatchSupervisorEvidenceError:
+                        raise WorkflowInvariantError(
+                            "owner-loss retry: RETRY_STARTED phase "
+                            "advance failed"
+                        )
                 except _dse.DispatchSupervisorEvidenceError:
                     raise WorkflowInvariantError(
                         "owner-loss retry: RETRY_STARTED phase "

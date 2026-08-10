@@ -349,11 +349,20 @@ class _SupervisorHarness:
             receipt = dse.read_dispatch_receipt(
                 self._project, self._dispatch_id
             )
-            if receipt is not None and receipt.worker_pid is not None:
-                try:
-                    os.kill(receipt.worker_pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+            if receipt is not None:
+                if receipt.worker_process_group is not None:
+                    try:
+                        os.killpg(
+                            receipt.worker_process_group,
+                            signal.SIGTERM,
+                        )
+                    except ProcessLookupError:
+                        pass
+                elif receipt.worker_pid is not None:
+                    try:
+                        os.kill(receipt.worker_pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
             try:
                 self.process.wait(timeout=20)
             except subprocess.TimeoutExpired:
@@ -376,20 +385,6 @@ class _SupervisorHarness:
 
 class OwnerLossAutomaticRetryE2E(unittest.TestCase):
     """Real-process happy path; no production entry or store is mocked."""
-
-    @staticmethod
-    def _job_open_error(generation_id: str) -> str:
-        try:
-            dse._open_dispatch_job(dse._derive_job_name(generation_id))
-        except OSError as exc:
-            return repr(
-                (
-                    exc.errno,
-                    getattr(exc, "winerror", None),
-                    exc.args,
-                )
-            )
-        return "job-open-succeeded"
 
     def _assert_liveness_rejects_without_side_effects(
         self,
@@ -913,52 +908,10 @@ class OwnerLossAutomaticRetryE2E(unittest.TestCase):
             )
             self.assertIs(worker_liveness, dse.ProcessLiveness.DEAD)
             tree_liveness = dse.probe_dispatch_process_tree(failed_receipt)
-            group_members: list[tuple[int, str]] = []
-            if os.name != "nt" and failed_receipt.worker_process_group is not None:
-                for proc_entry in Path("/proc").iterdir():
-                    if not proc_entry.name.isdigit():
-                        continue
-                    try:
-                        stat_text = (proc_entry / "stat").read_text(
-                            encoding="utf-8"
-                        )
-                        stat_end = stat_text.rfind(")")
-                        stat_fields = stat_text[stat_end + 2 :].split()
-                        if int(stat_fields[2]) == failed_receipt.worker_process_group:
-                            group_members.append(
-                                (int(proc_entry.name), stat_fields[0])
-                            )
-                    except (OSError, ValueError, IndexError):
-                        continue
             self.assertIs(
                 tree_liveness,
                 dse.ProcessLiveness.DEAD,
-                (
-                    "tree evidence: supervisor="
-                    + dse.probe_process(
-                        failed_receipt.supervisor_pid,
-                        failed_receipt.supervisor_creation_time,
-                        failed_receipt.boot_id,
-                    ).value
-                    + ", worker="
-                    + worker_liveness.value
-                    + ", worker_process_group="
-                    + repr(failed_receipt.worker_process_group)
-                    + ", supervisor_pid="
-                    + repr(failed_receipt.supervisor_pid)
-                    + ", worker_pid="
-                    + repr(failed_receipt.worker_pid)
-                    + ", group_members="
-                    + repr(group_members)
-                    + ", job_count="
-                    + repr(
-                        dse._DispatchJobOwner.probe_job_by_name(
-                            failed_receipt.generation_id
-                        )
-                    )
-                    + ", open_error="
-                    + self._job_open_error(failed_receipt.generation_id)
-                ),
+                "durable supervisor and Worker tree must be DEAD",
             )
 
             plan = _retry_plan(project)
