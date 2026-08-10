@@ -908,6 +908,12 @@ class OwnerLossAutomaticRetryE2E(unittest.TestCase):
             )
             self.assertIs(worker_liveness, dse.ProcessLiveness.DEAD)
             tree_liveness = dse.probe_dispatch_process_tree(failed_receipt)
+            if tree_liveness is dse.ProcessLiveness.UNKNOWN:
+                # The supervisor has been waited and the exact Worker PID is
+                # already DEAD.  Take one new complete durable snapshot for
+                # the kernel's process-group teardown boundary; a persistent
+                # evidence gap remains UNKNOWN and fails closed.
+                tree_liveness = dse.probe_dispatch_process_tree(failed_receipt)
             self.assertIs(
                 tree_liveness,
                 dse.ProcessLiveness.DEAD,
